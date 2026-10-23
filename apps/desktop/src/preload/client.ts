@@ -1,6 +1,7 @@
 import { CONTRACT_VERSION, isCommandReply, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
-import type { CommandReply, CommandRequest, DesktopBridge, DescribeReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+import type { CommandReply, CommandRequest, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionsReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -39,7 +40,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
 
   function requestId(): string { return makeId(); }
   function voidRequest(command: 'terminal.write' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' | 'ssh.write' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
-    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke', payload: Record<string, unknown>): CommandRequest {
+    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -107,6 +108,18 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     revokeSshHost(host: string, port: number): Promise<TerminalActionReply> {
       return send(voidRequest('ssh.host.revoke', { host, port }), 8_000);
+    },
+    listSavedSessions(query: string): Promise<ListSessionsReply> {
+      return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);
+    },
+    createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
+      return send({ command: 'session.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
+    },
+    setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply> {
+      return send(voidRequest('session.favorite', { id, favorite }), 8_000);
+    },
+    deleteSavedSession(id: string): Promise<TerminalActionReply> {
+      return send(voidRequest('session.delete', { id }), 8_000);
     },
     onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void {
       if (typeof listener !== 'function') return () => {};

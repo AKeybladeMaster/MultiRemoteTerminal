@@ -199,6 +199,58 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
+test('saved sessions save, search, favorite, reopen and delete through the workbench', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-session-catalog-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('No saved sessions yet.')).toBeVisible();
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await expect(saveDialog).toBeVisible();
+    const sessionNameInput = saveDialog.getByLabel('Session name');
+    await expect(sessionNameInput).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(saveDialog.getByRole('button', { name: 'Save session', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(sessionNameInput).toBeFocused();
+    await sessionNameInput.fill('Reusable PowerShell');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Save active session', exact: true })).toBeFocused();
+    const search = page.getByRole('searchbox', { name: 'Search saved sessions' });
+    const openSaved = page.getByRole('button', { name: 'Open Reusable PowerShell', exact: true });
+    await expect(openSaved).toBeVisible();
+    await page.getByRole('button', { name: 'Make favorite Reusable PowerShell', exact: true }).click();
+    const favorite = page.getByRole('button', { name: 'Remove favorite from Reusable PowerShell', exact: true });
+    await expect(favorite).toHaveAttribute('aria-pressed', 'true');
+    await page.screenshot({ path: 'test-results/saved-session-catalog.png', fullPage: true });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(820, 700));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(900);
+    await page.screenshot({ path: 'test-results/saved-session-catalog-narrow.png', fullPage: true });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(700, 480));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(740);
+    await expect(search).toBeVisible();
+    await expect(page.getByRole('button', { name: 'PowerShell session 1 running' })).toBeVisible();
+    const paletteHint = page.getByRole('button', { name: /Command palette/ });
+    await paletteHint.scrollIntoViewIfNeeded();
+    await expect(paletteHint).toBeVisible();
+    await page.screenshot({ path: 'test-results/saved-session-catalog-min-width.png', fullPage: true });
+    await search.fill('reusable power');
+    await expect(openSaved).toBeVisible();
+    await openSaved.click();
+    await expect(page.getByRole('tab')).toHaveCount(2);
+    await expect(page.getByRole('tab').filter({ hasText: 'Reusable PowerShell' })).toHaveCount(1);
+    page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: 'Delete saved session Reusable PowerShell', exact: true }).click();
+    await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SQLite storage worker migrates host trust and shuts down inside Electron', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-storage-worker-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
@@ -215,19 +267,13 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     const reply = await app.evaluate(async ({ utilityProcess }, { workerPath, appRoot, databasePath, identity }) => new Promise<unknown>((resolveReply, rejectReply) => {
-      const requestIds = [
-        '00000000-0000-4000-8000-000000000002',
-        '00000000-0000-4000-8000-000000000003',
-        '00000000-0000-4000-8000-000000000004'
-      ];
-      const requests = [
-        { version: 1, type: 'request', requestId: requestIds[0], command: 'hostTrust.importLegacy', identities: [identity] },
-        { version: 1, type: 'request', requestId: requestIds[1], command: 'hostTrust.find', endpoint: identity.endpoint },
-        { version: 1, type: 'request', requestId: requestIds[2], command: 'shutdown' }
-      ];
-      const replies: { imported?: unknown; found?: unknown; shutdown?: unknown } = {};
-      let requestIndex = 0;
+      const requestIds = Array.from({ length: 8 }, (_unused, index) => `00000000-0000-4000-8000-${String(index + 2).padStart(12, '0')}`);
+      const replies: { imported?: unknown; found?: unknown; created?: unknown; searched?: unknown; favorited?: unknown; favoriteChecked?: unknown; removed?: unknown; shutdown?: unknown } = {};
       const child = utilityProcess.fork(workerPath, [], { cwd: appRoot, env: { MRT_STORAGE_DB_PATH: databasePath }, stdio: 'ignore' });
+      const send = (index: number, command: string, payload: Record<string, unknown> = {}) => child.postMessage({
+        version: 1, type: 'request', requestId: requestIds[index], command, ...payload
+      });
+      const observed: string[] = [];
       let settled = false;
       const finish = (error?: Error, value?: unknown) => {
         if (settled) return;
@@ -236,16 +282,18 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
         if (error) rejectReply(error);
         else resolveReply(value);
       };
-      const timer = setTimeout(() => { child.kill(); finish(new Error('SQLite storage worker did not shut down')); }, 10_000);
+      const timer = setTimeout(() => { child.kill(); finish(new Error(`SQLite storage worker did not shut down; replies: ${observed.join(', ') || 'none'}`)); }, 10_000);
       child.once('error', error => finish(new Error(String(error))));
       child.once('exit', code => replies.shutdown ? finish(undefined, replies) : finish(new Error(`SQLite storage worker exited before replying (${code})`)));
       child.on('message', value => {
         const message = value as { type?: unknown; requestId?: unknown; ok?: unknown; result?: { kind?: unknown; value?: unknown } };
-        if (message.type === 'ready') child.postMessage(requests[requestIndex++]);
+        observed.push(message.type === 'reply' ? `${String(message.requestId)}:${String(message.ok)}` : String(message.type));
+        if (message.type === 'ready') send(0, 'hostTrust.importLegacy', { identities: [identity] });
         else if (message.type === 'startup-error') finish(new Error('SQLite storage worker failed to initialize'));
+        else if (typeof message.requestId === 'string' && message.ok !== true) finish(new Error(`SQLite storage worker rejected ${message.requestId}`));
         else if (message.requestId === requestIds[0] && message.ok === true) {
           replies.imported = message.result?.value;
-          child.postMessage(requests[requestIndex++]);
+          send(1, 'hostTrust.find', { endpoint: identity.endpoint });
         } else if (message.requestId === requestIds[1] && message.ok === true) {
           const saved = message.result?.value as typeof identity | null | undefined;
           replies.found = saved ? {
@@ -253,8 +301,28 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
             publicKeyBase64: Buffer.from(saved.publicKey).toString('base64'), trustedAt: saved.trustedAt,
             approvalSource: saved.approvalSource
           } : null;
-          child.postMessage(requests[requestIndex++]);
+          send(2, 'session.create', { draft: { kind: 'ssh', name: 'Storage gateway', host: 'catalog.example', port: 2200 } });
         } else if (message.requestId === requestIds[2] && message.ok === true) {
+          const saved = message.result?.value as { id?: unknown; kind?: unknown; name?: unknown; host?: unknown; port?: unknown; favorite?: unknown };
+          replies.created = saved;
+          if (typeof saved?.id !== 'string') { finish(new Error('SQLite storage worker returned an invalid saved session')); return; }
+          send(3, 'session.list', { query: 'CATALOG.EXAMPLE' });
+        } else if (message.requestId === requestIds[3] && message.ok === true) {
+          replies.searched = message.result?.value;
+          const saved = replies.created as { id: string };
+          send(4, 'session.favorite', { id: saved.id, favorite: true });
+        } else if (message.requestId === requestIds[4] && message.ok === true) {
+          replies.favorited = message.result?.value;
+          send(5, 'session.list', { query: '' });
+        } else if (message.requestId === requestIds[5] && message.ok === true) {
+          const saved = replies.created as { id: string };
+          const items = message.result?.value as { id?: string; favorite?: boolean }[];
+          replies.favoriteChecked = items.find(item => item.id === saved.id)?.favorite;
+          send(6, 'session.remove', { id: saved.id });
+        } else if (message.requestId === requestIds[6] && message.ok === true) {
+          replies.removed = message.result?.value;
+          send(7, 'shutdown');
+        } else if (message.requestId === requestIds[7] && message.ok === true) {
           replies.shutdown = message.result;
           child.kill();
         }
@@ -264,6 +332,9 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
       imported: { sourceCount: 1, verifiedCount: 1 },
       found: { endpoint: identity.endpoint, algorithm, fingerprint, publicKeyBase64: publicKey.toString('base64'),
         trustedAt: identity.trustedAt, approvalSource: 'user' },
+      created: expect.objectContaining({ kind: 'ssh', name: 'Storage gateway', host: 'catalog.example', port: 2200, favorite: false }),
+      searched: [expect.objectContaining({ name: 'Storage gateway', host: 'catalog.example' })],
+      favorited: true, favoriteChecked: true, removed: true,
       shutdown: { kind: 'shutdown' }
     });
     const database = new DatabaseSync(databasePath, { readOnly: true });
@@ -271,6 +342,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
       expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1);
       expect((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ssh_host_keys'").get())).toBeTruthy();
       expect(database.prepare('SELECT count(*) AS count FROM ssh_host_keys').get()).toEqual({ count: 1 });
+      expect(database.prepare('SELECT count(*) AS count FROM session_definitions').get()).toEqual({ count: 0 });
     } finally {
       database.close();
     }
@@ -357,6 +429,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.Buffer).toBe('undefined');
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+      'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'onTerminalEvent', 'onSshTrustEvent']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));

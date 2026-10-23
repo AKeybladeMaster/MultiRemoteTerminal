@@ -6,6 +6,7 @@ import type { OpenSshTerminalReply, OpenTerminalReply } from '../../../../packag
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import '@xterm/xterm/css/xterm.css';
@@ -77,11 +78,19 @@ function Workbench() {
   const [sshConnectError, setSshConnectError] = useState<string>();
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
   const [sshTrustBusy, setSshTrustBusy] = useState(false);
+  const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
+  const [savedSearch, setSavedSearch] = useState('');
+  const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [saveSessionOpen, setSaveSessionOpen] = useState(false);
+  const [saveSessionName, setSaveSessionName] = useState('');
+  const [saveSessionError, setSaveSessionError] = useState<string>();
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0 });
   const nextSshOrdinal = useRef(0);
+  const savedSessionsRequest = useRef(0);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
@@ -89,6 +98,9 @@ function Workbench() {
   const sshHostInput = useRef<HTMLInputElement>(null);
   const sshPortInput = useRef<HTMLInputElement>(null);
   const sshConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const saveSessionDialog = useRef<HTMLElement>(null);
+  const saveSessionNameInput = useRef<HTMLInputElement>(null);
+  const saveSessionReturnFocus = useRef<HTMLElement | null>(null);
   const sshTrustDialog = useRef<HTMLElement>(null);
   const rejectSshHostButton = useRef<HTMLButtonElement>(null);
   const changedSshHostButton = useRef<HTMLButtonElement>(null);
@@ -99,6 +111,32 @@ function Workbench() {
   const focusTerminalOnActiveChange = useRef(true);
 
   const showTerminalError = useCallback((message: string) => setAlert(message), []);
+  const loadSavedSessions = useCallback(async (search: string) => {
+    const request = ++savedSessionsRequest.current;
+    setSavedSessionsLoading(true);
+    try {
+      const reply = await window.multiRemoteTerminal.listSavedSessions(search);
+      if (request !== savedSessionsRequest.current) return;
+      if (!reply.ok) {
+        setAlert(`Saved sessions could not be loaded (${reply.error.code}).`);
+        return;
+      }
+      setSavedSessions(reply.result);
+    } catch {
+      if (request === savedSessionsRequest.current) setAlert('Saved sessions could not be loaded.');
+    } finally {
+      if (request === savedSessionsRequest.current) setSavedSessionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadSavedSessions(savedSearch); }, 160);
+    return () => {
+      window.clearTimeout(timer);
+      savedSessionsRequest.current++;
+    };
+  }, [loadSavedSessions, savedSearch]);
+
   const openPalette = useCallback(() => {
     paletteReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setQuery('');
@@ -161,7 +199,7 @@ function Workbench() {
     });
   }), []);
 
-  const openTerminal = useCallback(async (shell: LocalShell) => {
+  const openTerminal = useCallback(async (shell: LocalShell, savedTitle?: string) => {
     setPaletteOpen(false);
     setQuery('');
     setAlert(undefined);
@@ -179,11 +217,11 @@ function Workbench() {
     }
     const ordinal = ++nextOrdinal.current[shell];
     const title = shellName(shell);
-    setSessions(current => [...current, { ...reply.result, transport: 'local', title: `${title} session ${ordinal}` }]);
+    setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, []);
 
-  const openSshTerminal = useCallback(async (hostInput: string, portInput: string) => {
+  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -195,7 +233,7 @@ function Workbench() {
     const validatedEndpoint = canonicalizeSshHostEndpoint({ host, port });
     if (!validatedEndpoint) { setSshConnectError('Enter a valid DNS name or IP address.'); sshHostInput.current?.focus(); return; }
     setSshConnectError(undefined);
-    sshTrustReturnFocus.current = sshConnectReturnFocus.current;
+    sshTrustReturnFocus.current = sshConnectReturnFocus.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setSshConnectOpen(false);
     setPaletteOpen(false);
     setAlert(undefined);
@@ -214,7 +252,7 @@ function Workbench() {
     }
     const ordinal = ++nextSshOrdinal.current;
     const endpoint = reply.result.endpoint;
-    setSessions(current => [...current, { ...reply.result, transport: 'ssh', title: `${endpoint.host}:${endpoint.port} · SSH ${ordinal}` }]);
+    setSessions(current => [...current, { ...reply.result, transport: 'ssh', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SSH ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, []);
 
@@ -347,6 +385,18 @@ function Workbench() {
         }
         return;
       }
+      if (saveSessionOpen) {
+        if (event.key === 'Escape' && !catalogBusy) { event.preventDefault(); setSaveSessionOpen(false); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(saveSessionDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (sshConnectOpen) {
         if (event.key === 'Escape') { event.preventDefault(); setSshConnectOpen(false); }
         else if (event.key === 'Tab') {
@@ -396,7 +446,7 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, decideSshTrust, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents]);
+  }, [activeId, catalogBusy, decideSshTrust, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -417,6 +467,15 @@ function Workbench() {
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
     }
   }, [sshConnectOpen]);
+
+  useEffect(() => {
+    if (saveSessionOpen) requestAnimationFrame(() => saveSessionNameInput.current?.focus());
+    else if (saveSessionReturnFocus.current) {
+      const target = saveSessionReturnFocus.current;
+      saveSessionReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [saveSessionOpen]);
 
   useEffect(() => {
     const current = sshTrustEvents[0];
@@ -453,6 +512,69 @@ function Workbench() {
   const pendingClose = sessions.find(session => session.sessionId === pendingCloseId);
   const currentSshTrust = sshTrustEvents[0];
 
+  function openSavedSession(session: SavedSessionDefinition) {
+    if (session.kind === 'local') void openTerminal(session.shell, session.name);
+    else void openSshTerminal(session.host, String(session.port), session.name);
+  }
+
+  function beginSaveActiveSession() {
+    if (!active) return;
+    saveSessionReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSaveSessionName(active.title);
+    setSaveSessionError(undefined);
+    setSaveSessionOpen(true);
+  }
+
+  async function saveActiveSession() {
+    if (!active || catalogBusy) return;
+    const draft: SavedSessionDraft = active.transport === 'local'
+      ? { kind: 'local', name: saveSessionName, shell: active.shell }
+      : { kind: 'ssh', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port };
+    setCatalogBusy(true);
+    setSaveSessionError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.createSavedSession(draft);
+      if (!reply.ok) {
+        setSaveSessionError(reply.error.code === 'BUSY' ? 'Storage is busy. Try saving again.' : `The session could not be saved (${reply.error.code}).`);
+        return;
+      }
+      setSaveSessionOpen(false);
+      await loadSavedSessions(savedSearch);
+    } catch {
+      setSaveSessionError('The session could not be saved.');
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
+  async function toggleSavedFavorite(session: SavedSessionDefinition) {
+    if (catalogBusy) return;
+    setCatalogBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.setSavedSessionFavorite(session.id, !session.favorite);
+      if (!reply.ok) setAlert(`Favorite could not be updated (${reply.error.code}).`);
+      else await loadSavedSessions(savedSearch);
+    } catch {
+      setAlert('Favorite could not be updated.');
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
+  async function deleteSavedSession(session: SavedSessionDefinition) {
+    if (catalogBusy || !window.confirm(`Delete saved session "${session.name}"?`)) return;
+    setCatalogBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.deleteSavedSession(session.id);
+      if (!reply.ok) setAlert(`Saved session could not be deleted (${reply.error.code}).`);
+      else await loadSavedSessions(savedSearch);
+    } catch {
+      setAlert('Saved session could not be deleted.');
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
   function runCommand(command: PaletteCommand | undefined) {
     if (!command) return;
     setPaletteOpen(false);
@@ -481,6 +603,7 @@ function Workbench() {
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
         <button className="connect-ssh-button" type="button" onClick={openSshConnect}><span aria-hidden="true">↗</span> Connect to SSH</button>
+        <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Local terminals</h3>
           <ul>
@@ -496,6 +619,31 @@ function Workbench() {
             </li>)}
           </ul>
         </div>}
+        <section className="saved-session-group" aria-labelledby="saved-sessions-heading">
+          <div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span>{savedSessions.length}</span></div>
+          <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>
+          <input className="saved-session-search" id="saved-session-search" type="search" autoComplete="off" maxLength={256}
+            placeholder="Search saved sessions" value={savedSearch} onChange={event => setSavedSearch(event.target.value)} />
+          {savedSessionsLoading && <p className="saved-session-empty" role="status">Loading saved sessions</p>}
+          {!savedSessionsLoading && savedSessions.length === 0 && <p className="saved-session-empty">{savedSearch ? 'No saved sessions match this search.' : 'No saved sessions yet.'}</p>}
+          {savedSessions.length > 0 && <ul className="saved-session-list">
+            {savedSessions.map(session => <li className="saved-session-row" key={session.id}>
+              <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
+                <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
+                  {session.kind === 'ssh' ? 'SSH' : session.shell === 'powershell' ? 'PS' : 'CMD'}
+                </span>
+                <span className="saved-session-name" translate="no">{session.name}</span>
+                <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : `${session.host}:${session.port}`}</span>
+              </button>
+              <div className="saved-session-actions">
+                <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
+                  aria-pressed={session.favorite} disabled={catalogBusy} onClick={() => void toggleSavedFavorite(session)}>{session.favorite ? '★' : '☆'}</button>
+                <button type="button" aria-label={`Delete saved session ${session.name}`} disabled={catalogBusy}
+                  onClick={() => void deleteSavedSession(session)}>Del</button>
+              </div>
+            </li>)}
+          </ul>}
+        </section>
         <button className="palette-hint" type="button" onClick={openPalette}>
           <span>Command palette</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>
         </button>
@@ -595,6 +743,23 @@ function Workbench() {
           {filteredCommands.length === 0 && <li className="no-commands">No matching commands</li>}
         </ul>
         <p><kbd>↑</kbd><kbd>↓</kbd> select <kbd>Enter</kbd> run <kbd>Esc</kbd> close</p>
+      </section>
+    </div>}
+    {saveSessionOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !catalogBusy) setSaveSessionOpen(false); }}>
+      <section ref={saveSessionDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="save-session-heading" aria-describedby="save-session-description">
+        <h2 id="save-session-heading">Save active session</h2>
+        <p id="save-session-description">Save the shell or SSH endpoint so you can open it again later. Credentials and terminal history are never saved.</p>
+        <form onSubmit={event => { event.preventDefault(); void saveActiveSession(); }}>
+          <label htmlFor="saved-session-name">Session name</label>
+          <input ref={saveSessionNameInput} id="saved-session-name" name="name" type="text" autoComplete="off" maxLength={256}
+            required value={saveSessionName} onChange={event => setSaveSessionName(event.target.value)} />
+          {saveSessionError && <p className="dialog-error" role="alert">{saveSessionError}</p>}
+          <div className="ssh-connect-actions">
+            <button type="button" disabled={catalogBusy} onClick={() => setSaveSessionOpen(false)}>Cancel</button>
+            <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving...' : 'Save session'}</button>
+          </div>
+        </form>
       </section>
     </div>}
     {sshConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSshConnectOpen(false); }}>

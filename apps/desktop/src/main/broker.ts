@@ -2,6 +2,7 @@ import { isAppDocument, parseRequest, requestIdOf } from '../../../../packages/c
 import type { CommandReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 
@@ -21,6 +22,7 @@ export interface CommandActions {
   readonly noteUserActivity: () => void;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
+  readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove'>;
 }
 
 export async function dispatchCommand(
@@ -92,6 +94,10 @@ export async function dispatchCommand(
       case 'ssh.host.revoke': {
         return { requestId, ...await actions.sshTerminals.revokeHostKey(parsed.result.payload.host, parsed.result.payload.port) };
       }
+      case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query) };
+      case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload) };
+      case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite) };
+      case 'session.delete': return { requestId, ...await actions.sessionCatalog.remove(parsed.result.payload.id) };
     }
   } catch {
     audit({ kind: 'application.unavailable', code: 'UNAVAILABLE' });

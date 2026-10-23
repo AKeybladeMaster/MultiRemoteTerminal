@@ -70,6 +70,8 @@ First WP-03 phase (2026-10-23): a dedicated utility process owns a versioned SQL
 
 WP-03 storage follow-up (2026-10-23): the real Electron worker E2E now imports and reads a host key, and tests cover retry after a worker crash between database commit and reply, caller cancellation and worker restart, SQLite busy classification, and an online WAL backup/restore scenario. Cancellation is propagated from SSH-session teardown; it terminates the synchronous SQLite worker, and a later request starts a fresh worker. Storage failures publish only static redacted events on a local opt-in diagnostics channel. Corrupt-page recovery and application-level backup/restore remain acceptance work before catalog migration is complete. Folder CRUD must detect and reject parent cycles.
 
+WP-03B catalog phase (2026-10-23): the workbench now explicitly saves active local or SSH definitions, searches saved names/endpoints, updates favorites, reopens definitions and deletes them through typed preload IPC and the shared SQLite worker. Credentials and terminal history are excluded. A SQLite test exercises 1,002 definitions; Windows E2E covers the local save/search/favorite/reopen/delete path and worker CRUD. F-004 and P-13 remain PLANNED because folders and full acceptance are not complete; saved SSH metadata is covered, but reconnecting it against a real OpenSSH fixture is not verified. See [phase evidence](results/WP-03B-catalog-2026-10-23.md).
+
 ### WP-04 — SSH jump hosts / forwarding
 
 **Requires:** WP-02/03.  

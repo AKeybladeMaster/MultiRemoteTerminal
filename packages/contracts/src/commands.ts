@@ -6,6 +6,8 @@ import type { LocalTerminalEvent, LocalTerminalSession } from '../../application
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
 import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
+import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../domain/src/session-definition.ts';
+import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -41,8 +43,13 @@ export type AcknowledgeSshTerminalRequest = Request<'ssh.ack', { readonly sessio
 export type CloseSshTerminalRequest = Request<'ssh.close', { readonly sessionId: string }>;
 export type DecideSshHostRequest = Request<'ssh.host.approve' | 'ssh.host.reject', { readonly token: string }>;
 export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: string; readonly port: number }>;
+export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
+export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
+export type SetSessionFavoriteRequest = Request<'session.favorite', { readonly id: string; readonly favorite: boolean }>;
+export type DeleteSessionRequest = Request<'session.delete', { readonly id: string }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
-  OpenSshTerminalRequest | WriteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest;
+  OpenSshTerminalRequest | WriteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest |
+  ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -50,6 +57,8 @@ export type OpenTerminalResult = Pick<LocalTerminalSession, 'sessionId' | 'shell
 export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
+export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
+export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 
 export interface DesktopBridge {
@@ -67,6 +76,10 @@ export interface DesktopBridge {
   approveSshHost(token: string): Promise<TerminalActionReply>;
   rejectSshHost(token: string): Promise<TerminalActionReply>;
   revokeSshHost(host: string, port: number): Promise<TerminalActionReply>;
+  listSavedSessions(query: string): Promise<ListSessionsReply>;
+  createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
+  setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply>;
+  deleteSavedSession(id: string): Promise<TerminalActionReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
 }
@@ -132,8 +145,19 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     if (endpoint && endpoint.host === payload.host && endpoint.port === payload.port) return { ok: true, result: value as unknown as RevokeSshHostRequest };
     return failure('INVALID_REQUEST');
   }
+  if (value.command === 'session.list' && exactKeys(payload, ['query']) && normalizeSessionSearch(payload.query) !== undefined) {
+    return { ok: true, result: value as unknown as ListSessionsRequest };
+  }
+  if (value.command === 'session.create' && normalizeSavedSessionDraft(payload)) return { ok: true, result: value as unknown as CreateSessionRequest };
+  if (value.command === 'session.favorite' && exactKeys(payload, ['id', 'favorite']) && isSessionDefinitionId(payload.id) && typeof payload.favorite === 'boolean') {
+    return { ok: true, result: value as unknown as SetSessionFavoriteRequest };
+  }
+  if (value.command === 'session.delete' && exactKeys(payload, ['id']) && isSessionDefinitionId(payload.id)) {
+    return { ok: true, result: value as unknown as DeleteSessionRequest };
+  }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.resize', 'terminal.ack', 'terminal.close',
-    'ssh.open', 'ssh.write', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke'].includes(value.command)) {
+    'ssh.open', 'ssh.write', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke',
+    'session.list', 'session.create', 'session.favorite', 'session.delete'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -171,6 +195,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'app.describe') return validSnapshot(value.result);
     if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.shell);
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
+    if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
+    if (request.command === 'session.create') return isSavedSessionDefinition(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

@@ -1,5 +1,6 @@
 import type { Outcome } from '../../domain/src/errors.ts';
 import { failure } from '../../domain/src/errors.ts';
+import { StorageOperationError } from './storage-errors.ts';
 import { canonicalizeSshHostEndpoint, hostEndpointKey, isHostKeyEvidence, sameHostKey } from '../../domain/src/host-trust.ts';
 import type { HostKeyEvidence, SshHostEndpoint, TrustedHostKey } from '../../domain/src/host-trust.ts';
 import type { CredentialPromptCancellation } from './credential-prompt.ts';
@@ -12,13 +13,10 @@ export interface HostTrustStore {
   remove(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<boolean>;
 }
 
-export class HostTrustStoreError extends Error {
-  readonly kind: 'busy' | 'cancelled' | 'corrupt' | 'unavailable';
-
+export class HostTrustStoreError extends StorageOperationError {
   constructor(kind: 'busy' | 'cancelled' | 'corrupt' | 'unavailable') {
-    super(`Host trust store ${kind}`);
+    super(kind);
     this.name = 'HostTrustStoreError';
-    this.kind = kind;
   }
 }
 

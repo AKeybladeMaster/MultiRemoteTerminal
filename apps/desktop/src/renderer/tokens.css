@@ -51,7 +51,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .quiet-button:hover, .palette-hint:hover { background: var(--surface-raised); color: var(--text); }
 .skip:hover { top: 8px; }
 .workspace { display: grid; grid-template-columns: 228px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; }
-.session-rail { min-width: 0; display: flex; flex-direction: column; gap: 18px; padding: 20px 10px 12px; border-right: 1px solid var(--line); background: var(--surface); }
+.session-rail { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 16px 10px 10px; overflow-y: auto; scrollbar-width: thin; border-right: 1px solid var(--line); background: var(--surface); }
 .rail-heading { display: flex; align-items: baseline; justify-content: space-between; padding: 0 10px; }
 .rail-heading h2 { margin: 0; font-size: 15px; font-weight: 650; }
 .rail-heading span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -67,13 +67,34 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 }
 .connect-ssh-button > span { color: var(--accent); font-size: 16px; line-height: 1; }
 .connect-ssh-button:hover { border-color: var(--accent); background: var(--surface-raised); }
-.session-group { min-height: 0; overflow: auto; }
+.save-session-button { width: 100%; min-height: 36px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 3px; background: var(--accent); color: var(--accent-ink); font-weight: 650; text-align: left; cursor: pointer; }
+.save-session-button:hover:not(:disabled) { filter: brightness(1.06); }
+.save-session-button:disabled { border-color: var(--line); background: transparent; color: var(--muted); cursor: default; }
+.session-group { min-height: 0; flex: 0 0 auto; max-height: 30%; overflow: auto; }
 .session-group h3 { margin: 0 10px 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .session-group ul { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
 .session-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) 8px; align-items: center; gap: 8px; width: 100%; min-height: 42px; padding: 5px 9px; border: 1px solid transparent; border-radius: 3px; background: transparent; text-align: left; cursor: pointer; }
 .session-item:hover { background: color-mix(in srgb, var(--surface-raised) 60%, transparent); }
 .session-item.selected { border-left: 3px solid var(--accent); background: var(--surface-raised); }
 .session-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-session-group { display: flex; flex: 1 1 0; flex-direction: column; gap: 7px; min-height: 120px; overflow: hidden; }
+.saved-session-group .rail-heading { flex: 0 0 auto; }
+.saved-session-search { flex: 0 0 auto; width: 100%; min-width: 0; min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: var(--terminal-background); color: var(--text); }
+.saved-session-search:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.saved-session-list { display: grid; gap: 4px; min-height: 0; overflow: auto; margin: 0; padding: 0 2px 0 0; list-style: none; }
+.saved-session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px; min-width: 0; padding: 3px; border: 1px solid transparent; border-radius: 3px; }
+.saved-session-row:hover { border-color: var(--line); background: color-mix(in srgb, var(--surface-raised) 55%, transparent); }
+.saved-session-open { display: grid; grid-template-columns: 26px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: 2px 5px; min-width: 0; min-height: 38px; padding: 3px; border: 0; border-radius: 2px; background: transparent; text-align: left; cursor: pointer; }
+.saved-session-open .shell-glyph { grid-row: 1 / span 2; }
+.saved-session-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.saved-session-detail { min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.saved-session-actions { display: flex; align-items: center; gap: 2px; }
+.saved-session-actions button { min-width: 28px; min-height: 30px; padding: 2px 4px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.saved-session-actions button:first-child { color: var(--accent); font-size: 16px; }
+.saved-session-actions button:hover:not(:disabled) { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
+.saved-session-actions button[aria-pressed="true"] { color: var(--focus); }
+.saved-session-actions button:disabled { cursor: wait; opacity: .6; }
+.saved-session-empty { margin: 0; padding: 7px 9px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .shell-glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 23px; height: 21px; color: var(--accent); font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; }
 .shell-glyph.cmd { color: var(--muted); }
 .shell-glyph.ssh { min-width: 30px; font-size: 10px; letter-spacing: .04em; }
@@ -197,10 +218,11 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 @media (max-width: 740px) {
   .workspace { grid-template-columns: 164px minmax(0, 1fr); }
   .build-label { display: none; }
-  .palette-hint { flex-wrap: wrap; }
+  .palette-hint { flex-wrap: wrap; gap: 3px 4px; }
+  .palette-hint > span { flex: 0 0 100%; white-space: nowrap; }
 }
 @media (forced-colors: active) {
-  .new-terminal, .connect-ssh-button, .session-item, .tab-item, .tab-close, .font-controls button, .command-palette, .close-confirmation, .ssh-connect-dialog, .ssh-trust-dialog { border: 1px solid ButtonText; }
+  .new-terminal, .connect-ssh-button, .save-session-button, .saved-session-search, .saved-session-row, .saved-session-actions button, .session-item, .tab-item, .tab-close, .font-controls button, .command-palette, .close-confirmation, .ssh-connect-dialog, .ssh-trust-dialog { border: 1px solid ButtonText; }
   .session-item.selected, .tab-item.selected { outline: 2px solid Highlight; }
   .state-dot { background: CanvasText; outline: 1px solid CanvasText; }
 }

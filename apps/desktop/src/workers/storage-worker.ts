@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import { SqliteHostTrustRepository, toHostTrustStoreError } from '../adapters/sqlite-host-trust-repository.ts';
+import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catalog-repository.ts';
 import { parseStorageWorkerRequest, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -12,6 +13,7 @@ const databasePath = process.env.MRT_STORAGE_DB_PATH;
 if (!databasePath || !isAbsolute(databasePath)) throw new Error('Storage worker requires an absolute database path');
 
 let repository: SqliteHostTrustRepository;
+let sessionCatalogRepository: SqliteSessionCatalogRepository;
 try {
   await mkdir(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath, {
@@ -23,6 +25,7 @@ try {
   database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
   repository = new SqliteHostTrustRepository(database);
   repository.migrate();
+  sessionCatalogRepository = new SqliteSessionCatalogRepository(database);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
   const errorCode = normalizedError.kind.toUpperCase() as 'BUSY' | 'CORRUPT' | 'UNAVAILABLE';
@@ -40,7 +43,7 @@ function errorCode(error: unknown): 'BUSY' | 'CORRUPT' | 'UNAVAILABLE' {
 }
 
 let closed = false;
-parent.on('message', event => {
+parent.on('message', async event => {
   const request = parseStorageWorkerRequest(event.data);
   if (!request) return;
   const requestId = request.requestId;
@@ -58,6 +61,18 @@ parent.on('message', event => {
     } else if (request.command === 'hostTrust.importLegacy') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'migrated', value: repository.importLegacy(request.identities) } });
+    } else if (request.command === 'session.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'sessions', value: await sessionCatalogRepository.listSessions(request.query) } });
+    } else if (request.command === 'session.create') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'session', value: await sessionCatalogRepository.createSession(request.draft) } });
+    } else if (request.command === 'session.favorite') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.setFavorite(request.id, request.favorite) } });
+    } else if (request.command === 'session.remove') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.removeSession(request.id) } });
     } else {
       closed = true;
       repository.close();

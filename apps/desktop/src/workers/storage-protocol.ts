@@ -1,5 +1,7 @@
 import { canonicalizeSshHostEndpoint, isHostKeyEvidence } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
+import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
+import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -11,6 +13,10 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.trustIfAbsent'; readonly identity: TrustedHostKey }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.remove'; readonly endpoint: SshHostEndpoint }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.importLegacy'; readonly identities: readonly TrustedHostKey[] }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.list'; readonly query: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.favorite'; readonly id: string; readonly favorite: boolean }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remove'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
 
 export type StorageWorkerResult =
@@ -18,6 +24,9 @@ export type StorageWorkerResult =
   | { readonly kind: 'insert'; readonly value: 'inserted' | 'matched' | 'changed' }
   | { readonly kind: 'removed'; readonly value: boolean }
   | { readonly kind: 'migrated'; readonly value: { readonly sourceCount: number; readonly verifiedCount: number } }
+  | { readonly kind: 'sessions'; readonly value: readonly SavedSessionDefinition[] }
+  | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
+  | { readonly kind: 'changed'; readonly value: boolean }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CORRUPT' | 'UNAVAILABLE';
@@ -63,6 +72,17 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
     }
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'query']) && normalizeSessionSearch(value.query) !== undefined) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSavedSessionDraft(value.draft)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.favorite' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'favorite']) &&
+      isSessionDefinitionId(value.id) && typeof value.favorite === 'boolean') return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   return undefined;
 }
@@ -84,6 +104,9 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'removed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
   if (value.kind === 'migrated' && exactKeys(value, ['kind', 'value']) && record(value.value) && exactKeys(value.value, ['sourceCount', 'verifiedCount']) &&
       Number.isSafeInteger(value.value.sourceCount) && value.value.sourceCount === value.value.verifiedCount && (value.value.sourceCount as number) >= 0) return true;
+  if (value.kind === 'sessions' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionDefinition)) return true;
+  if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
+  if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 

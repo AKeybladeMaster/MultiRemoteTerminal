@@ -9,6 +9,8 @@ const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-b
 const owner = { owned: true, mainFrame: true, url: APP_URL };
 const snapshot = () => describeWorkbench({ version: '0.0.0', platform: 'win32' });
 const noOp = async () => ({ ok: true, result: {} } as const);
+const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
+  createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
@@ -17,6 +19,10 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp, approveHostKey: noOp,
     rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
+  }, sessionCatalog: {
+    list: async () => ({ ok: true, result: [] }),
+    create: async () => ({ ok: true, result: emptySavedSession }),
+    setFavorite: noOp, remove: noOp
   }
 });
 
@@ -45,6 +51,29 @@ test('host-trust reset dispatches only the validated canonical endpoint', async 
     payload: { host: 'server.example.com', port: 22 } };
   assert.deepEqual(await dispatchCommand(owner, input, withRevoke, () => {}), { requestId: request.requestId, ok: true, result: {} });
   assert.deepEqual(revoked, { host: 'server.example.com', port: 22 });
+});
+
+test('saved-session IPC dispatches only validated catalog operations', async () => {
+  const calls: string[] = [];
+  const base = actions();
+  const withCatalog: CommandActions = { ...base, sessionCatalog: {
+    async list(query) { calls.push(`list:${query}`); return { ok: true, result: [] }; },
+    async create(draft) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); return { ok: true, result: emptySavedSession }; },
+    async setFavorite(id, favorite) { calls.push(`favorite:${id}:${favorite}`); return { ok: true, result: {} }; },
+    async remove(id) { calls.push(`remove:${id}`); return { ok: true, result: {} }; }
+  } };
+  const requestId = request.requestId;
+  const replies = await Promise.all([
+    dispatchCommand(owner, { command: 'session.list', requestId, contractVersion: 1, payload: { query: 'Prod' } }, withCatalog, () => {}),
+    dispatchCommand(owner, { command: 'session.create', requestId, contractVersion: 1,
+      payload: { kind: 'local', name: 'Work shell', shell: 'powershell' } }, withCatalog, () => {}),
+    dispatchCommand(owner, { command: 'session.favorite', requestId, contractVersion: 1,
+      payload: { id: emptySavedSession.id, favorite: true } }, withCatalog, () => {}),
+    dispatchCommand(owner, { command: 'session.delete', requestId, contractVersion: 1,
+      payload: { id: emptySavedSession.id } }, withCatalog, () => {})
+  ]);
+  assert.ok(replies.every(reply => reply.ok));
+  assert.deepEqual(calls, ['list:Prod', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`]);
 });
 
 test('only validated local or SSH terminal open, write and close commands count as user activity', async () => {

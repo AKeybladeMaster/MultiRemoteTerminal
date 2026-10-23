@@ -3,8 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { UtilityProcess } from 'electron';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
+import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
+import { normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
+import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
 import type { StorageWorkerRequest, StorageWorkerResult } from '../workers/storage-protocol.ts';
@@ -61,7 +64,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
     : never
   : never;
 
-export class SqliteHostTrustStore implements HostTrustStore {
+export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -90,6 +93,38 @@ export class SqliteHostTrustStore implements HostTrustStore {
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'hostTrust.remove', endpoint }, cancellation);
     if (result.kind !== 'removed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async listSessions(query: string): Promise<readonly SavedSessionDefinition[]> {
+    const normalized = normalizeSessionSearch(query);
+    if (normalized === undefined) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'session.list', query: normalized });
+    if (result.kind !== 'sessions') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async createSession(input: SavedSessionDraft): Promise<SavedSessionDefinition> {
+    const draft = normalizeSavedSessionDraft(input);
+    if (!draft) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'session.create', draft });
+    if (result.kind !== 'session') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async setFavorite(id: string, favorite: boolean): Promise<boolean> {
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'session.favorite', id, favorite });
+    if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async removeSession(id: string): Promise<boolean> {
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'session.remove', id });
+    if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
     return result.value;
   }
 
@@ -317,6 +352,8 @@ class StorageWorkerClient {
     return exitPromise;
   }
 }
+
+export { SqliteStorageStore as SqliteHostTrustStore };
 
 function storeError(code: 'BUSY' | 'CORRUPT' | 'UNAVAILABLE'): HostTrustStoreError {
   return new HostTrustStoreError(code.toLowerCase() as 'busy' | 'corrupt' | 'unavailable');
