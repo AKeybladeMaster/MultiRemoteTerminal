@@ -13,8 +13,8 @@
     "dependencies:inventory": "node scripts/dependency-inventory.mjs",
     "start": "electron apps/desktop",
     "setup:electron": "install-electron --no",
-    "test:e2e": "pnpm setup:electron && playwright test",
-    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm test:e2e"
+    "test:e2e": "corepack pnpm setup:electron && corepack pnpm exec playwright test",
+    "check": "corepack pnpm typecheck && corepack pnpm lint && corepack pnpm test && corepack pnpm build && corepack pnpm test:e2e"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
