@@ -17,6 +17,7 @@ export interface AuditEvent {
 
 export interface CommandActions {
   readonly describe: () => WorkbenchSnapshot;
+  readonly noteUserActivity: () => void;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
 }
 
@@ -38,6 +39,8 @@ export async function dispatchCommand(
 
   const { requestId } = parsed.result;
   try {
+    if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' ||
+        parsed.result.command === 'terminal.close') actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {

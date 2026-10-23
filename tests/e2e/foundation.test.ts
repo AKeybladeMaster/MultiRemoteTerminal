@@ -1,6 +1,6 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -96,6 +96,44 @@ async function readPowerShellSize(page: Page, title: string): Promise<{ readonly
   expect(Number.isSafeInteger(rowCount) && rowCount > 0).toBe(true);
   return { columns, rows: rowCount };
 }
+
+function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<number> {
+  return new Promise((resolveExit, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('Second application instance did not exit after failing to acquire the lock'));
+    }, timeoutMs);
+    child.once('error', error => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', code => {
+      clearTimeout(timer);
+      resolveExit(code ?? -1);
+    });
+  });
+}
+
+test('a second application process exits under the same profile while the primary window stays open', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-single-instance-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let secondInstance: ReturnType<typeof spawn> | undefined;
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const executable = await app.evaluate(() => process.execPath);
+    secondInstance = spawn(executable, [resolve('apps/desktop'), `--user-data-dir=${profile}`], {
+      env: electronEnvironment(), windowsHide: true, stdio: 'ignore'
+    });
+    expect(await waitForExit(secondInstance, 10_000)).toBe(0);
+    expect(app.process()?.exitCode).toBeNull();
+    await expect(page.locator('.workbench')).toHaveCount(1);
+  } finally {
+    secondInstance?.kill();
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
 
 test('Windows local terminal workbench operates real shells, handles 10 tabs and closes their processes', async () => {
   test.skip(process.platform !== 'win32', 'ConPTY acceptance evidence is required on Windows');

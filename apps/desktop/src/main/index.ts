@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, protocol, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, powerMonitor, protocol, safeStorage, session } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { describeWorkbench } from '../../../../packages/application/src/workbench.ts';
@@ -8,6 +8,8 @@ import { APP_URL, COMMAND_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../pa
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
+import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
+import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 
 app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
@@ -19,6 +21,10 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const dist = resolve(here, '../../../../../');
 let window: BrowserWindow | undefined;
 let stopActiveTerminals = (): void => {};
+const ownsSingleInstance = app.requestSingleInstanceLock();
+
+if (!ownsSingleInstance) app.quit();
+else app.on('second-instance', focusWindow);
 
 function createWindow(): void {
   const current = new BrowserWindow({
@@ -41,7 +47,22 @@ function createWindow(): void {
   void current.loadURL(APP_URL);
 }
 
+function focusWindow(): void {
+  const current = window;
+  if (!current || current.isDestroyed()) return;
+  if (current.isMinimized()) current.restore();
+  current.focus();
+}
+
 function boot(): void {
+  const credentialVault = new SafeStorageSecretVault(join(app.getPath('userData'), 'credentials.json'), safeStorage);
+  const idleLock = new VaultIdleLock(() => credentialVault.lock(), scheduleTimeout);
+  const lockVaultForSystemEvent = () => credentialVault.lock();
+  powerMonitor.on('lock-screen', lockVaultForSystemEvent);
+  powerMonitor.on('suspend', lockVaultForSystemEvent);
+  idleLock.start();
+  void credentialVault.initialize().catch(() => undefined);
+
   let delayFirstOpenReply = process.argv.includes('--mrt-e2e-delay-first-terminal-open');
   const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
     if (!delayFirstOpenReply) return;
@@ -79,7 +100,8 @@ function boot(): void {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
     return dispatchCommand({ owned, mainFrame: owned && event.senderFrame === event.sender.mainFrame,
       url: event.senderFrame?.url ?? '' }, input, {
-      describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }), terminals
+      describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
+      noteUserActivity: () => idleLock.noteUserActivity(), terminals
     }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
   });
   createWindow();
@@ -89,10 +111,22 @@ function boot(): void {
     if (quitRequested) return;
     event.preventDefault();
     quitRequested = true;
+    idleLock.stop();
+    credentialVault.lock();
     void terminals.dispose().catch(() => undefined).finally(() => app.quit());
   });
-  app.on('will-quit', () => { ipcMain.removeHandler(COMMAND_CHANNEL); protocol.unhandle('mrt'); });
+  app.on('will-quit', () => {
+    powerMonitor.removeListener('lock-screen', lockVaultForSystemEvent);
+    powerMonitor.removeListener('suspend', lockVaultForSystemEvent);
+    ipcMain.removeHandler(COMMAND_CHANNEL);
+    protocol.unhandle('mrt');
+  });
+}
+
+function scheduleTimeout(callback: () => void, delayMs: number): () => void {
+  const timer = setTimeout(callback, delayMs);
+  return () => clearTimeout(timer);
 }
 
 // Do not await readiness at ESM top level: Electron 45 delays ready until module evaluation completes.
-void app.whenReady().then(boot).catch(() => app.exit(1));
+if (ownsSingleInstance) void app.whenReady().then(boot).catch(() => app.exit(1));
