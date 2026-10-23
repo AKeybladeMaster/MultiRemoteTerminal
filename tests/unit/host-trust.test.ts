@@ -52,16 +52,20 @@ test('unknown host approval is bounded, expires, and never exposes the key blob'
     if (initial.kind !== 'approval-required') return;
     assert.equal(initial.challenge.host, 'example.com');
     assert.equal('publicKey' in initial.challenge, false);
+    const rejectedHandshake = manager.waitForResolution(initial.challenge.token);
     const repeated = success(await manager.inspect({ host: 'example.com', port: 22 }, key));
     assert.equal(repeated.kind, 'approval-required');
     if (repeated.kind !== 'approval-required') return;
     assert.equal(repeated.challenge.token, initial.challenge.token);
 
     assert.equal(success(manager.reject(initial.challenge.token)).kind, 'rejected');
+    assert.equal(await rejectedHandshake, 'rejected');
     const expired = success(await manager.inspect(endpoint, key));
     assert.equal(expired.kind, 'approval-required');
     if (expired.kind !== 'approval-required') return;
+    const expiredHandshake = manager.waitForResolution(expired.challenge.token);
     runtime.advance(120_000);
+    assert.equal(await expiredHandshake, 'expired');
     const stale = await manager.approve(expired.challenge.token);
     assert.equal(stale.ok, false);
     if (!stale.ok) assert.equal(stale.error.code, 'NOT_FOUND');
@@ -70,7 +74,9 @@ test('unknown host approval is bounded, expires, and never exposes the key blob'
     assert.equal(renewed.kind, 'approval-required');
     if (renewed.kind !== 'approval-required') return;
     assert.notEqual(renewed.challenge.token, expired.challenge.token);
+    const approvedHandshake = manager.waitForResolution(renewed.challenge.token);
     assert.equal(success(await manager.approve(renewed.challenge.token)).kind, 'approved');
+    assert.equal(await approvedHandshake, 'approved');
     assert.equal(success(await manager.inspect({ host: 'example.com', port: 22 }, key)).kind, 'trusted');
     assert.equal(success(await manager.inspect(endpoint, hostKey(2))).kind, 'changed');
 
@@ -98,9 +104,12 @@ test('concurrent host approvals preserve distinct endpoints and never replace a 
     const first = approvalToken(success(await manager.inspect(endpoint, firstKey)));
     const competing = approvalToken(success(await secondManager.inspect(endpoint, competingKey)));
     const other = approvalToken(success(await secondManager.inspect(otherEndpoint, otherKey)));
+    const firstHandshake = manager.waitForResolution(first);
+    const competingHandshake = secondManager.waitForResolution(competing);
     const decisions = await Promise.all([manager.approve(first), secondManager.approve(competing), secondManager.approve(other)]);
     const kinds = decisions.map(result => success(result).kind);
     assert.deepEqual(kinds.sort(), ['approved', 'approved', 'changed']);
+    assert.deepEqual(await Promise.all([firstHandshake, competingHandshake]), ['approved', 'changed']);
 
     const raceRecord = await store.find(endpoint);
     const otherRecord = await store.find(otherEndpoint);
@@ -174,6 +183,55 @@ test('an explicit approval claims its token before storage; later cancellation c
   let signalWriteStarted!: () => void;
   const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
   const writeStarted = new Promise<void>(resolve => { signalWriteStarted = resolve; });
+  let signalWriteFinished!: () => void;
+  const writeFinished = new Promise<void>(resolve => { signalWriteFinished = resolve; });
+  const gatedStore: HostTrustStore = {
+    find: value => store.find(value),
+    async trustIfAbsent(identity): Promise<HostTrustInsertResult> {
+      signalWriteStarted();
+      await writeGate;
+      const result = await store.trustIfAbsent(identity);
+      signalWriteFinished();
+      return result;
+    },
+    remove: value => store.remove(value)
+  };
+  const runtime = new FakeRuntime();
+  const manager = createHostTrustManager(gatedStore, runtime);
+  try {
+    const token = approvalToken(success(await manager.inspect(endpoint, key)));
+    const approval = manager.approve(token);
+    await writeStarted;
+    const handshake = manager.waitForResolution(token);
+    const cancellation = manager.reject(token);
+    assert.equal(cancellation.ok, false);
+    if (!cancellation.ok) assert.equal(cancellation.error.code, 'NOT_FOUND');
+    manager.dispose();
+    assert.equal(await handshake, 'cancelled');
+    assert.equal(runtime.timerCount, 0);
+    releaseWrite();
+    const cancelledApproval = await approval;
+    assert.equal(cancelledApproval.ok, false);
+    if (!cancelledApproval.ok) assert.equal(cancelledApproval.error.code, 'CANCELLED');
+    await writeFinished;
+    const persisted = await store.find(endpoint);
+    assert.ok(persisted && sameHostKey(persisted, key));
+  } finally {
+    manager.dispose();
+    releaseWrite();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a waiter joining during persistence receives the claimed approval result', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-host-trust-'));
+  const endpoint = { host: 'late-waiter.example', port: 22 };
+  const key = hostKey(102);
+  const store = new HostTrustJsonStore(join(directory, 'host-trust.json'));
+  let releaseWrite!: () => void;
+  let signalWriteStarted!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  const writeStarted = new Promise<void>(resolve => { signalWriteStarted = resolve; });
   const gatedStore: HostTrustStore = {
     find: value => store.find(value),
     async trustIfAbsent(identity): Promise<HostTrustInsertResult> {
@@ -188,14 +246,58 @@ test('an explicit approval claims its token before storage; later cancellation c
     const token = approvalToken(success(await manager.inspect(endpoint, key)));
     const approval = manager.approve(token);
     await writeStarted;
-    const cancellation = manager.reject(token);
-    assert.equal(cancellation.ok, false);
-    if (!cancellation.ok) assert.equal(cancellation.error.code, 'NOT_FOUND');
-    manager.dispose();
+    const lateWaiter = manager.waitForResolution(token);
     releaseWrite();
     assert.equal(success(await approval).kind, 'approved');
+    assert.equal(await lateWaiter, 'approved');
+    assert.equal(await manager.waitForResolution(token), 'approved');
+  } finally {
+    manager.dispose();
+    releaseWrite();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a stalled trust write times out the handshake waiter and can finish its explicit save later', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-host-trust-'));
+  const endpoint = { host: 'slow-write.example', port: 22 };
+  const key = hostKey(103);
+  const store = new HostTrustJsonStore(join(directory, 'host-trust.json'));
+  const runtime = new FakeRuntime();
+  let releaseWrite!: () => void;
+  let signalWriteStarted!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  const writeStarted = new Promise<void>(resolve => { signalWriteStarted = resolve; });
+  let signalWriteFinished!: () => void;
+  const writeFinished = new Promise<void>(resolve => { signalWriteFinished = resolve; });
+  const gatedStore: HostTrustStore = {
+    find: value => store.find(value),
+    async trustIfAbsent(identity): Promise<HostTrustInsertResult> {
+      signalWriteStarted();
+      await writeGate;
+      const result = await store.trustIfAbsent(identity);
+      signalWriteFinished();
+      return result;
+    },
+    remove: value => store.remove(value)
+  };
+  const manager = createHostTrustManager(gatedStore, runtime);
+  try {
+    const token = approvalToken(success(await manager.inspect(endpoint, key)));
+    const approval = manager.approve(token);
+    await writeStarted;
+    const handshake = manager.waitForResolution(token);
+    runtime.advance(15_000);
+    const failed = await approval;
+    assert.equal(failed.ok, false);
+    if (!failed.ok) assert.equal(failed.error.code, 'TIMEOUT');
+    assert.equal(await handshake, 'unavailable');
+    assert.equal(runtime.timerCount, 0);
+    releaseWrite();
+    await writeFinished;
     const persisted = await store.find(endpoint);
     assert.ok(persisted && sameHostKey(persisted, key));
+    assert.equal(await manager.waitForResolution(token), 'unavailable');
   } finally {
     manager.dispose();
     releaseWrite();
@@ -227,6 +329,22 @@ test('disposal during a slow trust lookup cannot create a pending challenge afte
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.code, 'CANCELLED');
   assert.equal(runtime.timerCount, 0);
+});
+
+test('disposing host trust cancels an outstanding handshake waiter', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-host-trust-'));
+  const runtime = new FakeRuntime();
+  const manager = createHostTrustManager(new HostTrustJsonStore(join(directory, 'host-trust.json')), runtime);
+  try {
+    const token = approvalToken(success(await manager.inspect({ host: 'cancel.example', port: 22 }, hostKey(112))));
+    const handshake = manager.waitForResolution(token);
+    manager.dispose();
+    assert.equal(await handshake, 'cancelled');
+    assert.equal(runtime.timerCount, 0);
+  } finally {
+    manager.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 function success<T>(outcome: Outcome<T>): T {
