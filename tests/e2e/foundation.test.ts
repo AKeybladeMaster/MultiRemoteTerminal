@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const unicodeSample = String.fromCodePoint(0x416, 0x96ea, 0x1f642);
+let nextPowerShellSizeProbe = 0;
 
 function electronEnvironment(): Record<string, string> {
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
@@ -87,9 +88,11 @@ async function readPowerShellPid(page: Page, title: string): Promise<number> {
 }
 
 async function readPowerShellSize(page: Page, title: string): Promise<{ readonly columns: number; readonly rows: number }> {
+  const marker = `MRT-SIZE-${++nextPowerShellSizeProbe}`;
+  const outputPattern = new RegExp(`${marker}:(\\d+)x(\\d+)`);
   const { rows } = await sendLine(page, title,
-    "Write-Output ('MRT-SIZE:' + $Host.UI.RawUI.WindowSize.Width + 'x' + $Host.UI.RawUI.WindowSize.Height)", /MRT-SIZE:\d+x\d+/);
-  const match = (await rows.innerText()).match(/MRT-SIZE:(\d+)x(\d+)/);
+    `Write-Output ('${marker}:' + $Host.UI.RawUI.WindowSize.Width + 'x' + $Host.UI.RawUI.WindowSize.Height)`, outputPattern);
+  const match = (await rows.innerText()).match(outputPattern);
   const columns = Number(match?.[1]);
   const rowCount = Number(match?.[2]);
   expect(Number.isSafeInteger(columns) && columns > 1).toBe(true);
@@ -155,12 +158,26 @@ test('Windows multi-tab terminal dimensions track a resized Electron window', as
       await expect(page.getByRole('tab').filter({ hasText: /PowerShell session/ })).toHaveCount(index + 2);
     }
     await expect(page.getByRole('tab')).toHaveCount(9);
-    const originalWidth = await page.evaluate(() => innerWidth);
+    for (let index = 1; index <= 9; index++) {
+      const tab = page.getByRole('tab').filter({ hasText: new RegExp(`PowerShell session ${index}\\b`) });
+      await expect(tab.locator('.state-dot')).toHaveClass(/running/);
+    }
+    await expect(page.locator('.terminal-workspace')).toHaveAttribute('data-opening', 'false');
+    const originalViewport = await page.evaluate(() => ({ innerWidth, innerHeight }));
+    const originalWidth = originalViewport.innerWidth;
+    const otherShellSize = await readPowerShellSize(page, 'PowerShell session 8');
     const largeShellSize = await readPowerShellSize(page, 'PowerShell session 9');
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 600));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(originalWidth);
-    await expect.poll(async () => (await readPowerShellSize(page, 'PowerShell session 9')).columns,
-      { timeout: 10_000, intervals: [250] }).toBeLessThan(largeShellSize.columns);
+    await expect.poll(() => page.evaluate(() => innerHeight)).toBeLessThan(originalViewport.innerHeight);
+    await expect.poll(async () => {
+      const resized = await readPowerShellSize(page, 'PowerShell session 9');
+      return { columns: resized.columns < largeShellSize.columns, rows: resized.rows < largeShellSize.rows };
+    }, { timeout: 10_000, intervals: [250] }).toEqual({ columns: true, rows: true });
+    await expect.poll(async () => {
+      const resized = await readPowerShellSize(page, 'PowerShell session 8');
+      return { columns: resized.columns < otherShellSize.columns, rows: resized.rows < otherShellSize.rows };
+    }, { timeout: 10_000, intervals: [250] }).toEqual({ columns: true, rows: true });
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

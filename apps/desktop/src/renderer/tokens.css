@@ -50,7 +50,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .quiet-button { color: var(--muted); padding: 4px 9px; }
 .quiet-button:hover, .palette-hint:hover { background: var(--surface-raised); color: var(--text); }
 .skip:hover { top: 8px; }
-.workspace { display: grid; grid-template-columns: 228px minmax(0, 1fr); min-height: 0; min-width: 0; }
+.workspace { display: grid; grid-template-columns: 228px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; min-width: 0; }
 .session-rail { min-width: 0; display: flex; flex-direction: column; gap: 18px; padding: 20px 10px 12px; border-right: 1px solid var(--line); background: var(--surface); }
 .rail-heading { display: flex; align-items: baseline; justify-content: space-between; padding: 0 10px; }
 .rail-heading h2 { margin: 0; font-size: 15px; font-weight: 650; }
