@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $credential = $null
 $secret = $null
+$json = $null
 $exitCode = 0
 $reply = @{ kind = 'cancelled' }
 
@@ -23,10 +24,16 @@ try {
 }
 
 try {
-    [Console]::Out.Write((ConvertTo-Json -InputObject $reply -Compress))
+    $json = ConvertTo-Json -InputObject $reply -Compress
+    if ([System.Text.Encoding]::UTF8.GetByteCount($json) -gt 65536) {
+        $json = '{"kind":"unavailable"}'
+        $exitCode = 1
+    }
+    [Console]::Out.Write($json)
 } catch {
     $exitCode = 1
 } finally {
+    $json = $null
     $secret = $null
     $credential = $null
     $reply = $null

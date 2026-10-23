@@ -105,8 +105,11 @@ export function createWindowsCredentialPrompt(options: WindowsCredentialPromptOp
           resolve(UNAVAILABLE);
           return;
         }
+        function terminateHelper(): void {
+          try { child.kill(); } catch { /* The caller's result remains authoritative. */ }
+        }
         if (!child.stdout) {
-          child.kill();
+          terminateHelper();
           resolve(UNAVAILABLE);
           return;
         }
@@ -127,12 +130,12 @@ export function createWindowsCredentialPrompt(options: WindowsCredentialPromptOp
           resolve(result);
         }
         function onAbort(): void {
-          try { child.kill(); } catch { /* The result remains cancelled even if the process already exited. */ }
+          terminateHelper();
           finish(CANCELLED);
         }
 
         const timer = setTimeout(() => {
-          try { child.kill(); } catch { /* Timeout remains the observed result. */ }
+          terminateHelper();
           finish(TIMED_OUT);
         }, timeoutMs);
 
@@ -142,13 +145,13 @@ export function createWindowsCredentialPrompt(options: WindowsCredentialPromptOp
           if (Buffer.isBuffer(chunk)) bytes = chunk;
           else if (typeof chunk === 'string') bytes = Buffer.from(chunk, 'utf8');
           else {
-            try { child.kill(); } catch { /* The helper result is rejected. */ }
+            terminateHelper();
             finish(UNAVAILABLE);
             return;
           }
           receivedBytes += bytes.length;
           if (receivedBytes > MAX_HELPER_OUTPUT_BYTES) {
-            try { child.kill(); } catch { /* The helper result is rejected. */ }
+            terminateHelper();
             finish(UNAVAILABLE);
             return;
           }
