@@ -52,15 +52,19 @@ export function isHostKeyEvidence(input: unknown): input is HostKeyEvidence {
   if (typeof evidence.algorithm !== 'string' || !HOST_KEY_ALGORITHM.test(evidence.algorithm) ||
       typeof fingerprint !== 'string' || !/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint) ||
       !(evidence.publicKey instanceof Uint8Array) || evidence.publicKey.byteLength < 5 || evidence.publicKey.byteLength > MAX_HOST_KEY_BYTES) return false;
-  const key = evidence.publicKey;
-  const algorithmLength = ((key[0]! << 24) | (key[1]! << 16) | (key[2]! << 8) | key[3]!) >>> 0;
-  if (algorithmLength === 0 || algorithmLength > 128 || 4 + algorithmLength > key.byteLength) return false;
-  let embeddedAlgorithm = '';
-  for (const byte of key.subarray(4, 4 + algorithmLength)) {
-    if (byte > 0x7f) return false;
-    embeddedAlgorithm += String.fromCharCode(byte);
+  return sshPublicKeyAlgorithm(evidence.publicKey) === evidence.algorithm;
+}
+
+export function sshPublicKeyAlgorithm(publicKey: unknown): string | undefined {
+  if (!(publicKey instanceof Uint8Array) || publicKey.byteLength < 5 || publicKey.byteLength > MAX_HOST_KEY_BYTES) return undefined;
+  const algorithmLength = ((publicKey[0]! << 24) | (publicKey[1]! << 16) | (publicKey[2]! << 8) | publicKey[3]!) >>> 0;
+  if (algorithmLength === 0 || algorithmLength > 128 || 4 + algorithmLength > publicKey.byteLength) return undefined;
+  let algorithm = '';
+  for (const byte of publicKey.subarray(4, 4 + algorithmLength)) {
+    if (byte > 0x7f) return undefined;
+    algorithm += String.fromCharCode(byte);
   }
-  return embeddedAlgorithm === evidence.algorithm;
+  return HOST_KEY_ALGORITHM.test(algorithm) ? algorithm : undefined;
 }
 
 export function hostEndpointKey(endpoint: SshHostEndpoint): string {
