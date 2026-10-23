@@ -1,0 +1,27 @@
+name: Windows foundation checks
+on:
+  push:
+    branches: [dev, main, 'feature/**']
+  pull_request:
+    branches: [dev, main]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: npm exec --yes --package=pnpm@12.15.0 -- pnpm install --frozen-lockfile
+      - run: npm exec --yes --package=pnpm@12.15.0 -- pnpm check
+      - run: npm exec --yes --package=pnpm@12.15.0 -- pnpm audit --audit-level=high
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: windows-test-results
+          path: |
+            test-results/
+            playwright-report/

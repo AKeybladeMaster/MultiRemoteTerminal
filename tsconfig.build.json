@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.base.json","compilerOptions":{"composite":false,"rootDir":".","outDir":"dist/host","declaration":false,"emitDeclarationOnly":false,"rewriteRelativeImportExtensions":true,"types":["node"],"lib":["ES2023","DOM"]},"include":["apps/desktop/src/main/**/*.ts","packages/**/*.ts"]}

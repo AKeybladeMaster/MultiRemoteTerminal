@@ -31,6 +31,10 @@
 **Skills:** codebase-design + grill-with-docs when ambiguous.  
 **Gate:** no untrusted renderer code can access privileged APIs.
 
+Implementation checkpoint (2026-10-23): WP-00 source and Windows acceptance tests are on `dev`.
+See [contracts and ownership](WP-00-CONTRACTS.md) and [actual results](results/WP-00-2026-10-23.md).
+This checkpoint does not satisfy M1 or the M4 promotion gate. WP-01 is the next independent slice.
+
 ### WP-01 — Desktop shell and ConPTY
 
 **Requires:** WP-00.  

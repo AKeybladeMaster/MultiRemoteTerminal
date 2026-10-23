@@ -1,0 +1,8 @@
+{
+  "name": "@mrt/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/host/apps/desktop/src/main/index.js",
+  "dependencies": { "react": "19.3.1", "react-dom": "19.3.1" }
+}

@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    {"path":"packages/domain"}, {"path":"packages/application"},
+    {"path":"packages/contracts"}, {"path":"apps/desktop/tsconfig.host.json"},
+    {"path":"apps/desktop/tsconfig.renderer.json"}
+  ]
+}

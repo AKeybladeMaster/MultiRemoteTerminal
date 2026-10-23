@@ -1,0 +1,1 @@
+{"extends":"../../tsconfig.base.json","compilerOptions":{"rootDir":"src","outDir":"../../dist/types/domain","tsBuildInfoFile":"../../dist/types/domain/build.tsbuildinfo","lib":["ES2023"]},"include":["src/**/*.ts"]}

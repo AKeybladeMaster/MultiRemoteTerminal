@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.cache/
+test-results/
+playwright-report/
+*.tsbuildinfo
+.env*
+!.env.example
+*.zip
+*.exe
+*.db
+*.db-*

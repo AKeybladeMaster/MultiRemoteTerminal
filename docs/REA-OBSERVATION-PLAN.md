@@ -26,6 +26,9 @@
 
 ## Evidence ledger (blank template)
 
+An initial, static-only archive inventory is now recorded in [REA-00](evidence/REA-00-archive-inventory.md).
+REA-01 through REA-10 remain unobserved. The executable has not been run, decompiled or reused.
+
 | ID | Reference version | Test setup | Step | Observed result | Evidence locator | Confidence | Unknowns |
 |---|---|---|---|---|---|---|---|
 | REA-TEMPLATE | TBD | Controlled test | TBD | TBD | TBD | Low/Med/High | TBD |

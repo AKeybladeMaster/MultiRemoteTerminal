@@ -7,6 +7,9 @@ This is **requirements coverage**, not an assertion of implemented code. Each fe
 **Phases:** `MVP` (first independently usable release), `Next` (subsequent development), `Parity` (full-feature verification).  
 **Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. All entries are presently PLANNED.
 
+WP-00 foundation has separate [Windows acceptance evidence](results/WP-00-2026-10-23.md).
+It validates the shell and IPC security controls only; it completes none of the full workflows below.
+
 | ID | Reference feature | Planned architecture/provider | Phase | Verification/interpretation |
 |---|---|---|---|---|
 | P-01 | Tabbed terminal | React+xterm.js + runtime tabs | MVP | 10 tabs, independent input/resize/close, accessibility |

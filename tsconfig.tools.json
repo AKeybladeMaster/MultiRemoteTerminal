@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.base.json","compilerOptions":{"composite":false,"noEmit":true,"types":["node"],"lib":["ES2023","DOM"]},"include":["tests/**/*.ts","playwright.config.ts","vite.config.ts","apps/desktop/src/renderer/global.d.ts"]}
