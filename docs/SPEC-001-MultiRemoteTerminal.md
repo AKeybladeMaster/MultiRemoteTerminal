@@ -1,0 +1,168 @@
+# SPEC-001-MultiRemoteTerminal
+
+**Status:** Approved design candidate for Codex; not implemented  
+**Platform:** Windows x64 desktop  
+**Product type:** Personal remote-management workstation  
+**Source specification date:** 2026-10-23
+
+## Background
+
+The user wants an original personal counterpart to the publicly described Home and Professional feature sets of MobaXterm, without the Home Edition record/runtime limits. The new product is named **MultiRemoteTerminal** and is developed in the GitHub repository `AKeybladeMaster/MultiRemoteTerminal` with a `dev` first, then `main` merge workflow.
+
+The comparison application's publicly advertised features include tabbed local terminals, SSH/Telnet/Rlogin/Mosh, RDP/VNC/XDMCP, SFTP browser, X11 forwarding/server, SSH gateways and tunnels, multi-execution, macros, local tools, text editing, master-password storage, syntax highlighting and professional customizer settings. The official edition table additionally describes no limits on stored sessions/tunnels/macros, unlimited network-daemon runtime, startup message/logo, user profile script and enabled-tool selection.
+
+**Product boundary:** Build equivalent workflows independently. No reused proprietary binary/code/design assets, bypasses of license controls, copyrighted artwork or branded imitation. Supporting third-party tools are permitted only after license and redistributability review. REA research is observational with an evidence trail, never an instruction to extract reusable proprietary implementation.
+
+## Requirements
+
+Priority labels: **Must** = MVP release gate; **Should** = next public-quality release; **Could** = parity milestone; **Won't in MVP** = explicitly deferred while staying in full-scope backlog.
+
+### Product and functional (MoSCoW)
+
+| ID | Priority | Requirement | Testable exit criterion |
+|---|---|---|---|
+| F-001 | Must | Windows installer and portable app | Win10/11 x64 smoke; installer uninstall; portable stores data in opt-in portable folder |
+| F-002 | Must | Tabbed local terminal with PowerShell/cmd | ConPTY input/resize/Unicode/paste/tab lifecycle functional |
+| F-003 | Must | SSH terminal with auth and host verification | Password/key auth test against disposable OpenSSH server; changed key blocked |
+| F-004 | Must | Unlimited saved sessions and folders | Create/search/reopen/delete at least 1,000 saved definitions without fixed caps |
+| F-005 | Must | Automatic configurable SFTP side browser | SSH login opens navigable remote files; upload/download/cancel/collision tests |
+| F-006 | Must | SSH local/remote/dynamic tunnels and status | Each tunnel mode tested; 20 records; port conflict handled; no application count cap |
+| F-007 | Must | Unlimited structured macros; keyboard shortcuts | 100 macros store/replay; cancellations; secret-exclusion behavior |
+| F-008 | Must | MultiExec across selected active terminals | Explicit confirm; 3 hosts receive target text; errors isolated per host |
+| F-009 | Must | Startup greeting/logo/profile script/tool visibility | Settings persist; invalid logo path handled; profile load never silently executes |
+| F-010 | Must | OS-protected credentials, master password option | Default encrypted storage; vault lock/unlock; secret never sent to renderer |
+| F-011 | Must | SSH gateways / jump-host route | Connect via gateway; host identities independently verified |
+| F-012 | Must | Enhanced baseline security | IPC sandbox, strict host keys, non-loopback tunnel warnings, no plaintext log |
+| F-013 | Must | No arbitrary limits or daemon-runtime timers | Schema/config show no caps; smoke confirms persisted records; no injected 360 s timer |
+| F-014 | Should | Local/remote text editor and syntax color profiles | SFTP edit, conflict detection, autosave optional, keyword highlight toggle |
+| F-015 | Should | Remote desktop sessions: RDP and VNC | Supported external viewer launch, credential warnings, reconnect/error UX |
+| F-016 | Should | Serial and FTP | COM port enumeration/baud selection; FTP insecure transport warning |
+| F-017 | Should | Plugins/provider discovery | User can enable/disable signed/approved provider without arbitrary JS execution |
+| F-018 | Should | Secure import/export + settings profile templates | Roundtrip non-secret config; encrypted user-opt-in secret export |
+| F-019 | Could | Mosh and Telnet/Rlogin | True protocol negotiation, end-to-end fixture per protocol |
+| F-020 | Could | Integrated or licensed X server and X11 forwarding | Real remote `xclock`/GUI rendering with SSH-forwarded X11 |
+| F-021 | Could | XDMCP remote Unix desktop, extensions | Actual session through compatible provider, documented extension support |
+| F-022 | Could | Network daemons: TFTP, NFS, Cron and helpers | User-scope services with infinite application runtime, explicit stop and security |
+| F-023 | Could | Embedded utilities and Unix commands | WSL/system tool integration plus optional licensed utility packages |
+| F-024 | Could | Portable scripting/tool bundles and advanced appearance | Configurable package sources; licensing verified; no unsafe remote auto-install |
+| F-025 | Won't in MVP | Full in-window RDP/VNC/X11 embedding | External provider route first; optional later integration after technical validation |
+| F-026 | Won't in MVP | Clone MobaXterm's precise look, bundle, or MobApt internals | Independent UX and implementation only |
+
+**Clarification:** MVP includes the professional *settings and unlimited record counts* but is not full protocol parity. Marketing and documentation must not call it "all features" until F-019..F-024 plus corresponding parity matrix gates have passed.
+
+### Non-functional
+
+| ID | Priority | Requirement | Target / proof |
+|---|---|---|---|
+| N-001 | Must | Windows reliability | Recover cleanly from lost SSH, crashed PTY worker, locked vault, file conflict |
+| N-002 | Must | Security | Electron official checklist and `docs/SECURITY.md`, independent security review |
+| N-003 | Must | No remote execution without user action | Connections and macros only execute after explicit user intent and target selection |
+| N-004 | Must | Testability | Fake ports, SSH integration fixture, Windows E2E, no network required for unit suite |
+| N-005 | Must | Structured errors | All UI errors have code, target, retryability, no sensitive stack data |
+| N-006 | Must | Accessibility | Keyboard operation, focus-visible, labels, 200% DPI smoke, dark/light contrast |
+| N-007 | Must | Reproducible builds | Pinned lockfile, pinned tools, dependency SBOM, signed release plan |
+| N-008 | Should | Responsiveness | Typing latency p95 under 75ms with 10 idle tabs on reference Windows machine |
+| N-009 | Should | Scalability | 1,000 saved sessions search p95 below 150ms; 20 active SSH sessions memory profiled |
+| N-010 | Should | Recoverability | Crash-recovery app config/DB, migration backups, interrupted transfer status |
+| N-011 | Could | Offline use | Local terminal, saved settings and help work without internet |
+| N-012 | Must | Legal/provenance hygiene | Third-party dependency/asset register and compliance checks per release |
+
+Performance figures are initial **targets**, not measured facts; refine after hardware baseline. Support Windows versions only after real test evidence.
+
+## Method
+
+### Overview and architectural decisions
+
+1. Build a Windows modular monolith rather than cloud service or microservices.
+2. Use Electron's sandboxed renderer with React/TypeScript; use preload as a **small allowlisted IPC interface**; Electron main validates and brokers actions.
+3. Use independent utility worker processes for network operations, local PTY, and storage, with lifecycle supervision. No shell commands are assembled by concatenating untrusted values.
+4. Use clean module direction: domain rules -> application use cases -> adapter interfaces at seams; presentation is driven by use cases and typed view projections.
+5. Introduce protocol adapters according to `docs/ARCHITECTURE.md`, with capability probes. External RDP/VNC/X server tools are *provider integrations* initially, not fake embedded implementations.
+6. Store normalized session definitions in local SQLite and OS-protected vault secrets separately; use explicit settings and per-user paths.
+7. Enforce SSH known-host checking, sandboxed UI, safe SFTP transfers, controlled daemon exposure, no automatic macro replay.
+
+Detailed architecture, IPC family contracts, lifecycle diagrams, schema tables and algorithms: [ARCHITECTURE.md](ARCHITECTURE.md). Security threat model and policy: [SECURITY.md](SECURITY.md). Comprehensive edition coverage: [FEATURE-MATRIX.md](FEATURE-MATRIX.md).
+
+### Canonical workflow
+
+```mermaid
+sequenceDiagram
+    actor Person
+    participant UI as React UI
+    participant B as Electron IPC broker
+    participant V as Vault
+    participant N as SSH worker
+    participant H as SSH host
+    Person->>UI: Open saved session
+    UI->>B: runtime.open(definitionId)
+    B->>V: Resolve credential for one operation
+    B->>N: Open session with scoped credential
+    N->>H: SSH handshake / host key
+    H-->>N: Server identity
+    N->>B: Unknown/mismatched key evidence
+    B->>UI: Request trust decision
+    Person->>UI: Confirm trusted fingerprint or cancel
+    UI->>B: hostTrust.decision
+    B->>N: Continue / abort
+    N->>H: Authenticate / request shell
+    N-->>B: Session output/state
+    B-->>UI: Sanitized terminal bytes and state
+```
+
+Trust decisions require an explicit user action and must not default to acceptance. The broker does not log credentials or terminal command contents.
+
+### Existing applications and inspiration
+
+- MobaXterm: publicly advertised workflow benchmark; **not** source or asset source.
+- Windows Terminal: modern tabs/panes and ConPTY expectations.
+- OpenSSH: interoperability and known-host semantics reference.
+- PuTTY / KiTTY / WinSCP: comparative testing for SSH/serial and graphical transfers.
+- Royal TS / Termius: connection organization reference points.
+
+Study interaction patterns and user-visible behavior rather than copying styles, proprietary file formats or internal code. An evidence-based feature checklist replaces assumptions.
+
+## Implementation
+
+Build **vertical slices** in this sequence; every slice must pass tests before expansion. See [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
+
+1. **Foundation:** workspace, Electron security posture, typed preload/IPC, app shell, design tokens, CI checks, Git `dev` branch.
+2. **Terminal/SSH:** ConPTY/PTY lifecycle, SSH shell, known-host trust dialog, credential vault, tabs, error states.
+3. **Catalog:** SQLite schemas and migrations, folders/sessions, filters, backup, import/export redacted defaults.
+4. **SFTP and forwarding:** remote file browser, transfers, jumps, local/remote/dynamic SSH tunnels.
+5. **Power features:** macros, MultiExec safety, profile script settings, logo/greeting, remove/enable tool entries, text highlight.
+6. **Hardening/release:** review, E2E Windows installers, signing plan, portable mode, crash tests, docs.
+7. **Parity extensions:** RDP/VNC providers; serial/FTP; true Mosh and legacy; X11/XDMCP; daemons and Unix utilities.
+
+No step may be marked done because it has only stub UI or scaffolding.
+
+## Milestones
+
+| Milestone | Gate | Deliverable |
+|---|---|---|
+| M0 — Design baseline | Docs approved | This spec, architecture, skill playbook, feature matrix, ADRs |
+| M1 — Secure shell foundation | F-001/002/003/010/012 | Windows local/SSH workbench with trust/vault |
+| M2 — Remote operations MVP | F-004/005/006/011 | Session catalog, SFTP, forwarding/jump tests |
+| M3 — Power-user MVP | F-007/008/009/013 | Macros, MultiExec, professional settings, unlimited records |
+| M4 — v0.1 ready | N-001..N-007 | Installed/portable build E2E, no critical findings, dev→main |
+| M5 — Remote desktop/legacy | F-014..F-019 | RDP/VNC/serial/FTP/Mosh/legacy |
+| M6 — Full parity candidate | F-020..F-024 | X server/XDMCP/daemons/tooling tested on Windows |
+
+Do not promise calendar deadlines before available team/runtime/testing resources are known.
+
+## Gathering Results
+
+Track features by requirement ID, protocol fixture, Windows version, automated test, human confirmation, caveats and implementation evidence. Collect:
+
+- Connection success/failure rates and p95 startup time per protocol on local test network (no user telemetry by default).
+- Resource behavior at 10 and 20 concurrent sessions, tunnel counts and 1,000+ saved sessions.
+- Host-key mismatch prevention, default loopback exposure, vault lock and corrupted vault resilience.
+- SFTP integrity under transfer cancellation, network loss and overwrite conflicts.
+- Keyboard navigation and visual regression across 100%/200% DPI and themes.
+- Daemon longevity tests longer than 360 seconds **once implemented**, without unintended exposure.
+- A legal compliance checklist for every third-party binary and redistributed library.
+
+**Definition of full parity candidate:** All accepted features in `FEATURE-MATRIX.md` pass their real-protocol test; any feature that relies on an external app is transparently labeled, and any weaker implementation remains an open gap.
+
+## Need Professional Help in Developing Your Architecture?
+
+Please contact me at [sammuti.com](https://sammuti.com) :)
