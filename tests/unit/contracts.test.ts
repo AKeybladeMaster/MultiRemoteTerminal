@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isDescribeReply, parseRequest } from '../../packages/contracts/src/commands.ts';
+import { isDescribeReply, isSshTrustEvent, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -41,4 +41,25 @@ test('validates reply identity, shape and length; rejects secret-bearing replies
     { requestId: request.requestId, ok: false, error: { code: 'UNAVAILABLE', target: 'application', retryable: true, stack: 'private' } }]) {
     assert.equal(isDescribeReply(input, request.requestId), false);
   }
+});
+
+test('validates SSH connection requests and keeps host approval as a typed event', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const open = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24 } };
+  assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
+
+  const challenge = { kind: 'challenge', sessionId, challenge: { token: 'A'.repeat(32), host: 'server.example.com', port: 22,
+    algorithm: 'ssh-ed25519', fingerprint: `SHA256:${'A'.repeat(43)}` } };
+  assert.equal(isSshTrustEvent(challenge), true);
+  assert.equal(isSshTrustEvent({ ...challenge, secret: 'password' }), false);
+  assert.equal(isSshTrustEvent({ ...challenge, challenge: { ...challenge.challenge, fingerprint: 'not-a-fingerprint' } }), false);
+
+  const revoke = { command: 'ssh.host.revoke', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'server.example.com', port: 22 } };
+  assert.equal(parseRequest(revoke).ok, true);
+  assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, host: 'Server.example.com' } }).ok, false);
+  assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, port: 65_536 } }).ok, false);
 });

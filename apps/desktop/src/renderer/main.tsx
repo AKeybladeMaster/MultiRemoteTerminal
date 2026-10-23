@@ -1,29 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packages/application/src/local-terminals.ts';
+import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { OpenSshTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
+import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
-interface WorkbenchTerminal extends LocalTerminalSession {
-  readonly title: string;
-}
+type WorkbenchTerminal =
+  | (LocalTerminalSession & { readonly transport: 'local'; readonly title: string })
+  | (SshTerminalSession & { readonly transport: 'ssh'; readonly title: string });
 
-interface OpeningTerminal {
-  readonly sessionId: string;
-  readonly shell: LocalShell;
-  readonly cancelling: boolean;
-}
+type OpeningTerminal =
+  | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
+  | { readonly transport: 'ssh'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean };
 
-interface PendingOpenRequest {
-  cancelled: boolean;
-  readonly reply: Promise<Awaited<ReturnType<Window['multiRemoteTerminal']['openTerminal']>>>;
-}
+type PendingOpenRequest =
+  | { cancelled: boolean; readonly transport: 'local'; readonly reply: Promise<OpenTerminalReply> }
+  | { cancelled: boolean; readonly transport: 'ssh'; readonly reply: Promise<OpenSshTerminalReply> };
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'close-active' | 'toggle-theme';
+type CommandName = 'new-powershell' | 'new-cmd' | 'connect-ssh' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -31,6 +31,27 @@ interface PaletteCommand {
 }
 
 function shellName(shell: LocalShell): string { return shell === 'powershell' ? 'PowerShell' : 'cmd'; }
+
+function openingName(opening: OpeningTerminal): string {
+  return opening.transport === 'local' ? `${shellName(opening.shell)} terminal` : `SSH connection to ${sshEndpointLabel(opening.host, opening.port)}`;
+}
+
+function sshEndpointLabel(host: string, port: number): string { return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`; }
+
+function terminalStatus(session: WorkbenchTerminal | undefined): string {
+  if (!session) return 'No active terminal';
+  if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
+  return `SSH · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
+}
+
+function sshOpenError(code: string): string {
+  if (code === 'AUTHENTICATION_FAILED') return 'The SSH server rejected these credentials.';
+  if (code === 'HOST_KEY_REJECTED') return 'The SSH host was not trusted, so the connection was stopped.';
+  if (code === 'HOST_KEY_CHANGED') return 'The SSH host key changed. The connection was blocked.';
+  if (code === 'CANCELLED') return 'The SSH connection was cancelled.';
+  if (code === 'TIMEOUT') return 'The SSH connection timed out.';
+  return `Could not connect to the SSH server (${code}).`;
+}
 
 function messageForError(error: AppError): string {
   if (error.code === 'OUTPUT_LIMIT') return 'This terminal produced more output than the display can buffer. The process was stopped.';
@@ -50,13 +71,28 @@ function Workbench() {
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [query, setQuery] = useState('');
   const [selectedCommand, setSelectedCommand] = useState(0);
+  const [sshConnectOpen, setSshConnectOpen] = useState(false);
+  const [sshHost, setSshHost] = useState('');
+  const [sshPort, setSshPort] = useState('22');
+  const [sshConnectError, setSshConnectError] = useState<string>();
+  const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
+  const [sshTrustBusy, setSshTrustBusy] = useState(false);
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0 });
+  const nextSshOrdinal = useRef(0);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
+  const sshConnectDialog = useRef<HTMLElement>(null);
+  const sshHostInput = useRef<HTMLInputElement>(null);
+  const sshPortInput = useRef<HTMLInputElement>(null);
+  const sshConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const sshTrustDialog = useRef<HTMLElement>(null);
+  const rejectSshHostButton = useRef<HTMLButtonElement>(null);
+  const changedSshHostButton = useRef<HTMLButtonElement>(null);
+  const sshTrustReturnFocus = useRef<HTMLElement | null>(null);
   const closeDialog = useRef<HTMLElement>(null);
   const closeReturnFocus = useRef<HTMLElement | null>(null);
   const keepTerminalButton = useRef<HTMLButtonElement>(null);
@@ -69,6 +105,12 @@ function Workbench() {
     setPaletteOpen(true);
   }, []);
 
+  const openSshConnect = useCallback(() => {
+    sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSshConnectError(undefined);
+    setSshConnectOpen(true);
+  }, []);
+
   const requestCloseTerminal = useCallback((sessionId: string) => {
     closeReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPendingCloseId(sessionId);
@@ -77,8 +119,8 @@ function Workbench() {
   const deliver = useCallback((event: LocalTerminalEvent, handle: TerminalUiHandle) => {
     if (event.kind === 'data') {
       handle.write(event.data, () => {
-        void window.multiRemoteTerminal.acknowledgeTerminalOutput(event.sessionId, event.sequence).then(reply => {
-          if (!reply.ok) setAlert(messageForError(reply.error));
+        void handle.acknowledgeOutput(event.sequence).then(() => undefined).catch(() => {
+          setAlert('Terminal output could not be acknowledged.');
         });
       });
     } else if (event.kind === 'exit') {
@@ -107,14 +149,26 @@ function Workbench() {
     }
   }), [deliver]);
 
+  useEffect(() => window.multiRemoteTerminal.onSshTrustEvent(event => {
+    if (sshTrustReturnFocus.current === null) sshTrustReturnFocus.current = sshConnectReturnFocus.current;
+    setSshTrustEvents(current => {
+      const index = current.findIndex(existing => existing.sessionId === event.sessionId);
+      if (index < 0) return [...current, event];
+      if (event.kind === 'changed' && current[index]?.kind !== 'changed') {
+        return current.map((existing, currentIndex) => currentIndex === index ? event : existing);
+      }
+      return current;
+    });
+  }), []);
+
   const openTerminal = useCallback(async (shell: LocalShell) => {
     setPaletteOpen(false);
     setQuery('');
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
     const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, shell, 80, 24);
-    pendingOpenRequests.current.set(sessionId, { cancelled: false, reply: replyPromise });
-    setOpeningSessions(current => [...current, { sessionId, shell, cancelling: false }]);
+    pendingOpenRequests.current.set(sessionId, { transport: 'local', cancelled: false, reply: replyPromise });
+    setOpeningSessions(current => [...current, { transport: 'local', sessionId, shell, cancelling: false }]);
     const reply = await replyPromise;
     if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
     pendingOpenRequests.current.delete(sessionId);
@@ -125,7 +179,42 @@ function Workbench() {
     }
     const ordinal = ++nextOrdinal.current[shell];
     const title = shellName(shell);
-    setSessions(current => [...current, { ...reply.result, title: `${title} session ${ordinal}` }]);
+    setSessions(current => [...current, { ...reply.result, transport: 'local', title: `${title} session ${ordinal}` }]);
+    setActiveId(reply.result.sessionId);
+  }, []);
+
+  const openSshTerminal = useCallback(async (hostInput: string, portInput: string) => {
+    const host = hostInput.trim();
+    const port = Number(portInput);
+    if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
+    if (!/^\d{1,5}$/.test(portInput) || !Number.isInteger(port) || port < 1 || port > 65_535) {
+      setSshConnectError('Port must be a whole number from 1 to 65535.');
+      sshPortInput.current?.focus();
+      return;
+    }
+    const validatedEndpoint = canonicalizeSshHostEndpoint({ host, port });
+    if (!validatedEndpoint) { setSshConnectError('Enter a valid DNS name or IP address.'); sshHostInput.current?.focus(); return; }
+    setSshConnectError(undefined);
+    sshTrustReturnFocus.current = sshConnectReturnFocus.current;
+    setSshConnectOpen(false);
+    setPaletteOpen(false);
+    setAlert(undefined);
+    const sessionId = crypto.randomUUID();
+    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24);
+    pendingOpenRequests.current.set(sessionId, { transport: 'ssh', cancelled: false, reply: replyPromise });
+    setOpeningSessions(current => [...current, { transport: 'ssh', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false }]);
+    const reply = await replyPromise;
+    if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
+    pendingOpenRequests.current.delete(sessionId);
+    setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
+    if (!reply.ok) {
+      setSshTrustEvents(current => current.filter(event => event.sessionId !== sessionId || event.kind === 'changed'));
+      if (reply.error.code !== 'CANCELLED') setAlert(sshOpenError(reply.error.code));
+      return;
+    }
+    const ordinal = ++nextSshOrdinal.current;
+    const endpoint = reply.result.endpoint;
+    setSessions(current => [...current, { ...reply.result, transport: 'ssh', title: `${endpoint.host}:${endpoint.port} · SSH ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, []);
 
@@ -135,10 +224,14 @@ function Workbench() {
     pending.cancelled = true;
     setOpeningSessions(current => current.map(opening => opening.sessionId === sessionId ? { ...opening, cancelling: true } : opening));
     void (async () => {
-      const closeReply = await window.multiRemoteTerminal.closeTerminal(sessionId);
+      const closeReply = pending.transport === 'ssh'
+        ? await window.multiRemoteTerminal.closeSshTerminal(sessionId)
+        : await window.multiRemoteTerminal.closeTerminal(sessionId);
       const reply = await pending.reply;
       if (reply.ok) {
-        const cleanup = await window.multiRemoteTerminal.closeTerminal(sessionId);
+        const cleanup = pending.transport === 'ssh'
+          ? await window.multiRemoteTerminal.closeSshTerminal(sessionId)
+          : await window.multiRemoteTerminal.closeTerminal(sessionId);
         if (!cleanup.ok && cleanup.error.code !== 'NOT_FOUND') setAlert(messageForError(cleanup.error));
       } else if (!closeReply.ok && closeReply.error.code !== 'NOT_FOUND') {
         setAlert(messageForError(closeReply.error));
@@ -147,13 +240,65 @@ function Workbench() {
       }
       pendingEvents.current.delete(sessionId);
       pendingOpenRequests.current.delete(sessionId);
+      if (pending.transport === 'ssh') {
+        setSshTrustEvents(current => current.filter(event => event.sessionId !== sessionId || event.kind === 'changed'));
+      }
       setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     })();
   }, []);
 
-  const closeTerminal = useCallback(async (sessionId: string) => {
-    const reply = await window.multiRemoteTerminal.closeTerminal(sessionId);
+  const removeSshTrustEvent = useCallback((sessionId: string) => {
+    setSshTrustEvents(current => current.filter(event => event.sessionId !== sessionId));
+  }, []);
+
+  const decideSshTrust = useCallback(async (event: SshTrustEvent, approve: boolean) => {
+    if (event.kind === 'changed') {
+      removeSshTrustEvent(event.sessionId);
+      setAlert('The SSH host key changed. The connection remains blocked. Verify the new key before resetting saved host trust.');
+      return;
+    }
+    if (sshTrustBusy) return;
+    setSshTrustBusy(true);
+    try {
+      const reply = approve
+        ? await window.multiRemoteTerminal.approveSshHost(event.challenge.token)
+        : await window.multiRemoteTerminal.rejectSshHost(event.challenge.token);
+      if (!reply.ok) {
+        setAlert(messageForError(reply.error));
+        return;
+      }
+      removeSshTrustEvent(event.sessionId);
+    } catch {
+      setAlert('The SSH host decision could not be completed.');
+    } finally {
+      setSshTrustBusy(false);
+    }
+  }, [removeSshTrustEvent, sshTrustBusy]);
+
+  const resetSshHostTrust = useCallback(async (event: Extract<SshTrustEvent, { kind: 'changed' }>) => {
+    if (sshTrustBusy) return;
+    setSshTrustBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.revokeSshHost(event.host, event.port);
+      if (!reply.ok) {
+        setAlert(messageForError(reply.error));
+        return;
+      }
+      removeSshTrustEvent(event.sessionId);
+      setAlert('Saved host trust was reset. Reconnect only after you verify the new fingerprint with the server administrator.');
+    } catch {
+      setAlert('Saved SSH host trust could not be reset.');
+    } finally {
+      setSshTrustBusy(false);
+    }
+  }, [removeSshTrustEvent, sshTrustBusy]);
+
+  const closeTerminal = useCallback(async (sessionId: string, transport: WorkbenchTerminal['transport']) => {
+    const reply = transport === 'ssh'
+      ? await window.multiRemoteTerminal.closeSshTerminal(sessionId)
+      : await window.multiRemoteTerminal.closeTerminal(sessionId);
     if (!reply.ok && reply.error.code !== 'NOT_FOUND') setAlert(messageForError(reply.error));
+    handles.current.delete(sessionId);
     pendingEvents.current.delete(sessionId);
     focusTerminalOnActiveChange.current = true;
     setSessions(current => current.filter(session => session.sessionId !== sessionId));
@@ -187,6 +332,33 @@ function Workbench() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      const currentTrust = sshTrustEvents[0];
+      if (currentTrust) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          if (!sshTrustBusy) void decideSshTrust(currentTrust, false);
+        } else if (event.key === 'Tab') {
+          const focusable = [...(sshTrustDialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
+      if (sshConnectOpen) {
+        if (event.key === 'Escape') { event.preventDefault(); setSshConnectOpen(false); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(sshConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (pendingCloseId) {
         if (event.key === 'Escape') { event.preventDefault(); setPendingCloseId(undefined); }
         else if (event.key === 'Tab') {
@@ -222,9 +394,9 @@ function Workbench() {
         }
       }
     }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [activeId, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, sessions]);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [activeId, decideSshTrust, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -238,6 +410,29 @@ function Workbench() {
   }, [paletteOpen]);
 
   useEffect(() => {
+    if (sshConnectOpen) requestAnimationFrame(() => sshHostInput.current?.focus());
+    else if (sshConnectReturnFocus.current) {
+      const target = sshConnectReturnFocus.current;
+      sshConnectReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [sshConnectOpen]);
+
+  useEffect(() => {
+    const current = sshTrustEvents[0];
+    if (current) {
+      requestAnimationFrame(() => {
+        if (current.kind === 'challenge') rejectSshHostButton.current?.focus();
+        else changedSshHostButton.current?.focus();
+      });
+    } else if (sshTrustReturnFocus.current) {
+      const target = sshTrustReturnFocus.current;
+      sshTrustReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [sshTrustEvents]);
+
+  useEffect(() => {
     if (pendingCloseId) requestAnimationFrame(() => keepTerminalButton.current?.focus());
     else if (closeReturnFocus.current) {
       const target = closeReturnFocus.current;
@@ -249,12 +444,14 @@ function Workbench() {
   const commands: PaletteCommand[] = [
     { id: 'new-powershell', label: 'New PowerShell terminal', run: () => { void openTerminal('powershell'); } },
     { id: 'new-cmd', label: 'New cmd terminal', run: () => { void openTerminal('cmd'); } },
+    { id: 'connect-ssh', label: 'Connect to SSH server', run: openSshConnect },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme }
   ];
   const filteredCommands = commands.filter(command => command.label.toLowerCase().includes(query.toLowerCase()));
   const active = sessions.find(session => session.sessionId === activeId);
   const pendingClose = sessions.find(session => session.sessionId === pendingCloseId);
+  const currentSshTrust = sshTrustEvents[0];
 
   function runCommand(command: PaletteCommand | undefined) {
     if (!command) return;
@@ -263,7 +460,7 @@ function Workbench() {
   }
 
   function confirmCloseTerminal() {
-    if (pendingCloseId) void closeTerminal(pendingCloseId);
+    if (pendingClose) void closeTerminal(pendingClose.sessionId, pendingClose.transport);
     setPendingCloseId(undefined);
   }
 
@@ -273,7 +470,7 @@ function Workbench() {
     <header className="app-header">
       <span className="wordmark" translate="no">MultiRemoteTerminal</span>
       <div className="header-actions">
-        <span className="build-label">Local terminals</span>
+        <span className="build-label">Local and SSH terminals</span>
         <button className="quiet-button" type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={toggleTheme}>
           {theme === 'dark' ? 'Light theme' : 'Dark theme'}
         </button>
@@ -283,13 +480,16 @@ function Workbench() {
       <aside className="session-rail" aria-label="Sessions">
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
+        <button className="connect-ssh-button" type="button" onClick={openSshConnect}><span aria-hidden="true">↗</span> Connect to SSH</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Local terminals</h3>
           <ul>
             {sessions.map(session => <li key={session.sessionId}>
               <button className={`session-item ${session.sessionId === activeId ? 'selected' : ''}`} type="button"
                 aria-current={session.sessionId === activeId ? 'page' : undefined} onClick={() => setActiveId(session.sessionId)}>
-                <span className={`shell-glyph ${session.shell}`} aria-hidden="true">{session.shell === 'powershell' ? '›_' : 'C:\\'}</span>
+                <span className={`shell-glyph ${session.transport === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
+                  {session.transport === 'ssh' ? 'SSH' : session.shell === 'powershell' ? '›_' : 'C:\\'}
+                </span>
                 <span className="session-name" translate="no">{session.title}</span>
                 <span className={`state-dot ${session.state}`} aria-label={session.state} />
               </button>
@@ -321,7 +521,9 @@ function Workbench() {
                 setActiveId(next.sessionId);
                 requestAnimationFrame(() => document.getElementById(`tab-${next.sessionId}`)?.focus());
               }}>
-              <span className={`shell-glyph ${session.shell}`} aria-hidden="true">{session.shell === 'powershell' ? '›_' : 'C:\\'}</span>
+              <span className={`shell-glyph ${session.transport === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
+                {session.transport === 'ssh' ? 'SSH' : session.shell === 'powershell' ? '›_' : 'C:\\'}
+              </span>
               <span translate="no">{session.title}</span>
               <span className={`state-dot ${session.state}`} aria-hidden="true" />
             </button>
@@ -334,9 +536,9 @@ function Workbench() {
         </div>
         {openingSessions.length > 0 && <div className="opening-notices" role="group" aria-label="Opening terminals">
           {openingSessions.map(opening => <div className="opening-notice" key={opening.sessionId}>
-            <span role="status">{opening.cancelling ? 'Cancelling' : 'Opening'} {shellName(opening.shell)} terminal...</span>
+            <span role="status">{opening.cancelling ? 'Cancelling' : 'Opening'} {openingName(opening)}...</span>
             <button type="button" className="quiet-button" disabled={opening.cancelling}
-              aria-label={`${opening.cancelling ? 'Cancelling' : 'Cancel opening'} ${shellName(opening.shell)} terminal`}
+              aria-label={`${opening.cancelling ? 'Cancelling' : 'Cancel opening'} ${openingName(opening)}`}
               onClick={() => cancelOpening(opening.sessionId)}>{opening.cancelling ? 'Cancelling...' : 'Cancel'}</button>
           </div>)}
         </div>}
@@ -344,14 +546,16 @@ function Workbench() {
           {sessions.map(session => <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
             aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
             <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
+              transport={session.transport}
               canWrite={session.state === 'running'} theme={theme} fontSize={fontSize} onReady={terminalReady}
               onError={showTerminalError} />
           </section>)}
           {sessions.length === 0 && <div className="empty-terminal">
             <span className="empty-mark" aria-hidden="true">›_</span>
             <h2>No terminal is open</h2>
-            <p>Open PowerShell or cmd to start working on this computer.</p>
+            <p>Open a local terminal or connect to an SSH server to get started.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
+            <button type="button" className="connect-ssh-button" onClick={openSshConnect}>Connect to SSH</button>
           </div>}
         </div>
       </main>
@@ -360,7 +564,7 @@ function Workbench() {
     <footer className="status-bar">
       <div className="terminal-status">
         <span className={`state-dot ${active?.state ?? 'idle'}`} />
-        <span>{active ? `${shellName(active.shell)} · Local · ${active.state}` : 'No active terminal'}</span>
+        <span>{terminalStatus(active)}</span>
       </div>
       <div className="font-controls" role="group" aria-label="Terminal font size">
         <span>Font size</span>
@@ -391,6 +595,65 @@ function Workbench() {
           {filteredCommands.length === 0 && <li className="no-commands">No matching commands</li>}
         </ul>
         <p><kbd>↑</kbd><kbd>↓</kbd> select <kbd>Enter</kbd> run <kbd>Esc</kbd> close</p>
+      </section>
+    </div>}
+    {sshConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSshConnectOpen(false); }}>
+      <section ref={sshConnectDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="ssh-connect-heading" aria-describedby="ssh-connect-description">
+        <h2 id="ssh-connect-heading">Connect to an SSH server</h2>
+        <p id="ssh-connect-description">Enter the server address. The Windows credential prompt will collect your username and password after you connect.</p>
+        <form onSubmit={event => { event.preventDefault(); void openSshTerminal(sshHost, sshPort); }}>
+          <label htmlFor="ssh-host">Host name or IP address</label>
+          <input ref={sshHostInput} id="ssh-host" name="host" type="text" autoComplete="off" spellCheck={false}
+            placeholder="server.example.com…" value={sshHost} onChange={event => setSshHost(event.target.value)} />
+          <label htmlFor="ssh-port">Port</label>
+          <input ref={sshPortInput} id="ssh-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
+            value={sshPort} onChange={event => setSshPort(event.target.value)} />
+          {sshConnectError && <p className="dialog-error" role="alert">{sshConnectError}</p>}
+          <div className="ssh-connect-actions">
+            <button type="button" onClick={() => setSshConnectOpen(false)}>Cancel</button>
+            <button type="submit" className="ssh-primary">Connect</button>
+          </div>
+        </form>
+      </section>
+    </div>}
+    {currentSshTrust && <div className="ssh-backdrop" onMouseDown={event => {
+      if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
+    }}>
+      <section ref={sshTrustDialog} className={`ssh-trust-dialog ${currentSshTrust.kind === 'changed' ? 'changed' : ''}`}
+        role={currentSshTrust.kind === 'changed' ? 'alertdialog' : 'dialog'} aria-modal="true"
+        aria-labelledby="ssh-trust-heading" aria-describedby="ssh-trust-description">
+        {currentSshTrust.kind === 'challenge' ? <>
+          <p className="dialog-eyebrow">First connection</p>
+          <h2 id="ssh-trust-heading">Verify this SSH host</h2>
+          <p id="ssh-trust-description">Check this fingerprint with the server administrator using a trusted channel before you trust the host.</p>
+          <dl className="ssh-host-facts">
+          <div><dt>Host</dt><dd>{sshEndpointLabel(currentSshTrust.challenge.host, currentSshTrust.challenge.port)}</dd></div>
+            <div><dt>Key algorithm</dt><dd>{currentSshTrust.challenge.algorithm}</dd></div>
+            <div><dt>SHA-256 fingerprint</dt><dd><code className="ssh-fingerprint" translate="no">{currentSshTrust.challenge.fingerprint}</code></dd></div>
+          </dl>
+          <div className="ssh-connect-actions">
+            <button ref={rejectSshHostButton} type="button" disabled={sshTrustBusy}
+              onClick={() => void decideSshTrust(currentSshTrust, false)}>Reject</button>
+            <button type="button" className="ssh-primary" disabled={sshTrustBusy}
+              onClick={() => void decideSshTrust(currentSshTrust, true)}>{sshTrustBusy ? 'Saving trust…' : 'Trust key and connect'}</button>
+          </div>
+        </> : <>
+          <p className="dialog-eyebrow">Connection blocked</p>
+          <h2 id="ssh-trust-heading">SSH host key changed</h2>
+          <p id="ssh-trust-description">The saved identity for this server does not match its current key. This connection was stopped. Verify the new fingerprint independently before resetting saved host trust.</p>
+          <dl className="ssh-host-facts">
+          <div><dt>Host</dt><dd>{sshEndpointLabel(currentSshTrust.host, currentSshTrust.port)}</dd></div>
+            <div><dt>Key algorithm</dt><dd>{currentSshTrust.algorithm}</dd></div>
+            <div><dt>New SHA-256 fingerprint</dt><dd><code className="ssh-fingerprint" translate="no">{currentSshTrust.fingerprint}</code></dd></div>
+          </dl>
+          <div className="ssh-connect-actions">
+            <button ref={changedSshHostButton} type="button" disabled={sshTrustBusy}
+              onClick={() => void decideSshTrust(currentSshTrust, false)}>Dismiss</button>
+            <button type="button" className="ssh-primary" disabled={sshTrustBusy}
+              onClick={() => void resetSshHostTrust(currentSshTrust)}>Reset saved host trust</button>
+          </div>
+        </>}
       </section>
     </div>}
     {pendingClose && <div className="close-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setPendingCloseId(undefined); }}>

@@ -145,6 +145,58 @@ test('a second application process exits and focuses the primary window under th
   }
 });
 
+test('SSH quick connect validates the address before any credential prompt and returns focus on cancel', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-connect-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=1'], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const workerReply = await app.evaluate(async ({ utilityProcess }, { workerPath, appRoot }) => new Promise<unknown>((resolveReply, rejectReply) => {
+      const requestId = '00000000-0000-4000-8000-000000000001';
+      const child = utilityProcess.fork(workerPath, [], { cwd: appRoot, env: { MRT_APP_ROOT: appRoot }, stdio: 'ignore' });
+      let settled = false;
+      const finish = (error?: Error, value?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.kill();
+        if (error) rejectReply(error);
+        else resolveReply(value);
+      };
+      const timer = setTimeout(() => finish(new Error('SSH worker did not acknowledge shutdown')), 10_000);
+      child.once('error', error => finish(new Error(String(error))));
+      child.once('exit', code => finish(new Error(`SSH worker exited before replying (${code})`)));
+      child.on('message', value => {
+        const message = value as { requestId?: unknown };
+        if (message?.requestId === requestId) finish(undefined, message);
+      });
+      child.once('spawn', () => child.postMessage({ version: 1, type: 'request', requestId, command: 'shutdown' }));
+    }), { workerPath: resolve('dist/host/apps/desktop/src/workers/ssh-worker.js'), appRoot: resolve('apps/desktop') });
+    expect(workerReply).toEqual({ version: 1, type: 'reply', requestId: '00000000-0000-4000-8000-000000000001', ok: true, result: {} });
+    const connectButton = page.getByRole('button', { name: 'Connect to SSH' }).first();
+    await connectButton.click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await expect(dialog).toBeVisible();
+    const hostInput = page.getByLabel('Host name or IP address');
+    await expect(hostInput).toBeFocused();
+    await page.screenshot({ path: 'test-results/ssh-quick-connect-100pct.png', fullPage: true });
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toHaveText('Enter a host name or IP address.');
+    await hostInput.fill('https://server.example.com');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toHaveText('Enter a valid DNS name or IP address.');
+    await expect(hostInput).toBeFocused();
+    await expect(page.getByRole('tab')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(connectButton).toBeFocused();
+    await expect(page.locator('.status-bar')).toContainText('Local');
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('Windows multi-tab terminal dimensions track a resized Electron window', async () => {
   test.skip(process.platform !== 'win32', 'ConPTY resize acceptance evidence is required on Windows');
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-resize-e2e-'));
@@ -220,7 +272,9 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.require).toBe('undefined');
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
-    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal', 'onTerminalEvent']);
+    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+      'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+      'onTerminalEvent', 'onSshTrustEvent']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);
@@ -258,9 +312,15 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       await expect(page.getByRole('tab').filter({ hasText: /PowerShell session/ })).toHaveCount(index + 2);
     }
     await expect(page.getByRole('tab')).toHaveCount(10);
-    await page.keyboard.press('Control+Tab');
-    await expect(page.getByRole('tab', { name: /PowerShell session 9/ })).toHaveAttribute('aria-selected', 'true');
+    const sessionTabs = page.getByRole('tab');
     const sessionNineTab = page.getByRole('tab', { name: /PowerShell session 9/ });
+    await expect(sessionNineTab).toHaveAttribute('aria-selected', 'true');
+    const selectedBefore = await sessionTabs.evaluateAll(tabs => tabs.findIndex(tab => tab.getAttribute('aria-selected') === 'true'));
+    const nextTab = sessionTabs.nth((selectedBefore + 1) % await sessionTabs.count());
+    await page.keyboard.press('Control+Tab');
+    await expect(nextTab).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Control+Shift+Tab');
+    await expect(sessionNineTab).toHaveAttribute('aria-selected', 'true');
     await sessionNineTab.focus();
     await page.keyboard.press('ArrowLeft');
     await expect(page.getByRole('tab', { name: /PowerShell session 8/ })).toHaveAttribute('aria-selected', 'true');

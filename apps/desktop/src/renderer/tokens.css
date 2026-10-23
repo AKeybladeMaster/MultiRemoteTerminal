@@ -61,6 +61,12 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 }
 .new-terminal > span { color: var(--accent); font-size: 20px; font-weight: 350; line-height: 1; }
 .new-terminal:hover { border-color: var(--accent); background: var(--surface-raised); }
+.connect-ssh-button {
+  display: flex; align-items: center; justify-content: flex-start; gap: 9px; width: 100%; min-height: 40px;
+  padding: 7px 12px; border: 1px solid var(--line); border-radius: 3px; background: transparent; color: var(--text); cursor: pointer;
+}
+.connect-ssh-button > span { color: var(--accent); font-size: 16px; line-height: 1; }
+.connect-ssh-button:hover { border-color: var(--accent); background: var(--surface-raised); }
 .session-group { min-height: 0; overflow: auto; }
 .session-group h3 { margin: 0 10px 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .session-group ul { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
@@ -70,6 +76,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .session-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shell-glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 23px; height: 21px; color: var(--accent); font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; }
 .shell-glyph.cmd { color: var(--muted); }
+.shell-glyph.ssh { min-width: 30px; font-size: 10px; letter-spacing: .04em; }
 .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .state-dot.running { background: #86c997; }
 .state-dot.starting { background: var(--accent); }
@@ -136,6 +143,45 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .close-actions button { min-height: 36px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); cursor: pointer; }
 .close-actions button:hover { border-color: var(--accent); }
 .close-actions .confirm-close { border-color: var(--error); background: var(--error); color: var(--canvas); font-weight: 650; }
+.ssh-backdrop { position: fixed; z-index: 7; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #07111d70; }
+.ssh-connect-dialog, .ssh-trust-dialog {
+  width: min(540px, 100%); max-height: min(90vh, 760px); overflow: auto; padding: 22px;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 12px 40px #0008;
+  overscroll-behavior: contain;
+}
+.ssh-connect-dialog h2, .ssh-trust-dialog h2 { margin: 0 0 10px; font-size: 20px; font-weight: 650; text-wrap: balance; }
+.ssh-connect-dialog > p, .ssh-trust-dialog > p:not(.dialog-eyebrow) { margin: 0 0 18px; color: var(--muted); line-height: 1.55; }
+.ssh-connect-dialog form { display: grid; gap: 9px; }
+.ssh-connect-dialog label { margin-top: 3px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.ssh-connect-dialog input {
+  width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px;
+  outline: 0; background: var(--terminal-background); color: var(--text);
+}
+.ssh-connect-dialog input:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.ssh-connect-dialog input[type="number"] { width: min(260px, 100%); }
+.ssh-connect-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.ssh-connect-actions button {
+  min-height: 38px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--surface-raised); color: var(--text); cursor: pointer;
+}
+.ssh-connect-actions button:hover:not(:disabled) { border-color: var(--accent); }
+.ssh-connect-actions button:disabled { cursor: wait; opacity: .72; }
+.ssh-connect-actions .ssh-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 650; }
+.ssh-connect-actions .ssh-primary:hover:not(:disabled) { filter: brightness(1.06); }
+.dialog-error { margin: 3px 0 0; color: var(--error); line-height: 1.45; }
+.dialog-eyebrow { margin: 0 0 5px; color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+.ssh-trust-dialog.changed { border-top: 3px solid var(--error); }
+.ssh-trust-dialog.changed .dialog-eyebrow { color: var(--error); }
+.ssh-host-facts { display: grid; gap: 11px; margin: 18px 0 0; }
+.ssh-host-facts > div { display: grid; gap: 4px; min-width: 0; }
+.ssh-host-facts dt { color: var(--muted); font-size: 11px; font-weight: 650; }
+.ssh-host-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--text); }
+.ssh-fingerprint {
+  display: block; width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--terminal-background); color: var(--text); font: 12px/1.5 "Cascadia Mono", Consolas, monospace;
+  user-select: text; -webkit-user-select: text; overflow-wrap: anywhere;
+}
+.ssh-trust-dialog.changed .ssh-connect-actions { margin-top: 18px; }
 .skip { position: absolute; z-index: 10; top: -80px; left: 14px; padding: 10px 12px; border: 1px solid var(--focus); border-radius: 3px; background: var(--surface); color: var(--text); }
 .skip:focus { top: 8px; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; clip-path: inset(50%) !important; }
@@ -154,7 +200,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
   .palette-hint { flex-wrap: wrap; }
 }
 @media (forced-colors: active) {
-  .new-terminal, .session-item, .tab-item, .tab-close, .font-controls button, .command-palette, .close-confirmation { border: 1px solid ButtonText; }
+  .new-terminal, .connect-ssh-button, .session-item, .tab-item, .tab-close, .font-controls button, .command-palette, .close-confirmation, .ssh-connect-dialog, .ssh-trust-dialog { border: 1px solid ButtonText; }
   .session-item.selected, .tab-item.selected { outline: 2px solid Highlight; }
   .state-dot { background: CanvasText; outline: 1px solid CanvasText; }
 }

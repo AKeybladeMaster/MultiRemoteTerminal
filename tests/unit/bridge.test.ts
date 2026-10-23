@@ -11,8 +11,46 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal', 'onTerminalEvent']);
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+    'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+    'onTerminalEvent', 'onSshTrustEvent']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload forwards host-trust reset only for the supplied canonical endpoint', async () => {
+  const bridge = createBridge(async request => {
+    assert.deepEqual(request, { command: 'ssh.host.revoke', requestId: id(), contractVersion: 1,
+      payload: { host: 'server.example.com', port: 22 } });
+    return { requestId: id(), ok: true, result: {} };
+  }, id);
+  assert.deepEqual(await bridge.revokeSshHost('server.example.com', 22), { requestId: id(), ok: true, result: {} });
+});
+
+test('preload validates SSH open replies and filters trust events before exposing them', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let invokeCount = 0;
+  let trustListener: ((value: unknown) => void) | undefined;
+  let receivedTrustEvents = 0;
+  const bridge = createBridge(async request => {
+    invokeCount++;
+    assert.deepEqual(request, {
+      command: 'ssh.open', requestId: id(), contractVersion: 1,
+      payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24 }
+    });
+    return { requestId: id(), ok: true, result: { sessionId, endpoint: { host: 'server.example.com', port: 22 }, state: 'running' } };
+  }, id, undefined, listener => { trustListener = listener; return () => { trustListener = undefined; }; });
+
+  assert.deepEqual(await bridge.openSshTerminal(sessionId, 'server.example.com', 22, 80, 24), {
+    requestId: id(), ok: true, result: { sessionId, endpoint: { host: 'server.example.com', port: 22 }, state: 'running' }
+  });
+  const unsubscribe = bridge.onSshTrustEvent(() => { receivedTrustEvents++; });
+  trustListener?.({ kind: 'challenge', sessionId, challenge: { token: 'invalid', host: 'server.example.com', port: 22,
+    algorithm: 'ssh-ed25519', fingerprint: `SHA256:${'A'.repeat(43)}` } });
+  trustListener?.({ kind: 'changed', sessionId, host: 'server.example.com', port: 22,
+    algorithm: 'ssh-ed25519', fingerprint: `SHA256:${'A'.repeat(43)}` });
+  unsubscribe();
+  assert.equal(invokeCount, 1);
+  assert.equal(receivedTrustEvents, 1);
 });
 
 test('preload carries a caller-known session id so an opening terminal can be cancelled', async () => {

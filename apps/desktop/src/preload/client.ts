@@ -1,15 +1,17 @@
-import { CONTRACT_VERSION, isCommandReply, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
-import type { CommandReply, CommandRequest, DesktopBridge, DescribeReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+import { CONTRACT_VERSION, isCommandReply, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
+import type { CommandReply, CommandRequest, DesktopBridge, DescribeReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
+import type { SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
 const MAX_PENDING_REQUESTS = 256;
+const SSH_OPEN_TIMEOUT_MS = 275_000;
 
-export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}): DesktopBridge {
+export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {}): DesktopBridge {
   let inFlight = 0;
   const pendingWriteChars = new Map<string, number>();
 
@@ -36,7 +38,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   }
 
   function requestId(): string { return makeId(); }
-  function voidRequest(command: 'terminal.write' | 'terminal.resize' | 'terminal.ack' | 'terminal.close', payload: Record<string, unknown>): CommandRequest {
+  function voidRequest(command: 'terminal.write' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' | 'ssh.write' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
+    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -70,12 +73,57 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       pendingWriteChars.delete(sessionId);
       return send(voidRequest('terminal.close', { sessionId }), 8_000);
     },
+    openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenSshTerminalReply> {
+      return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port, columns, rows } }, SSH_OPEN_TIMEOUT_MS);
+    },
+    writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
+      const pending = pendingWriteChars.get(sessionId) ?? 0;
+      if (typeof data !== 'string' || data.length > MAX_TERMINAL_INPUT_CHARS) return Promise.resolve({ requestId: requestId(), ...failure('INVALID_REQUEST') });
+      if (inFlight >= MAX_PENDING_REQUESTS) return Promise.resolve({ requestId: requestId(), ...failure('BUSY') });
+      if (pending + data.length > MAX_QUEUED_TERMINAL_INPUT_CHARS) return Promise.resolve({ requestId: requestId(), ...failure('BUSY', 'terminal') });
+      pendingWriteChars.set(sessionId, pending + data.length);
+      const settle = () => {
+        const remaining = (pendingWriteChars.get(sessionId) ?? data.length) - data.length;
+        if (remaining > 0) pendingWriteChars.set(sessionId, remaining);
+        else pendingWriteChars.delete(sessionId);
+      };
+      return send(voidRequest('ssh.write', { sessionId, data }), 5_000, settle);
+    },
+    resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.resize', { sessionId, columns, rows }), 5_000);
+    },
+    acknowledgeSshTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.ack', { sessionId, sequence }), 5_000);
+    },
+    closeSshTerminal(sessionId: string): Promise<TerminalActionReply> {
+      pendingWriteChars.delete(sessionId);
+      return send(voidRequest('ssh.close', { sessionId }), 8_000);
+    },
+    approveSshHost(token: string): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.host.approve', { token }), 20_000);
+    },
+    rejectSshHost(token: string): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.host.reject', { token }), 5_000);
+    },
+    revokeSshHost(host: string, port: number): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.host.revoke', { host, port }), 8_000);
+    },
     onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void {
       if (typeof listener !== 'function') return () => {};
       try {
         return listen(value => {
           if (isTerminalEvent(value)) {
             try { listener(value); } catch { /* Presentation errors do not affect IPC ownership. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenSshTrust(value => {
+          if (isSshTrustEvent(value)) {
+            try { listener(value); } catch { /* A trust decision listener cannot interrupt transport ownership. */ }
           }
         });
       } catch { return () => {}; }

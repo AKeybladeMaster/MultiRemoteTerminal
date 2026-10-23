@@ -13,6 +13,10 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   describe, noteUserActivity, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+  }, sshTerminals: {
+    async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
+    write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp, approveHostKey: noOp,
+    rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
   }
 });
 
@@ -30,7 +34,20 @@ test('terminal open forwards the preallocated id for close-during-startup cancel
   });
 });
 
-test('only validated terminal open, write and close commands count as user activity', async () => {
+test('host-trust reset dispatches only the validated canonical endpoint', async () => {
+  let revoked: { host: string; port: number } | undefined;
+  const base = actions();
+  const withRevoke: CommandActions = { ...base, sshTerminals: { ...base.sshTerminals, async revokeHostKey(host, port) {
+    revoked = { host, port };
+    return { ok: true, result: {} };
+  } } };
+  const input = { command: 'ssh.host.revoke', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'server.example.com', port: 22 } };
+  assert.deepEqual(await dispatchCommand(owner, input, withRevoke, () => {}), { requestId: request.requestId, ok: true, result: {} });
+  assert.deepEqual(revoked, { host: 'server.example.com', port: 22 });
+});
+
+test('only validated local or SSH terminal open, write and close commands count as user activity', async () => {
   let activityCount = 0;
   const withActivity = actions(snapshot, () => { activityCount += 1; });
   await dispatchCommand(owner, request, withActivity, () => {});
@@ -47,13 +64,23 @@ test('only validated terminal open, write and close commands count as user activ
   }
   assert.equal(activityCount, 3);
 
+  const sshCommands = [
+    { command: 'ssh.open', payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24 } },
+    { command: 'ssh.write', payload: { sessionId, data: 'echo remote' } },
+    { command: 'ssh.close', payload: { sessionId } }
+  ];
+  for (const command of sshCommands) {
+    await dispatchCommand(owner, { ...command, requestId: request.requestId, contractVersion: 1 }, withActivity, () => {});
+  }
+  assert.equal(activityCount, 6);
+
   const resize = { command: 'terminal.resize', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, columns: 100, rows: 30 } };
   await dispatchCommand(owner, resize, withActivity, () => {});
   const malformedWrite = { command: 'terminal.write', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, data: 'x', extra: true } };
   await dispatchCommand(owner, malformedWrite, withActivity, () => {});
-  assert.equal(activityCount, 3);
+  assert.equal(activityCount, 6);
 });
 
 test('rejects foreign windows, subframes, origins and documents before dispatch', async () => {

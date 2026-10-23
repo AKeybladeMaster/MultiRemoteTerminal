@@ -1,14 +1,23 @@
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor, protocol, safeStorage, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import { describeWorkbench } from '../../../../packages/application/src/workbench.ts';
 import { createLocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
-import { APP_URL, COMMAND_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
+import { createHostTrustManager } from '../../../../packages/application/src/host-trust.ts';
+import type { HostTrustRuntime } from '../../../../packages/application/src/host-trust.ts';
+import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import { APP_URL, COMMAND_CHANNEL, SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
+import { HostTrustJsonStore } from '../adapters/host-trust-json-store.ts';
+import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
+import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 
 app.setName('MultiRemoteTerminal');
@@ -19,6 +28,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'mrt', privileges: { standard: t
 // Compiled location: dist/host/apps/desktop/src/main; assets remain immutable build outputs.
 const here = fileURLToPath(new URL('.', import.meta.url));
 const dist = resolve(here, '../../../../../');
+const loadNative = createRequire(import.meta.url);
 let window: BrowserWindow | undefined;
 let windowReady = false;
 let stopActiveTerminals = (): void => {};
@@ -73,7 +83,8 @@ function focusWindow(): void {
 }
 
 function boot(): void {
-  const credentialVault = new SafeStorageSecretVault(join(app.getPath('userData'), 'credentials.json'), safeStorage);
+  const userData = app.getPath('userData');
+  const credentialVault = new SafeStorageSecretVault(join(userData, 'credentials.json'), safeStorage);
   const idleLock = new VaultIdleLock(() => credentialVault.lock(), scheduleTimeout);
   const lockVaultForSystemEvent = () => credentialVault.lock();
   powerMonitor.on('lock-screen', lockVaultForSystemEvent);
@@ -91,11 +102,34 @@ function boot(): void {
     join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath(), openReplyBarrier
   );
   const terminals: LocalTerminalController = createLocalTerminalController(terminalHost);
+  const sshTrustRuntime: HostTrustRuntime = {
+    createToken: randomUUID,
+    monotonicNow: () => performance.now(),
+    wallNow: () => Date.now(),
+    schedule: scheduleTimeout
+  };
+  const hostTrust = createHostTrustManager(new HostTrustJsonStore(join(userData, 'ssh-host-keys.json')), sshTrustRuntime);
+  const systemDirectory = {
+    getSystemDirectory(): string {
+      const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
+      return bridge.getSystemDirectory();
+    }
+  };
+  const credentialPrompt = createWindowsCredentialPrompt({
+    systemDirectory,
+    helperPath: join(dist, 'host/apps/desktop/src/adapters/credential-prompt.ps1')
+  });
+  const sshProvider = new SshTerminalWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/ssh-worker.js'), app.getAppPath(),
+    (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
+  );
+  const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = terminals.closeAll().catch(() => undefined).finally(() => { shutdownPromise = undefined; });
+      shutdownPromise = Promise.all([terminals.closeAll(), sshTerminals.closeAll()]).then(() => undefined).catch(() => undefined)
+        .finally(() => { shutdownPromise = undefined; });
     }
     return shutdownPromise;
   };
@@ -114,12 +148,20 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
   });
+  sshTerminals.subscribe(event => {
+    const current = window;
+    if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
+  });
+  sshTerminals.subscribeTrust(event => {
+    const current = window;
+    if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRUST_EVENT_CHANNEL, event);
+  });
   ipcMain.handle(COMMAND_CHANNEL, (event, input: unknown) => {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
     return dispatchCommand({ owned, mainFrame: owned && event.senderFrame === event.sender.mainFrame,
       url: event.senderFrame?.url ?? '' }, input, {
       describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
-      noteUserActivity: () => idleLock.noteUserActivity(), terminals
+      noteUserActivity: () => idleLock.noteUserActivity(), terminals, sshTerminals
     }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
   });
   createWindow();
@@ -131,7 +173,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void terminals.dispose().catch(() => undefined).finally(() => app.quit());
+    void Promise.all([terminals.dispose(), sshTerminals.dispose()]).catch(() => undefined).finally(() => app.quit());
   });
   app.on('will-quit', () => {
     powerMonitor.removeListener('lock-screen', lockVaultForSystemEvent);

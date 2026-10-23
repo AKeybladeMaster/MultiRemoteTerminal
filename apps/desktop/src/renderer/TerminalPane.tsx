@@ -8,11 +8,13 @@ export type TerminalTheme = 'dark' | 'light';
 export interface TerminalUiHandle {
   readonly write: (data: string, onParsed: () => void) => void;
   readonly focus: () => void;
+  readonly acknowledgeOutput: (sequence: number) => Promise<void>;
 }
 
 interface Props {
   readonly sessionId: string;
   readonly title: string;
+  readonly transport: 'local' | 'ssh';
   readonly active: boolean;
   readonly canWrite: boolean;
   readonly theme: TerminalTheme;
@@ -38,7 +40,7 @@ const terminalThemes: Record<TerminalTheme, ITheme> = {
   }
 };
 
-export function TerminalPane({ sessionId, title, active, canWrite, theme, fontSize, onReady, onError }: Props) {
+export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | undefined>(undefined);
   const fit = useRef<FitAddon | undefined>(undefined);
@@ -58,13 +60,19 @@ export function TerminalPane({ sessionId, title, active, canWrite, theme, fontSi
     instance.loadAddon(fitAddon);
     instance.onData(data => {
       if (!canWriteRef.current) return;
-      void window.multiRemoteTerminal.writeTerminal(sessionId, data).then(reply => {
+      const sent = transport === 'ssh'
+        ? window.multiRemoteTerminal.writeSshTerminal(sessionId, data)
+        : window.multiRemoteTerminal.writeTerminal(sessionId, data);
+      void sent.then(reply => {
         if (!reply.ok) onError(`Terminal input could not be sent (${reply.error.code}).`);
       });
     });
     instance.onResize(({ cols, rows }) => {
       if (!canWriteRef.current) return;
-      void window.multiRemoteTerminal.resizeTerminal(sessionId, cols, rows).then(reply => {
+      const resized = transport === 'ssh'
+        ? window.multiRemoteTerminal.resizeSshTerminal(sessionId, cols, rows)
+        : window.multiRemoteTerminal.resizeTerminal(sessionId, cols, rows);
+      void resized.then(reply => {
         if (!reply.ok) onError(`Terminal size could not be updated (${reply.error.code}).`);
       });
     });
@@ -75,7 +83,13 @@ export function TerminalPane({ sessionId, title, active, canWrite, theme, fontSi
     observer.observe(host.current);
     const handle: TerminalUiHandle = Object.freeze({
       write: (data: string, onParsed: () => void) => instance.write(data, onParsed),
-      focus: () => instance.focus()
+      focus: () => instance.focus(),
+      acknowledgeOutput: async (sequence: number) => {
+        const reply = transport === 'ssh'
+          ? await window.multiRemoteTerminal.acknowledgeSshTerminalOutput(sessionId, sequence)
+          : await window.multiRemoteTerminal.acknowledgeTerminalOutput(sessionId, sequence);
+        if (!reply.ok) onError(`Terminal output could not be acknowledged (${reply.error.code}).`);
+      }
     });
     onReady(sessionId, handle);
     requestAnimationFrame(() => { if (activeRef.current) fitAddon.fit(); });
@@ -86,7 +100,7 @@ export function TerminalPane({ sessionId, title, active, canWrite, theme, fontSi
       terminal.current = undefined;
       fit.current = undefined;
     };
-  }, [sessionId, title, onReady, onError]);
+  }, [sessionId, title, transport, onReady, onError]);
 
   useLayoutEffect(() => {
     const instance = terminal.current;
