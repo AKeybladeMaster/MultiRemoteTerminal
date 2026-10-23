@@ -64,7 +64,7 @@ export class LocalPtyProvider implements LocalTerminalProvider {
       name: 'xterm-256color', cols: size.columns, rows: size.rows,
       ...(home ? { cwd: home } : {}),
       env: process.env,
-      useConpty: true, useConptyDll: true, conptyInheritCursor: true
+      useConpty: true, useConptyDll: false, conptyInheritCursor: true
     });
 
     let resolveExit = () => {};

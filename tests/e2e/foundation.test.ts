@@ -142,6 +142,31 @@ test('a second application process exits and focuses the primary window under th
   }
 });
 
+test('Windows multi-tab terminal dimensions track a resized Electron window', async () => {
+  test.skip(process.platform !== 'win32', 'ConPTY resize acceptance evidence is required on Windows');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-resize-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=2'], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+    for (let index = 0; index < 8; index++) {
+      await runPaletteCommand(page, 'New PowerShell terminal');
+      await expect(page.getByRole('tab').filter({ hasText: /PowerShell session/ })).toHaveCount(index + 2);
+    }
+    await expect(page.getByRole('tab')).toHaveCount(9);
+    const originalWidth = await page.evaluate(() => innerWidth);
+    const largeShellSize = await readPowerShellSize(page, 'PowerShell session 9');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(originalWidth);
+    await expect.poll(async () => (await readPowerShellSize(page, 'PowerShell session 9')).columns,
+      { timeout: 10_000, intervals: [250] }).toBeLessThan(largeShellSize.columns);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('Windows local terminal workbench operates real shells, handles 10 tabs and closes their processes', async () => {
   test.skip(process.platform !== 'win32', 'ConPTY acceptance evidence is required on Windows');
   test.setTimeout(180_000);
