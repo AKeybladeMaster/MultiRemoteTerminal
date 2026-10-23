@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SecretVaultError } from '../../packages/application/src/secret-vault.ts';
@@ -95,6 +95,44 @@ test('unavailable OS encryption fails closed and can be retried when it becomes 
     safeStorage.available = true;
     await vault.initialize();
     assert.equal(vault.state, 'available');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a manual lock remains in force when initialization retries after OS encryption recovers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-vault-'));
+  const safeStorage = new SwitchableSafeStorage();
+  const vault = new SafeStorageSecretVault(join(directory, 'credentials.json'), safeStorage);
+  try {
+    safeStorage.available = false;
+    await assert.rejects(vault.initialize(), error => isVaultError(error, 'unavailable'));
+    vault.lock();
+
+    safeStorage.available = true;
+    await vault.initialize();
+    assert.equal(vault.state, 'locked');
+    await vault.unlock();
+    assert.equal(vault.state, 'available');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed reset stays fail-closed until the explicit reset succeeds', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-vault-'));
+  const path = join(directory, 'credential-target');
+  const vault = new SafeStorageSecretVault(path, new FakeSafeStorage());
+  try {
+    await mkdir(path);
+    await assert.rejects(vault.initialize(), error => isVaultError(error, 'corrupt'));
+    await assert.rejects(vault.reset(), error => isVaultError(error, 'unavailable'));
+    await assert.rejects(vault.initialize(), error => isVaultError(error, 'unavailable'));
+
+    await rm(path, { recursive: true, force: true });
+    await vault.reset();
+    assert.equal(vault.state, 'available');
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { version: 1, entries: {} });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
