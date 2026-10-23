@@ -21,6 +21,7 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const dist = resolve(here, '../../../../../');
 let window: BrowserWindow | undefined;
 let stopActiveTerminals = (): void => {};
+let focusRequested = false;
 const ownsSingleInstance = app.requestSingleInstanceLock();
 
 if (!ownsSingleInstance) app.quit();
@@ -41,7 +42,10 @@ function createWindow(): void {
   current.webContents.on('will-navigate', event => event.preventDefault());
   current.webContents.on('will-frame-navigate', event => event.preventDefault());
   current.webContents.on('will-attach-webview', event => event.preventDefault());
-  current.once('ready-to-show', () => current.show());
+  current.once('ready-to-show', () => {
+    current.show();
+    if (focusRequested) focusWindow();
+  });
   current.on('closed', () => { if (window === current) window = undefined; stopActiveTerminals(); });
   current.webContents.on('render-process-gone', () => stopActiveTerminals());
   void current.loadURL(APP_URL);
@@ -49,7 +53,11 @@ function createWindow(): void {
 
 function focusWindow(): void {
   const current = window;
-  if (!current || current.isDestroyed()) return;
+  if (!current || current.isDestroyed() || !current.isVisible()) {
+    focusRequested = true;
+    return;
+  }
+  focusRequested = false;
   if (current.isMinimized()) current.restore();
   current.focus();
 }

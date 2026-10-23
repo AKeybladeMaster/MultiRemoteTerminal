@@ -114,19 +114,25 @@ function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promis
   });
 }
 
-test('a second application process exits under the same profile while the primary window stays open', async () => {
+test('a second application process exits and focuses the primary window under the same profile', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-single-instance-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
   let secondInstance: ReturnType<typeof spawn> | undefined;
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.minimize());
+    await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isMinimized())).toBe(true);
     const executable = await app.evaluate(() => process.execPath);
     secondInstance = spawn(executable, [resolve('apps/desktop'), `--user-data-dir=${profile}`], {
       env: electronEnvironment(), windowsHide: true, stdio: 'ignore'
     });
     expect(await waitForExit(secondInstance, 10_000)).toBe(0);
     expect(app.process()?.exitCode).toBeNull();
+    await expect.poll(() => app.evaluate(electron => ({
+      minimized: electron.BrowserWindow.getAllWindows()[0]?.isMinimized(),
+      focused: electron.BrowserWindow.getAllWindows()[0]?.isFocused()
+    })), { timeout: 10_000 }).toEqual({ minimized: false, focused: true });
     await expect(page.locator('.workbench')).toHaveCount(1);
   } finally {
     secondInstance?.kill();
