@@ -11,6 +11,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
+export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
 export const APP_URL = 'mrt://app/index.html';

@@ -4,6 +4,7 @@ import type { LocalTerminalController } from '../../../../packages/application/s
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
+import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 
 export interface CommandSender {
@@ -20,6 +21,7 @@ export interface AuditEvent {
 export interface CommandActions {
   readonly describe: () => WorkbenchSnapshot;
   readonly noteUserActivity: () => void;
+  readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove'>;
@@ -94,10 +96,10 @@ export async function dispatchCommand(
       case 'ssh.host.revoke': {
         return { requestId, ...await actions.sshTerminals.revokeHostKey(parsed.result.payload.host, parsed.result.payload.port) };
       }
-      case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query) };
-      case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload) };
-      case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite) };
-      case 'session.delete': return { requestId, ...await actions.sessionCatalog.remove(parsed.result.payload.id) };
+      case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
+      case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
+      case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite, actions.cancellation) };
+      case 'session.delete': return { requestId, ...await actions.sessionCatalog.remove(parsed.result.payload.id, actions.cancellation) };
     }
   } catch {
     audit({ kind: 'application.unavailable', code: 'UNAVAILABLE' });

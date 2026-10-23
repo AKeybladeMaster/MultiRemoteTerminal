@@ -11,7 +11,8 @@ import type { HostTrustRuntime } from '../../../../packages/application/src/host
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
-import { APP_URL, COMMAND_CHANNEL, SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, isAppDocument, parseRequest, requestIdOf,
+  SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
@@ -35,6 +36,12 @@ let windowReady = false;
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
 const ownsSingleInstance = app.requestSingleInstanceLock();
+interface PendingCatalogCommand {
+  readonly cancellation: AbortController;
+  readonly settled: Promise<void>;
+  complete(): void;
+}
+const pendingCatalogCommands = new Map<number, Map<string, Set<PendingCatalogCommand>>>();
 
 if (!ownsSingleInstance) app.quit();
 else app.on('second-instance', focusWindow);
@@ -81,6 +88,35 @@ function focusWindow(): void {
   if (current.isMinimized()) current.restore();
   if (!current.isVisible()) current.show();
   current.focus();
+}
+
+async function cancelCatalogCommand(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<void> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input) || Object.keys(input).length !== 1 ||
+      !Object.hasOwn(input, 'requestId')) return;
+  const requestId = requestIdOf(input);
+  const current = window;
+  if (!requestId || !current || current.isDestroyed() || event.sender !== current.webContents ||
+      event.senderFrame !== event.sender.mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return;
+  const cancellations = pendingCatalogCommands.get(event.sender.id)?.get(requestId);
+  if (cancellations) {
+    for (const cancellation of cancellations) cancellation.cancellation.abort();
+    await Promise.all([...cancellations].map(cancellation => cancellation.settled));
+  }
+}
+
+function trackCatalogCommand(senderId: number, requestId: string, cancellation: PendingCatalogCommand, add: boolean): void {
+  let senderCommands = pendingCatalogCommands.get(senderId);
+  if (add) {
+    if (!senderCommands) { senderCommands = new Map(); pendingCatalogCommands.set(senderId, senderCommands); }
+    let requests = senderCommands.get(requestId);
+    if (!requests) { requests = new Set(); senderCommands.set(requestId, requests); }
+    requests.add(cancellation);
+    return;
+  }
+  const requests = senderCommands?.get(requestId);
+  requests?.delete(cancellation);
+  if (requests?.size === 0) senderCommands?.delete(requestId);
+  if (senderCommands?.size === 0) pendingCatalogCommands.delete(senderId);
 }
 
 function boot(): void {
@@ -163,14 +199,42 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRUST_EVENT_CHANNEL, event);
   });
-  ipcMain.handle(COMMAND_CHANNEL, (event, input: unknown) => {
+  ipcMain.handle(COMMAND_CHANNEL, async (event, input: unknown) => {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
-    return dispatchCommand({ owned, mainFrame: owned && event.senderFrame === event.sender.mainFrame,
-      url: event.senderFrame?.url ?? '' }, input, {
-      describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
-      noteUserActivity: () => idleLock.noteUserActivity(), terminals, sshTerminals, sessionCatalog
-    }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
+    const cancellation = new AbortController();
+    const cancelIfSenderCloses = () => cancellation.abort();
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    const frameUrl = event.senderFrame?.url ?? '';
+    const parsed = parseRequest(input);
+    const catalogRequest = parsed.ok && parsed.result.command.startsWith('session.') && owned && mainFrame && isAppDocument(frameUrl);
+    const requestId = parsed.ok ? parsed.result.requestId : undefined;
+    const trackedRequestId = catalogRequest && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
+    let completePending!: () => void;
+    const pending: PendingCatalogCommand = {
+      cancellation,
+      settled: new Promise<void>(resolve => { completePending = resolve; }),
+      complete: () => completePending()
+    };
+    if (trackedRequestId) {
+      trackCatalogCommand(event.sender.id, trackedRequestId, pending, true);
+      event.sender.once('destroyed', cancelIfSenderCloses);
+      event.sender.once('render-process-gone', cancelIfSenderCloses);
+    } else if (event.sender.isDestroyed()) cancelIfSenderCloses();
+    try {
+      return await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
+        describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
+        noteUserActivity: () => idleLock.noteUserActivity(), terminals, sshTerminals, sessionCatalog, cancellation: cancellation.signal
+      }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
+    } finally {
+      if (trackedRequestId) {
+        event.sender.removeListener('destroyed', cancelIfSenderCloses);
+        event.sender.removeListener('render-process-gone', cancelIfSenderCloses);
+        trackCatalogCommand(event.sender.id, trackedRequestId, pending, false);
+        pending.complete();
+      }
+    }
   });
+  ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   app.on('window-all-closed', () => app.quit());
@@ -186,6 +250,7 @@ function boot(): void {
   app.on('will-quit', () => {
     powerMonitor.removeListener('lock-screen', lockVaultForSystemEvent);
     powerMonitor.removeListener('suspend', lockVaultForSystemEvent);
+    ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

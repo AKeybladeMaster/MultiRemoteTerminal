@@ -108,3 +108,23 @@ test('pending IPC stays bounded and late completion releases one slot after time
   for (const finish of finishers.slice(1, 256)) finish(valid);
   await Promise.resolve(); await Promise.resolve();
 });
+
+test('saved-session timeout notifies main to cancel the pending catalog operation', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const cancellations: string[] = [];
+  let settleCancellation!: () => void;
+  let didReturn = false;
+  const bridge = createBridge(() => new Promise(() => {}), id, undefined, undefined, requestId => {
+    cancellations.push(requestId);
+    return new Promise<void>(resolve => { settleCancellation = resolve; });
+  });
+  const pending = bridge.createSavedSession({ kind: 'local', name: 'Work shell', shell: 'powershell' });
+  void pending.then(() => { didReturn = true; });
+  context.mock.timers.tick(8_000);
+  assert.deepEqual(cancellations, [id()]);
+  assert.equal(didReturn, false, 'the timeout waits until main has finished cancelling the request');
+  settleCancellation();
+  const reply = await pending;
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'TIMEOUT');
+});

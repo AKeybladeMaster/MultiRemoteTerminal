@@ -55,12 +55,14 @@ test('host-trust reset dispatches only the validated canonical endpoint', async 
 
 test('saved-session IPC dispatches only validated catalog operations', async () => {
   const calls: string[] = [];
+  const forwardedCancellations: unknown[] = [];
+  const cancellation = { aborted: false, addEventListener() {}, removeEventListener() {} };
   const base = actions();
-  const withCatalog: CommandActions = { ...base, sessionCatalog: {
-    async list(query) { calls.push(`list:${query}`); return { ok: true, result: [] }; },
-    async create(draft) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); return { ok: true, result: emptySavedSession }; },
-    async setFavorite(id, favorite) { calls.push(`favorite:${id}:${favorite}`); return { ok: true, result: {} }; },
-    async remove(id) { calls.push(`remove:${id}`); return { ok: true, result: {} }; }
+  const withCatalog: CommandActions = { ...base, cancellation, sessionCatalog: {
+    async list(query, signal) { calls.push(`list:${query}`); forwardedCancellations.push(signal); return { ok: true, result: [] }; },
+    async create(draft, signal) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
+    async setFavorite(id, favorite, signal) { calls.push(`favorite:${id}:${favorite}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
+    async remove(id, signal) { calls.push(`remove:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; }
   } };
   const requestId = request.requestId;
   const replies = await Promise.all([
@@ -74,6 +76,7 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
   ]);
   assert.ok(replies.every(reply => reply.ok));
   assert.deepEqual(calls, ['list:Prod', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`]);
+  assert.deepEqual(forwardedCancellations, Array(4).fill(cancellation));
 });
 
 test('only validated local or SSH terminal open, write and close commands count as user activity', async () => {

@@ -6,6 +6,7 @@ import type { OpenSshTerminalReply, OpenTerminalReply } from '../../../../packag
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
@@ -85,6 +86,7 @@ function Workbench() {
   const [saveSessionOpen, setSaveSessionOpen] = useState(false);
   const [saveSessionName, setSaveSessionName] = useState('');
   const [saveSessionError, setSaveSessionError] = useState<string>();
+  const [uncertainSaveDraft, setUncertainSaveDraft] = useState<SavedSessionDraft>();
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
@@ -111,19 +113,21 @@ function Workbench() {
   const focusTerminalOnActiveChange = useRef(true);
 
   const showTerminalError = useCallback((message: string) => setAlert(message), []);
-  const loadSavedSessions = useCallback(async (search: string) => {
+  const loadSavedSessions = useCallback(async (search: string): Promise<readonly SavedSessionDefinition[] | undefined> => {
     const request = ++savedSessionsRequest.current;
     setSavedSessionsLoading(true);
     try {
       const reply = await window.multiRemoteTerminal.listSavedSessions(search);
-      if (request !== savedSessionsRequest.current) return;
+      if (request !== savedSessionsRequest.current) return undefined;
       if (!reply.ok) {
         setAlert(`Saved sessions could not be loaded (${reply.error.code}).`);
-        return;
+        return undefined;
       }
       setSavedSessions(reply.result);
+      return reply.result;
     } catch {
       if (request === savedSessionsRequest.current) setAlert('Saved sessions could not be loaded.');
+      return undefined;
     } finally {
       if (request === savedSessionsRequest.current) setSavedSessionsLoading(false);
     }
@@ -520,13 +524,15 @@ function Workbench() {
   function beginSaveActiveSession() {
     if (!active) return;
     saveSessionReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSaveSessionName(active.title);
-    setSaveSessionError(undefined);
+    setSaveSessionName(uncertainSaveDraft?.name ?? active.title);
+    setSaveSessionError(uncertainSaveDraft
+      ? 'A previous save has an uncertain result. Check Saved sessions before trying again.'
+      : undefined);
     setSaveSessionOpen(true);
   }
 
   async function saveActiveSession() {
-    if (!active || catalogBusy) return;
+    if (!active || catalogBusy || uncertainSaveDraft) return;
     const draft: SavedSessionDraft = active.transport === 'local'
       ? { kind: 'local', name: saveSessionName, shell: active.shell }
       : { kind: 'ssh', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port };
@@ -535,16 +541,40 @@ function Workbench() {
     try {
       const reply = await window.multiRemoteTerminal.createSavedSession(draft);
       if (!reply.ok) {
-        setSaveSessionError(reply.error.code === 'BUSY' ? 'Storage is busy. Try saving again.' : `The session could not be saved (${reply.error.code}).`);
+        if (reply.error.code === 'BUSY') setSaveSessionError('Storage is busy. Try saving again.');
+        else if (reply.error.code === 'TIMEOUT' || reply.error.code === 'CANCELLED' || reply.error.code === 'UNAVAILABLE') {
+          setUncertainSaveDraft(normalizeSavedSessionDraft(draft));
+          setSaveSessionError('Saving could not be confirmed. Check Saved sessions before trying again.');
+        } else setSaveSessionError(`The session could not be saved (${reply.error.code}).`);
         return;
       }
       setSaveSessionOpen(false);
       await loadSavedSessions(savedSearch);
     } catch {
-      setSaveSessionError('The session could not be saved.');
+      setUncertainSaveDraft(normalizeSavedSessionDraft(draft));
+      setSaveSessionError('Saving could not be confirmed. Check Saved sessions before trying again.');
     } finally {
       setCatalogBusy(false);
     }
+  }
+
+  async function checkUncertainSavedSession() {
+    if (!uncertainSaveDraft || catalogBusy) return;
+    const draft = normalizeSavedSessionDraft(uncertainSaveDraft);
+    if (!draft) return;
+    const search = draft.name;
+    const definitions = await loadSavedSessions(search);
+    if (!definitions) return;
+    setSavedSearch(search);
+    setUncertainSaveDraft(undefined);
+    const alreadySaved = definitions.some(definition => {
+      if (definition.kind !== draft.kind || definition.name !== draft.name) return false;
+      if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell;
+      return definition.kind === 'ssh' && definition.host === draft.host && definition.port === draft.port;
+    });
+    setAlert(alreadySaved
+      ? 'This session is already saved. Open it from Saved sessions instead of saving it again.'
+      : 'No matching saved session was found. You can try saving again.');
   }
 
   async function toggleSavedFavorite(session: SavedSessionDefinition) {
@@ -633,7 +663,7 @@ function Workbench() {
                   {session.kind === 'ssh' ? 'SSH' : session.shell === 'powershell' ? 'PS' : 'CMD'}
                 </span>
                 <span className="saved-session-name" translate="no">{session.name}</span>
-                <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : `${session.host}:${session.port}`}</span>
+                <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : sshEndpointLabel(session.host, session.port)}</span>
               </button>
               <div className="saved-session-actions">
                 <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
@@ -748,16 +778,24 @@ function Workbench() {
     {saveSessionOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !catalogBusy) setSaveSessionOpen(false); }}>
       <section ref={saveSessionDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
         aria-labelledby="save-session-heading" aria-describedby="save-session-description">
-        <h2 id="save-session-heading">Save active session</h2>
-        <p id="save-session-description">Save the shell or SSH endpoint so you can open it again later. Credentials and terminal history are never saved.</p>
+        <h2 id="save-session-heading">{uncertainSaveDraft ? 'Check save status' : 'Save active session'}</h2>
+        <p id="save-session-description">{uncertainSaveDraft
+          ? 'The previous save may have completed. Check the saved-session list before retrying.'
+          : 'Save the shell or SSH endpoint so you can open it again later. Credentials and terminal history are never saved.'}</p>
         <form onSubmit={event => { event.preventDefault(); void saveActiveSession(); }}>
           <label htmlFor="saved-session-name">Session name</label>
           <input ref={saveSessionNameInput} id="saved-session-name" name="name" type="text" autoComplete="off" maxLength={256}
+            disabled={Boolean(uncertainSaveDraft)}
             required value={saveSessionName} onChange={event => setSaveSessionName(event.target.value)} />
           {saveSessionError && <p className="dialog-error" role="alert">{saveSessionError}</p>}
           <div className="ssh-connect-actions">
-            <button type="button" disabled={catalogBusy} onClick={() => setSaveSessionOpen(false)}>Cancel</button>
-            <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving...' : 'Save session'}</button>
+            <button type="button" disabled={catalogBusy} onClick={() => setSaveSessionOpen(false)}>{uncertainSaveDraft ? 'Close' : 'Cancel'}</button>
+            {uncertainSaveDraft
+              ? <button type="button" className="ssh-primary" disabled={catalogBusy} onClick={() => {
+                void checkUncertainSavedSession();
+                setSaveSessionOpen(false);
+              }}>Check saved sessions</button>
+              : <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving...' : 'Save session'}</button>}
           </div>
         </form>
       </section>

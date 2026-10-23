@@ -2,6 +2,7 @@ import { canonicalizeSshHostEndpoint, isHostKeyEvidence } from '../../../../pack
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
+import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -36,6 +37,14 @@ export type StorageWorkerMessage =
   | { readonly version: 1; readonly type: 'startup-error'; readonly errorCode: StorageWorkerErrorCode }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: StorageWorkerResult }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: StorageWorkerErrorCode };
+
+export function storageWorkerErrorCode(error: unknown): StorageWorkerErrorCode {
+  if (error instanceof StorageOperationError) {
+    if (error.kind === 'busy') return 'BUSY';
+    if (error.kind === 'corrupt') return 'CORRUPT';
+  }
+  return 'UNAVAILABLE';
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

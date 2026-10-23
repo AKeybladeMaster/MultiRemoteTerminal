@@ -4,6 +4,7 @@ import type { UtilityProcess } from 'electron';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
 import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
+import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import { normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
@@ -96,34 +97,34 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
     return result.value;
   }
 
-  async listSessions(query: string): Promise<readonly SavedSessionDefinition[]> {
+  async listSessions(query: string, cancellation?: CancellationSignal): Promise<readonly SavedSessionDefinition[]> {
     const normalized = normalizeSessionSearch(query);
     if (normalized === undefined) throw new HostTrustStoreError('unavailable');
-    await this.ensureMigrated();
-    const result = await this.worker.request({ command: 'session.list', query: normalized });
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.list', query: normalized }, cancellation);
     if (result.kind !== 'sessions') throw new HostTrustStoreError('corrupt');
     return result.value;
   }
 
-  async createSession(input: SavedSessionDraft): Promise<SavedSessionDefinition> {
+  async createSession(input: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition> {
     const draft = normalizeSavedSessionDraft(input);
     if (!draft) throw new HostTrustStoreError('unavailable');
-    await this.ensureMigrated();
-    const result = await this.worker.request({ command: 'session.create', draft });
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.create', draft }, cancellation);
     if (result.kind !== 'session') throw new HostTrustStoreError('corrupt');
     return result.value;
   }
 
-  async setFavorite(id: string, favorite: boolean): Promise<boolean> {
-    await this.ensureMigrated();
-    const result = await this.worker.request({ command: 'session.favorite', id, favorite });
+  async setFavorite(id: string, favorite: boolean, cancellation?: CancellationSignal): Promise<boolean> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.favorite', id, favorite }, cancellation);
     if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
     return result.value;
   }
 
-  async removeSession(id: string): Promise<boolean> {
-    await this.ensureMigrated();
-    const result = await this.worker.request({ command: 'session.remove', id });
+  async removeSession(id: string, cancellation?: CancellationSignal): Promise<boolean> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.remove', id }, cancellation);
     if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
     return result.value;
   }

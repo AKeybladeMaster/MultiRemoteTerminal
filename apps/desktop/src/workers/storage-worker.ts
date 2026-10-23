@@ -4,7 +4,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import { SqliteHostTrustRepository, toHostTrustStoreError } from '../adapters/sqlite-host-trust-repository.ts';
 import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catalog-repository.ts';
-import { parseStorageWorkerRequest, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
+import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
 if (!parent) throw new Error('Storage worker requires an Electron utility process');
@@ -35,11 +35,6 @@ try {
 
 function send(value: unknown): void {
   try { parent.postMessage(value); } catch { /* The main process owns worker teardown. */ }
-}
-
-function errorCode(error: unknown): 'BUSY' | 'CORRUPT' | 'UNAVAILABLE' {
-  if (error instanceof HostTrustStoreError) return error.kind.toUpperCase() as 'BUSY' | 'CORRUPT' | 'UNAVAILABLE';
-  return 'UNAVAILABLE';
 }
 
 let closed = false;
@@ -79,7 +74,7 @@ parent.on('message', async event => {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true, result: { kind: 'shutdown' } });
     }
   } catch (error) {
-    send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: false, errorCode: errorCode(error) });
+    send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: false, errorCode: storageWorkerErrorCode(error) });
   }
 });
 

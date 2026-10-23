@@ -9,10 +9,12 @@ import type { SshTrustEvent } from '../../../../packages/application/src/ssh-ter
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
+type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 
-export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {}): DesktopBridge {
+export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {},
+  cancelCatalogRequest: CancelCatalogRequest = () => {}): DesktopBridge {
   let inFlight = 0;
   const pendingWriteChars = new Map<string, number>();
 
@@ -30,7 +32,15 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       });
     try {
       return Promise.race([received, new Promise<CommandReply<T>>(resolve => {
-        timer = setTimeout(() => resolve({ requestId, ...failure('TIMEOUT') }), timeoutMs);
+        timer = setTimeout(() => {
+          if (request.command.startsWith('session.')) {
+            const reportTimeout = () => resolve({ requestId, ...failure('TIMEOUT') });
+            try { void Promise.resolve(cancelCatalogRequest(requestId)).then(reportTimeout, reportTimeout); }
+            catch { reportTimeout(); }
+          } else {
+            resolve({ requestId, ...failure('TIMEOUT') });
+          }
+        }, timeoutMs);
       })]);
     } finally {
       // The underlying invocation owns its slot until it settles, even after this bounded wait times out.
