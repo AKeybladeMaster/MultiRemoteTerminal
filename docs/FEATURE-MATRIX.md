@@ -5,7 +5,7 @@
 This is **requirements coverage**, not an assertion of implemented code. Each feature begins `PLANNED`. Change the status only with a Windows build and linked acceptance evidence.
 
 **Phases:** `MVP` (first independently usable release), `Next` (subsequent development), `Parity` (full-feature verification).  
-**Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. P-01 is VERIFIED from Windows acceptance evidence; all other entries remain PLANNED.
+**Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. P-01 is VERIFIED from Windows acceptance evidence. P-13 is PARTIAL: Windows E2E covers explicit save, search, favorites, reopen and folder grouping, but the automatic save preference is not implemented. See [WP-03B catalog evidence](results/WP-03B-catalog-2026-10-23.md) and [WP-03C folder evidence](results/WP-03C-folders-2026-10-23.md). Other entries remain PLANNED.
 
 WP-00 foundation has separate [Windows acceptance evidence](results/WP-00-2026-10-23.md).
 It validates the shell and IPC security controls only; it completes none of the full workflows below.
@@ -25,7 +25,7 @@ WP-01 verifies P-01's ten-tab local-terminal workflow in [Windows acceptance evi
 | P-10 | FTP sessions | Opt-in FTP provider | Next | Actual list/download/upload; plaintext warning |
 | P-11 | Standalone SFTP sessions | SSH/SFTP adapter | MVP | Standalone session with remote browser |
 | P-12 | Serial/COM sessions | Windows serial adapter | Next | Port list, baud, parity, flow control, hot-unplug |
-| P-13 | Auto-saved sessions sidebar | Catalog and recently-used UI | MVP | Reopen from sidebar, favorites and groups |
+| P-13 | Auto-saved sessions sidebar (PARTIAL) | Catalog and recently-used UI | MVP | Windows E2E verifies explicit save, search, reopen, favorites and folder groups; automatic save preference remains pending. See WP-03B/WP-03C evidence. |
 | P-14 | Graphical automatic SFTP browser | SFTP module + sidebar | MVP | Open after SSH if server supports SFTP; clear fallback when not |
 | P-15 | File drag & drop | Transfer job module | MVP | Upload and download with overwrite/cancel/error |
 | P-16 | X11 server | Capability-checked local licensed X server provider | Parity | Remote X client displayed, lifecycle supervised |
