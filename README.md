@@ -2,7 +2,7 @@
 
 An independent Windows remote terminal workbench, developed incrementally on `dev-1`.
 
-**Current state: WP-03B partial saved-session catalog.** Windows local terminals, SQLite-backed host-trust migration, and basic local/SSH saved-session metadata operations have Windows end-to-end coverage. The catalog supports explicit save, search, favorites, reopen and delete, and stores no credentials or terminal history. Full folder management and the remaining catalog acceptance work are still pending. SSH acceptance remains pending until a real disposable OpenSSH handshake is verified. There is no installable or portable `.exe` package yet.
+**Current state: WP-03C saved-session folders (partial acceptance).** Windows E2E covers explicit local save, search, favorites, reopen/delete, nested folder create/rename/move/delete, safe child promotion and persistence across restart. Saved definitions contain no credentials or terminal history. F-004 remains planned until the full 1,000-definition workflow passes end-to-end; P-13 is partial because automatic saving through a user preference is not implemented. Saved SSH reconnect still needs a disposable OpenSSH test. There is no installable or portable `.exe` package yet.
 
 ## Run the development preview
 
@@ -30,14 +30,14 @@ npm exec --yes --package=pnpm@12.15.0 -- pnpm dependencies:inventory
 
 - [Start here](docs/CODEX-START-HERE.md), [mandatory rules](AGENTS.md), [canonical specification](docs/SPEC-001-MultiRemoteTerminal.md)
 - [Architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [feature matrix](docs/FEATURE-MATRIX.md), [implementation plan](docs/IMPLEMENTATION-PLAN.md)
-- [WP-00 interfaces](docs/WP-00-CONTRACTS.md), [WP-00 results](docs/results/WP-00-2026-10-23.md), [WP-01 results](docs/results/WP-01-2026-10-23.md), [WP-02 SSH results](docs/results/WP-02-ssh-2026-10-23.md), [WP-03A storage results](docs/results/WP-03-storage-2026-10-23.md), [WP-03B catalog results](docs/results/WP-03B-catalog-2026-10-23.md)
+- [WP-00 interfaces](docs/WP-00-CONTRACTS.md), [WP-00 results](docs/results/WP-00-2026-10-23.md), [WP-01 results](docs/results/WP-01-2026-10-23.md), [WP-02 SSH results](docs/results/WP-02-ssh-2026-10-23.md), [WP-03A storage results](docs/results/WP-03-storage-2026-10-23.md), [WP-03B catalog results](docs/results/WP-03B-catalog-2026-10-23.md), [WP-03C folder results](docs/results/WP-03C-folders-2026-10-23.md)
 - [Dependency decisions](docs/dependencies/)
 
 Domain and application code have no Electron, Node, React, storage or protocol imports. The renderer communicates through typed, validated preload commands; credentials and protocol/storage adapters stay in privileged processes or supervised workers. Main validates window ownership and contracts, and serves only immutable application assets.
 
 ## Development and promotion
 
-`main` is the default branch. Work is prepared on `dev-1` and reviewed before promotion. An MVP release requires complete MVP behavior, Windows smoke/E2E and installer/portable tests, security review, and a signing/verified packaging decision. The current preview does not satisfy that release gate. Next: complete folder CRUD, catalog recovery/import-export acceptance, and remaining WP-03 settings work.
+`main` is the default branch. Work is prepared on `dev-1` and reviewed before promotion. An MVP release requires complete MVP behavior, Windows smoke/E2E and installer/portable tests, security review, and a signing/verified packaging decision. The current preview does not satisfy that release gate. Next: verify full 1,000-definition acceptance, complete auto-save/settings and import/export behavior, and test saved SSH reconnect against OpenSSH.
 
 ## Independence
 
