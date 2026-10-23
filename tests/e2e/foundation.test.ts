@@ -251,6 +251,47 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
   }
 });
 
+test('a timed-out saved-session write must be checked before retrying, even after dialog dismissal', async () => {
+  test.setTimeout(30_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-session-timeout-e2e-'));
+  const app = await electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-delay-first-session-create-reply'],
+    env: electronEnvironment()
+  });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible({ timeout: 15_000 });
+    const saveButton = page.getByRole('button', { name: 'Save active session', exact: true });
+    await saveButton.click();
+    let dialog = page.getByRole('dialog', { name: 'Save active session' });
+    await dialog.getByLabel('Session name').fill('Timed save reconciliation');
+    await dialog.getByRole('button', { name: 'Save session', exact: true }).click();
+
+    dialog = page.getByRole('dialog', { name: 'Check save status' });
+    await expect(dialog).toBeVisible({ timeout: 15_000 });
+    await expect(dialog.getByRole('alert')).toHaveText('Saving could not be confirmed. Check Saved sessions before trying again.');
+    await expect(dialog.getByLabel('Session name')).toBeDisabled();
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+
+    await saveButton.click();
+    dialog = page.getByRole('dialog', { name: 'Check save status' });
+    await expect(dialog).toBeVisible();
+    const checkButton = dialog.getByRole('button', { name: 'Check saved sessions', exact: true });
+    await expect(checkButton).toBeFocused();
+    await expect(dialog.getByRole('button', { name: 'Save session', exact: true })).toHaveCount(0);
+    await checkButton.click();
+
+    await expect(page.locator('.alert-strip > span')).toHaveText('This session is already saved. Open it from Saved sessions instead of saving it again.');
+    await expect(page.getByRole('button', { name: 'Open Timed save reconciliation', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Delete saved session Timed save reconciliation', exact: true })).toHaveCount(1);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SQLite storage worker migrates host trust and shuts down inside Electron', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-storage-worker-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });

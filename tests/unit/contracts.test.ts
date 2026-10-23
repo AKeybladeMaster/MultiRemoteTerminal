@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isDescribeReply, isSshTrustEvent, parseRequest } from '../../packages/contracts/src/commands.ts';
+import { APP_URL, isDescribeReply, isSshTrustEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -31,6 +31,21 @@ test('unknown commands never become privileged capabilities', () => {
   for (const command of ['runtime.open', 'fs.readFile', '__proto__', 'constructor', 'mrt:admin']) {
     assert.deepEqual(parseRequest({ ...request, command }), { ok: false, error: { code: 'UNKNOWN_COMMAND', target: 'application', retryable: false } });
   }
+});
+
+test('catalog cancellation accepts an exact request only from the owning app main frame', () => {
+  const cancellation = { requestId: request.requestId };
+  const context = { ownerWindow: true, mainFrame: true, url: APP_URL };
+  assert.equal(parseCatalogCancellationRequest(cancellation, context), request.requestId);
+  for (const input of [null, {}, { ...cancellation, extra: true }, { requestId: '../secret' }]) {
+    assert.equal(parseCatalogCancellationRequest(input, context), undefined);
+  }
+  for (const rejectedContext of [
+    { ...context, ownerWindow: false },
+    { ...context, mainFrame: false },
+    { ...context, url: 'https://example.com/' },
+    { ...context, url: 'mrt://app/other.html' }
+  ]) assert.equal(parseCatalogCancellationRequest(cancellation, rejectedContext), undefined);
 });
 
 test('validates reply identity, shape and length; rejects secret-bearing replies', () => {

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
+import { failure } from '../../../../packages/domain/src/errors.ts';
 import { describeWorkbench } from '../../../../packages/application/src/workbench.ts';
 import { createLocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
@@ -11,7 +12,7 @@ import type { HostTrustRuntime } from '../../../../packages/application/src/host
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, isAppDocument, parseRequest, requestIdOf,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, isAppDocument, parseCatalogCancellationRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -91,12 +92,13 @@ function focusWindow(): void {
 }
 
 async function cancelCatalogCommand(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<void> {
-  if (typeof input !== 'object' || input === null || Array.isArray(input) || Object.keys(input).length !== 1 ||
-      !Object.hasOwn(input, 'requestId')) return;
-  const requestId = requestIdOf(input);
   const current = window;
-  if (!requestId || !current || current.isDestroyed() || event.sender !== current.webContents ||
-      event.senderFrame !== event.sender.mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return;
+  const requestId = parseCatalogCancellationRequest(input, {
+    ownerWindow: Boolean(current && !current.isDestroyed() && event.sender === current.webContents),
+    mainFrame: event.senderFrame === event.sender.mainFrame,
+    url: event.senderFrame?.url ?? ''
+  });
+  if (!requestId) return;
   const cancellations = pendingCatalogCommands.get(event.sender.id)?.get(requestId);
   if (cancellations) {
     for (const cancellation of cancellations) cancellation.cancellation.abort();
@@ -130,6 +132,7 @@ function boot(): void {
   void credentialVault.initialize().catch(() => undefined);
 
   let delayFirstOpenReply = process.argv.includes('--mrt-e2e-delay-first-terminal-open');
+  let delayFirstSessionCreateReply = process.argv.includes('--mrt-e2e-delay-first-session-create-reply');
   const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
     if (!delayFirstOpenReply) return;
     delayFirstOpenReply = false;
@@ -221,10 +224,18 @@ function boot(): void {
       event.sender.once('render-process-gone', cancelIfSenderCloses);
     } else if (event.sender.isDestroyed()) cancelIfSenderCloses();
     try {
-      return await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
+      const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
         noteUserActivity: () => idleLock.noteUserActivity(), terminals, sshTerminals, sessionCatalog, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
+      if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
+        delayFirstSessionCreateReply = false;
+        if (!cancellation.signal.aborted) {
+          await new Promise<void>(resolveOnCancel => cancellation.signal.addEventListener('abort', () => resolveOnCancel(), { once: true }));
+        }
+        return { requestId: parsed.result.requestId, ...failure('CANCELLED') };
+      }
+      return reply;
     } finally {
       if (trackedRequestId) {
         event.sender.removeListener('destroyed', cancelIfSenderCloses);

@@ -102,6 +102,7 @@ function Workbench() {
   const sshConnectReturnFocus = useRef<HTMLElement | null>(null);
   const saveSessionDialog = useRef<HTMLElement>(null);
   const saveSessionNameInput = useRef<HTMLInputElement>(null);
+  const checkSavedSessionsButton = useRef<HTMLButtonElement>(null);
   const saveSessionReturnFocus = useRef<HTMLElement | null>(null);
   const sshTrustDialog = useRef<HTMLElement>(null);
   const rejectSshHostButton = useRef<HTMLButtonElement>(null);
@@ -473,13 +474,17 @@ function Workbench() {
   }, [sshConnectOpen]);
 
   useEffect(() => {
-    if (saveSessionOpen) requestAnimationFrame(() => saveSessionNameInput.current?.focus());
-    else if (saveSessionReturnFocus.current) {
+    if (saveSessionOpen) {
+      if (!catalogBusy) requestAnimationFrame(() => {
+        if (uncertainSaveDraft) checkSavedSessionsButton.current?.focus();
+        else saveSessionNameInput.current?.focus();
+      });
+    } else if (!catalogBusy && saveSessionReturnFocus.current) {
       const target = saveSessionReturnFocus.current;
       saveSessionReturnFocus.current = null;
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
     }
-  }, [saveSessionOpen]);
+  }, [catalogBusy, saveSessionOpen, uncertainSaveDraft]);
 
   useEffect(() => {
     const current = sshTrustEvents[0];
@@ -791,7 +796,7 @@ function Workbench() {
           <div className="ssh-connect-actions">
             <button type="button" disabled={catalogBusy} onClick={() => setSaveSessionOpen(false)}>{uncertainSaveDraft ? 'Close' : 'Cancel'}</button>
             {uncertainSaveDraft
-              ? <button type="button" className="ssh-primary" disabled={catalogBusy} onClick={() => {
+              ? <button ref={checkSavedSessionsButton} type="button" className="ssh-primary" disabled={catalogBusy} onClick={() => {
                 void checkUncertainSavedSession();
                 setSaveSessionOpen(false);
               }}>Check saved sessions</button>

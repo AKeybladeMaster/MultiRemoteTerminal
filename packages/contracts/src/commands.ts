@@ -24,6 +24,16 @@ export function isAppDocument(value: string): boolean {
   } catch { return false; }
 }
 
+export function parseCatalogCancellationRequest(value: unknown, context: {
+  readonly ownerWindow: boolean;
+  readonly mainFrame: boolean;
+  readonly url: string;
+}): string | undefined {
+  if (!context.ownerWindow || !context.mainFrame || !isAppDocument(context.url) || !record(value) || !exactKeys(value, ['requestId'])) return undefined;
+  const requestId = requestIdOf(value);
+  return requestId || undefined;
+}
+
 interface Request<C extends string, P extends Record<string, unknown>> {
   readonly command: C;
   readonly requestId: string;
