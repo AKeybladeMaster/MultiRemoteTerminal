@@ -51,9 +51,11 @@ Implementation checkpoint (2026-10-23): WP-01's P-01 workflow passed on Windows 
 
 **Requires:** WP-00/01.  
 **Deliver:** ssh2-backed remote terminal, host verification, password/key/agent paths, vault and optional master password, status/error/reconnect UI.  
-**Tests:** disposable OpenSSH fixture, fingerprint mismatch, unknown-host approve/reject, wrong password, cancellation, lock/restart.  
+**Tests:** disposable OpenSSH fixture, fingerprint mismatch, unknown-host approve/reject, wrong password, cancellation, native secret-entry isolation, idle/OS-triggered lock and restart, same-account reinstall/restore and cross-account fail-closed behavior.
 **Skills:** codebase-design, diagnosing-bugs on failures, code-review.  
 **Gate:** zero plaintext secrets in DB, logs and renderer IPC.
+
+Dependency review: [WP-02 dependency decision](dependencies/WP-02.md). Interim host-identity and credential persistence before the WP-03 SQLite catalog is specified in [ADR-0003](adr/ADR-0003-wp02-interim-identity-storage.md). WP-02 includes OS-protected default storage, a main-process-only Windows native secret prompt, and optional master-password lock/unlock; P-03/F-003 stays unverified until the Windows OpenSSH fixture tests pass.
 
 ### WP-03 — Persisted sessions and settings
 

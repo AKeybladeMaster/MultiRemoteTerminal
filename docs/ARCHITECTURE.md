@@ -25,6 +25,7 @@ flowchart TB
     MAIN["Main: validate sender + request\nroute + vault broker + window"]
     STORE["Storage utility worker\nSQLite migrations/repositories"]
     NET["Network utility worker\nSSH/SFTP/tunnel providers"]
+    KDF["Short-lived vault KDF utility process\nbounded Argon2id derivation"]
     PTY["PTY utility worker\nConPTY sessions and process lifecycle"]
     EXT["External-provider supervisor\nRDP/VNC/X server/tools"]
   end
@@ -32,6 +33,7 @@ flowchart TB
   PRE <-->|"validated request/reply + events"| MAIN
   MAIN <-->|"internal messages"| STORE
   MAIN <-->|"internal messages"| NET
+  MAIN <-->|"one-shot derivation only"| KDF
   MAIN <-->|"internal messages"| PTY
   MAIN --> EXT
   STORE --> DB[("User-profile SQLite")]
@@ -63,6 +65,7 @@ flowchart TD
 - **Adapters** translate protocols and storage details; tested against port-level contract suites.
 - **Presentation** owns layout, focus, accessibility, transient UI state. It does not know SQLite or ssh2 types.
 - **Composition roots** construct concrete dependencies and negotiate availability of optional providers.
+- The main process remains responsive while the synchronous Argon2id operation runs in a dedicated short-lived utility process. The process returns a derived key only to main, and never handles SSH connections or renderer requests.
 
 Avoid a giant `SessionManager` with switch statements for each protocol. Use **capability discovery** and independent adapters while sharing lifecycle/use-case primitives.
 
@@ -183,6 +186,7 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 
 - Default mode: OS-backed encryption through Electron `safeStorage` **async API where supported**, with encrypted blobs stored separately from session definitions. Windows DPAPI is user-context protection, *not* isolation from malware running as the same Windows user.
 - Optional master password: Argon2id-derived key, random per-vault salt and authenticated encryption (AES-256-GCM or vetted equivalent); encrypted envelopes carry format and KDF parameter versions; rate-limit unlock attempts locally and wipe references as practicable.
+- Obtain passwords, passphrases and master passwords only through an explicit main-process request to the Windows native credential prompt. Resolve the PowerShell executable from Win32 `GetSystemDirectoryW`, not inherited environment variables. The renderer sends no secret and receives no secret; the one-shot helper returns to main over a private process pipe. Keep private-key selection and file reads in main.
 - Avoid a home-grown cryptographic design. Select a maintained vetted library, threat-model migrations and test locked/corrupted vault behavior before enabling feature.
 - Prevent plaintext logs, crash reports and clipboard leaks. Do not store secrets inside the session JSON/options or repository fixtures.
 - Credentials are passed to a provider at operation time only, never exposed to the renderer.

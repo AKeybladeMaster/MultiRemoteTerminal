@@ -10,7 +10,7 @@
 | Command injection | Untrusted host/path interpolated into shell | Structured provider args and APIs, `spawn` without shell, no command concatenation | Host/path with quotes and metacharacters has no side effect |
 | MITM via host key | New/changed SSH host silently accepted | Strict trust-on-first-use approval with fingerprint; changed keys BLOCK, explicit trust reset | Fixture replaces key; connection stopped |
 | Vault disclosure | Secrets in SQLite/logs/UI | Vault encryption, reference IDs, no renderer secret reads, redacted structured logs | Scan DB/logs; review IPC traces |
-| Misleading vault guarantee | Same-user attacker decrypts DPAPI | Explain limits, master-password option, lock and auto-lock | UI documentation + corruption recovery |
+| Misleading vault guarantee | Same-user attacker decrypts DPAPI | Explain limits, master-password option, lock and auto-lock | UI documentation + corruption fail-closed and explicit reset |
 | X11 exposure | X server accepts unauthenticated remote clients | Local-only X listener, MIT-MAGIC-COOKIE when supported, disable TCP by default, no `-ac` | Unauthorized connection denied |
 | Unrestricted tunnel | Forwarded listener exposed to LAN | Bind loopback by default, explicit nonlocal bind opt-in; warn for reverse/dynamic | Default socket binds 127.0.0.1; no 0.0.0.0 |
 | Legacy insecure protocols | Plaintext passwords over FTP/Telnet/Rlogin | Disabled by default, warning and local user action before use | Confirmation and transport label |
@@ -44,7 +44,7 @@
 
 ## Master-password threat model
 
-OS-protected storage on Windows is encrypted using a user-context mechanism; same-user malware can often access it. Optional master-password mode must add an independently derived encryption key using vetted Argon2id + authenticated encryption, versioned KDF settings, clear lock semantics, failure handling and recovery policy. No password recovery claim without recovery-key design. Application should not transmit master passwords outside local cryptographic path. Test persistence across reinstall, OS account changes and data restore.
+OS-protected storage on Windows is encrypted using a user-context mechanism; same-user malware can often access it. Optional master-password mode must add an independently derived encryption key using vetted Argon2id + authenticated encryption, versioned KDF settings, clear lock semantics, failure handling and recovery policy. WP-02 provides no password recovery or escrow: loss requires an explicit vault reset and re-entry of credentials. Application should not transmit master passwords outside local cryptographic path. Test persistence across reinstall, OS account changes and data restore. For WP-02, both vault modes lock after 15 minutes without a validated user-initiated app command and immediately on Windows session lock or suspend; already authenticated SSH transports may stay connected after credentials have been discarded. See [ADR-0003](adr/ADR-0003-wp02-interim-identity-storage.md).
 
 **Caveat from Electron docs:** `safeStorage` synchronous API is deprecated in current docs; use async variant when supported by the selected pinned release. Confirm this API at implementation time, not by guessing Electron version.
 
