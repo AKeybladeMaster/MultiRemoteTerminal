@@ -2,19 +2,20 @@ import type { Outcome } from '../../domain/src/errors.ts';
 import { failure } from '../../domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint, hostEndpointKey, isHostKeyEvidence, sameHostKey } from '../../domain/src/host-trust.ts';
 import type { HostKeyEvidence, SshHostEndpoint, TrustedHostKey } from '../../domain/src/host-trust.ts';
+import type { CredentialPromptCancellation } from './credential-prompt.ts';
 
 export type HostTrustInsertResult = 'inserted' | 'matched' | 'changed';
 
 export interface HostTrustStore {
-  find(endpoint: SshHostEndpoint): Promise<TrustedHostKey | undefined>;
-  trustIfAbsent(identity: TrustedHostKey): Promise<HostTrustInsertResult>;
-  remove(endpoint: SshHostEndpoint): Promise<boolean>;
+  find(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<TrustedHostKey | undefined>;
+  trustIfAbsent(identity: TrustedHostKey, cancellation?: CredentialPromptCancellation): Promise<HostTrustInsertResult>;
+  remove(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<boolean>;
 }
 
 export class HostTrustStoreError extends Error {
-  readonly kind: 'busy' | 'corrupt' | 'unavailable';
+  readonly kind: 'busy' | 'cancelled' | 'corrupt' | 'unavailable';
 
-  constructor(kind: 'busy' | 'corrupt' | 'unavailable') {
+  constructor(kind: 'busy' | 'cancelled' | 'corrupt' | 'unavailable') {
     super(`Host trust store ${kind}`);
     this.name = 'HostTrustStoreError';
     this.kind = kind;
@@ -46,7 +47,7 @@ export type HostTrustDecision =
   | { readonly kind: 'rejected' };
 
 export interface HostTrustManager {
-  inspect(endpoint: unknown, evidence: unknown): Promise<Outcome<HostTrustDecision>>;
+  inspect(endpoint: unknown, evidence: unknown, cancellation?: CredentialPromptCancellation): Promise<Outcome<HostTrustDecision>>;
   waitForResolution(token: unknown): Promise<HostTrustResolution>;
   approve(token: unknown): Promise<Outcome<HostTrustDecision>>;
   reject(token: unknown): Outcome<HostTrustDecision>;
@@ -125,6 +126,7 @@ export function createHostTrustManager(store: HostTrustStore, runtime: HostTrust
   }
 
   function mapStoreFailure(error: unknown): ReturnType<typeof failure> {
+    if (error instanceof HostTrustStoreError && error.kind === 'cancelled') return failure('CANCELLED');
     return failure(error instanceof HostTrustStoreError && error.kind === 'busy' ? 'BUSY' : 'UNAVAILABLE');
   }
 
@@ -133,14 +135,14 @@ export function createHostTrustManager(store: HostTrustStore, runtime: HostTrust
   }
 
   return Object.freeze({
-    async inspect(endpointInput: unknown, evidenceInput: unknown): Promise<Outcome<HostTrustDecision>> {
-      if (disposed) return failure('CANCELLED');
+    async inspect(endpointInput: unknown, evidenceInput: unknown, cancellation?: CredentialPromptCancellation): Promise<Outcome<HostTrustDecision>> {
+      if (disposed || cancellation?.aborted) return failure('CANCELLED');
       const endpoint = canonicalizeSshHostEndpoint(endpointInput);
       if (!endpoint || !isHostKeyEvidence(evidenceInput)) return failure('INVALID_REQUEST');
       const evidence: HostKeyEvidence = { algorithm: evidenceInput.algorithm, fingerprint: evidenceInput.fingerprint, publicKey: Uint8Array.from(evidenceInput.publicKey) };
       try {
-        const current = await store.find(endpoint);
-        if (disposed) return failure('CANCELLED');
+        const current = await store.find(endpoint, cancellation);
+        if (disposed || cancellation?.aborted) return failure('CANCELLED');
         if (current) {
           const matches = sameHostKey(current, evidence);
           removeEndpointPending(endpoint, item => sameHostKey(current, item.identity) ? 'approved' : 'changed');

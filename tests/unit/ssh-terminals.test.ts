@@ -27,13 +27,29 @@ function hostKey(): Uint8Array {
 
 class FakeTrust implements HostTrustManager {
   readonly revoked: SshHostEndpoint[] = [];
+  cancellationLookup = false;
+  inspectionStarted: (() => void) | undefined;
+  inspectionCancellation: CredentialPromptCancellation | undefined;
   decision: HostTrustDecision = { kind: 'approval-required', challenge: {
     token: 'ssh-host-approval-token-0001', host: 'server.example.net', port: 22,
     algorithm: evidence.algorithm, fingerprint: evidence.fingerprint
   } };
   private readonly resolvers = new Map<string, (value: HostTrustResolution) => void>();
 
-  async inspect(endpoint: unknown, evidence: unknown) { void endpoint; void evidence; return { ok: true as const, result: this.decision }; }
+  async inspect(endpoint: unknown, evidence: unknown, cancellation?: CredentialPromptCancellation) {
+    void endpoint;
+    void evidence;
+    this.inspectionCancellation = cancellation;
+    this.inspectionStarted?.();
+    if (this.cancellationLookup) {
+      return new Promise<Awaited<ReturnType<HostTrustManager['inspect']>>>(resolve => {
+        const cancelled = () => resolve({ ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false } });
+        if (cancellation?.aborted) cancelled();
+        else cancellation?.addEventListener('abort', cancelled, { once: true });
+      });
+    }
+    return { ok: true as const, result: this.decision };
+  }
   waitForResolution(token: unknown): Promise<HostTrustResolution> {
     if (typeof token !== 'string') return Promise.resolve('not-found');
     return new Promise(resolve => this.resolvers.set(token, resolve));
@@ -114,6 +130,24 @@ test('closing during native credential entry cancels the helper and never starts
   assert.equal((await controller.close(sessionId)).ok, true);
   assert.equal((await pending).ok, false);
   assert.equal(provider.opened.length, 0);
+  assert.deepEqual(provider.closed, [sessionId]);
+  await controller.dispose();
+});
+
+test('closing during a host-trust lookup cancels the storage operation', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.cancellationLookup = true;
+  let signalInspectionStarted!: () => void;
+  const inspectionStarted = new Promise<void>(resolve => { signalInspectionStarted = resolve; });
+  trust.inspectionStarted = signalInspectionStarted;
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary-secret' }), trust);
+  const pending = controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 });
+  await inspectionStarted;
+  assert.ok(trust.inspectionCancellation);
+  assert.equal((await controller.close(sessionId)).ok, true);
+  assert.equal((await pending).ok, false);
+  assert.equal(trust.inspectionCancellation?.aborted, true);
   assert.deepEqual(provider.closed, [sessionId]);
   await controller.dispose();
 });

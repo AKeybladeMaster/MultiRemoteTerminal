@@ -15,7 +15,7 @@ import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
-import { HostTrustJsonStore } from '../adapters/host-trust-json-store.ts';
+import { SqliteHostTrustStore } from '../adapters/sqlite-host-trust-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
@@ -108,7 +108,12 @@ function boot(): void {
     wallNow: () => Date.now(),
     schedule: scheduleTimeout
   };
-  const hostTrust = createHostTrustManager(new HostTrustJsonStore(join(userData, 'ssh-host-keys.json')), sshTrustRuntime);
+  const hostTrustStore = new SqliteHostTrustStore(
+    join(userData, 'multiremote-terminal.sqlite'), join(userData, 'ssh-host-keys.json'),
+    join(dist, 'host/apps/desktop/src/workers/storage-worker.js'), app.getAppPath(),
+    (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
+  );
+  const hostTrust = createHostTrustManager(hostTrustStore, sshTrustRuntime);
   const systemDirectory = {
     getSystemDirectory(): string {
       const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
@@ -173,7 +178,8 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void Promise.all([terminals.dispose(), sshTerminals.dispose()]).catch(() => undefined).finally(() => app.quit());
+    void Promise.all([terminals.dispose(), sshTerminals.dispose()]).then(() => hostTrustStore.shutdown())
+      .catch(() => undefined).finally(() => app.quit());
   });
   app.on('will-quit', () => {
     powerMonitor.removeListener('lock-screen', lockVaultForSystemEvent);

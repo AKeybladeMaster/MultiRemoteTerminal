@@ -9,6 +9,7 @@ import type { HostKeyEvidence, TrustedHostKey } from '../../packages/domain/src/
 import { canonicalizeSshHostEndpoint, sameHostKey } from '../../packages/domain/src/host-trust.ts';
 import { HostTrustStoreError, createHostTrustManager } from '../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustRuntime, HostTrustStore, HostTrustDecision } from '../../packages/application/src/host-trust.ts';
+import type { CredentialPromptCancellation } from '../../packages/application/src/credential-prompt.ts';
 import { HostTrustJsonStore } from '../../apps/desktop/src/adapters/host-trust-json-store.ts';
 
 class FakeRuntime implements HostTrustRuntime {
@@ -329,6 +330,32 @@ test('disposal during a slow trust lookup cannot create a pending challenge afte
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.code, 'CANCELLED');
   assert.equal(runtime.timerCount, 0);
+});
+
+test('caller cancellation reaches the host-trust store and maps to CANCELLED', async () => {
+  let observedCancellation: CredentialPromptCancellation | undefined;
+  const store: HostTrustStore = {
+    async find(_endpoint, cancellation) {
+      observedCancellation = cancellation;
+      throw new HostTrustStoreError('cancelled');
+    },
+    async trustIfAbsent(): Promise<HostTrustInsertResult> { return 'inserted'; },
+    async remove(): Promise<boolean> { return false; }
+  };
+  const manager = createHostTrustManager(store, new FakeRuntime());
+  const cancellation: CredentialPromptCancellation = {
+    aborted: false,
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  try {
+    const result = await manager.inspect({ host: 'cancel.example', port: 22 }, hostKey(113), cancellation);
+    assert.equal(observedCancellation, cancellation);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.error.code, 'CANCELLED');
+  } finally {
+    manager.dispose();
+  }
 });
 
 test('disposing host trust cancels an outstanding handshake waiter', async () => {

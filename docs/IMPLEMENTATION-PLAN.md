@@ -66,6 +66,10 @@ Implementation checkpoint (2026-10-23): the default OS-protected credential-vaul
 **Tests:** migrations, corruption recovery, 1,000 saved sessions, invalid settings, startup with missing logo.  
 **Gate:** persistent definitions independent from sockets, no 12-session cap.
 
+First WP-03 phase (2026-10-23): a dedicated utility process owns a versioned SQLite database created from the logical schema in `docs/ARCHITECTURE.md`. The storage adapter transactionally migrates interim SSH host identities from JSON and retires that file only after fingerprint/count verification and an unchanged-source check. See [ADR-0005](adr/ADR-0005-node-sqlite-storage-worker.md), [runtime review](dependencies/WP-03.md), and [phase evidence](results/WP-03-storage-2026-10-23.md). Persisted session CRUD/search/favorites, settings commands and catalog UI remain planned; no saved-session feature status changes in this phase.
+
+WP-03 storage follow-up (2026-10-23): the real Electron worker E2E now imports and reads a host key, and tests cover retry after a worker crash between database commit and reply, caller cancellation and worker restart, SQLite busy classification, and an online WAL backup/restore scenario. Cancellation is propagated from SSH-session teardown; it terminates the synchronous SQLite worker, and a later request starts a fresh worker. Storage failures publish only static redacted events on a local opt-in diagnostics channel. Corrupt-page recovery and application-level backup/restore remain acceptance work before catalog migration is complete. Folder CRUD must detect and reject parent cycles.
+
 ### WP-04 — SSH jump hosts / forwarding
 
 **Requires:** WP-02/03.  

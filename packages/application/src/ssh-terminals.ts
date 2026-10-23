@@ -169,7 +169,7 @@ export function createSshTerminalController(
   async function verifyHost(session: SessionState, evidence: HostKeyEvidence): Promise<boolean> {
     if (session.cancellation.token.aborted || sessions.get(session.sessionId) !== session || !isHostKeyEvidence(evidence)) return false;
     let inspected: Outcome<HostTrustDecision>;
-    try { inspected = await hostTrust.inspect(session.endpoint, evidence); }
+    try { inspected = await hostTrust.inspect(session.endpoint, evidence, session.cancellation.token); }
     catch { return false; }
     if (!inspected.ok) return false;
     const decision = inspected.result;

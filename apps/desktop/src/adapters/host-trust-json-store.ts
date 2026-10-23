@@ -3,6 +3,7 @@ import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
+import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import { canonicalizeSshHostEndpoint, hostEndpointKey, isHostKeyEvidence, sameHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
 
@@ -33,6 +34,11 @@ interface StoreDocument {
   readonly entries: StoredHostKey[];
 }
 
+export interface HostTrustMigrationSnapshot {
+  readonly entries: readonly TrustedHostKey[];
+  readonly sourceSha256: string | undefined;
+}
+
 export class HostTrustJsonStore implements HostTrustStore {
   private readonly filePath: string;
   private readonly queue: StoreQueue;
@@ -43,93 +49,152 @@ export class HostTrustJsonStore implements HostTrustStore {
     this.queue = queueForPath(this.filePath);
   }
 
-  find(endpoint: SshHostEndpoint): Promise<TrustedHostKey | undefined> {
+  find(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<TrustedHostKey | undefined> {
     return this.run(async () => {
       const canonicalEndpoint = checkedEndpoint(endpoint);
-      const entries = await this.readEntries();
+      const entries = await this.readEntries(cancellation);
+      throwIfCancelled(cancellation);
       const key = hostEndpointKey(canonicalEndpoint);
       const stored = entries.find(item => hostEndpointKey({ host: item.host, port: item.port }) === key);
       return stored ? decodeEntry(stored) : undefined;
-    });
+    }, cancellation);
   }
 
-  trustIfAbsent(identity: TrustedHostKey): Promise<HostTrustInsertResult> {
+  trustIfAbsent(identity: TrustedHostKey, cancellation?: CredentialPromptCancellation): Promise<HostTrustInsertResult> {
     return this.run(async () => {
       const candidate = encodeEntry(identity);
-      const entries = await this.readEntries();
+      const entries = await this.readEntries(cancellation);
+      throwIfCancelled(cancellation);
       const key = hostEndpointKey(identity.endpoint);
       const existing = entries.find(item => hostEndpointKey({ host: item.host, port: item.port }) === key);
       if (existing) return sameHostKey(decodeEntry(existing), identity) ? 'matched' : 'changed';
       if (entries.length >= MAX_ENTRIES) throw new HostTrustStoreError('unavailable');
       entries.push(candidate);
-      await this.writeEntries(entries);
+      await this.writeEntries(entries, cancellation);
       return 'inserted';
-    });
+    }, cancellation);
   }
 
-  remove(endpoint: SshHostEndpoint): Promise<boolean> {
+  remove(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<boolean> {
     return this.run(async () => {
       const canonicalEndpoint = checkedEndpoint(endpoint);
-      const entries = await this.readEntries();
+      const entries = await this.readEntries(cancellation);
+      throwIfCancelled(cancellation);
       const key = hostEndpointKey(canonicalEndpoint);
       const remaining = entries.filter(item => hostEndpointKey({ host: item.host, port: item.port }) !== key);
       if (remaining.length === entries.length) return false;
-      await this.writeEntries(remaining);
+      await this.writeEntries(remaining, cancellation);
       return true;
-    });
+    }, cancellation);
   }
 
-  private run<T>(operation: () => Promise<T>): Promise<T> {
+  exportForMigration(cancellation?: CredentialPromptCancellation): Promise<HostTrustMigrationSnapshot> {
+    return this.run(async () => {
+      const bytes = await this.readBytes(cancellation);
+      throwIfCancelled(cancellation);
+      if (!bytes) return { entries: [], sourceSha256: undefined };
+      const document = parseBytes(bytes);
+      return {
+        entries: document.map(decodeEntry),
+        sourceSha256: createHash('sha256').update(bytes).digest('hex')
+      };
+    }, cancellation);
+  }
+
+  retireAfterMigration(expectedSha256: string | undefined, cancellation?: CredentialPromptCancellation): Promise<void> {
+    return this.run(async () => {
+      const bytes = await this.readBytes(cancellation);
+      throwIfCancelled(cancellation);
+      if (expectedSha256 === undefined) {
+        if (bytes) throw new HostTrustStoreError('unavailable');
+        return;
+      }
+      if (!bytes || createHash('sha256').update(bytes).digest('hex') !== expectedSha256) {
+        throw new HostTrustStoreError('unavailable');
+      }
+      throwIfCancelled(cancellation);
+      await rm(this.filePath);
+    }, cancellation);
+  }
+
+  private run<T>(operation: () => Promise<T>, cancellation?: CredentialPromptCancellation): Promise<T> {
+    if (cancellation?.aborted) return Promise.reject(new HostTrustStoreError('cancelled'));
     if (this.queue.pendingOperations >= MAX_QUEUED_OPERATIONS) return Promise.reject(new HostTrustStoreError('busy'));
     this.queue.pendingOperations += 1;
-    const result = this.queue.tail.then(operation, operation);
-    this.queue.tail = result.then(() => undefined, () => undefined);
+    let started = false;
+    let rejectQueuedCancellation!: (error: Error) => void;
+    const queuedCancellation = new Promise<never>((_resolve, reject) => { rejectQueuedCancellation = reject; });
+    const abortQueued = () => { if (!started) rejectQueuedCancellation(new HostTrustStoreError('cancelled')); };
+    cancellation?.addEventListener('abort', abortQueued, { once: true });
+    const task = this.queue.tail.then(() => {
+      started = true;
+      throwIfCancelled(cancellation);
+      return operation();
+    }, () => {
+      started = true;
+      throwIfCancelled(cancellation);
+      return operation();
+    });
+    this.queue.tail = task.then(() => undefined, () => undefined);
+    void task.finally(() => {
+      cancellation?.removeEventListener('abort', abortQueued);
+      this.queue.pendingOperations -= 1;
+    }).catch(() => undefined);
+    const result = cancellation ? Promise.race([task, queuedCancellation]) : task;
     return result.catch(error => {
       if (error instanceof HostTrustStoreError) throw error;
       throw new HostTrustStoreError('unavailable');
-    }).finally(() => { this.queue.pendingOperations -= 1; });
+    });
   }
 
-  private async readEntries(): Promise<StoredHostKey[]> {
+  private async readEntries(cancellation?: CredentialPromptCancellation): Promise<StoredHostKey[]> {
+    const bytes = await this.readBytes(cancellation);
+    throwIfCancelled(cancellation);
+    if (!bytes) return [];
+    return parseBytes(bytes);
+  }
+
+  private async readBytes(cancellation?: CredentialPromptCancellation): Promise<Buffer | undefined> {
+    throwIfCancelled(cancellation);
     let fileStat;
     try {
       fileStat = await stat(this.filePath);
     } catch (error) {
-      if (hasNodeCode(error, 'ENOENT')) return [];
+      if (hasNodeCode(error, 'ENOENT')) return undefined;
       throw error;
     }
+    throwIfCancelled(cancellation);
     if (!fileStat.isFile() || fileStat.size > MAX_FILE_BYTES) throw new HostTrustStoreError('corrupt');
 
     const handle = await open(this.filePath, 'r');
     let bytes: Buffer;
     try {
       const openedStat = await handle.stat();
+      throwIfCancelled(cancellation);
       if (!openedStat.isFile() || openedStat.size > MAX_FILE_BYTES) throw new HostTrustStoreError('corrupt');
       const bounded = Buffer.alloc(MAX_FILE_BYTES + 1);
       let offset = 0;
       while (offset < bounded.length) {
+        throwIfCancelled(cancellation);
         const { bytesRead } = await handle.read(bounded, offset, bounded.length - offset, offset);
+        throwIfCancelled(cancellation);
         if (bytesRead === 0) break;
         offset += bytesRead;
       }
       if (offset > MAX_FILE_BYTES || offset !== openedStat.size) throw new HostTrustStoreError('corrupt');
       const afterRead = await handle.stat();
+      throwIfCancelled(cancellation);
       if (afterRead.size !== openedStat.size || afterRead.mtimeMs !== openedStat.mtimeMs) throw new HostTrustStoreError('corrupt');
       bytes = bounded.subarray(0, offset);
     } finally {
       await handle.close();
     }
 
-    let value: unknown;
-    try {
-      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
-    } catch {
-      throw new HostTrustStoreError('corrupt');
-    }
-    return parseDocument(value);
+    return bytes;
   }
 
-  private async writeEntries(entries: StoredHostKey[]): Promise<void> {
+  private async writeEntries(entries: StoredHostKey[], cancellation?: CredentialPromptCancellation): Promise<void> {
+    throwIfCancelled(cancellation);
     const document: StoreDocument = { version: SCHEMA_VERSION, entries };
     const serialized = `${JSON.stringify(document)}\n`;
     if (Buffer.byteLength(serialized, 'utf8') > MAX_FILE_BYTES) throw new HostTrustStoreError('unavailable');
@@ -139,10 +204,14 @@ export class HostTrustJsonStore implements HostTrustStore {
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       handle = await open(temporary, 'wx', 0o600);
+      throwIfCancelled(cancellation);
       await handle.writeFile(serialized, 'utf8');
+      throwIfCancelled(cancellation);
       await handle.sync();
+      throwIfCancelled(cancellation);
       await handle.close();
       handle = undefined;
+      throwIfCancelled(cancellation);
       await rename(temporary, this.filePath);
     } catch (error) {
       if (handle) await handle.close().catch(() => undefined);
@@ -150,6 +219,20 @@ export class HostTrustJsonStore implements HostTrustStore {
       throw error;
     }
   }
+}
+
+function throwIfCancelled(cancellation?: CredentialPromptCancellation): void {
+  if (cancellation?.aborted) throw new HostTrustStoreError('cancelled');
+}
+
+function parseBytes(bytes: Buffer): StoredHostKey[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    throw new HostTrustStoreError('corrupt');
+  }
+  return parseDocument(value);
 }
 
 function parseDocument(input: unknown): StoredHostKey[] {

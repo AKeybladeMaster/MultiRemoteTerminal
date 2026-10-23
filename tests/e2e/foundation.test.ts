@@ -1,6 +1,8 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -191,6 +193,87 @@ test('SSH quick connect validates the address before any credential prompt and r
     await expect(dialog).toHaveCount(0);
     await expect(connectButton).toBeFocused();
     await expect(page.locator('.status-bar')).toContainText('Local');
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SQLite storage worker migrates host trust and shuts down inside Electron', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-storage-worker-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  const databasePath = join(profile, 'storage-smoke.sqlite');
+  const algorithm = 'ssh-ed25519';
+  const algorithmBytes = Buffer.from(algorithm, 'ascii');
+  const publicKey = Buffer.concat([Buffer.from([0, 0, 0, algorithmBytes.length]), algorithmBytes, Buffer.alloc(32, 41)]);
+  const fingerprint = `SHA256:${createHash('sha256').update(publicKey).digest('base64').replace(/=+$/, '')}`;
+  const identity = {
+    endpoint: { host: 'storage.example', port: 2222 }, algorithm, fingerprint,
+    publicKey: Uint8Array.from(publicKey), trustedAt: 1_800_000_000_041, approvalSource: 'user'
+  } as const;
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const reply = await app.evaluate(async ({ utilityProcess }, { workerPath, appRoot, databasePath, identity }) => new Promise<unknown>((resolveReply, rejectReply) => {
+      const requestIds = [
+        '00000000-0000-4000-8000-000000000002',
+        '00000000-0000-4000-8000-000000000003',
+        '00000000-0000-4000-8000-000000000004'
+      ];
+      const requests = [
+        { version: 1, type: 'request', requestId: requestIds[0], command: 'hostTrust.importLegacy', identities: [identity] },
+        { version: 1, type: 'request', requestId: requestIds[1], command: 'hostTrust.find', endpoint: identity.endpoint },
+        { version: 1, type: 'request', requestId: requestIds[2], command: 'shutdown' }
+      ];
+      const replies: { imported?: unknown; found?: unknown; shutdown?: unknown } = {};
+      let requestIndex = 0;
+      const child = utilityProcess.fork(workerPath, [], { cwd: appRoot, env: { MRT_STORAGE_DB_PATH: databasePath }, stdio: 'ignore' });
+      let settled = false;
+      const finish = (error?: Error, value?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) rejectReply(error);
+        else resolveReply(value);
+      };
+      const timer = setTimeout(() => { child.kill(); finish(new Error('SQLite storage worker did not shut down')); }, 10_000);
+      child.once('error', error => finish(new Error(String(error))));
+      child.once('exit', code => replies.shutdown ? finish(undefined, replies) : finish(new Error(`SQLite storage worker exited before replying (${code})`)));
+      child.on('message', value => {
+        const message = value as { type?: unknown; requestId?: unknown; ok?: unknown; result?: { kind?: unknown; value?: unknown } };
+        if (message.type === 'ready') child.postMessage(requests[requestIndex++]);
+        else if (message.type === 'startup-error') finish(new Error('SQLite storage worker failed to initialize'));
+        else if (message.requestId === requestIds[0] && message.ok === true) {
+          replies.imported = message.result?.value;
+          child.postMessage(requests[requestIndex++]);
+        } else if (message.requestId === requestIds[1] && message.ok === true) {
+          const saved = message.result?.value as typeof identity | null | undefined;
+          replies.found = saved ? {
+            endpoint: saved.endpoint, algorithm: saved.algorithm, fingerprint: saved.fingerprint,
+            publicKeyBase64: Buffer.from(saved.publicKey).toString('base64'), trustedAt: saved.trustedAt,
+            approvalSource: saved.approvalSource
+          } : null;
+          child.postMessage(requests[requestIndex++]);
+        } else if (message.requestId === requestIds[2] && message.ok === true) {
+          replies.shutdown = message.result;
+          child.kill();
+        }
+      });
+    }), { workerPath: resolve('dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, identity });
+    expect(reply).toEqual({
+      imported: { sourceCount: 1, verifiedCount: 1 },
+      found: { endpoint: identity.endpoint, algorithm, fingerprint, publicKeyBase64: publicKey.toString('base64'),
+        trustedAt: identity.trustedAt, approvalSource: 'user' },
+      shutdown: { kind: 'shutdown' }
+    });
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(1);
+      expect((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ssh_host_keys'").get())).toBeTruthy();
+      expect(database.prepare('SELECT count(*) AS count FROM ssh_host_keys').get()).toEqual({ count: 1 });
+    } finally {
+      database.close();
+    }
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

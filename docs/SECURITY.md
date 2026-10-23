@@ -52,6 +52,8 @@ OS-protected storage on Windows is encrypted using a user-context mechanism; sam
 
 Default is **no external analytics or telemetry**. Diagnostic logs locally opt-in, expiring/rotating, capped; never include passwords, private keys, full terminal output, arbitrary executed commands, auth headers or complete remote file contents. Crash reports off by default or sanitized explicitly. Users can clear local logs, known-host approvals and session metadata independently.
 
+The SQLite storage adapter exposes only static `{component, event, code}` failure events on the local `multi-remote-terminal.storage` diagnostics channel. No listener or persistent log writer is installed by default; a future opt-in logger must remain local, capped and redacted, and must not add paths, SQL, hostnames, request IDs or stored values.
+
 ## Secrets and key provenance
 
 - Sessions reference `credential_ref`; vault content remains outside session definitions.
