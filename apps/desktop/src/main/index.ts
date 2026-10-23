@@ -20,6 +20,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'mrt', privileges: { standard: t
 const here = fileURLToPath(new URL('.', import.meta.url));
 const dist = resolve(here, '../../../../../');
 let window: BrowserWindow | undefined;
+let windowReady = false;
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
 const ownsSingleInstance = app.requestSingleInstanceLock();
@@ -38,27 +39,36 @@ function createWindow(): void {
     }
   });
   window = current;
+  windowReady = false;
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
   current.webContents.on('will-frame-navigate', event => event.preventDefault());
   current.webContents.on('will-attach-webview', event => event.preventDefault());
   current.once('ready-to-show', () => {
+    windowReady = true;
     current.show();
     if (focusRequested) focusWindow();
   });
-  current.on('closed', () => { if (window === current) window = undefined; stopActiveTerminals(); });
+  current.on('closed', () => {
+    if (window === current) {
+      window = undefined;
+      windowReady = false;
+    }
+    stopActiveTerminals();
+  });
   current.webContents.on('render-process-gone', () => stopActiveTerminals());
   void current.loadURL(APP_URL);
 }
 
 function focusWindow(): void {
   const current = window;
-  if (!current || current.isDestroyed() || !current.isVisible()) {
+  if (!current || current.isDestroyed() || !windowReady) {
     focusRequested = true;
     return;
   }
   focusRequested = false;
   if (current.isMinimized()) current.restore();
+  if (!current.isVisible()) current.show();
   current.focus();
 }
 

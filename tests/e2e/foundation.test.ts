@@ -130,9 +130,10 @@ test('a second application process exits and focuses the primary window under th
     expect(await waitForExit(secondInstance, 10_000)).toBe(0);
     expect(app.process()?.exitCode).toBeNull();
     await expect.poll(() => app.evaluate(electron => ({
+      visible: electron.BrowserWindow.getAllWindows()[0]?.isVisible(),
       minimized: electron.BrowserWindow.getAllWindows()[0]?.isMinimized(),
       focused: electron.BrowserWindow.getAllWindows()[0]?.isFocused()
-    })), { timeout: 10_000 }).toEqual({ minimized: false, focused: true });
+    })), { timeout: 10_000 }).toEqual({ visible: true, minimized: false, focused: true });
     await expect(page.locator('.workbench')).toHaveCount(1);
   } finally {
     secondInstance?.kill();
