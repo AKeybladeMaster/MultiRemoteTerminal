@@ -455,6 +455,23 @@
     {
       "type": "library",
       "name": "@types/node",
+      "version": "18.19.130",
+      "purl": "pkg:npm/%40types/node@18.19.130",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@types/node",
       "version": "24.19.2",
       "purl": "pkg:npm/%40types/node@24.19.2",
       "licenses": [
@@ -500,6 +517,23 @@
         {
           "type": "website",
           "url": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@types/ssh2",
+      "version": "1.15.6",
+      "purl": "pkg:npm/%40types/ssh2@1.15.6",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/ssh2"
         }
       ]
     },
@@ -675,6 +709,40 @@
     },
     {
       "type": "library",
+      "name": "@xterm/addon-fit",
+      "version": "0.11.0",
+      "purl": "pkg:npm/%40xterm/addon-fit@0.11.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/xtermjs/xterm.js/tree/master#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@xterm/xterm",
+      "version": "6.0.0",
+      "purl": "pkg:npm/%40xterm/xterm@6.0.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/xtermjs/xterm.js#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "acorn",
       "version": "8.19.0",
       "purl": "pkg:npm/acorn@8.19.0",
@@ -726,6 +794,23 @@
     },
     {
       "type": "library",
+      "name": "asn1",
+      "version": "0.2.6",
+      "purl": "pkg:npm/asn1@0.2.6",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/joyent/node-asn1#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "balanced-match",
       "version": "4.0.4",
       "purl": "pkg:npm/balanced-match@4.0.4",
@@ -738,6 +823,23 @@
         {
           "type": "website",
           "url": "https://github.com/juliangruber/balanced-match#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "bcrypt-pbkdf",
+      "version": "1.0.2",
+      "purl": "pkg:npm/bcrypt-pbkdf@1.0.2",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/joyent/node-bcrypt-pbkdf#readme"
         }
       ]
     },
@@ -760,6 +862,23 @@
     },
     {
       "type": "library",
+      "name": "buildcheck",
+      "version": "0.0.7",
+      "purl": "pkg:npm/buildcheck@0.0.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/mscdex/buildcheck#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "cacheable",
       "version": "2.5.0",
       "purl": "pkg:npm/cacheable@2.5.0",
@@ -772,6 +891,23 @@
         {
           "type": "website",
           "url": "https://github.com/jaredwray/cacheable#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cpu-features",
+      "version": "0.0.10",
+      "purl": "pkg:npm/cpu-features@0.0.10",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/mscdex/cpu-features#readme"
         }
       ]
     },
@@ -1474,6 +1610,40 @@
     },
     {
       "type": "library",
+      "name": "libsodium-sumo",
+      "version": "0.8.4",
+      "purl": "pkg:npm/libsodium-sumo@0.8.4",
+      "licenses": [
+        {
+          "expression": "ISC"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/jedisct1/libsodium.js"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "libsodium-wrappers-sumo",
+      "version": "0.8.4",
+      "purl": "pkg:npm/libsodium-wrappers-sumo@0.8.4",
+      "licenses": [
+        {
+          "expression": "ISC"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/jedisct1/libsodium.js"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "lightningcss",
       "version": "1.33.0",
       "purl": "pkg:npm/lightningcss@1.33.0",
@@ -1559,6 +1729,23 @@
     },
     {
       "type": "library",
+      "name": "nan",
+      "version": "2.30.0",
+      "purl": "pkg:npm/nan@2.30.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/nodejs/nan#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "nanoid",
       "version": "3.3.20",
       "purl": "pkg:npm/nanoid@3.3.20",
@@ -1588,6 +1775,40 @@
         {
           "type": "website",
           "url": "https://github.com/litejs/natural-compare-lite#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "node-addon-api",
+      "version": "7.1.1",
+      "purl": "pkg:npm/node-addon-api@7.1.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/nodejs/node-addon-api"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "node-pty",
+      "version": "1.1.0",
+      "purl": "pkg:npm/node-pty@1.1.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/microsoft/node-pty"
         }
       ]
     },
@@ -1831,6 +2052,40 @@
     },
     {
       "type": "library",
+      "name": "react",
+      "version": "19.3.1",
+      "purl": "pkg:npm/react@19.3.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://react.dev/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "react-dom",
+      "version": "19.3.1",
+      "purl": "pkg:npm/react-dom@19.3.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://react.dev/"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "rolldown",
       "version": "1.2.15",
       "purl": "pkg:npm/rolldown@1.2.15",
@@ -1843,6 +2098,40 @@
         {
           "type": "website",
           "url": "https://rolldown.rs/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "safer-buffer",
+      "version": "2.1.2",
+      "purl": "pkg:npm/safer-buffer@2.1.2",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/ChALkeR/safer-buffer#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "scheduler",
+      "version": "0.28.0",
+      "purl": "pkg:npm/scheduler@0.28.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://react.dev/"
         }
       ]
     },
@@ -1916,6 +2205,23 @@
     },
     {
       "type": "library",
+      "name": "ssh2",
+      "version": "1.17.0",
+      "purl": "pkg:npm/ssh2@1.17.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/mscdex/ssh2#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "sumchecker",
       "version": "3.0.1",
       "purl": "pkg:npm/sumchecker@3.0.1",
@@ -1962,6 +2268,23 @@
         {
           "type": "website",
           "url": "https://github.com/JoshuaKGoldberg/ts-api-utils#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "tweetnacl",
+      "version": "0.14.5",
+      "purl": "pkg:npm/tweetnacl@0.14.5",
+      "licenses": [
+        {
+          "expression": "Unlicense"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://tweetnacl.js.org"
         }
       ]
     },
@@ -2021,6 +2344,23 @@
       "name": "undici",
       "version": "7.30.1",
       "purl": "pkg:npm/undici@7.30.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://undici.nodejs.org"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "undici-types",
+      "version": "5.26.5",
+      "purl": "pkg:npm/undici-types@5.26.5",
       "licenses": [
         {
           "expression": "MIT"
