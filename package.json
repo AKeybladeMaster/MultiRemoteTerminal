@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.15.0",
-  "engines": { "node": "24.14.1" },
+  "engines": {
+    "node": "24.14.1"
+  },
   "scripts": {
     "typecheck": "tsc -b && tsc -p tsconfig.tools.json",
     "lint": "eslint . && node scripts/check-boundaries.mjs",
@@ -24,6 +26,7 @@
     "electron": "45.0.0",
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
+    "node-gyp": "12.4.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.0",
     "vite": "8.3.5"
