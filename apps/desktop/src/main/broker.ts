@@ -41,8 +41,8 @@ export async function dispatchCommand(
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
-        const { shell, columns, rows } = parsed.result.payload;
-        return { requestId, ...await actions.terminals.open(shell, { columns, rows }) };
+        const { sessionId, shell, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.terminals.open(sessionId, shell, { columns, rows }) };
       }
       case 'terminal.write': {
         const { sessionId, data } = parsed.result.payload;

@@ -15,6 +15,18 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   assert.deepEqual(await bridge.describe(), valid);
 });
 
+test('preload carries a caller-known session id so an opening terminal can be cancelled', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const bridge = createBridge(async request => {
+    assert.deepEqual(request, {
+      command: 'terminal.open', requestId: id(), contractVersion: 1,
+      payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 }
+    });
+    return { requestId: id(), ok: true, result: { sessionId, shell: 'cmd', state: 'running' } };
+  }, id);
+  assert.equal((await bridge.openTerminal(sessionId, 'cmd', 80, 24)).ok, true);
+});
+
 test('preload redacts rejected and malformed transport responses', async () => {
   for (const invoke of [async () => { throw new Error('private-secret'); }, async () => ({ ...valid, secret: 'private-secret' })]) {
     const reply = await createBridge(invoke, id).describe();

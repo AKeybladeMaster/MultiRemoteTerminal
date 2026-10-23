@@ -1,4 +1,5 @@
 import type * as NodePty from 'node-pty';
+import { win32 } from 'node:path';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalShell, TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { LocalTerminalEvent, LocalTerminalProvider } from '../../../../packages/application/src/local-terminals.ts';
@@ -8,6 +9,13 @@ const OUTPUT_PAUSE_BYTES = 65_536;
 const OUTPUT_RESUME_BYTES = 32_768;
 const OUTPUT_CHUNK_CHARS = 16_384;
 const CLOSE_TIMEOUT_MS = 2_000;
+
+export function resolveShellExecutable(shell: LocalShell, systemRoot = process.env.SystemRoot): string {
+  if (!systemRoot || !win32.isAbsolute(systemRoot)) throw new Error('Windows system directory is unavailable');
+  return shell === 'powershell'
+    ? win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : win32.join(systemRoot, 'System32', 'cmd.exe');
+}
 
 interface OutputChunk {
   readonly data: string;
@@ -49,7 +57,7 @@ export class LocalPtyProvider implements LocalTerminalProvider {
   async open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<void> {
     if (process.platform !== 'win32') throw new Error('ConPTY is only available on Windows');
     if (this.sessions.has(sessionId)) throw new Error('Terminal session already exists');
-    const executable = shell === 'powershell' ? 'powershell.exe' : 'cmd.exe';
+    const executable = resolveShellExecutable(shell);
     const args = shell === 'powershell' ? ['-NoLogo', '-NoProfile'] : ['/Q', '/D', '/K', 'chcp 65001'];
     const home = process.env.USERPROFILE || process.env.HOME;
     const terminal = this.ptySpawn(executable, args, {

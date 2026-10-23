@@ -35,13 +35,18 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
   private stopping = false;
   private terminating = false;
 
-  constructor(private readonly workerPath: string, private readonly appRoot: string) {}
+  constructor(
+    private readonly workerPath: string,
+    private readonly appRoot: string,
+    private readonly openReplyBarrier?: (sessionId: string) => Promise<void>
+  ) {}
 
   async open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<void> {
     this.opening.add(sessionId);
     this.exitedDuringOpen.delete(sessionId);
     try {
       const result = await this.request({ command: 'open', sessionId, shell, size });
+      await this.openReplyBarrier?.(sessionId);
       if (!Number.isSafeInteger(result.pid) || (result.pid as number) < 1) throw new Error('Terminal worker returned an invalid process ID');
       if (!this.exitedDuringOpen.has(sessionId)) this.processIds.set(sessionId, result.pid as number);
     } finally {

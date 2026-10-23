@@ -45,11 +45,37 @@ async function confirmCloseActiveTerminal(page: Page, title: string): Promise<vo
   await confirmation.getByRole('button', { name: 'Close terminal' }).click();
 }
 
+function systemExecutable(name: string): string {
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+  return join(systemRoot, 'System32', name);
+}
+
+function windowsPowerShellExecutable(): string {
+  return join(systemExecutable(''), 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
 function processIsRunning(pid: number): boolean {
-  const result = execFileSync('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+  const result = execFileSync(systemExecutable('tasklist.exe'), ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
     encoding: 'utf8', windowsHide: true
   });
   return result.includes(`"${pid}"`);
+}
+
+function parentProcessId(pid: number): number {
+  const result = execFileSync(windowsPowerShellExecutable(), ['-NoProfile', '-NonInteractive', '-Command',
+    `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').ParentProcessId`], {
+    encoding: 'utf8', windowsHide: true
+  });
+  return Number(result.trim());
+}
+
+function powerShellProcessIds(): number[] {
+  const result = execFileSync(windowsPowerShellExecutable(),
+    ['-NoProfile', '-NonInteractive', '-Command',
+      `Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\" | Where-Object ProcessId -ne $PID | ForEach-Object ProcessId`], {
+      encoding: 'utf8', windowsHide: true
+    });
+  return result.split(/\r?\n/).map(value => Number(value.trim())).filter(value => Number.isSafeInteger(value) && value > 0);
 }
 
 async function readPowerShellPid(page: Page, title: string): Promise<number> {
@@ -75,15 +101,27 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
   test.skip(process.platform !== 'win32', 'ConPTY acceptance evidence is required on Windows');
   test.setTimeout(180_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-e2e-'));
+  const existingPowerShellPids = new Set(powerShellProcessIds());
   const app = await electron.launch({
-    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=2'],
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=2', '--mrt-e2e-delay-first-terminal-open'],
     env: electronEnvironment()
   });
   try {
     const page = await app.firstWindow();
     const pageErrors: string[] = [];
     page.on('pageerror', error => pageErrors.push(error.message));
+    expect(await app.evaluate(() => process.argv.includes('--mrt-e2e-delay-first-terminal-open'))).toBe(true);
+    const openingCancel = page.getByRole('button', { name: 'Cancel opening PowerShell terminal' });
+    await expect(openingCancel).toBeVisible({ timeout: 15_000 });
+    const newPowerShellPids = () => powerShellProcessIds().filter(pid => !existingPowerShellPids.has(pid));
+    await expect.poll(() => newPowerShellPids().length, { timeout: 10_000, intervals: [100, 250, 500] }).toBeGreaterThan(0);
+    await openingCancel.click();
+    await expect(page.getByRole('tab')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Opening terminals' })).toHaveCount(0, { timeout: 15_000 });
+    await expect.poll(() => newPowerShellPids(), { timeout: 10_000, intervals: [100, 250, 500] }).toEqual([]);
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New PowerShell terminal');
     await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
     await expect(page.getByRole('tabpanel')).toBeVisible();
 
@@ -101,7 +139,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(rendererProcesses.length).toBeGreaterThan(0);
     expect(rendererProcesses.every(renderer => renderer.sandboxed)).toBe(true);
 
-    const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal('sh' as never, 80, 24));
+    const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(crypto.randomUUID(), 'sh' as never, 80, 24));
     expect(invalidShell.ok).toBe(false);
     if (!invalidShell.ok) expect(invalidShell.error.code).toBe('INVALID_REQUEST');
 
@@ -121,7 +159,9 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
 
     await page.keyboard.press('Control+Shift+P');
     await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await expect(page.locator('#palette-search')).toBeFocused();
     await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('button', { name: 'New cmd terminal' })).toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('Enter');
     await expect(page.getByRole('tab', { name: /cmd session 1/ })).toBeVisible();
     await sendLine(page, 'cmd session 1', 'echo MRT-CMD:%RANDOM%', /MRT-CMD:\d+/);
@@ -194,19 +234,46 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       await expect(page.getByRole('tab', { name: new RegExp(title) })).toHaveCount(0);
       await expect.poll(() => processIsRunning(pid), { timeout: 12_000, intervals: [100, 250, 500] }).toBe(false);
     }
+
+    const crashTitle = 'PowerShell session 13';
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    await expect(page.getByRole('tab', { name: new RegExp(crashTitle) })).toBeVisible();
+    const crashShellPid = await readPowerShellPid(page, crashTitle);
+    const workerPid = parentProcessId(crashShellPid);
+    expect(workerPid).toBeGreaterThan(0);
+    expect(workerPid).not.toBe(await app.evaluate(() => process.pid));
+    expect(processIsRunning(workerPid)).toBe(true);
+    execFileSync(systemExecutable('taskkill.exe'), ['/F', '/PID', String(workerPid)], { encoding: 'utf8', windowsHide: true });
+    await expect(page.getByRole('alert')).toContainText('UNAVAILABLE', { timeout: 15_000 });
+    await expect(page.locator('.status-bar')).toContainText('failed');
+    await expect.poll(() => processIsRunning(crashShellPid), { timeout: 12_000, intervals: [100, 250, 500] }).toBe(false);
+
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    await expect(page.getByRole('tab', { name: /PowerShell session 14/ })).toBeVisible();
+    await sendLine(page, 'PowerShell session 14', "Write-Output ('MRT-WORKER:' + 'restarted')", 'MRT-WORKER:restarted');
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
 
-test('CSP and Electron policy deny injected code, file reads, navigation, windows and permissions', async () => {
+test('100% scale themes render and CSP/Electron policy deny injected capabilities', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-security-'));
-  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=1'], env: electronEnvironment() });
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => devicePixelRatio)).toBe(1);
+    await page.getByRole('button', { name: 'Switch to light theme' }).click();
+    await expect(page.locator('.workbench')).toHaveAttribute('data-theme', 'light');
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#f3f6fa');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: 'test-results/terminal-light-100pct.png', fullPage: true });
+    await page.getByRole('button', { name: 'Switch to dark theme' }).click();
+    await expect(page.locator('.workbench')).toHaveAttribute('data-theme', 'dark');
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#142231');
+    await page.screenshot({ path: 'test-results/terminal-dark-100pct.png', fullPage: true });
     const result = await page.evaluate(async () => {
       const globals = globalThis as unknown as Record<string, unknown>;
       globals.injectionExecuted = false;

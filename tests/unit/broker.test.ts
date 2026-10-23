@@ -10,13 +10,22 @@ const owner = { owned: true, mainFrame: true, url: APP_URL };
 const snapshot = () => describeWorkbench({ version: '0.0.0', platform: 'win32' });
 const noOp = async () => ({ ok: true, result: {} } as const);
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot): CommandActions => ({ describe, terminals: {
-  async open(shell) { return { ok: true, result: { sessionId: request.requestId, shell, state: 'running' } }; },
+  async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
   write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
 } });
 
 test('valid sender reaches the application through its interface', async () => {
   assert.deepEqual(await dispatchCommand(owner, request, actions(), () => {}), { requestId: request.requestId, ok: true, result: snapshot() });
   assert.equal((await dispatchCommand({ ...owner, url: APP_URL + '#preview' }, request, actions(), () => {})).ok, true);
+});
+
+test('terminal open forwards the preallocated id for close-during-startup cancellation', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const input = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 } };
+  assert.deepEqual(await dispatchCommand(owner, input, actions(), () => {}), {
+    requestId: request.requestId, ok: true, result: { sessionId, shell: 'cmd', state: 'running' }
+  });
 });
 
 test('rejects foreign windows, subframes, origins and documents before dispatch', async () => {

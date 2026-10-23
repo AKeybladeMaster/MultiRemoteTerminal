@@ -44,8 +44,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     describe(): Promise<DescribeReply> {
       return send({ command: 'app.describe', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 3_000);
     },
-    openTerminal(shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply> {
-      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { shell, columns, rows } }, 20_000);
+    openTerminal(sessionId: string, shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply> {
+      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, shell, columns, rows } }, 20_000);
     },
     writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       const pending = pendingWriteChars.get(sessionId) ?? 0;

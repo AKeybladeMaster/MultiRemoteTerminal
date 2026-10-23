@@ -1,7 +1,6 @@
 import { app, BrowserWindow, ipcMain, Menu, protocol, session } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { describeWorkbench } from '../../../../packages/application/src/workbench.ts';
 import { createLocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
@@ -43,8 +42,16 @@ function createWindow(): void {
 }
 
 function boot(): void {
-  const terminalHost = new TerminalWorkerHost(join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath());
-  const terminals: LocalTerminalController = createLocalTerminalController(terminalHost, randomUUID);
+  let delayFirstOpenReply = process.argv.includes('--mrt-e2e-delay-first-terminal-open');
+  const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
+    if (!delayFirstOpenReply) return;
+    delayFirstOpenReply = false;
+    await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 750));
+  } : undefined;
+  const terminalHost = new TerminalWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath(), openReplyBarrier
+  );
+  const terminals: LocalTerminalController = createLocalTerminalController(terminalHost);
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {

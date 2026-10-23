@@ -26,7 +26,7 @@ interface Request<C extends string, P extends Record<string, unknown>> {
 }
 
 export type DescribeRequest = Request<'app.describe', Record<string, never>>;
-export type OpenTerminalRequest = Request<'terminal.open', { readonly shell: LocalShell; readonly columns: number; readonly rows: number }>;
+export type OpenTerminalRequest = Request<'terminal.open', { readonly sessionId: string; readonly shell: LocalShell; readonly columns: number; readonly rows: number }>;
 export type WriteTerminalRequest = Request<'terminal.write', { readonly sessionId: string; readonly data: string }>;
 export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
@@ -41,7 +41,7 @@ export type TerminalActionReply = CommandReply<Record<string, never>>;
 
 export interface DesktopBridge {
   describe(): Promise<DescribeReply>;
-  openTerminal(shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply>;
+  openTerminal(sessionId: string, shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply>;
   writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
@@ -74,7 +74,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       value.contractVersion !== CONTRACT_VERSION || !record(value.payload)) return failure('INVALID_REQUEST');
   const payload = value.payload;
   if (value.command === 'app.describe' && exactKeys(payload, [])) return { ok: true, result: value as unknown as DescribeRequest };
-  if (value.command === 'terminal.open' && exactKeys(payload, ['shell', 'columns', 'rows']) && isLocalShell(payload.shell) && validSize(payload.columns, payload.rows)) {
+  if (value.command === 'terminal.open' && exactKeys(payload, ['sessionId', 'shell', 'columns', 'rows']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && isLocalShell(payload.shell) && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenTerminalRequest };
   }
   if (value.command === 'terminal.write' && exactKeys(payload, ['sessionId', 'data']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&

@@ -33,7 +33,7 @@ interface SessionState {
 }
 
 export interface LocalTerminalController {
-  open(shell: LocalShell, size: TerminalSize): Promise<Outcome<LocalTerminalSession>>;
+  open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<Outcome<LocalTerminalSession>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
@@ -47,7 +47,6 @@ const EMPTY_RESULT: Record<string, never> = Object.freeze({});
 
 export function createLocalTerminalController(
   provider: LocalTerminalProvider,
-  makeId: () => string,
 ): LocalTerminalController {
   const sessions = new Map<string, SessionState>();
   const listeners = new Set<(event: LocalTerminalEvent) => void>();
@@ -66,11 +65,11 @@ export function createLocalTerminalController(
     publish(event);
   });
 
-  async function open(shell: LocalShell, size: TerminalSize): Promise<Outcome<LocalTerminalSession>> {
+  async function open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<Outcome<LocalTerminalSession>> {
     if (disposed) return failure('CANCELLED', 'terminal');
     if (shutdownPromise) return failure('BUSY', 'terminal');
-    if (!isLocalShell(shell) || !isTerminalSize(size)) return failure('INVALID_REQUEST');
-    const sessionId = makeId();
+    if (typeof sessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId) ||
+        !isLocalShell(shell) || !isTerminalSize(size)) return failure('INVALID_REQUEST');
     if (sessions.has(sessionId)) return failure('UNAVAILABLE', 'terminal');
     const session: SessionState = { sessionId, shell, state: 'starting', pendingInputChars: 0, pendingEvents: [] };
     sessions.set(sessionId, session);

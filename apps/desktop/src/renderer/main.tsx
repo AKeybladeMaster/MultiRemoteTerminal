@@ -12,6 +12,17 @@ interface WorkbenchTerminal extends LocalTerminalSession {
   readonly title: string;
 }
 
+interface OpeningTerminal {
+  readonly sessionId: string;
+  readonly shell: LocalShell;
+  readonly cancelling: boolean;
+}
+
+interface PendingOpenRequest {
+  cancelled: boolean;
+  readonly reply: Promise<Awaited<ReturnType<Window['multiRemoteTerminal']['openTerminal']>>>;
+}
+
 type CommandName = 'new-powershell' | 'new-cmd' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
@@ -31,6 +42,7 @@ function Workbench() {
   const [theme, setTheme] = useState<TerminalTheme>('dark');
   const [fontSize, setFontSize] = useState(14);
   const [sessions, setSessions] = useState<WorkbenchTerminal[]>([]);
+  const [openingSessions, setOpeningSessions] = useState<OpeningTerminal[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [status, setStatus] = useState('Starting');
   const [alert, setAlert] = useState<string>();
@@ -40,6 +52,7 @@ function Workbench() {
   const [selectedCommand, setSelectedCommand] = useState(0);
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
+  const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0 });
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
@@ -98,12 +111,44 @@ function Workbench() {
     setPaletteOpen(false);
     setQuery('');
     setAlert(undefined);
-    const reply = await window.multiRemoteTerminal.openTerminal(shell, 80, 24);
-    if (!reply.ok) { setAlert(`Could not start ${shellName(shell)} (${reply.error.code}).`); return; }
+    const sessionId = crypto.randomUUID();
+    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, shell, 80, 24);
+    pendingOpenRequests.current.set(sessionId, { cancelled: false, reply: replyPromise });
+    setOpeningSessions(current => [...current, { sessionId, shell, cancelling: false }]);
+    const reply = await replyPromise;
+    if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
+    pendingOpenRequests.current.delete(sessionId);
+    setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
+    if (!reply.ok) {
+      if (reply.error.code !== 'CANCELLED') setAlert(`Could not start ${shellName(shell)} (${reply.error.code}).`);
+      return;
+    }
     const ordinal = ++nextOrdinal.current[shell];
     const title = shellName(shell);
     setSessions(current => [...current, { ...reply.result, title: `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
+  }, []);
+
+  const cancelOpening = useCallback((sessionId: string) => {
+    const pending = pendingOpenRequests.current.get(sessionId);
+    if (!pending || pending.cancelled) return;
+    pending.cancelled = true;
+    setOpeningSessions(current => current.map(opening => opening.sessionId === sessionId ? { ...opening, cancelling: true } : opening));
+    void (async () => {
+      const closeReply = await window.multiRemoteTerminal.closeTerminal(sessionId);
+      const reply = await pending.reply;
+      if (reply.ok) {
+        const cleanup = await window.multiRemoteTerminal.closeTerminal(sessionId);
+        if (!cleanup.ok && cleanup.error.code !== 'NOT_FOUND') setAlert(messageForError(cleanup.error));
+      } else if (!closeReply.ok && closeReply.error.code !== 'NOT_FOUND') {
+        setAlert(messageForError(closeReply.error));
+      } else if (reply.error.code !== 'CANCELLED' && reply.error.code !== 'NOT_FOUND') {
+        setAlert(`Could not confirm terminal cancellation (${reply.error.code}).`);
+      }
+      pendingEvents.current.delete(sessionId);
+      pendingOpenRequests.current.delete(sessionId);
+      setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
+    })();
   }, []);
 
   const closeTerminal = useCallback(async (sessionId: string) => {
@@ -255,7 +300,7 @@ function Workbench() {
           <span>Command palette</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>
         </button>
       </aside>
-      <main className="terminal-workspace" id="workspace" tabIndex={-1}>
+      <main className="terminal-workspace" id="workspace" tabIndex={-1} data-opening={openingSessions.length > 0}>
         <div className="tab-strip">
           <div className="tab-list" role="tablist" aria-label="Terminal sessions">
             {sessions.map((session, index) => <button className={`tab-item ${session.sessionId === activeId ? 'selected' : ''}`} key={session.sessionId}
@@ -287,6 +332,14 @@ function Workbench() {
             <button className="add-tab" type="button" aria-label="New local terminal" title="New local terminal" onClick={openPalette}>＋</button>
           </div>
         </div>
+        {openingSessions.length > 0 && <div className="opening-notices" role="group" aria-label="Opening terminals">
+          {openingSessions.map(opening => <div className="opening-notice" key={opening.sessionId}>
+            <span role="status">{opening.cancelling ? 'Cancelling' : 'Opening'} {shellName(opening.shell)} terminal...</span>
+            <button type="button" className="quiet-button" disabled={opening.cancelling}
+              aria-label={`${opening.cancelling ? 'Cancelling' : 'Cancel opening'} ${shellName(opening.shell)} terminal`}
+              onClick={() => cancelOpening(opening.sessionId)}>{opening.cancelling ? 'Cancelling...' : 'Cancel'}</button>
+          </div>)}
+        </div>}
         <div className="terminal-stack">
           {sessions.map(session => <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
             aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>

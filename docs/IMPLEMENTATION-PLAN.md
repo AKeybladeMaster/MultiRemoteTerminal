@@ -39,11 +39,11 @@ This checkpoint does not satisfy M1 or the M4 promotion gate. WP-01 is the next 
 
 **Requires:** WP-00.  
 **Deliver:** independently branded dense desktop layout, sidebar/tabs/panes, local terminal, PowerShell/cmd selection, resizing, themes, keyboard focus/command palette.  
-**Tests:** 10 tabs, tab lifecycle, UTF-8/unicode, paste, command line, 200% DPI.  
+**Tests:** 10 tabs, tab lifecycle, open cancellation, UTF-8/unicode, paste, command line, 200% DPI, worker-crash cleanup and restart.\
 **Skills:** frontend-design, ui-taste, web-design-guidelines, codebase-design.  
 **Gate:** no process leaks after repeated tab open/close.
 
-Visual contract for this slice (preserve / local extension): a familiar Windows workbench for opening and operating local shells. Keep WP-00's slate surfaces, blue-gray separators, pale-blue accent, amber focus, Segoe UI Variable interface type and Cascadia Mono terminal type. At first launch, show a compact Sessions rail, tab strip and one dominant terminal pane; keep errors and terminal status in the work area and status strip. The primary action is opening a PowerShell or cmd session. The approved renderer target is [WP-01-local-terminal-target.png](evidence/WP-01-local-terminal-target.png), 1550×1014 pixels; it depicts generic sample text and the dark theme. It is a spatial reference, not a source of shell behavior or operating-system chrome. Check the result in dark and light themes, at 100% and 200% display scale, with ten live tabs, keyboard operation, Unicode input/output and clipboard paste.
+Visual contract for this slice (preserve / local extension): a familiar Windows workbench for opening and operating local shells. Keep WP-00's slate surfaces, blue-gray separators, pale-blue accent, amber focus, Segoe UI Variable interface type and Cascadia Mono terminal type. At first launch, show a compact Sessions rail, tab strip and one dominant terminal pane; keep errors and terminal status in the work area and status strip. The primary action is opening a PowerShell or cmd session. The approved renderer target is [WP-01-local-terminal-target.png](evidence/WP-01-local-terminal-target.png), 1550×1014 pixels; it depicts generic sample text and the dark theme. It is a spatial reference, not a source of shell behavior or operating-system chrome. Check both themes at 100% and 200% display scale. At 200%, exercise the full workflow with ten live tabs, keyboard operation, Unicode input/output, clipboard paste and resizing.
 
 Implementation checkpoint (2026-10-23): WP-01's P-01 workflow passed on Windows 11 x64. See [acceptance evidence](results/WP-01-2026-10-23.md) and the [terminal dependency review](dependencies/WP-01.md). This does not satisfy M1/M4 or authorize promotion to `main`.
 

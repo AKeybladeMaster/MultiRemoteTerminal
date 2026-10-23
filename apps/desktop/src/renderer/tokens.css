@@ -79,6 +79,10 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .palette-hint > span { flex: 1; }
 kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font: 11px "Segoe UI Variable", "Segoe UI", sans-serif; text-align: center; }
 .terminal-workspace { display: grid; grid-template-rows: 48px minmax(0, 1fr); min-width: 0; min-height: 0; outline: none; }
+.terminal-workspace[data-opening="true"] { grid-template-rows: 48px auto minmax(0, 1fr); }
+.opening-notices { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 5px 14px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 12px; }
+.opening-notice { display: inline-flex; align-items: center; gap: 8px; }
+.opening-notice .quiet-button { min-height: 26px; }
 .tab-strip { display: flex; align-items: stretch; min-width: 0; overflow: hidden; border-bottom: 1px solid var(--line); }
 .tab-list { display: flex; align-items: stretch; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .tab-item { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-width: 130px; max-width: 250px; padding: 0 11px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }

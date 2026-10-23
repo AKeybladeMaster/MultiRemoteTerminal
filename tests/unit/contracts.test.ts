@@ -21,6 +21,10 @@ test('rejects malformed, extra, oversized, and incompatible request fields', () 
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.error.code, 'INVALID_REQUEST');
   }
+  const open = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId, shell: 'powershell', columns: 80, rows: 24 } };
+  assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, sessionId: 'bad' } }).ok, false);
 });
 
 test('unknown commands never become privileged capabilities', () => {
