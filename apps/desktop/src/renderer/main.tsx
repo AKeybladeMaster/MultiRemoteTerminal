@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { MouseEvent, ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
@@ -8,6 +9,7 @@ import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/hos
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
+import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import '@xterm/xterm/css/xterm.css';
@@ -25,6 +27,12 @@ type PendingOpenRequest =
   | { cancelled: boolean; readonly transport: 'local'; readonly reply: Promise<OpenTerminalReply> }
   | { cancelled: boolean; readonly transport: 'ssh'; readonly reply: Promise<OpenSshTerminalReply> };
 
+type SavedFolderDialogState =
+  | { readonly mode: 'create'; readonly parentId: string | null }
+  | { readonly mode: 'rename'; readonly folder: SavedSessionFolder }
+  | { readonly mode: 'move-folder'; readonly folder: SavedSessionFolder }
+  | { readonly mode: 'move-session'; readonly session: SavedSessionDefinition };
+
 type CommandName = 'new-powershell' | 'new-cmd' | 'connect-ssh' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
@@ -39,6 +47,79 @@ function openingName(opening: OpeningTerminal): string {
 }
 
 function sshEndpointLabel(host: string, port: number): string { return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`; }
+
+function positionSavedActionsPanel(menu: HTMLDetailsElement): void {
+  if (!menu.open) return;
+  const summary = menu.querySelector<HTMLElement>('summary');
+  const panel = menu.querySelector<HTMLElement>('.saved-actions-panel');
+  if (!summary || !panel) return;
+
+  panel.style.position = 'fixed';
+  panel.style.top = '0';
+  panel.style.left = '0';
+  panel.style.right = 'auto';
+  const anchor = summary.getBoundingClientRect();
+  const bounds = panel.getBoundingClientRect();
+  const margin = 8;
+  const left = Math.max(margin, Math.min(anchor.right - bounds.width, window.innerWidth - bounds.width - margin));
+  const below = anchor.bottom + 2;
+  const top = below + bounds.height <= window.innerHeight - margin
+    ? below
+    : Math.max(margin, anchor.top - bounds.height - 2);
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>): void {
+  const menu = event.currentTarget.closest('details');
+  if (!menu) return;
+  event.preventDefault();
+  menu.open = !menu.open;
+  positionSavedActionsPanel(menu);
+}
+
+function folderDescendants(folders: readonly SavedSessionFolder[], folderId: string): Set<string> {
+  const descendants = new Set<string>([folderId]);
+  const children = new Map<string, string[]>();
+  for (const folder of folders) {
+    if (folder.parentId === null) continue;
+    const siblings = children.get(folder.parentId) ?? [];
+    siblings.push(folder.id);
+    children.set(folder.parentId, siblings);
+  }
+  const pending = [folderId];
+  while (pending.length > 0) {
+    const parentId = pending.pop();
+    if (!parentId) continue;
+    for (const childId of children.get(parentId) ?? []) {
+      if (descendants.has(childId)) continue;
+      descendants.add(childId);
+      pending.push(childId);
+    }
+  }
+  return descendants;
+}
+
+function folderPathLabel(folder: SavedSessionFolder, folders: readonly SavedSessionFolder[]): string {
+  const names = [folder.name];
+  const seen = new Set([folder.id]);
+  let parentId = folder.parentId;
+  while (parentId) {
+    if (seen.has(parentId)) break;
+    seen.add(parentId);
+    const parent = folders.find(candidate => candidate.id === parentId);
+    if (!parent) break;
+    names.push(parent.name);
+    parentId = parent.parentId;
+  }
+  return names.reverse().join(' / ');
+}
+
+function savedFolderError(code: string): string {
+  if (code === 'CONFLICT') return 'This would create a folder cycle or a duplicate folder name at the same level. Rename a matching folder and try again.';
+  if (code === 'NOT_FOUND') return 'The folder or session changed before the operation completed. Refresh the saved-session list and try again.';
+  return `The folder operation failed (${code}).`;
+}
 
 function terminalStatus(session: WorkbenchTerminal | undefined): string {
   if (!session) return 'No active terminal';
@@ -80,6 +161,7 @@ function Workbench() {
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
   const [sshTrustBusy, setSshTrustBusy] = useState(false);
   const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
+  const [savedFolders, setSavedFolders] = useState<readonly SavedSessionFolder[]>([]);
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -87,12 +169,18 @@ function Workbench() {
   const [saveSessionName, setSaveSessionName] = useState('');
   const [saveSessionError, setSaveSessionError] = useState<string>();
   const [uncertainSaveDraft, setUncertainSaveDraft] = useState<SavedSessionDraft>();
+  const [folderDialog, setFolderDialog] = useState<SavedFolderDialogState>();
+  const [folderNameDraft, setFolderNameDraft] = useState('');
+  const [folderParentDraft, setFolderParentDraft] = useState('');
+  const [folderDialogError, setFolderDialogError] = useState<string>();
+  const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0 });
   const nextSshOrdinal = useRef(0);
   const savedSessionsRequest = useRef(0);
+  const savedFoldersRequest = useRef(0);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
@@ -104,6 +192,10 @@ function Workbench() {
   const saveSessionNameInput = useRef<HTMLInputElement>(null);
   const checkSavedSessionsButton = useRef<HTMLButtonElement>(null);
   const saveSessionReturnFocus = useRef<HTMLElement | null>(null);
+  const folderDialogRef = useRef<HTMLElement>(null);
+  const folderNameInput = useRef<HTMLInputElement>(null);
+  const folderParentInput = useRef<HTMLSelectElement>(null);
+  const folderDialogReturnFocus = useRef<HTMLElement | null>(null);
   const sshTrustDialog = useRef<HTMLElement>(null);
   const rejectSshHostButton = useRef<HTMLButtonElement>(null);
   const changedSshHostButton = useRef<HTMLButtonElement>(null);
@@ -134,6 +226,24 @@ function Workbench() {
     }
   }, []);
 
+  const loadSavedFolders = useCallback(async (): Promise<readonly SavedSessionFolder[] | undefined> => {
+    const request = ++savedFoldersRequest.current;
+    try {
+      const reply = await window.multiRemoteTerminal.listSavedSessionFolders();
+      if (request !== savedFoldersRequest.current) return undefined;
+      if (!reply.ok) {
+        setAlert(`Saved folders could not be loaded (${reply.error.code}).`);
+        return undefined;
+      }
+      setSavedFolders(reply.result);
+      setExpandedFolderIds(current => current.size > 0 ? current : new Set(reply.result.filter(folder => folder.parentId === null).map(folder => folder.id)));
+      return reply.result;
+    } catch {
+      if (request === savedFoldersRequest.current) setAlert('Saved folders could not be loaded.');
+      return undefined;
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => { void loadSavedSessions(savedSearch); }, 160);
     return () => {
@@ -141,6 +251,11 @@ function Workbench() {
       savedSessionsRequest.current++;
     };
   }, [loadSavedSessions, savedSearch]);
+
+  useEffect(() => {
+    void loadSavedFolders();
+    return () => { savedFoldersRequest.current++; };
+  }, [loadSavedFolders]);
 
   const openPalette = useCallback(() => {
     paletteReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -402,6 +517,18 @@ function Workbench() {
         }
         return;
       }
+      if (folderDialog) {
+        if (event.key === 'Escape' && !catalogBusy) { event.preventDefault(); setFolderDialog(undefined); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(folderDialogRef.current?.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (sshConnectOpen) {
         if (event.key === 'Escape') { event.preventDefault(); setSshConnectOpen(false); }
         else if (event.key === 'Tab') {
@@ -451,7 +578,7 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, catalogBusy, decideSshTrust, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents]);
+  }, [activeId, catalogBusy, decideSshTrust, folderDialog, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -487,6 +614,19 @@ function Workbench() {
   }, [catalogBusy, saveSessionOpen, uncertainSaveDraft]);
 
   useEffect(() => {
+    if (folderDialog) {
+      if (!catalogBusy) requestAnimationFrame(() => {
+        if (folderDialog.mode === 'create' || folderDialog.mode === 'rename') folderNameInput.current?.focus();
+        else folderParentInput.current?.focus();
+      });
+    } else if (!catalogBusy && folderDialogReturnFocus.current) {
+      const target = folderDialogReturnFocus.current;
+      folderDialogReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [catalogBusy, folderDialog]);
+
+  useEffect(() => {
     const current = sshTrustEvents[0];
     if (current) {
       requestAnimationFrame(() => {
@@ -520,6 +660,107 @@ function Workbench() {
   const active = sessions.find(session => session.sessionId === activeId);
   const pendingClose = sessions.find(session => session.sessionId === pendingCloseId);
   const currentSshTrust = sshTrustEvents[0];
+  const savedFolderById = new Map(savedFolders.map(folder => [folder.id, folder]));
+  const sessionsByFolder = new Map<string, SavedSessionDefinition[]>();
+  const unfiledSessions: SavedSessionDefinition[] = [];
+  for (const session of savedSessions) {
+    if (session.folderId === null) unfiledSessions.push(session);
+    else {
+      const items = sessionsByFolder.get(session.folderId) ?? [];
+      items.push(session);
+      sessionsByFolder.set(session.folderId, items);
+    }
+  }
+  const folderChildren = new Map<string, SavedSessionFolder[]>();
+  const rootFolders: SavedSessionFolder[] = [];
+  for (const folder of savedFolders) {
+    if (folder.parentId === null) rootFolders.push(folder);
+    else {
+      const items = folderChildren.get(folder.parentId) ?? [];
+      items.push(folder);
+      folderChildren.set(folder.parentId, items);
+    }
+  }
+  const visibleFolderIds = savedSearch ? new Set<string>() : new Set(savedFolders.map(folder => folder.id));
+  if (savedSearch) {
+    for (const session of savedSessions) {
+      let folderId = session.folderId;
+      const seen = new Set<string>();
+      while (folderId && !seen.has(folderId)) {
+        seen.add(folderId);
+        visibleFolderIds.add(folderId);
+        folderId = savedFolderById.get(folderId)?.parentId ?? null;
+      }
+    }
+  }
+  const excludedMoveTargetIds = folderDialog?.mode === 'move-folder' ? folderDescendants(savedFolders, folderDialog.folder.id) : new Set<string>();
+
+  function renderSavedSession(session: SavedSessionDefinition, depth: number): ReactElement {
+    return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
+      <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
+        <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
+          {session.kind === 'ssh' ? 'SSH' : session.shell === 'powershell' ? 'PS' : 'CMD'}
+        </span>
+        <span className="saved-session-name" translate="no">{session.name}</span>
+        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : sshEndpointLabel(session.host, session.port)}</span>
+      </button>
+      <div className="saved-session-actions">
+        <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
+          aria-pressed={session.favorite} disabled={catalogBusy} onClick={() => void toggleSavedFavorite(session)}>{session.favorite ? '★' : '☆'}</button>
+        <details className="saved-actions-menu">
+          <summary role="button" aria-label={`Actions for saved session ${session.name}`} title={`Actions for ${session.name}`}
+            onClick={toggleSavedActionsMenu}>···</summary>
+          <div className="saved-actions-panel" aria-label={`Saved-session actions for ${session.name}`}>
+            <button type="button" disabled={catalogBusy} aria-label={`Move saved session ${session.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'move-session', session }); }}>Move to folder</button>
+            <button type="button" disabled={catalogBusy} aria-label={`Delete saved session ${session.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); void deleteSavedSession(session); }}>Delete</button>
+          </div>
+        </details>
+      </div>
+    </li>;
+  }
+
+  function renderSavedFolder(folder: SavedSessionFolder, depth: number): ReactElement {
+    const sessionsHere = sessionsByFolder.get(folder.id) ?? [];
+    const children = (folderChildren.get(folder.id) ?? []).filter(child => visibleFolderIds.has(child.id));
+    const expanded = expandedFolderIds.has(folder.id) || (Boolean(savedSearch) && (sessionsHere.length > 0 || children.length > 0));
+    return <li className="saved-folder-node" key={folder.id}>
+      <div className="saved-folder-entry" style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
+        <button className="saved-folder-toggle" type="button" aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} folder ${folder.name}`} disabled={catalogBusy}
+          onClick={() => setExpandedFolderIds(current => {
+            const next = new Set(current);
+            if (next.has(folder.id)) next.delete(folder.id);
+            else next.add(folder.id);
+            return next;
+          })}>
+          <span className="saved-folder-chevron" aria-hidden="true">{expanded ? '⌄' : '›'}</span>
+          <span className="saved-folder-icon" aria-hidden="true" />
+          <span className="saved-folder-name" translate="no">{folder.name}</span>
+          <span className="saved-folder-count">{sessionsHere.length}</span>
+        </button>
+        <details className="saved-actions-menu">
+          <summary role="button" aria-label={`Actions for folder ${folder.name}`} title={`Actions for ${folder.name}`}
+            onClick={toggleSavedActionsMenu}>···</summary>
+          <div className="saved-actions-panel" aria-label={`Folder actions for ${folder.name}`}>
+            <button type="button" disabled={catalogBusy} aria-label={`Create subfolder in ${folder.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'create', parentId: folder.id }); }}>New subfolder</button>
+            <button type="button" disabled={catalogBusy} aria-label={`Rename folder ${folder.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'rename', folder }); }}>Rename</button>
+            <button type="button" disabled={catalogBusy} aria-label={`Move folder ${folder.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'move-folder', folder }); }}>Move</button>
+            <button type="button" disabled={catalogBusy} aria-label={`Delete folder ${folder.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); void deleteSavedFolder(folder); }}>Delete</button>
+          </div>
+        </details>
+      </div>
+      {expanded && <ul className="saved-folder-children">
+        {children.map(child => renderSavedFolder(child, depth + 1))}
+        {sessionsHere.map(session => renderSavedSession(session, depth + 1))}
+      </ul>}
+    </li>;
+  }
 
   function openSavedSession(session: SavedSessionDefinition) {
     if (session.kind === 'local') void openTerminal(session.shell, session.name);
@@ -610,6 +851,88 @@ function Workbench() {
     }
   }
 
+  function openSavedFolderDialog(state: SavedFolderDialogState) {
+    folderDialogReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFolderDialogError(undefined);
+    setFolderNameDraft(state.mode === 'rename' ? state.folder.name : '');
+    if (state.mode === 'create') setFolderParentDraft(state.parentId ?? '');
+    else if (state.mode === 'move-folder') setFolderParentDraft(state.folder.parentId ?? '');
+    else if (state.mode === 'move-session') setFolderParentDraft(state.session.folderId ?? '');
+    else setFolderParentDraft('');
+    setFolderDialog(state);
+  }
+
+  async function refreshSavedCatalog() {
+    await Promise.all([loadSavedSessions(savedSearch), loadSavedFolders()]);
+  }
+
+  async function submitSavedFolderDialog() {
+    if (!folderDialog || catalogBusy) return;
+    setCatalogBusy(true);
+    setFolderDialogError(undefined);
+    let completed = false;
+    try {
+      if (folderDialog.mode === 'create') {
+        const reply = await window.multiRemoteTerminal.createSavedSessionFolder({ name: folderNameDraft, parentId: folderDialog.parentId });
+        if (!reply.ok) { setFolderDialogError(savedFolderError(reply.error.code)); focusFolderDialogError(); return; }
+        setExpandedFolderIds(current => new Set([...current, ...(folderDialog.parentId ? [folderDialog.parentId] : []), reply.result.id]));
+        completed = true;
+      } else if (folderDialog.mode === 'rename') {
+        const reply = await window.multiRemoteTerminal.renameSavedSessionFolder(folderDialog.folder.id, folderNameDraft);
+        if (!reply.ok) { setFolderDialogError(savedFolderError(reply.error.code)); focusFolderDialogError(); return; }
+        completed = true;
+      } else if (folderDialog.mode === 'move-folder') {
+        const reply = await window.multiRemoteTerminal.moveSavedSessionFolder(folderDialog.folder.id, folderParentDraft || null);
+        if (!reply.ok) { setFolderDialogError(savedFolderError(reply.error.code)); focusFolderDialogError(); return; }
+        completed = true;
+      } else {
+        const reply = await window.multiRemoteTerminal.moveSavedSession(folderDialog.session.id, folderParentDraft || null);
+        if (!reply.ok) { setFolderDialogError(savedFolderError(reply.error.code)); focusFolderDialogError(); return; }
+        completed = true;
+      }
+      if (completed) {
+        setFolderDialog(undefined);
+        await refreshSavedCatalog();
+      }
+    } catch {
+      setFolderDialogError('The folder operation could not be confirmed. Refresh the list before retrying.');
+      focusFolderDialogError();
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
+  function focusFolderDialogError() {
+    requestAnimationFrame(() => {
+      if (folderDialog?.mode === 'create' || folderDialog?.mode === 'rename') folderNameInput.current?.focus();
+      else folderParentInput.current?.focus();
+    });
+  }
+
+  async function deleteSavedFolder(folder: SavedSessionFolder) {
+    if (catalogBusy) return;
+    const destination = folder.parentId ? savedFolders.find(item => item.id === folder.parentId)?.name ?? 'its parent folder' : 'the top level';
+    const sessionDestination = folder.parentId ? `inside ${destination}` : 'Unfiled';
+    if (!window.confirm(`Delete folder “${folder.name}”? Its sessions will move to ${sessionDestination}, and its subfolders will move to ${destination}.`)) return;
+    setCatalogBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.deleteSavedSessionFolder(folder.id);
+      if (!reply.ok) setAlert(savedFolderError(reply.error.code));
+      else {
+        setExpandedFolderIds(current => {
+          const next = new Set(current);
+          next.delete(folder.id);
+          return next;
+        });
+        await refreshSavedCatalog();
+      }
+    } catch {
+      setAlert('The folder could not be deleted. Refresh the saved-session list and check its contents.');
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
   function runCommand(command: PaletteCommand | undefined) {
     if (!command) return;
     setPaletteOpen(false);
@@ -655,28 +978,25 @@ function Workbench() {
           </ul>
         </div>}
         <section className="saved-session-group" aria-labelledby="saved-sessions-heading">
-          <div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span>{savedSessions.length}</span></div>
+          <div className="saved-session-heading"><div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span>{savedSessions.length}</span></div>
+            <button className="saved-folder-create" type="button" disabled={catalogBusy} onClick={() => openSavedFolderDialog({ mode: 'create', parentId: null })}>+ Folder</button>
+          </div>
           <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>
           <input className="saved-session-search" id="saved-session-search" type="search" autoComplete="off" maxLength={256}
-            placeholder="Search saved sessions" value={savedSearch} onChange={event => setSavedSearch(event.target.value)} />
-          {savedSessionsLoading && <p className="saved-session-empty" role="status">Loading saved sessions</p>}
-          {!savedSessionsLoading && savedSessions.length === 0 && <p className="saved-session-empty">{savedSearch ? 'No saved sessions match this search.' : 'No saved sessions yet.'}</p>}
-          {savedSessions.length > 0 && <ul className="saved-session-list">
-            {savedSessions.map(session => <li className="saved-session-row" key={session.id}>
-              <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
-                <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-                  {session.kind === 'ssh' ? 'SSH' : session.shell === 'powershell' ? 'PS' : 'CMD'}
-                </span>
-                <span className="saved-session-name" translate="no">{session.name}</span>
-                <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : sshEndpointLabel(session.host, session.port)}</span>
-              </button>
-              <div className="saved-session-actions">
-                <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
-                  aria-pressed={session.favorite} disabled={catalogBusy} onClick={() => void toggleSavedFavorite(session)}>{session.favorite ? '★' : '☆'}</button>
-                <button type="button" aria-label={`Delete saved session ${session.name}`} disabled={catalogBusy}
-                  onClick={() => void deleteSavedSession(session)}>Del</button>
+            placeholder="Search saved sessions…" value={savedSearch} onChange={event => setSavedSearch(event.target.value)} />
+          {savedSessionsLoading && <p className="saved-session-empty" role="status">Loading saved sessions…</p>}
+          {!savedSessionsLoading && savedSearch && savedSessions.length === 0 && <p className="saved-session-empty">No saved sessions match this search.</p>}
+          {!savedSessionsLoading && !savedSearch && savedSessions.length === 0 && savedFolders.length === 0 && <p className="saved-session-empty">No saved sessions yet.</p>}
+          {(!savedSessionsLoading && (savedSessions.length > 0 || savedFolders.length > 0)) && <ul className="saved-session-list" aria-label="Saved sessions and folders">
+            {unfiledSessions.length > 0 && <li className="saved-folder-node">
+              <div className="saved-folder-entry unfiled-folder-entry">
+                <span className="saved-folder-static"><span className="saved-folder-chevron" aria-hidden="true">⌄</span>
+                  <span className="saved-folder-icon" aria-hidden="true" /><span className="saved-folder-name">Unfiled</span>
+                  <span className="saved-folder-count">{unfiledSessions.length}</span></span>
               </div>
-            </li>)}
+              <ul className="saved-folder-children">{unfiledSessions.map(session => renderSavedSession(session, 1))}</ul>
+            </li>}
+            {rootFolders.filter(folder => visibleFolderIds.has(folder.id)).map(folder => renderSavedFolder(folder, 0))}
           </ul>}
         </section>
         <button className="palette-hint" type="button" onClick={openPalette}>
@@ -801,6 +1121,41 @@ function Workbench() {
                 setSaveSessionOpen(false);
               }}>Check saved sessions</button>
               : <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving...' : 'Save session'}</button>}
+          </div>
+        </form>
+      </section>
+    </div>}
+    {folderDialog && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !catalogBusy) setFolderDialog(undefined); }}>
+      <section ref={folderDialogRef} className="ssh-connect-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="saved-folder-dialog-heading" aria-describedby="saved-folder-dialog-description">
+        <h2 id="saved-folder-dialog-heading">{folderDialog.mode === 'create' ? 'Create folder'
+          : folderDialog.mode === 'rename' ? `Rename ${folderDialog.folder.name}`
+            : folderDialog.mode === 'move-folder' ? `Move ${folderDialog.folder.name}` : `Move ${folderDialog.session.name}`}</h2>
+        <p id="saved-folder-dialog-description">{folderDialog.mode === 'create'
+          ? `Create a folder ${folderDialog.parentId ? `inside ${savedFolderById.get(folderDialog.parentId)?.name ?? 'the selected folder'}` : 'at the top level'}. Folder names must be unique within the same parent.`
+          : folderDialog.mode === 'rename' ? 'Rename the folder. A folder with the same name cannot already exist at this level.'
+            : folderDialog.mode === 'move-folder' ? 'Choose the new parent. A folder cannot be moved into itself or one of its descendants.'
+              : 'Choose where this saved session should appear in the sidebar. Credentials and terminal history stay separate.'}</p>
+        <form onSubmit={event => { event.preventDefault(); void submitSavedFolderDialog(); }}>
+          {(folderDialog.mode === 'create' || folderDialog.mode === 'rename') && <>
+            <label htmlFor="saved-folder-name">Folder name</label>
+            <input ref={folderNameInput} id="saved-folder-name" name="name" type="text" autoComplete="off" maxLength={256}
+              required value={folderNameDraft} onChange={event => setFolderNameDraft(event.target.value)} />
+          </>}
+          {(folderDialog.mode === 'move-folder' || folderDialog.mode === 'move-session') && <>
+            <label htmlFor="saved-folder-parent">{folderDialog.mode === 'move-folder' ? 'Move under' : 'Move to'}</label>
+            <select ref={folderParentInput} id="saved-folder-parent" value={folderParentDraft} onChange={event => setFolderParentDraft(event.target.value)}>
+              <option value="">{folderDialog.mode === 'move-folder' ? 'Top level' : 'Unfiled'}</option>
+              {savedFolders.filter(folder => !excludedMoveTargetIds.has(folder.id))
+                .toSorted((left, right) => folderPathLabel(left, savedFolders).localeCompare(folderPathLabel(right, savedFolders)))
+                .map(folder => <option key={folder.id} value={folder.id}>{folderPathLabel(folder, savedFolders)}</option>)}
+            </select>
+          </>}
+          {folderDialogError && <p className="dialog-error" role="alert">{folderDialogError}</p>}
+          <div className="ssh-connect-actions">
+            <button type="button" disabled={catalogBusy} onClick={() => setFolderDialog(undefined)}>Cancel</button>
+            <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving…'
+              : folderDialog.mode === 'create' ? 'Create folder' : folderDialog.mode === 'rename' ? 'Save name' : 'Move'}</button>
           </div>
         </form>
       </section>

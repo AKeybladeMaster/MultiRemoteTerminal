@@ -243,8 +243,88 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     await expect(page.getByRole('tab')).toHaveCount(2);
     await expect(page.getByRole('tab').filter({ hasText: 'Reusable PowerShell' })).toHaveCount(1);
     page.once('dialog', dialog => dialog.accept());
+    await page.getByRole('button', { name: 'Actions for saved session Reusable PowerShell' }).click();
     await page.getByRole('button', { name: 'Delete saved session Reusable PowerShell', exact: true }).click();
     await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('saved-session folders create, nest, move, rename, delete safely and persist across restart', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-session-folders-e2e-'));
+  let app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'Save active session' });
+    await dialog.getByLabel('Session name').fill('Folder saved shell');
+    await dialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open Folder saved shell', exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Create folder' });
+    await dialog.getByLabel('Folder name').fill('Work');
+    await dialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Collapse folder Work', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Actions for folder Work' }).click();
+    await page.getByRole('button', { name: 'Create subfolder in Work', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Create folder' });
+    await dialog.getByLabel('Folder name').fill('Lab');
+    await dialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Actions for saved session Folder saved shell' }).click();
+    await page.getByRole('button', { name: 'Move saved session Folder saved shell', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Move Folder saved shell' });
+    await dialog.getByLabel('Move to').selectOption({ label: 'Work / Lab' });
+    await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open Folder saved shell', exact: true })).toBeVisible();
+    await page.screenshot({ path: 'test-results/saved-session-folders.png', fullPage: true });
+    await page.getByRole('button', { name: 'Open Folder saved shell', exact: true }).click();
+    await expect(page.getByRole('tab').filter({ hasText: 'Folder saved shell' })).toHaveCount(1);
+
+    await page.getByRole('button', { name: 'Actions for folder Work' }).click();
+    await page.getByRole('button', { name: 'Rename folder Work', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Rename Work' });
+    await dialog.getByLabel('Folder name').fill('Projects');
+    await dialog.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Collapse folder Projects', exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Create folder' });
+    await dialog.getByLabel('Folder name').fill('Archive');
+    await dialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for folder Projects' }).click();
+    await page.getByRole('button', { name: 'Move folder Projects', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Move Projects' });
+    await dialog.getByLabel('Move under').selectOption({ label: 'Archive' });
+    await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for folder Archive' }).click();
+    await page.getByRole('button', { name: 'Rename folder Archive', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Rename Archive' });
+    await dialog.getByLabel('Folder name').fill('Team');
+    await dialog.getByRole('button', { name: 'Save name', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for folder Team' }).click();
+    page.once('dialog', nativeDialog => nativeDialog.accept());
+    await page.getByRole('button', { name: 'Delete folder Team', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Collapse folder Projects', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Collapse folder Lab', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open Folder saved shell', exact: true })).toBeVisible();
+
+    await app.close();
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Collapse folder Projects', exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Expand folder Lab', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Expand folder Lab', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Collapse folder Lab', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open Folder saved shell', exact: true }).click();
+    await expect(page.getByRole('tab').filter({ hasText: 'Folder saved shell' })).toHaveCount(1);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -285,6 +365,7 @@ test('a timed-out saved-session write must be checked before retrying, even afte
 
     await expect(page.locator('.alert-strip > span')).toHaveText('This session is already saved. Open it from Saved sessions instead of saving it again.');
     await expect(page.getByRole('button', { name: 'Open Timed save reconciliation', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Actions for saved session Timed save reconciliation' }).click();
     await expect(page.getByRole('button', { name: 'Delete saved session Timed save reconciliation', exact: true })).toHaveCount(1);
   } finally {
     await app.close();
@@ -471,6 +552,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+      'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'moveSavedSession',
       'onTerminalEvent', 'onSshTrustEvent']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));

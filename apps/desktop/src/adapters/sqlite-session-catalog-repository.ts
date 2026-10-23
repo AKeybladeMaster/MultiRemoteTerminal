@@ -68,7 +68,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     this.updateFolderParent = database.prepare('UPDATE folders SET parent_id = ? WHERE id = ?');
     this.deleteFolderStatement = database.prepare('DELETE FROM folders WHERE id = ?');
     this.updateSessionFolder = database.prepare(`
-      UPDATE session_definitions SET folder_id = ?, updated_at = ? WHERE folder_id = ? AND kind IN ('local', 'ssh')
+      UPDATE session_definitions SET folder_id = ?, updated_at = ? WHERE folder_id = ?
     `);
     this.isFolderDescendant = database.prepare(`
       WITH RECURSIVE descendants(id) AS (
@@ -187,11 +187,11 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     try {
       if (!isSessionDefinitionId(id) || !(folderId === null || isSessionFolderId(folderId))) throw new StorageOperationError('unavailable');
       this.requireFolder(folderId);
-      const current = this.database.prepare(`SELECT folder_id FROM session_definitions WHERE id = ? AND kind IN ('local', 'ssh')`).get(id) as { readonly folder_id: unknown } | undefined;
+      const current = this.database.prepare('SELECT folder_id FROM session_definitions WHERE id = ?').get(id) as { readonly folder_id: unknown } | undefined;
       if (!current) return false;
       if (current.folder_id === folderId) return true;
       const changed = this.database.prepare(`
-        UPDATE session_definitions SET folder_id = ?, updated_at = ? WHERE id = ? AND kind IN ('local', 'ssh')
+        UPDATE session_definitions SET folder_id = ?, updated_at = ? WHERE id = ?
       `).run(folderId, new Date().toISOString(), id);
       return Number(changed.changes) > 0;
     } catch (error) { throw mapStorageError(error); }

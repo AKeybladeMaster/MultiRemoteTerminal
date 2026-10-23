@@ -66,6 +66,12 @@ test('folder moves reject cycles and folder deletion preserves children and sess
     const labAtRoot = await catalog.createFolder({ name: 'Lab', parentId: null });
     const rootSession = await catalog.createSession({ kind: 'local', name: 'Root session', shell: 'powershell' });
     const childSession = await catalog.createSession({ kind: 'local', name: 'Lab session', shell: 'cmd' });
+    const futureSessionId = '2d7cd587-9b58-49d9-9f95-781e2d68583b';
+    const timestamp = new Date().toISOString();
+    database.prepare(`INSERT INTO session_definitions
+      (id, folder_id, kind, name, options_json, options_version, favorite, created_at, updated_at)
+      VALUES (?, ?, 'rdp', 'Future viewer', '{}', 1, 0, ?, ?)`)
+      .run(futureSessionId, work.id, timestamp, timestamp);
     const applicationCatalog = createSessionCatalog(catalog);
     assert.equal(await catalog.moveSession(rootSession.id, work.id), true);
     assert.equal(await catalog.moveSession(childSession.id, lab.id), true);
@@ -81,6 +87,8 @@ test('folder moves reject cycles and folder deletion preserves children and sess
       'a rejected deletion must not leave sessions partially moved');
     assert.equal((await catalog.listFolders()).find(item => item.id === lab.id)?.parentId, work.id,
       'a rejected deletion must not leave child folders partially reparented');
+    assert.equal((database.prepare('SELECT folder_id FROM session_definitions WHERE id = ?').get(futureSessionId) as { readonly folder_id: string }).folder_id, work.id,
+      'folder deletion must preserve saved definitions for providers outside the current UI');
 
     assert.equal(await catalog.renameFolder(labAtRoot.id, 'Lab elsewhere'), true);
     assert.equal(await catalog.removeFolder(work.id), true);
@@ -90,6 +98,7 @@ test('folder moves reject cycles and folder deletion preserves children and sess
     const sessions = await catalog.listSessions('');
     assert.equal(sessions.find(item => item.id === rootSession.id)?.folderId, null);
     assert.equal(sessions.find(item => item.id === childSession.id)?.folderId, lab.id);
+    assert.equal((database.prepare('SELECT folder_id FROM session_definitions WHERE id = ?').get(futureSessionId) as { readonly folder_id: string | null }).folder_id, null);
   } finally {
     database.close();
   }
