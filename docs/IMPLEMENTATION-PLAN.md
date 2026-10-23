@@ -57,6 +57,8 @@ Implementation checkpoint (2026-10-23): WP-01's P-01 workflow passed on Windows 
 
 Dependency review: [WP-02 dependency decision](dependencies/WP-02.md). Interim host-identity and credential persistence before the WP-03 SQLite catalog is specified in [ADR-0003](adr/ADR-0003-wp02-interim-identity-storage.md). WP-02 includes OS-protected default storage, a main-process-only Windows native secret prompt, and optional master-password lock/unlock; P-03/F-003 stays unverified until the Windows OpenSSH fixture tests pass.
 
+Implementation checkpoint (2026-10-23): the default OS-protected credential-vault adapter now stores ciphertext separately from session definitions, supports operation-scoped resolution, lock/unlock, delete, strict bounded decoding and safeStorage key-rotation writes. Unit tests use a fake safeStorage port and do not establish Windows DPAPI behavior. Main-process composition, the native credential prompt, master-password mode, SSH authentication/UI flow and Windows OpenSSH acceptance remain pending; P-03/F-003 and all feature-matrix entries remain PLANNED.
+
 ### WP-03 — Persisted sessions and settings
 
 **Requires:** WP-00, ideally WP-02.  
