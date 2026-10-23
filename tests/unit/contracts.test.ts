@@ -90,4 +90,13 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   assert.equal(parseRequest(list).ok, true);
   assert.equal(parseRequest({ ...list, payload: { query: 'x'.repeat(257) } }).ok, false);
   assert.equal(parseRequest({ ...list, payload: { query: '', secret: 'hidden' } }).ok, false);
+
+  const folderCreate = { command: 'session.folder.create', requestId: request.requestId, contractVersion: 1,
+    payload: { parentId: null, name: 'Work' } };
+  assert.equal(parseRequest(folderCreate).ok, true);
+  assert.equal(parseRequest({ ...folderCreate, payload: { ...folderCreate.payload, parentId: 'not-a-folder' } }).ok, false);
+  assert.equal(parseRequest({ ...folderCreate, payload: { ...folderCreate.payload, secret: 'hidden' } }).ok, false);
+  const folderMove = { command: 'session.folder.move', requestId: request.requestId, contractVersion: 1,
+    payload: { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', parentId: null } };
+  assert.equal(parseRequest(folderMove).ok, true);
 });

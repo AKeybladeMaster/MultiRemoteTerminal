@@ -7,10 +7,13 @@ import type { SessionCatalogStore } from '../../../../packages/application/src/s
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
-import { normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
+import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
+import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
+import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
+import type { StorageWorkerErrorCode } from '../workers/storage-protocol.ts';
 import type { StorageWorkerRequest, StorageWorkerResult } from '../workers/storage-protocol.ts';
 
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -22,7 +25,7 @@ const storageDiagnostics = channel(STORAGE_DIAGNOSTICS_CHANNEL_NAME);
 type StorageDiagnosticEvent = {
   readonly component: 'storage';
   readonly event: 'protocol-invalid' | 'request-cancelled' | 'request-timeout' | 'startup-error' | 'startup-timeout' | 'worker-exit';
-  readonly code: 'BUSY' | 'CANCELLED' | 'CORRUPT' | 'UNAVAILABLE';
+  readonly code: 'BUSY' | 'CANCELLED' | 'CONFLICT' | 'CORRUPT' | 'NOT_FOUND' | 'UNAVAILABLE';
 };
 
 function publishStorageDiagnostic(event: StorageDiagnosticEvent['event'], code: StorageDiagnosticEvent['code']): void {
@@ -125,6 +128,55 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
   async removeSession(id: string, cancellation?: CancellationSignal): Promise<boolean> {
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'session.remove', id }, cancellation);
+    if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async listFolders(cancellation?: CancellationSignal): Promise<readonly SavedSessionFolder[]> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.list' }, cancellation);
+    if (result.kind !== 'folders') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async createFolder(input: SavedSessionFolderDraft, cancellation?: CancellationSignal): Promise<SavedSessionFolder> {
+    const draft = normalizeSessionFolderDraft(input);
+    if (!draft) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.create', draft }, cancellation);
+    if (result.kind !== 'folder') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async renameFolder(id: string, nameInput: string, cancellation?: CancellationSignal): Promise<boolean> {
+    const name = normalizeSessionFolderName(nameInput);
+    if (!isSessionFolderId(id) || !name) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.rename', id, name }, cancellation);
+    if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async moveFolder(id: string, parentId: string | null, cancellation?: CancellationSignal): Promise<boolean> {
+    if (!isSessionFolderId(id) || !(parentId === null || isSessionFolderId(parentId))) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.move', id, parentId }, cancellation);
+    if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async removeFolder(id: string, cancellation?: CancellationSignal): Promise<boolean> {
+    if (!isSessionFolderId(id)) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.remove', id }, cancellation);
+    if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async moveSession(id: string, folderId: string | null, cancellation?: CancellationSignal): Promise<boolean> {
+    if (!isSessionDefinitionId(id) || !(folderId === null || isSessionFolderId(folderId))) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.move', id, folderId }, cancellation);
     if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
     return result.value;
   }
@@ -356,7 +408,9 @@ class StorageWorkerClient {
 
 export { SqliteStorageStore as SqliteHostTrustStore };
 
-function storeError(code: 'BUSY' | 'CORRUPT' | 'UNAVAILABLE'): HostTrustStoreError {
+function storeError(code: StorageWorkerErrorCode): HostTrustStoreError {
+  if (code === 'CONFLICT') return new HostTrustStoreError('conflict');
+  if (code === 'NOT_FOUND') return new HostTrustStoreError('not-found');
   return new HostTrustStoreError(code.toLowerCase() as 'busy' | 'corrupt' | 'unavailable');
 }
 

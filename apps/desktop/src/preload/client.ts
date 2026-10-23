@@ -1,7 +1,9 @@
 import { CONTRACT_VERSION, isCommandReply, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
-import type { CommandReply, CommandRequest, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionsReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
+  OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
+import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -50,7 +52,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
 
   function requestId(): string { return makeId(); }
   function voidRequest(command: 'terminal.write' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' | 'ssh.write' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
-    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete', payload: Record<string, unknown>): CommandRequest {
+    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
+    'session.folder.delete' | 'session.move', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -130,6 +133,24 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     deleteSavedSession(id: string): Promise<TerminalActionReply> {
       return send(voidRequest('session.delete', { id }), 8_000);
+    },
+    listSavedSessionFolders(): Promise<ListSessionFoldersReply> {
+      return send({ command: 'session.folder.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    createSavedSessionFolder(draft: SavedSessionFolderDraft): Promise<CreateSessionFolderReply> {
+      return send({ command: 'session.folder.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
+    },
+    renameSavedSessionFolder(id: string, name: string): Promise<TerminalActionReply> {
+      return send(voidRequest('session.folder.rename', { id, name }), 8_000);
+    },
+    moveSavedSessionFolder(id: string, parentId: string | null): Promise<TerminalActionReply> {
+      return send(voidRequest('session.folder.move', { id, parentId }), 8_000);
+    },
+    deleteSavedSessionFolder(id: string): Promise<TerminalActionReply> {
+      return send(voidRequest('session.folder.delete', { id }), 8_000);
+    },
+    moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply> {
+      return send(voidRequest('session.move', { id, folderId }), 8_000);
     },
     onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void {
       if (typeof listener !== 'function') return () => {};

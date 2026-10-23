@@ -4,6 +4,7 @@ import type { LocalShell } from './local-terminal.ts';
 
 export interface SavedSessionBase {
   readonly id: string;
+  readonly folderId: string | null;
   readonly name: string;
   readonly favorite: boolean;
   readonly createdAt: string;
@@ -42,14 +43,19 @@ export function normalizeSessionSearch(value: unknown): string | undefined {
 
 export function isSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
   if (!isPlainRecord(value) || typeof value.kind !== 'string' || typeof value.id !== 'string' || !UUID.test(value.id) ||
+      !(value.folderId === null || (typeof value.folderId === 'string' && UUID.test(value.folderId))) ||
       normalizeName(value.name) !== value.name || typeof value.favorite !== 'boolean' || !isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt)) return false;
-  if (value.kind === 'local') return hasExactKeys(value, ['id', 'kind', 'name', 'shell', 'favorite', 'createdAt', 'updatedAt']) && isLocalShell(value.shell);
+  if (value.kind === 'local') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'shell', 'favorite', 'createdAt', 'updatedAt']) && isLocalShell(value.shell);
   if (value.kind === 'ssh') {
-    if (!hasExactKeys(value, ['id', 'kind', 'name', 'host', 'port', 'favorite', 'createdAt', 'updatedAt'])) return false;
+    if (!hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'host', 'port', 'favorite', 'createdAt', 'updatedAt'])) return false;
     const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
     return endpoint !== undefined && endpoint.host === value.host && endpoint.port === value.port;
   }
   return false;
+}
+
+export function isSessionFolderId(value: unknown): value is string {
+  return typeof value === 'string' && UUID.test(value);
 }
 
 export function isSessionDefinitionId(value: unknown): value is string {

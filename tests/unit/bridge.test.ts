@@ -13,7 +13,8 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   }, id);
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
-    'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+    'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
+    'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent']);
   assert.deepEqual(await bridge.describe(), valid);
 });
@@ -22,7 +23,7 @@ test('preload routes saved-session commands through fixed validated requests', a
   const bridge = createBridge(async request => {
     assert.deepEqual(request, { command: 'session.create', requestId: id(), contractVersion: 1,
       payload: { kind: 'local', name: 'Work shell', shell: 'powershell' } });
-    return { requestId: id(), ok: true, result: { id: id(), kind: 'local', name: 'Work shell', shell: 'powershell', favorite: false,
+    return { requestId: id(), ok: true, result: { id: id(), folderId: null, kind: 'local', name: 'Work shell', shell: 'powershell', favorite: false,
       createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } };
   }, id);
   const reply = await bridge.createSavedSession({ kind: 'local', name: 'Work shell', shell: 'powershell' });

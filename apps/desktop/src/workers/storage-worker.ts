@@ -28,7 +28,7 @@ try {
   sessionCatalogRepository = new SqliteSessionCatalogRepository(database);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
-  const errorCode = normalizedError.kind.toUpperCase() as 'BUSY' | 'CORRUPT' | 'UNAVAILABLE';
+  const errorCode = storageWorkerErrorCode(normalizedError);
   try { parent.postMessage({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'startup-error', errorCode }); } catch { /* Main observes worker exit. */ }
   process.exit(1);
 }
@@ -68,6 +68,24 @@ parent.on('message', async event => {
     } else if (request.command === 'session.remove') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: await sessionCatalogRepository.removeSession(request.id) } });
+    } else if (request.command === 'session.folder.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'folders', value: await sessionCatalogRepository.listFolders() } });
+    } else if (request.command === 'session.folder.create') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'folder', value: await sessionCatalogRepository.createFolder(request.draft) } });
+    } else if (request.command === 'session.folder.rename') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.renameFolder(request.id, request.name) } });
+    } else if (request.command === 'session.folder.move') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.moveFolder(request.id, request.parentId) } });
+    } else if (request.command === 'session.folder.remove') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.removeFolder(request.id) } });
+    } else if (request.command === 'session.move') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.moveSession(request.id, request.folderId) } });
     } else {
       closed = true;
       repository.close();

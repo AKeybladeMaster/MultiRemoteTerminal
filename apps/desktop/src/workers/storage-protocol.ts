@@ -1,7 +1,9 @@
 import { canonicalizeSshHostEndpoint, isHostKeyEvidence } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
-import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
+import { isSavedSessionDefinition, isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
+import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
+import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
@@ -18,6 +20,12 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.favorite'; readonly id: string; readonly favorite: boolean }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.list' }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.create'; readonly draft: SavedSessionFolderDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.rename'; readonly id: string; readonly name: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.move'; readonly id: string; readonly parentId: string | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
 
 export type StorageWorkerResult =
@@ -26,11 +34,13 @@ export type StorageWorkerResult =
   | { readonly kind: 'removed'; readonly value: boolean }
   | { readonly kind: 'migrated'; readonly value: { readonly sourceCount: number; readonly verifiedCount: number } }
   | { readonly kind: 'sessions'; readonly value: readonly SavedSessionDefinition[] }
+  | { readonly kind: 'folders'; readonly value: readonly SavedSessionFolder[] }
+  | { readonly kind: 'folder'; readonly value: SavedSessionFolder }
   | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
   | { readonly kind: 'changed'; readonly value: boolean }
   | { readonly kind: 'shutdown' };
 
-export type StorageWorkerErrorCode = 'BUSY' | 'CORRUPT' | 'UNAVAILABLE';
+export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'NOT_FOUND' | 'UNAVAILABLE';
 
 export type StorageWorkerMessage =
   | { readonly version: 1; readonly type: 'ready' }
@@ -41,7 +51,9 @@ export type StorageWorkerMessage =
 export function storageWorkerErrorCode(error: unknown): StorageWorkerErrorCode {
   if (error instanceof StorageOperationError) {
     if (error.kind === 'busy') return 'BUSY';
+    if (error.kind === 'conflict') return 'CONFLICT';
     if (error.kind === 'corrupt') return 'CORRUPT';
+    if (error.kind === 'not-found') return 'NOT_FOUND';
   }
   return 'UNAVAILABLE';
 }
@@ -92,6 +104,19 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.folder.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSessionFolderDraft(value.draft)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.folder.rename' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'name']) &&
+      isSessionFolderId(value.id) && normalizeSessionFolderName(value.name) === value.name) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'parentId']) &&
+      isSessionFolderId(value.id) && (value.parentId === null || isSessionFolderId(value.parentId))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionFolderId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'folderId']) &&
+      isSessionDefinitionId(value.id) && (value.folderId === null || isSessionFolderId(value.folderId))) return value as unknown as StorageWorkerRequest;
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   return undefined;
 }
@@ -114,11 +139,13 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'migrated' && exactKeys(value, ['kind', 'value']) && record(value.value) && exactKeys(value.value, ['sourceCount', 'verifiedCount']) &&
       Number.isSafeInteger(value.value.sourceCount) && value.value.sourceCount === value.value.verifiedCount && (value.value.sourceCount as number) >= 0) return true;
   if (value.kind === 'sessions' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionDefinition)) return true;
+  if (value.kind === 'folders' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionFolder)) return true;
+  if (value.kind === 'folder' && exactKeys(value, ['kind', 'value']) && isSavedSessionFolder(value.value)) return true;
   if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
   if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 
 function isErrorCode(value: unknown): value is StorageWorkerErrorCode {
-  return value === 'BUSY' || value === 'CORRUPT' || value === 'UNAVAILABLE';
+  return value === 'BUSY' || value === 'CONFLICT' || value === 'CORRUPT' || value === 'NOT_FOUND' || value === 'UNAVAILABLE';
 }

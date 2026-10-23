@@ -8,6 +8,9 @@ import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
 import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
+import { isSessionFolderId } from '../../domain/src/session-definition.ts';
+import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../domain/src/session-folder.ts';
+import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/src/session-folder.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -58,9 +61,16 @@ export type ListSessionsRequest = Request<'session.list', { readonly query: stri
 export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
 export type SetSessionFavoriteRequest = Request<'session.favorite', { readonly id: string; readonly favorite: boolean }>;
 export type DeleteSessionRequest = Request<'session.delete', { readonly id: string }>;
+export type ListSessionFoldersRequest = Request<'session.folder.list', Record<string, never>>;
+export type CreateSessionFolderRequest = Request<'session.folder.create', { readonly parentId: string | null; readonly name: string }>;
+export type RenameSessionFolderRequest = Request<'session.folder.rename', { readonly id: string; readonly name: string }>;
+export type MoveSessionFolderRequest = Request<'session.folder.move', { readonly id: string; readonly parentId: string | null }>;
+export type DeleteSessionFolderRequest = Request<'session.folder.delete', { readonly id: string }>;
+export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | WriteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest |
-  ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest;
+  ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
+  RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | MoveSessionRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -70,6 +80,8 @@ export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
 export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
+export type ListSessionFoldersReply = CommandReply<readonly SavedSessionFolder[]>;
+export type CreateSessionFolderReply = CommandReply<SavedSessionFolder>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 
 export interface DesktopBridge {
@@ -91,6 +103,12 @@ export interface DesktopBridge {
   createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
   setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply>;
   deleteSavedSession(id: string): Promise<TerminalActionReply>;
+  listSavedSessionFolders(): Promise<ListSessionFoldersReply>;
+  createSavedSessionFolder(draft: SavedSessionFolderDraft): Promise<CreateSessionFolderReply>;
+  renameSavedSessionFolder(id: string, name: string): Promise<TerminalActionReply>;
+  moveSavedSessionFolder(id: string, parentId: string | null): Promise<TerminalActionReply>;
+  deleteSavedSessionFolder(id: string): Promise<TerminalActionReply>;
+  moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
 }
@@ -105,7 +123,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRUST_TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
-const ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CANCELLED', 'OUTPUT_LIMIT',
+const ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CANCELLED', 'OUTPUT_LIMIT',
   'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
 
 function validSize(columns: unknown, rows: unknown): boolean {
@@ -166,9 +184,21 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'session.delete' && exactKeys(payload, ['id']) && isSessionDefinitionId(payload.id)) {
     return { ok: true, result: value as unknown as DeleteSessionRequest };
   }
+  if (value.command === 'session.folder.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSessionFoldersRequest };
+  if (value.command === 'session.folder.create' && normalizeSessionFolderDraft(payload)) return { ok: true, result: value as unknown as CreateSessionFolderRequest };
+  if (value.command === 'session.folder.rename' && exactKeys(payload, ['id', 'name']) && isSessionFolderId(payload.id) &&
+      normalizeSessionFolderName(payload.name) === payload.name) return { ok: true, result: value as unknown as RenameSessionFolderRequest };
+  if (value.command === 'session.folder.move' && exactKeys(payload, ['id', 'parentId']) && isSessionFolderId(payload.id) &&
+      (payload.parentId === null || isSessionFolderId(payload.parentId))) return { ok: true, result: value as unknown as MoveSessionFolderRequest };
+  if (value.command === 'session.folder.delete' && exactKeys(payload, ['id']) && isSessionFolderId(payload.id)) {
+    return { ok: true, result: value as unknown as DeleteSessionFolderRequest };
+  }
+  if (value.command === 'session.move' && exactKeys(payload, ['id', 'folderId']) && isSessionDefinitionId(payload.id) &&
+      (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke',
-    'session.list', 'session.create', 'session.favorite', 'session.delete'].includes(value.command)) {
+    'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
+    'session.folder.move', 'session.folder.delete', 'session.move'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -208,6 +238,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.create') return isSavedSessionDefinition(value.result);
+    if (request.command === 'session.folder.list') return Array.isArray(value.result) && value.result.every(isSavedSessionFolder);
+    if (request.command === 'session.folder.create') return isSavedSessionFolder(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

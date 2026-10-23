@@ -9,7 +9,7 @@ const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-b
 const owner = { owned: true, mainFrame: true, url: APP_URL };
 const snapshot = () => describeWorkbench({ version: '0.0.0', platform: 'win32' });
 const noOp = async () => ({ ok: true, result: {} } as const);
-const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
+const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId: null, kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
   createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, terminals: {
@@ -22,7 +22,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptySavedSession }),
-    setFavorite: noOp, remove: noOp
+    setFavorite: noOp, remove: noOp, listFolders: async () => ({ ok: true, result: [] }),
+    createFolder: async () => ({ ok: true, result: { id: emptySavedSession.id, parentId: null, name: 'Folder' } }),
+    renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp
   }
 });
 
@@ -62,7 +64,13 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
     async list(query, signal) { calls.push(`list:${query}`); forwardedCancellations.push(signal); return { ok: true, result: [] }; },
     async create(draft, signal) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async setFavorite(id, favorite, signal) { calls.push(`favorite:${id}:${favorite}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
-    async remove(id, signal) { calls.push(`remove:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; }
+    async remove(id, signal) { calls.push(`remove:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
+    async listFolders(signal) { forwardedCancellations.push(signal); return { ok: true, result: [] }; },
+    async createFolder(draft, signal) { const name = String((draft as { readonly name?: unknown }).name); calls.push(`folder:${name}`); forwardedCancellations.push(signal); return { ok: true, result: { id: emptySavedSession.id, parentId: null, name } }; },
+    async renameFolder(id, name, signal) { calls.push(`rename-folder:${id}:${name}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
+    async moveFolder(id, parentId, signal) { calls.push(`move-folder:${id}:${parentId}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
+    async removeFolder(id, signal) { calls.push(`remove-folder:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
+    async moveSession(id, folderId, signal) { calls.push(`move-session:${id}:${folderId}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; }
   } };
   const requestId = request.requestId;
   const replies = await Promise.all([

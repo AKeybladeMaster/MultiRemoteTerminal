@@ -56,13 +56,58 @@ test('SQLite catalog rejects secret-bearing or malformed definitions without wri
   }
 });
 
+test('folder moves reject cycles and folder deletion preserves children and sessions transactionally', async () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(database).migrate();
+    const catalog = new SqliteSessionCatalogRepository(database);
+    const work = await catalog.createFolder({ name: 'Work', parentId: null });
+    const lab = await catalog.createFolder({ name: 'Lab', parentId: work.id });
+    const labAtRoot = await catalog.createFolder({ name: 'Lab', parentId: null });
+    const rootSession = await catalog.createSession({ kind: 'local', name: 'Root session', shell: 'powershell' });
+    const childSession = await catalog.createSession({ kind: 'local', name: 'Lab session', shell: 'cmd' });
+    const applicationCatalog = createSessionCatalog(catalog);
+    assert.equal(await catalog.moveSession(rootSession.id, work.id), true);
+    assert.equal(await catalog.moveSession(childSession.id, lab.id), true);
+    assert.equal((await catalog.listSessions('')).find(item => item.id === childSession.id)?.folderId, lab.id);
+
+    assert.deepEqual(await applicationCatalog.moveFolder(work.id, lab.id), {
+      ok: false, error: { code: 'CONFLICT', target: 'application', retryable: false }
+    });
+    assert.deepEqual(await applicationCatalog.removeFolder(work.id), {
+      ok: false, error: { code: 'CONFLICT', target: 'application', retryable: false }
+    });
+    assert.equal((await catalog.listSessions('')).find(item => item.id === rootSession.id)?.folderId, work.id,
+      'a rejected deletion must not leave sessions partially moved');
+    assert.equal((await catalog.listFolders()).find(item => item.id === lab.id)?.parentId, work.id,
+      'a rejected deletion must not leave child folders partially reparented');
+
+    assert.equal(await catalog.renameFolder(labAtRoot.id, 'Lab elsewhere'), true);
+    assert.equal(await catalog.removeFolder(work.id), true);
+    const folders = await catalog.listFolders();
+    assert.equal(folders.find(item => item.id === lab.id)?.parentId, null);
+    assert.equal(folders.some(item => item.id === work.id), false);
+    const sessions = await catalog.listSessions('');
+    assert.equal(sessions.find(item => item.id === rootSession.id)?.folderId, null);
+    assert.equal(sessions.find(item => item.id === childSession.id)?.folderId, lab.id);
+  } finally {
+    database.close();
+  }
+});
+
 test('session catalog forwards cancellation and preserves the cancelled outcome', async () => {
   let forwarded: unknown;
   const catalog = createSessionCatalog({
     async listSessions(_query, cancellation) { forwarded = cancellation; throw new StorageOperationError('cancelled'); },
     async createSession() { throw new Error('not called'); },
     async setFavorite() { throw new Error('not called'); },
-    async removeSession() { throw new Error('not called'); }
+    async removeSession() { throw new Error('not called'); },
+    async listFolders() { throw new Error('not called'); },
+    async createFolder() { throw new Error('not called'); },
+    async renameFolder() { throw new Error('not called'); },
+    async moveFolder() { throw new Error('not called'); },
+    async removeFolder() { throw new Error('not called'); },
+    async moveSession() { throw new Error('not called'); }
   });
   const cancellation = { aborted: false, addEventListener() {}, removeEventListener() {} };
   const result = await catalog.list('prod', cancellation);
@@ -72,6 +117,8 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
 
 test('storage worker retains busy and corrupt categories from shared storage errors', () => {
   assert.equal(storageWorkerErrorCode(new StorageOperationError('busy')), 'BUSY');
+  assert.equal(storageWorkerErrorCode(new StorageOperationError('conflict')), 'CONFLICT');
   assert.equal(storageWorkerErrorCode(new StorageOperationError('corrupt')), 'CORRUPT');
+  assert.equal(storageWorkerErrorCode(new StorageOperationError('not-found')), 'NOT_FOUND');
   assert.equal(storageWorkerErrorCode(new StorageOperationError('unavailable')), 'UNAVAILABLE');
 });

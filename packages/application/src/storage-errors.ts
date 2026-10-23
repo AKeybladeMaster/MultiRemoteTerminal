@@ -1,4 +1,4 @@
-export type StorageOperationKind = 'busy' | 'cancelled' | 'corrupt' | 'unavailable';
+export type StorageOperationKind = 'busy' | 'cancelled' | 'conflict' | 'corrupt' | 'not-found' | 'unavailable';
 
 export class StorageOperationError extends Error {
   readonly kind: StorageOperationKind;
