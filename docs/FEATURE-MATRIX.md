@@ -5,14 +5,15 @@
 This is **requirements coverage**, not an assertion of implemented code. Each feature begins `PLANNED`. Change the status only with a Windows build and linked acceptance evidence.
 
 **Phases:** `MVP` (first independently usable release), `Next` (subsequent development), `Parity` (full-feature verification).  
-**Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. All entries are presently PLANNED.
+**Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. P-01 is VERIFIED from Windows acceptance evidence; all other entries remain PLANNED.
 
 WP-00 foundation has separate [Windows acceptance evidence](results/WP-00-2026-10-23.md).
 It validates the shell and IPC security controls only; it completes none of the full workflows below.
+WP-01 verifies P-01's ten-tab local-terminal workflow in [Windows acceptance evidence](results/WP-01-2026-10-23.md). It does not mark remote protocols, saved sessions, or packaging as implemented.
 
 | ID | Reference feature | Planned architecture/provider | Phase | Verification/interpretation |
 |---|---|---|---|---|
-| P-01 | Tabbed terminal | React+xterm.js + runtime tabs | MVP | 10 tabs, independent input/resize/close, accessibility |
+| P-01 | Tabbed terminal (VERIFIED) | React+xterm.js + runtime tabs | MVP | 10 tabs, independent input/resize/close, accessibility |
 | P-02 | Local Unix-like commands | Local ConPTY, user-installed WSL/PATH tools | Next | Common commands through actual installed shell; no false built-in claim |
 | P-03 | SSH sessions | SSH provider with host trust | MVP | Public-key/password, disconnect, host change test |
 | P-04 | Telnet sessions | Opt-in legacy Telnet provider | Parity | Real TCP negotiation and conspicuous plaintext warning |

@@ -11,7 +11,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe']);
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal', 'onTerminalEvent']);
   assert.deepEqual(await bridge.describe(), valid);
 });
 
@@ -22,27 +22,27 @@ test('preload redacts rejected and malformed transport responses', async () => {
   }
 });
 
-test('timeout does not permit unbounded pending IPC; late completion releases the slot', async context => {
+test('pending IPC stays bounded and late completion releases one slot after timeout', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
-  let finish: (value: unknown) => void = () => {};
+  const finishers: ((value: unknown) => void)[] = [];
   let calls = 0;
-  const bridge = createBridge(() => { calls++; return new Promise(resolve => { finish = resolve; }); }, id);
-  const waiting = bridge.describe();
+  const bridge = createBridge(() => { calls++; return new Promise(resolve => { finishers.push(resolve); }); }, id);
+  const waiting = Array.from({ length: 256 }, () => bridge.describe());
   await Promise.resolve();
   const busy = await bridge.describe();
   assert.equal(busy.ok, false);
   if (!busy.ok) assert.equal(busy.error.code, 'BUSY');
   context.mock.timers.tick(3000);
-  const timedOut = await waiting;
-  assert.equal(timedOut.ok, false);
-  if (!timedOut.ok) assert.equal(timedOut.error.code, 'TIMEOUT');
-  for (let i = 0; i < 100; i++) assert.equal((await bridge.describe()).ok, false);
-  assert.equal(calls, 1);
-  finish(valid);
+  const timedOut = await Promise.all(waiting);
+  assert.ok(timedOut.every(reply => !reply.ok && reply.error.code === 'TIMEOUT'));
+  assert.equal(calls, 256);
+  finishers[0]!(valid);
   await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   const next = bridge.describe();
   await Promise.resolve();
-  assert.equal(calls, 2);
-  finish(valid);
+  assert.equal(calls, 257);
+  finishers[256]!(valid);
   assert.deepEqual(await next, valid);
+  for (const finish of finishers.slice(1, 256)) finish(valid);
+  await Promise.resolve(); await Promise.resolve();
 });

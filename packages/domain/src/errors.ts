@@ -1,13 +1,14 @@
-export type ErrorCode = 'INVALID_REQUEST' | 'UNKNOWN_COMMAND' | 'FORBIDDEN' | 'UNAVAILABLE' | 'TIMEOUT' | 'BUSY';
+export type ErrorCode = 'INVALID_REQUEST' | 'UNKNOWN_COMMAND' | 'FORBIDDEN' | 'UNAVAILABLE' | 'TIMEOUT' | 'BUSY' | 'NOT_FOUND' | 'CANCELLED' | 'OUTPUT_LIMIT';
+export type ErrorTarget = 'application' | 'terminal';
 
 export interface AppError {
   readonly code: ErrorCode;
-  readonly target: 'application';
+  readonly target: ErrorTarget;
   readonly retryable: boolean;
 }
 
 export type Outcome<T> = { readonly ok: true; readonly result: T } | { readonly ok: false; readonly error: AppError };
 
-export function failure(code: ErrorCode): { readonly ok: false; readonly error: AppError } {
-  return { ok: false, error: { code, target: 'application', retryable: code === 'UNAVAILABLE' || code === 'TIMEOUT' || code === 'BUSY' } };
+export function failure(code: ErrorCode, target: ErrorTarget = 'application'): { readonly ok: false; readonly error: AppError } {
+  return { ok: false, error: { code, target, retryable: code === 'UNAVAILABLE' || code === 'TIMEOUT' || code === 'BUSY' } };
 }
