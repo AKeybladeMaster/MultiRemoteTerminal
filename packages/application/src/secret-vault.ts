@@ -19,6 +19,7 @@ export interface SecretVault {
   store(reference: CredentialReference, secret: string): Promise<void>;
   resolveForOperation(reference: CredentialReference): Promise<string>;
   delete(reference: CredentialReference): Promise<boolean>;
+  reset(): Promise<void>;
   lock(): void;
   unlock(): Promise<void>;
 }

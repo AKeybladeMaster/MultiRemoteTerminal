@@ -26,6 +26,7 @@ export class SafeStorageSecretVault implements SecretVault {
   private readonly filePath: string;
   private readonly safeStorage: AsyncSafeStorage;
   private records = new Map<string, string>();
+  private recordsLoaded = false;
   private vaultState: SecretVaultState = 'uninitialized';
   private generation = 0;
   private pendingOperations = 0;
@@ -50,7 +51,8 @@ export class SafeStorageSecretVault implements SecretVault {
       return Promise.reject(new SecretVaultError('invalid-input'));
     }
     return this.run(async () => {
-      this.requireInitialized();
+      this.requireAvailable();
+      const generation = this.generation;
       await this.requireEncryptionAvailable();
       let encrypted: Buffer;
       try {
@@ -58,6 +60,7 @@ export class SafeStorageSecretVault implements SecretVault {
       } catch {
         throw new SecretVaultError('unavailable');
       }
+      this.requireSameUnlockedGeneration(generation);
       const ciphertext = encodeCiphertext(encrypted);
       const next = new Map(this.records);
       next.set(reference, ciphertext);
@@ -74,9 +77,10 @@ export class SafeStorageSecretVault implements SecretVault {
       const ciphertext = this.records.get(reference);
       if (!ciphertext) throw new SecretVaultError('not-found');
 
+      const encrypted = decodeCiphertext(ciphertext);
       let decrypted: { readonly result: string; readonly shouldReEncrypt: boolean };
       try {
-        decrypted = await this.safeStorage.decryptStringAsync(decodeCiphertext(ciphertext));
+        decrypted = await this.safeStorage.decryptStringAsync(encrypted);
       } catch {
         throw new SecretVaultError('unavailable');
       }
@@ -108,10 +112,12 @@ export class SafeStorageSecretVault implements SecretVault {
   delete(reference: CredentialReference): Promise<boolean> {
     if (!parseCredentialReference(reference)) return Promise.reject(new SecretVaultError('invalid-input'));
     return this.run(async () => {
-      this.requireInitialized();
+      this.requireAvailable();
       if (!this.records.has(reference)) return false;
+      const generation = this.generation;
       const next = new Map(this.records);
       next.delete(reference);
+      this.requireSameUnlockedGeneration(generation);
       await this.writeRecords(next);
       this.records = next;
       return true;
@@ -119,36 +125,61 @@ export class SafeStorageSecretVault implements SecretVault {
   }
 
   lock(): void {
-    if (this.vaultState !== 'available') return;
     this.generation += 1;
-    this.vaultState = 'locked';
+    if (this.vaultState !== 'unavailable') this.vaultState = 'locked';
   }
 
   unlock(): Promise<void> {
+    const generation = this.generation;
     return this.run(async () => {
-      if (this.vaultState === 'uninitialized') {
+      if (this.vaultState === 'available' && this.recordsLoaded) return;
+      if (!this.recordsLoaded || this.vaultState === 'unavailable' || this.vaultState === 'uninitialized') {
         await this.initializeWithinQueue();
-        return;
       }
-      if (this.vaultState === 'unavailable') {
-        await this.initializeWithinQueue();
-        return;
-      }
-      if (this.vaultState === 'available') return;
+      if (generation !== this.generation) throw new SecretVaultError('locked');
+      if (this.vaultState === 'available' && this.recordsLoaded) return;
+      if (!this.recordsLoaded) throw new SecretVaultError('unavailable');
       await this.requireEncryptionAvailable();
-      this.generation += 1;
+      if (generation !== this.generation || this.vaultState !== 'locked') throw new SecretVaultError('locked');
       this.vaultState = 'available';
     });
   }
 
+  reset(): Promise<void> {
+    const generation = ++this.generation;
+    const preserveLock = this.vaultState === 'locked';
+    if (this.vaultState === 'available') this.vaultState = 'locked';
+    return this.run(async () => {
+      try {
+        await this.writeRecords(new Map());
+        this.records = new Map();
+        this.recordsLoaded = true;
+        if (generation !== this.generation) return;
+        if (preserveLock) return;
+        await this.requireEncryptionAvailable();
+        if (generation !== this.generation) return;
+        this.vaultState = 'available';
+      } catch (error) {
+        if (generation === this.generation) this.vaultState = 'unavailable';
+        throw error;
+      }
+    });
+  }
+
   private async initializeWithinQueue(): Promise<void> {
-    if (this.vaultState === 'available' || this.vaultState === 'locked') return;
+    if (this.vaultState === 'available' && this.recordsLoaded) return;
+    const generation = this.generation;
+    const preserveLock = this.vaultState === 'locked';
     try {
       await this.requireEncryptionAvailable();
-      this.records = await this.readRecords();
-      this.vaultState = 'available';
+      if (!this.recordsLoaded) {
+        this.records = await this.readRecords();
+        this.recordsLoaded = true;
+      }
+      if (generation !== this.generation) return;
+      this.vaultState = preserveLock ? 'locked' : 'available';
     } catch (error) {
-      this.vaultState = 'unavailable';
+      if (generation === this.generation) this.vaultState = 'unavailable';
       if (error instanceof SecretVaultError) throw error;
       throw new SecretVaultError('unavailable');
     }
@@ -164,7 +195,9 @@ export class SafeStorageSecretVault implements SecretVault {
   }
 
   private requireInitialized(): void {
-    if (this.vaultState === 'unavailable' || this.vaultState === 'uninitialized') throw new SecretVaultError('unavailable');
+    if (!this.recordsLoaded || this.vaultState === 'unavailable' || this.vaultState === 'uninitialized') {
+      throw new SecretVaultError('unavailable');
+    }
   }
 
   private requireAvailable(): void {
