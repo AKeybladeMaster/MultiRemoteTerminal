@@ -203,7 +203,6 @@ function boot(): void {
       return result.canceled ? undefined : result.filePaths[0];
     }
   };
-  const sessionCatalog = createSessionCatalog(storageStore, bundleDialog);
   const systemDirectory = {
     getSystemDirectory(): string {
       const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
@@ -231,6 +230,7 @@ function boot(): void {
   );
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
   const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
+  const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels);
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })

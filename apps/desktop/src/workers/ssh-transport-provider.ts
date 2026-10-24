@@ -179,6 +179,7 @@ export function createSshTransportProvider(
             closeForwardConnection(forward, connection);
             return;
           }
+          clearTimeout(connection.timer);
           connection.channel = channel;
           channel.once('error', () => closeForwardConnection(forward, connection));
           channel.once('close', () => closeForwardConnection(forward, connection));

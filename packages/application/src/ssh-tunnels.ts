@@ -2,6 +2,7 @@ import { failure } from '../../domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../domain/src/errors.ts';
 import type { LocalTunnelDefinition, LocalTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
 import { isTunnelId, normalizeLocalTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
+import { isSessionDefinitionId } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition } from '../../domain/src/session-definition.ts';
 import type { CancellationSignal } from './cancellation.ts';
 import type { SshTerminalController } from './ssh-terminals.ts';
@@ -35,6 +36,8 @@ export interface SshTunnelController {
   remove(id: unknown): Promise<Outcome<Record<string, never>>>;
   start(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>>;
   stop(id: unknown): Promise<Outcome<TunnelRunStatus>>;
+  beginSessionRemoval(sessionId: string): boolean;
+  endSessionRemoval(sessionId: string): void;
   closeAll(): Promise<void>;
   subscribe(listener: (status: TunnelRunStatus) => void): () => void;
   dispose(): Promise<void>;
@@ -53,6 +56,7 @@ interface RuntimeTunnel {
 
 interface StartAttempt {
   cancelled: boolean;
+  sessionId?: string;
   runtime?: RuntimeTunnel;
   promise: Promise<Outcome<TunnelRunStatus>>;
 }
@@ -70,6 +74,7 @@ export function createSshTunnelController(
 ): SshTunnelController {
   const runtimes = new Map<string, RuntimeTunnel>();
   const startingRequests = new Map<string, StartAttempt>();
+  const profilesBeingRemoved = new Set<string>();
   const statuses = new Map<string, TunnelRunStatus>();
   const listeners = new Set<(status: TunnelRunStatus) => void>();
   let disposed = false;
@@ -124,7 +129,7 @@ export function createSshTunnelController(
     if (disposed) return failure('CANCELLED');
     const draft = normalizeLocalTunnelDraft(input);
     if (!draft) return failure('INVALID_REQUEST');
-    if (draft.id && runtimes.has(draft.id)) return failure('BUSY', 'terminal');
+    if (draft.id && (runtimes.has(draft.id) || startingRequests.has(draft.id))) return failure('BUSY', 'terminal');
     try {
       const profile = await profiles.getSessionDefinition(draft.sessionId);
       if (!profile) return failure('NOT_FOUND');
@@ -136,7 +141,7 @@ export function createSshTunnelController(
   async function remove(id: unknown): Promise<Outcome<Record<string, never>>> {
     if (disposed) return failure('CANCELLED');
     if (!isTunnelId(id)) return failure('INVALID_REQUEST');
-    if (runtimes.has(id)) return failure('BUSY', 'terminal');
+    if (runtimes.has(id) || startingRequests.has(id)) return failure('BUSY', 'terminal');
     try {
       const removed = await catalog.removeLocalTunnel(id);
       if (!removed) return failure('NOT_FOUND');
@@ -194,11 +199,14 @@ export function createSshTunnelController(
       definition = await catalog.getLocalTunnel(id);
       if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
       if (!definition) return failure('NOT_FOUND');
+      attempt.sessionId = definition.sessionId;
+      if (profilesBeingRemoved.has(definition.sessionId)) return failure('BUSY');
       profile = await profiles.getSessionDefinition(definition.sessionId);
     } catch (error) {
       return disposed || attempt.cancelled ? failure('CANCELLED', 'terminal') : failure(storageErrorCode(error));
     }
     if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
+    if (profilesBeingRemoved.has(definition.sessionId)) return failure('BUSY');
     if (!profile) return failure('NOT_FOUND');
     if ((profile.kind !== 'ssh' && profile.kind !== 'sftp') || !profile.host || !profile.port) return failure('INVALID_REQUEST');
 
@@ -266,6 +274,22 @@ export function createSshTunnelController(
     return requestStop(runtime);
   }
 
+  function beginSessionRemoval(sessionId: string): boolean {
+    if (!isSessionDefinitionId(sessionId) || profilesBeingRemoved.has(sessionId)) return false;
+    profilesBeingRemoved.add(sessionId);
+    const hasInFlightTunnel = [...startingRequests.values()].some(attempt => attempt.sessionId === sessionId) ||
+      [...runtimes.values()].some(runtime => runtime.definition.sessionId === sessionId);
+    if (hasInFlightTunnel) {
+      profilesBeingRemoved.delete(sessionId);
+      return false;
+    }
+    return true;
+  }
+
+  function endSessionRemoval(sessionId: string): void {
+    profilesBeingRemoved.delete(sessionId);
+  }
+
   function requestStop(runtime: RuntimeTunnel): Promise<Outcome<TunnelRunStatus>> {
     if (runtime.stopPromise) return runtime.stopPromise;
     const operation = performStop(runtime).finally(() => { delete runtime.stopPromise; });
@@ -303,6 +327,8 @@ export function createSshTunnelController(
     remove,
     start,
     stop,
+    beginSessionRemoval,
+    endSessionRemoval,
     async closeAll() {
       for (const attempt of startingRequests.values()) cancelAttempt(attempt);
       await Promise.all([...runtimes.values()].map(runtime => requestStop(runtime)));

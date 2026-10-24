@@ -192,6 +192,65 @@ test('local SSH forwarding binds only on loopback, relays TCP bytes, and release
   await closeServer(target);
 });
 
+test('established SSH forwarded connections stay open beyond the channel-open timeout', async () => {
+  const target: Server = createServer(socket => socket.pipe(socket));
+  const targetPort = await listen(target);
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+  client.emit('ready');
+  await opened;
+  const definition = { id: '33333333-3333-4333-8333-333333333334', sessionId, name: 'Long-lived echo', mode: 'local' as const,
+    bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort, createdAt: '2026-10-24T00:00:00.000Z' };
+  const bindPort = await provider.startLocalForward(sessionId, definition);
+  const socket = connectTcp(bindPort, '127.0.0.1');
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
+    await new Promise(resolve => setTimeout(resolve, 16_000));
+    assert.equal(socket.destroyed, false, 'an established channel must not keep the open timeout armed');
+    const echoed = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Long-lived forwarded echo timed out')), 2_000);
+      socket.once('data', chunk => { clearTimeout(timer); resolve(chunk.toString('utf8')); });
+      socket.once('error', error => { clearTimeout(timer); reject(error); });
+    });
+    socket.write('still-forwarded');
+    assert.equal(await echoed, 'still-forwarded');
+  } finally {
+    socket.destroy();
+    await provider.stopLocalForward(sessionId, definition.id);
+    await provider.close(sessionId);
+    await closeServer(target);
+  }
+});
+
+test('an actual occupied loopback port returns CONFLICT and leaves no listener behind', async () => {
+  const occupied: Server = createServer();
+  const bindPort = await listen(occupied);
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+  client.emit('ready');
+  await opened;
+  const definition = { id: '33333333-3333-4333-8333-333333333335', sessionId, name: 'Occupied', mode: 'local' as const,
+    bindHost: '127.0.0.1' as const, bindPort, targetHost: '127.0.0.1', targetPort: 1, createdAt: '2026-10-24T00:00:00.000Z' };
+
+  try {
+    await assert.rejects(provider.startLocalForward(sessionId, definition), error => (error as { code?: string }).code === 'CONFLICT');
+    await closeServer(occupied);
+    assert.equal(await canConnect(bindPort), false, 'the failed bind must not leave a loopback listener behind');
+    const retryPort = await provider.startLocalForward(sessionId, { ...definition, id: '33333333-3333-4333-8333-333333333336' });
+    assert.equal(retryPort, bindPort, 'the formerly occupied port can be reused after its owner closes');
+    await provider.stopLocalForward(sessionId, '33333333-3333-4333-8333-333333333336');
+    assert.equal(await canConnect(bindPort), false, 'stopping the retry releases its port');
+  } finally {
+    await closeServer(occupied);
+    await provider.close(sessionId);
+  }
+});
+
 async function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);

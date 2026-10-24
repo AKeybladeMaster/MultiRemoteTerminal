@@ -91,18 +91,18 @@ test('concurrent starts for the same tunnel share one runtime and listener', asy
   await controller.dispose();
 });
 
-test('controller allows more than sixteen active saved tunnels', async () => {
+test('controller allows twenty active saved tunnels without an application cap', async () => {
   let nextRuntime = 100;
   const { controller, calls, saved } = harness({ newId: () => `00000000-0000-4000-8000-${String(++nextRuntime).padStart(12, '0')}` });
-  const tunnelIds = Array.from({ length: 17 }, (_, index) => `00000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`);
+  const tunnelIds = Array.from({ length: 20 }, (_, index) => `00000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`);
   for (const [index, id] of tunnelIds.entries()) saved.set(id, { ...definition, id, name: `Tunnel ${index + 1}` });
 
   const results = await Promise.all(tunnelIds.map(id => controller.start(id)));
 
   assert.ok(results.every(result => result.ok));
-  assert.equal(calls.opened.length, 17);
+  assert.equal(calls.opened.length, 20);
   await controller.closeAll();
-  assert.equal(calls.closed.length, 17);
+  assert.equal(calls.closed.length, 20);
   await controller.dispose();
 });
 
@@ -112,11 +112,28 @@ test('closeAll cancels startup waiting on profile lookup before it opens SSH', a
   const starting = controller.start(tunnelId);
   await new Promise(resolve => setImmediate(resolve));
 
+  assert.deepEqual(await controller.remove(tunnelId), { ok: false, error: { code: 'BUSY', target: 'terminal', retryable: true } });
+  assert.deepEqual(await controller.save({ id: tunnelId, sessionId: profileId, name: 'Changed', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
+    targetHost: 'db.internal', targetPort: 5432 }), { ok: false, error: { code: 'BUSY', target: 'terminal', retryable: true } });
   await controller.closeAll();
   releaseProfile(profile);
 
   assert.deepEqual(await starting, { ok: false, error: { code: 'CANCELLED', target: 'terminal', retryable: false } });
   assert.deepEqual(calls.opened, []);
+  await controller.dispose();
+});
+
+test('profile removal reservation blocks tunnel startup and active tunnel profile deletion', async () => {
+  const { controller } = harness();
+  assert.equal(controller.beginSessionRemoval(profileId), true);
+  assert.deepEqual(await controller.start(tunnelId), { ok: false, error: { code: 'BUSY', target: 'application', retryable: true } });
+  controller.endSessionRemoval(profileId);
+
+  assert.equal((await controller.start(tunnelId)).ok, true);
+  assert.equal(controller.beginSessionRemoval(profileId), false);
+  await controller.stop(tunnelId);
+  assert.equal(controller.beginSessionRemoval(profileId), true);
+  controller.endSessionRemoval(profileId);
   await controller.dispose();
 });
 

@@ -27,6 +27,10 @@ additional routing and exposure rules.
   behavior so a client can finish sending while it still receives a response.
 - Definitions persist across app restarts but never auto-start. Runtime status
   and assigned ports are ephemeral.
+- A concurrent start for the same definition joins the existing startup. The
+  application has no tunnel-count quota; the worker continues to bound forwarded
+  sockets per listener. Profile deletion is reserved against concurrent starts
+  and refused while one of its tunnels is starting or active.
 - This slice binds only to `127.0.0.1`. Port `0` asks Windows to select an
   available port. Public binding, remote forwarding, dynamic forwarding and
   jump-host routing remain separate WP-04 slices with their own explicit policy
@@ -46,6 +50,9 @@ one.
 WP-04A must cover a Windows loopback TCP roundtrip through the UI, first-use SSH
 trust, persisted definition reopen after restart, port conflict with no leaked
 SSH runtime, successful-start-only status, and listener release after stop.
-Repository tests must also store more than two definitions. These checks do not
-complete P-23/F-006 or WP-04; remote/dynamic forwarding, jump chains, public-bind
-confirmation and full failure/interoperability coverage remain open.
+Repository tests also cover twenty concurrently active local definitions, an
+actual occupied-port conflict, v1 database upgrade with existing definitions,
+duplicate-start coalescing, long-lived forwarded sockets and profile-removal
+coordination. These checks do not complete P-23/F-006 or WP-04; remote/dynamic
+forwarding, jump chains, public-bind confirmation and full
+failure/interoperability coverage remain open.

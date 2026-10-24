@@ -131,7 +131,7 @@ CREATE TABLE audit_events (
 );
 CREATE INDEX audit_events_at ON audit_events(at);
 `;
-const SCHEMA_V2 = `ALTER TABLE tunnel_definitions ADD COLUMN name TEXT NOT NULL DEFAULT '';`;
+const SCHEMA_V2 = `ALTER TABLE tunnel_definitions ADD COLUMN name TEXT NOT NULL DEFAULT 'Local forward';`;
 
 export interface HostTrustMigrationResult {
   readonly sourceCount: number;
