@@ -176,6 +176,8 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .remote-file-path { min-width: 0; overflow: hidden; color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .remote-file-status, .remote-file-error { margin: 0; padding: 12px 13px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .remote-file-error { border-left: 2px solid var(--error); color: var(--text); }
+.remote-file-reconnect { align-self: flex-start; margin: 0 13px 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); font-size: 12px; cursor: pointer; }
+.remote-file-reconnect:hover:not(:disabled), .remote-file-reconnect:focus-visible { border-color: var(--accent); }
 .remote-file-limit { margin-top: auto; border-top: 1px solid var(--line); }
 .remote-file-list { min-height: 0; margin: 0; padding: 4px 0; overflow: auto; list-style: none; scrollbar-width: thin; }
 .remote-file-list li { content-visibility: auto; contain-intrinsic-size: 34px; }

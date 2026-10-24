@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Enter the SSH account credential.', 'Unlock the selected SSH private key.', 'Enter the vault master password.')]
+    [ValidateSet('Enter the SSH account credential.', 'Unlock the selected SSH private key.', 'Enter the FTP account credential.', 'Enter the vault master password.')]
     [string] $Message
 )
 

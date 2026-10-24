@@ -9,6 +9,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const PURPOSE_MESSAGE: Readonly<Record<CredentialPromptPurpose, string>> = Object.freeze({
   'ssh-password': 'Enter the SSH account credential.',
   'ssh-key-passphrase': 'Unlock the selected SSH private key.',
+  'ftp-account': 'Enter the FTP account credential.',
   'master-password': 'Enter the vault master password.'
 });
 const CANCELLED: CredentialPromptResult = Object.freeze({ kind: 'cancelled' });

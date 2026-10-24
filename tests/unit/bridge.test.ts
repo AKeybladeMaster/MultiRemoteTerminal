@@ -15,6 +15,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
+    'openFtpFiles', 'listFtpDirectory', 'closeFtpFiles',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent']);

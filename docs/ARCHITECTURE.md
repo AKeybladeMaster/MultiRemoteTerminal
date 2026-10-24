@@ -84,6 +84,7 @@ packages/
   adapters/
     ssh/                SSH authentication, remote shell, host-key policy, forwarding
     sftp/               directory listings, transfers, remote file edit saves
+    ftp/                explicit FTPS / consent-gated FTP directory browsing and transfers
     local-pty/          ConPTY backend
     persistence/        SQLite schema, migrations, repositories
     credential-vault/   Windows-protected secrets and master-password envelope
@@ -167,6 +168,8 @@ stateDiagram-v2
 
 **WP-09B Telnet terminal:** the UI requires a fresh, visible plaintext warning acknowledgement for each connection, including each saved-profile reopen. The profile stores only the canonical host and port; login data is typed into the remote terminal and is not intercepted or persisted. Typed `telnet.*` IPC crosses the preload and main broker into a supervised Electron utility worker; the worker owns the TCP socket and protocol codec. The codec incrementally parses Telnet IAC commands, bounds subnegotiation payloads to 512 bytes, handles NVT line endings until BINARY is accepted, and supports BINARY, Suppress Go Ahead, remote ECHO, NAWS and fixed `XTERM-256COLOR` terminal type. Terminal output is UTF-8 decoded, sequence-acknowledged and backpressured; input queues are bounded. TCP connection establishment is limited to 12 seconds, the worker open request to 15 seconds, and the preload IPC wait to 20 seconds. Close, timeout, worker crash and application shutdown destroy the socket and settle pending operations. Telnet carries terminal bytes without encryption and must not be used for secrets or untrusted networks. Windows loopback E2E exercises the UI, warning, TCP negotiation, terminal input/output, catalog save and consent-gated reopen; this does not claim interoperability against every historical Telnet server.
 
+**WP-09C FTP/FTPS file browser:** FTP endpoints are credential-free saved definitions; the `secure` option selects explicit FTPS, which is the connect-dialog default. FTP usernames/passwords come from the separate Windows credential prompt and are sent only to a dedicated utility worker. The `basic-ftp` client is serialized per connection, uses a 30-second server-progress timeout, caps parsed directory data at 2 MiB and results at 500 entries, suppresses protocol logging, and refuses PASV transfer hosts that differ from the control host. Every plaintext FTP connection needs a short-lived, one-use trusted submit gesture bound to the visible host and port and independently consumed by the main broker. Paths and replies are validated at the domain, IPC and worker boundaries. Listing cancellation closes the FTP client; shutdown cancels prompt and connection operations and terminates the worker. This slice supports directory browsing only; FTP upload/download, FTPS server-interoperability fixtures and the remaining FTP acceptance gate are still open.
+
 ## 8. SQLite logical schema (v1)
 
 Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique constraints, WAL mode, transactional migrations. Database file stored in per-user `app.getPath('userData')`. Database has no secret plaintext; `credential_ref` points to the vault. The selected built-in `node:sqlite` driver runs only in the storage utility process; see [ADR-0005](adr/ADR-0005-node-sqlite-storage-worker.md) and the [WP-03 runtime review](dependencies/WP-03.md).
@@ -174,7 +177,7 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 | Table | Fields (type; required where noted) | Important rules |
 |---|---|---|
 | `folders` | `id TEXT PK`, `parent_id TEXT FK?`, `name TEXT NOT NULL`, `sort_order INTEGER` | Detect and reject cycles; cascade policy on folder deletion asks user |
-| `session_definitions` | `id TEXT PK`, `folder_id TEXT FK?`, `kind TEXT`, `name TEXT`, `host TEXT?`, `port INTEGER?`, `username TEXT?`, `credential_ref TEXT?`, `options_json TEXT`, `options_version INTEGER`, `favorite INTEGER`, `created_at TEXT`, `updated_at TEXT` | `kind` enum: `local`, `ssh`, `telnet`, `rlogin`, `mosh`, `rdp`, `vnc`, `serial`, `ftp`, `xdmcp`; validate ports 1..65535 for network transports; no runtime details. Telnet catalog records contain only the canonical endpoint; credentials are entered interactively in the remote terminal and are never persisted. |
+| `session_definitions` | `id TEXT PK`, `folder_id TEXT FK?`, `kind TEXT`, `name TEXT`, `host TEXT?`, `port INTEGER?`, `username TEXT?`, `credential_ref TEXT?`, `options_json TEXT`, `options_version INTEGER`, `favorite INTEGER`, `created_at TEXT`, `updated_at TEXT` | `kind` enum: `local`, `ssh`, `telnet`, `rlogin`, `mosh`, `rdp`, `vnc`, `serial`, `ftp`, `xdmcp`; validate ports 1..65535 for network transports; no runtime details. Telnet records contain only the canonical endpoint; FTP records contain the canonical endpoint and explicit-FTPS flag. Neither profile stores account credentials. |
 | `session_tags` | `session_id TEXT FK`, `tag TEXT`, composite PK | Search and classification |
 | `tunnel_definitions` | `id TEXT PK`, `session_id TEXT FK`, `mode TEXT`, `bind_host TEXT`, `bind_port INTEGER`, `target_host TEXT?`, `target_port INTEGER?`, `enabled INTEGER`, `created_at TEXT` | `mode=local/remote/dynamic`; no limit on records; binding validated at start |
 | `macro_definitions` | `id TEXT PK`, `name TEXT`, `description TEXT?`, `steps_json TEXT`, `schema_version INTEGER`, `created_at TEXT`, `updated_at TEXT` | Steps versioned and validated; no credentials/secret bytes |
@@ -209,7 +212,8 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 | VNC | User-installed audited viewer | Provider path and license must be accepted; embedded version later |
 | X11/XDMCP | User-installed licensed X server with capabilities probes | XDMCP insecure by nature; off by default and explicitly warned |
 | Mosh | User-installed Mosh/WSL integration | UDP and server-side `mosh-server`; don't mislabel SSH as Mosh |
-| Telnet/Rlogin/FTP | Isolated opt-in legacy adapters or approved clients | Clear encryption warning; disabled by default |
+| FTP/FTPS | `basic-ftp` in a supervised utility worker | Explicit FTPS by default; plaintext FTP requires per-connection consent; transfers remain open |
+| Telnet/Rlogin | Isolated legacy adapter or approved client | Plaintext warning for Telnet; provider-wide enable/disable remains open |
 | Serial | `serialport`-style native adapter | Verify signed binary/driver and Windows COM access |
 | Network daemons | Local user-scope controlled provider | Bind loopback by default; no artificial runtime timeout |
 | Unix tools | WSL shell and PATH-discovered approved executables | Not equivalent to MobaXterm's built-in Unix toolset; no copying of MobApt |

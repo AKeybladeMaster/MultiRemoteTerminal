@@ -4,7 +4,8 @@ import { isSavedSessionFolder } from './session-folder.ts';
 import type { SavedSessionFolder } from './session-folder.ts';
 
 export const SESSION_FOLDER_BUNDLE_FORMAT = 'multiremote-terminal/session-folder';
-export const SESSION_FOLDER_BUNDLE_VERSION = 1;
+export const SESSION_FOLDER_BUNDLE_VERSION = 2;
+const LEGACY_SESSION_FOLDER_BUNDLE_VERSION = 1;
 export const MAX_SESSION_FOLDER_BUNDLE_RECORDS = 100_000;
 export const MAX_SESSION_FOLDER_BUNDLE_BYTES = 16 * 1024 * 1024;
 
@@ -38,10 +39,11 @@ export function createSessionFolderBundle(input: {
 
 export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundle | undefined {
   if (!isPlainRecord(value) || !hasExactKeys(value, ['format', 'version', 'rootFolderId', 'exportedAt', 'folders', 'sessions']) ||
-      value.format !== SESSION_FOLDER_BUNDLE_FORMAT || value.version !== SESSION_FOLDER_BUNDLE_VERSION || !isSessionFolderId(value.rootFolderId) ||
+      value.format !== SESSION_FOLDER_BUNDLE_FORMAT || (value.version !== LEGACY_SESSION_FOLDER_BUNDLE_VERSION && value.version !== SESSION_FOLDER_BUNDLE_VERSION) || !isSessionFolderId(value.rootFolderId) ||
       !isIsoTimestamp(value.exportedAt) || !Array.isArray(value.folders) || !Array.isArray(value.sessions) ||
       value.folders.length < 1 || value.folders.length + value.sessions.length > MAX_SESSION_FOLDER_BUNDLE_RECORDS ||
-      !value.folders.every(isSavedSessionFolder) || !value.sessions.every(isSavedSessionDefinition)) return undefined;
+      !value.folders.every(isSavedSessionFolder) ||
+      !value.sessions.every(value.version === LEGACY_SESSION_FOLDER_BUNDLE_VERSION ? isLegacySavedSessionDefinition : isSavedSessionDefinition)) return undefined;
 
   const folders = value.folders as SavedSessionFolder[];
   const sessions = value.sessions as SavedSessionDefinition[];
@@ -91,8 +93,12 @@ export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundl
   };
 }
 
+function isLegacySavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
+  return isSavedSessionDefinition(value) && value.kind !== 'ftp';
+}
+
 export function isSessionFolderBundle(value: unknown): value is SessionFolderBundle {
-  return normalizeSessionFolderBundle(value) !== undefined;
+  return isPlainRecord(value) && value.version === SESSION_FOLDER_BUNDLE_VERSION && normalizeSessionFolderBundle(value) !== undefined;
 }
 
 // SQLite's built-in NOCASE collation folds ASCII letters only. Keep bundle validation
