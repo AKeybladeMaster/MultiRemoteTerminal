@@ -12,7 +12,9 @@ import type { HostTrustRuntime } from '../../../../packages/application/src/host
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, PASTE_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest, parsePasteGestureRequest, parseRequest,
+import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, PASTE_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -21,8 +23,9 @@ import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts
 import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
+import { TelnetTerminalWorkerHost } from '../adapters/telnet-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
-import { PasteGestureGate } from './paste-gesture.ts';
+import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
 
 app.setName('MultiRemoteTerminal');
@@ -38,7 +41,7 @@ let window: BrowserWindow | undefined;
 let windowReady = false;
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
-const pasteGestures = new PasteGestureGate();
+const rendererGestures = new RendererGestureGate();
 const ownsSingleInstance = app.requestSingleInstanceLock();
 interface PendingCatalogCommand {
   readonly cancellation: AbortController;
@@ -63,7 +66,7 @@ function createWindow(): void {
   window = current;
   windowReady = false;
   const webContentsId = current.webContents.id;
-  current.webContents.once('destroyed', () => pasteGestures.clear(webContentsId));
+  current.webContents.once('destroyed', () => rendererGestures.clear(webContentsId));
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
   current.webContents.on('will-frame-navigate', event => event.preventDefault());
@@ -206,11 +209,15 @@ function boot(): void {
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
   );
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
+  const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
+    (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })
+  ));
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = Promise.all([terminals.closeAll(), sshTerminals.closeAll()]).then(() => undefined).catch(() => undefined)
+      shutdownPromise = Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll()]).then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
     return shutdownPromise;
@@ -240,6 +247,10 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
   });
+  telnetTerminals.subscribe(event => {
+    const current = window;
+    if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
+  });
   sshTerminals.subscribeTrust(event => {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRUST_EVENT_CHANNEL, event);
@@ -251,7 +262,7 @@ function boot(): void {
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
     const catalogRequest = parsed.ok && parsed.result.command.startsWith('session.') && owned && mainFrame && isAppDocument(frameUrl);
-    const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste') &&
+    const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const fileListRequest = parsed.ok && parsed.result.command === 'ssh.files.list' && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
@@ -273,7 +284,8 @@ function boot(): void {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
-        authorizeClipboardPaste: sessionId => pasteGestures.consume(event.sender.id, sessionId),
+        authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
+        authorizeTelnetConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
         async confirmMultilinePaste() {
           const options: Electron.MessageBoxOptions = {
             type: 'warning', title: 'Confirm multiline paste',
@@ -287,7 +299,7 @@ function boot(): void {
             : await dialog.showMessageBox(options);
           return result.response === 0;
         },
-        terminals, sshTerminals, sessionCatalog, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, sessionCatalog, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
@@ -312,7 +324,17 @@ function boot(): void {
     if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
     const sessionId = parsePasteGestureRequest(input);
     if (!sessionId) return false;
-    pasteGestures.issue(event.sender.id, sessionId);
+    rendererGestures.issue(event.sender.id, sessionId);
+    return true;
+  });
+  ipcMain.handle(TELNET_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const sessionId = parseTelnetConsentGestureRequest(input);
+    if (!sessionId) return false;
+    rendererGestures.issue(event.sender.id, sessionId, 'telnet-plaintext-consent');
     return true;
   });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
@@ -325,7 +347,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void Promise.all([terminals.dispose(), sshTerminals.dispose()]).then(() => storageStore.shutdown())
+    void Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose()]).then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
   app.on('will-quit', () => {
@@ -333,6 +355,7 @@ function boot(): void {
     powerMonitor.removeListener('suspend', lockVaultForSystemEvent);
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
+    ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

@@ -3,9 +3,11 @@ import type { MouseEvent, ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
-import type { OpenSshTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
+import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
+import type { OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
@@ -18,15 +20,17 @@ import './tokens.css';
 
 type WorkbenchTerminal =
   | (LocalTerminalSession & { readonly transport: 'local'; readonly title: string })
-  | (SshTerminalSession & { readonly transport: 'ssh'; readonly title: string });
+  | (SshTerminalSession & { readonly transport: 'ssh'; readonly title: string })
+  | (TelnetTerminalSession & { readonly transport: 'telnet'; readonly title: string });
 
 type OpeningTerminal =
   | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
-  | { readonly transport: 'ssh'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean };
+  | { readonly transport: 'ssh' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean };
 
 type PendingOpenRequest =
   | { cancelled: boolean; readonly transport: 'local'; readonly reply: Promise<OpenTerminalReply> }
-  | { cancelled: boolean; readonly transport: 'ssh'; readonly reply: Promise<OpenSshTerminalReply> };
+  | { cancelled: boolean; readonly transport: 'ssh'; readonly reply: Promise<OpenSshTerminalReply> }
+  | { cancelled: boolean; readonly transport: 'telnet'; readonly reply: Promise<OpenTelnetTerminalReply> };
 
 type SavedFolderDialogState =
   | { readonly mode: 'create'; readonly parentId: string | null }
@@ -40,7 +44,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'close-active' | 'toggle-theme';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-telnet' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -58,7 +62,8 @@ function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell
 function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
 function openingName(opening: OpeningTerminal): string {
-  return opening.transport === 'local' ? `${shellName(opening.shell)} terminal` : `SSH connection to ${sshEndpointLabel(opening.host, opening.port)}`;
+  if (opening.transport === 'local') return `${shellName(opening.shell)} terminal`;
+  return `${opening.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
 }
 
 function sshEndpointLabel(host: string, port: number): string { return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`; }
@@ -117,7 +122,7 @@ function savedBundleError(code: string): string {
 function terminalStatus(session: WorkbenchTerminal | undefined): string {
   if (!session) return 'No active terminal';
   if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
-  return `SSH · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
+  return `${session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
 }
 
 function sshOpenError(code: string): string {
@@ -127,6 +132,18 @@ function sshOpenError(code: string): string {
   if (code === 'CANCELLED') return 'The SSH connection was cancelled.';
   if (code === 'TIMEOUT') return 'The SSH connection timed out.';
   return `Could not connect to the SSH server (${code}).`;
+}
+
+function telnetOpenError(code: string): string {
+  if (code === 'CANCELLED') return 'The Telnet connection was cancelled.';
+  if (code === 'TIMEOUT') return 'The Telnet connection timed out.';
+  return `Could not connect to the Telnet server (${code}).`;
+}
+
+function closeTerminalConnection(sessionId: string, transport: 'local' | 'ssh' | 'telnet') {
+  if (transport === 'ssh') return window.multiRemoteTerminal.closeSshTerminal(sessionId);
+  if (transport === 'telnet') return window.multiRemoteTerminal.closeTelnetTerminal(sessionId);
+  return window.multiRemoteTerminal.closeTerminal(sessionId);
 }
 
 function messageForError(error: AppError): string {
@@ -152,6 +169,11 @@ function Workbench() {
   const [sshHost, setSshHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
   const [sshConnectError, setSshConnectError] = useState<string>();
+  const [telnetConnectOpen, setTelnetConnectOpen] = useState(false);
+  const [telnetHost, setTelnetHost] = useState('');
+  const [telnetPort, setTelnetPort] = useState('23');
+  const [telnetConnectError, setTelnetConnectError] = useState<string>();
+  const [telnetSavedTitle, setTelnetSavedTitle] = useState<string>();
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
   const [sshTrustBusy, setSshTrustBusy] = useState(false);
   const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
@@ -175,6 +197,7 @@ function Workbench() {
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0 });
   const nextSshOrdinal = useRef(0);
+  const nextTelnetOrdinal = useRef(0);
   const savedSessionsRequest = useRef(0);
   const savedFoldersRequest = useRef(0);
   const paletteInput = useRef<HTMLInputElement>(null);
@@ -184,6 +207,10 @@ function Workbench() {
   const sshHostInput = useRef<HTMLInputElement>(null);
   const sshPortInput = useRef<HTMLInputElement>(null);
   const sshConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const telnetConnectDialog = useRef<HTMLElement>(null);
+  const telnetHostInput = useRef<HTMLInputElement>(null);
+  const telnetPortInput = useRef<HTMLInputElement>(null);
+  const telnetConnectReturnFocus = useRef<HTMLElement | null>(null);
   const saveSessionDialog = useRef<HTMLElement>(null);
   const saveSessionNameInput = useRef<HTMLInputElement>(null);
   const checkSavedSessionsButton = useRef<HTMLButtonElement>(null);
@@ -297,6 +324,15 @@ function Workbench() {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSshConnectError(undefined);
     setSshConnectOpen(true);
+  }, []);
+
+  const openTelnetConnect = useCallback((host = '', port = 23, savedTitle?: string) => {
+    telnetConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setTelnetHost(host);
+    setTelnetPort(String(port));
+    setTelnetSavedTitle(savedTitle);
+    setTelnetConnectError(undefined);
+    setTelnetConnectOpen(true);
   }, []);
 
   const requestCloseTerminal = useCallback((sessionId: string) => {
@@ -477,20 +513,53 @@ function Workbench() {
     setActiveId(reply.result.sessionId);
   }, []);
 
+  const openTelnetTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
+    const host = hostInput.trim();
+    const port = Number(portInput);
+    if (!host) { setTelnetConnectError('Enter a host name or IP address.'); telnetHostInput.current?.focus(); return; }
+    if (!/^\d{1,5}$/.test(portInput) || !Number.isInteger(port) || port < 1 || port > 65_535) {
+      setTelnetConnectError('Port must be a whole number from 1 to 65535.');
+      telnetPortInput.current?.focus();
+      return;
+    }
+    const validatedEndpoint = canonicalizeRemoteEndpoint({ host, port });
+    if (!validatedEndpoint) { setTelnetConnectError('Enter a valid DNS name or IP address.'); telnetHostInput.current?.focus(); return; }
+    setTelnetConnectError(undefined);
+    setTelnetConnectOpen(false);
+    setPaletteOpen(false);
+    setAlert(undefined);
+    const sessionId = crypto.randomUUID();
+    const replyPromise = window.multiRemoteTerminal.openTelnetTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24);
+    pendingOpenRequests.current.set(sessionId, { transport: 'telnet', cancelled: false, reply: replyPromise });
+    setOpeningSessions(current => [...current, {
+      transport: 'telnet', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false
+    }]);
+    const reply = await replyPromise;
+    if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
+    pendingOpenRequests.current.delete(sessionId);
+    setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
+    if (!reply.ok) {
+      if (reply.error.code !== 'CANCELLED') setAlert(telnetOpenError(reply.error.code));
+      return;
+    }
+    const endpoint = reply.result.endpoint;
+    const ordinal = ++nextTelnetOrdinal.current;
+    setSessions(current => [...current, {
+      ...reply.result, transport: 'telnet', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - Telnet (plaintext) ${ordinal}`
+    }]);
+    setActiveId(reply.result.sessionId);
+  }, []);
+
   const cancelOpening = useCallback((sessionId: string) => {
     const pending = pendingOpenRequests.current.get(sessionId);
     if (!pending || pending.cancelled) return;
     pending.cancelled = true;
     setOpeningSessions(current => current.map(opening => opening.sessionId === sessionId ? { ...opening, cancelling: true } : opening));
     void (async () => {
-      const closeReply = pending.transport === 'ssh'
-        ? await window.multiRemoteTerminal.closeSshTerminal(sessionId)
-        : await window.multiRemoteTerminal.closeTerminal(sessionId);
+      const closeReply = await closeTerminalConnection(sessionId, pending.transport);
       const reply = await pending.reply;
       if (reply.ok) {
-        const cleanup = pending.transport === 'ssh'
-          ? await window.multiRemoteTerminal.closeSshTerminal(sessionId)
-          : await window.multiRemoteTerminal.closeTerminal(sessionId);
+        const cleanup = await closeTerminalConnection(sessionId, pending.transport);
         if (!cleanup.ok && cleanup.error.code !== 'NOT_FOUND') setAlert(messageForError(cleanup.error));
       } else if (!closeReply.ok && closeReply.error.code !== 'NOT_FOUND') {
         setAlert(messageForError(closeReply.error));
@@ -553,9 +622,7 @@ function Workbench() {
   }, [removeSshTrustEvent, sshTrustBusy]);
 
   const closeTerminal = useCallback(async (sessionId: string, transport: WorkbenchTerminal['transport']) => {
-    const reply = transport === 'ssh'
-      ? await window.multiRemoteTerminal.closeSshTerminal(sessionId)
-      : await window.multiRemoteTerminal.closeTerminal(sessionId);
+    const reply = await closeTerminalConnection(sessionId, transport);
     if (!reply.ok && reply.error.code !== 'NOT_FOUND') setAlert(messageForError(reply.error));
     handles.current.delete(sessionId);
     pendingEvents.current.delete(sessionId);
@@ -642,6 +709,18 @@ function Workbench() {
         }
         return;
       }
+      if (telnetConnectOpen) {
+        if (event.key === 'Escape') { event.preventDefault(); setTelnetConnectOpen(false); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(telnetConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (pendingCloseId) {
         if (event.key === 'Escape') { event.preventDefault(); setPendingCloseId(undefined); }
         else if (event.key === 'Tab') {
@@ -697,7 +776,7 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, catalogBusy, decideSshTrust, folderDialog, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu]);
+  }, [activeId, catalogBusy, decideSshTrust, folderDialog, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -718,6 +797,15 @@ function Workbench() {
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
     }
   }, [sshConnectOpen]);
+
+  useEffect(() => {
+    if (telnetConnectOpen) requestAnimationFrame(() => telnetHostInput.current?.focus());
+    else if (telnetConnectReturnFocus.current) {
+      const target = telnetConnectReturnFocus.current;
+      telnetConnectReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [telnetConnectOpen]);
 
   useEffect(() => {
     if (saveSessionOpen) {
@@ -773,6 +861,7 @@ function Workbench() {
     { id: 'new-cmd', label: 'New cmd terminal', run: () => { void openTerminal('cmd'); } },
     { id: 'new-bash', label: 'New Bash terminal', run: () => { void openTerminal('bash'); } },
     { id: 'connect-ssh', label: 'Connect to SSH server', run: openSshConnect },
+    { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme }
   ];
@@ -820,7 +909,7 @@ function Workbench() {
     const menuOpen = openSavedActionsMenuId === menuId;
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
-        <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
+        <span className={`shell-glyph ${session.kind === 'local' ? session.shell : session.kind}`} aria-hidden="true">
           {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : 'TELNET'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
@@ -892,7 +981,7 @@ function Workbench() {
   function openSavedSession(session: SavedSessionDefinition) {
     if (session.kind === 'local') void openTerminal(session.shell, session.name);
     else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name);
-    else setAlert('Telnet connections are not available in this phase. This profile is saved for later use.');
+    else openTelnetConnect(session.host, session.port, session.name);
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string): void {
@@ -914,7 +1003,9 @@ function Workbench() {
     if (!active || catalogBusy || uncertainSaveDraft) return;
     const draft: SavedSessionDraft = active.transport === 'local'
       ? { kind: 'local', name: saveSessionName, shell: active.shell }
-      : { kind: 'ssh', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port };
+      : active.transport === 'ssh'
+        ? { kind: 'ssh', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port }
+        : { kind: 'telnet', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port };
     setCatalogBusy(true);
     setSaveSessionError(undefined);
     try {
@@ -1122,7 +1213,7 @@ function Workbench() {
     <header className="app-header">
       <span className="wordmark" translate="no">MultiRemoteTerminal</span>
       <div className="header-actions">
-        <span className="build-label">Local and SSH terminals</span>
+      <span className="build-label">Local, SSH and Telnet terminals</span>
         <button className="quiet-button" type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={toggleTheme}>
           {theme === 'dark' ? 'Light theme' : 'Dark theme'}
         </button>
@@ -1133,15 +1224,16 @@ function Workbench() {
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
         <button className="connect-ssh-button" type="button" onClick={openSshConnect}><span aria-hidden="true">↗</span> Connect to SSH</button>
+        <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
-          <h3>Local terminals</h3>
+          <h3>Open terminals</h3>
           <ul>
             {sessions.map(session => <li key={session.sessionId}>
               <button className={`session-item ${session.sessionId === activeId ? 'selected' : ''}`} type="button"
                 aria-current={session.sessionId === activeId ? 'page' : undefined} onClick={() => setActiveId(session.sessionId)}>
-                <span className={`shell-glyph ${session.transport === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-                  {session.transport === 'ssh' ? 'SSH' : shellMark(session.shell)}
+                <span className={`shell-glyph ${session.transport === 'local' ? session.shell : session.transport}`} aria-hidden="true">
+                  {session.transport === 'local' ? shellMark(session.shell) : session.transport === 'ssh' ? 'SSH' : 'TELNET'}
                 </span>
                 <span className="session-name" translate="no">{session.title}</span>
                 <span className={`state-dot ${session.state}`} aria-label={session.state} />
@@ -1200,8 +1292,8 @@ function Workbench() {
                 setActiveId(next.sessionId);
                 requestAnimationFrame(() => document.getElementById(`tab-${next.sessionId}`)?.focus());
               }}>
-              <span className={`shell-glyph ${session.transport === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-                {session.transport === 'ssh' ? 'SSH' : shellMark(session.shell)}
+              <span className={`shell-glyph ${session.transport === 'local' ? session.shell : session.transport}`} aria-hidden="true">
+                {session.transport === 'local' ? shellMark(session.shell) : session.transport === 'ssh' ? 'SSH' : 'TELNET'}
               </span>
               <span translate="no">{session.title}</span>
               <span className={`state-dot ${session.state}`} aria-hidden="true" />
@@ -1238,9 +1330,10 @@ function Workbench() {
           {sessions.length === 0 && <div className="empty-terminal">
             <span className="empty-mark" aria-hidden="true">›_</span>
             <h2>No terminal is open</h2>
-            <p>Open a local terminal or connect to an SSH server to get started.</p>
+            <p>Open a local terminal or connect to an SSH or Telnet server to get started.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
             <button type="button" className="connect-ssh-button" onClick={openSshConnect}>Connect to SSH</button>
+            <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>
           </div>}
         </div>
       </main>
@@ -1383,6 +1476,29 @@ function Workbench() {
           <div className="ssh-connect-actions">
             <button type="button" onClick={() => setSshConnectOpen(false)}>Cancel</button>
             <button type="submit" className="ssh-primary">Connect</button>
+          </div>
+        </form>
+      </section>
+    </div>}
+    {telnetConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setTelnetConnectOpen(false); }}>
+      <section ref={telnetConnectDialog} className="ssh-connect-dialog telnet-connect-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="telnet-connect-heading" aria-describedby="telnet-connect-description telnet-plaintext-warning">
+        <h2 id="telnet-connect-heading">Connect to a Telnet server</h2>
+        <p id="telnet-connect-description">Enter the server address. Telnet uses an unencrypted connection and may expose everything you type.</p>
+        <div className="telnet-plaintext-warning" id="telnet-plaintext-warning" role="note">
+          <strong>Telnet traffic is sent in plaintext.</strong> Do not enter passwords, private keys, or other secrets. Use only on a trusted network.
+        </div>
+        <form onSubmit={event => { event.preventDefault(); void openTelnetTerminal(telnetHost, telnetPort, telnetSavedTitle); }}>
+          <label htmlFor="telnet-host">Host name or IP address</label>
+          <input ref={telnetHostInput} id="telnet-host" name="host" type="text" autoComplete="off" spellCheck={false}
+            placeholder="server.example.com" value={telnetHost} onChange={event => setTelnetHost(event.target.value)} />
+          <label htmlFor="telnet-port">Port</label>
+          <input ref={telnetPortInput} id="telnet-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
+            value={telnetPort} onChange={event => setTelnetPort(event.target.value)} />
+          {telnetConnectError && <p className="dialog-error" role="alert">{telnetConnectError}</p>}
+          <div className="ssh-connect-actions">
+            <button type="button" onClick={() => setTelnetConnectOpen(false)}>Cancel</button>
+            <button type="submit" className="ssh-primary" data-mrt-telnet-consent-trigger>Connect</button>
           </div>
         </form>
       </section>

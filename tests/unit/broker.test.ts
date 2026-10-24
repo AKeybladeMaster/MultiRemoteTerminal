@@ -14,13 +14,17 @@ const noOp = async () => ({ ok: true, result: {} } as const);
 const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId: null, kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
   createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
-  describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, confirmMultilinePaste: async () => false, terminals: {
+  describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
+  confirmMultilinePaste: async () => false, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, listRemoteDirectory: async () => ({ ok: true, result: { path: '/', entries: [], truncated: false } }), close: noOp, approveHostKey: noOp,
     rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
+  }, telnetTerminals: {
+    async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
+    write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptySavedSession }),
@@ -30,6 +34,26 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
     importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
   }
+});
+
+test('Telnet open requires a fresh plaintext-consent gesture at the main-process broker', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let connections = 0;
+  const base = actions();
+  const input = { command: 'telnet.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'console.example.net', port: 23, columns: 80, rows: 24 } };
+  const denied = await dispatchCommand(owner, input, base, () => {});
+  assert.deepEqual(denied, { requestId: request.requestId, ok: false,
+    error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
+  assert.equal(connections, 0);
+
+  const authorized: CommandActions = { ...base, authorizeTelnetConsent: id => id === sessionId,
+    telnetTerminals: { ...base.telnetTerminals, async open(id, host, port) {
+      connections++;
+      return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } };
+    } } };
+  assert.equal((await dispatchCommand(owner, input, authorized, () => {})).ok, true);
+  assert.equal(connections, 1);
 });
 
 test('valid sender reaches the application through its interface', async () => {
@@ -112,7 +136,7 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
   assert.deepEqual(forwardedCancellations, Array(6).fill(cancellation));
 });
 
-test('only validated local or SSH terminal open, write and close commands count as user activity', async () => {
+test('only validated local, SSH or Telnet terminal open, write and close commands count as user activity', async () => {
   let activityCount = 0;
   const withActivity = actions(snapshot, () => { activityCount += 1; });
   await dispatchCommand(owner, request, withActivity, () => {});
@@ -139,13 +163,23 @@ test('only validated local or SSH terminal open, write and close commands count 
   }
   assert.equal(activityCount, 6);
 
+  const telnetCommands = [
+    { command: 'telnet.open', payload: { sessionId, host: 'console.example.net', port: 23, columns: 80, rows: 24 } },
+    { command: 'telnet.write', payload: { sessionId, data: 'login' } },
+    { command: 'telnet.close', payload: { sessionId } }
+  ];
+  for (const command of telnetCommands) {
+    await dispatchCommand(owner, { ...command, requestId: request.requestId, contractVersion: 1 }, withActivity, () => {});
+  }
+  assert.equal(activityCount, 9);
+
   const resize = { command: 'terminal.resize', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, columns: 100, rows: 30 } };
   await dispatchCommand(owner, resize, withActivity, () => {});
   const malformedWrite = { command: 'terminal.write', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, data: 'x', extra: true } };
   await dispatchCommand(owner, malformedWrite, withActivity, () => {});
-  assert.equal(activityCount, 6);
+  assert.equal(activityCount, 9);
 });
 
 test('clipboard paste reads only in the broker, bounds text, and writes to the requested terminal', async () => {

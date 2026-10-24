@@ -1,6 +1,6 @@
 import { CONTRACT_VERSION, isCommandReply, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
-  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
@@ -13,9 +13,11 @@ type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
 type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
 type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
+type ConsumeTelnetConsent = (sessionId: string, host: string, port: number) => boolean | Promise<boolean>;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
+const TELNET_OPEN_TIMEOUT_MS = 20_000;
 interface TerminalInputBarrier {
   tail: Promise<void>;
   readonly pendingWrites: Set<Promise<void>>;
@@ -25,7 +27,8 @@ interface TerminalInputBarrier {
 }
 
 export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {},
-  cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false): DesktopBridge {
+  cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false,
+  consumeTelnetConsent: ConsumeTelnetConsent = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -131,7 +134,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     return { tail: waitForActiveWrites(sessionId), pendingWrites: new Set(), pendingPaste: false, closing: false };
   }
 
-  function writeTerminalInput(sessionId: string, data: string, command: 'terminal.write' | 'ssh.write'): Promise<TerminalActionReply> {
+  function writeTerminalInput(sessionId: string, data: string, command: 'terminal.write' | 'ssh.write' | 'telnet.write'): Promise<TerminalActionReply> {
     if (typeof data !== 'string' || data.length > MAX_TERMINAL_INPUT_CHARS) return Promise.resolve({ requestId: requestId(), ...failure('INVALID_REQUEST') });
     if (inFlight >= MAX_PENDING_REQUESTS) return Promise.resolve({ requestId: requestId(), ...failure('BUSY') });
     const barrier = terminalInputBarriers.get(sessionId);
@@ -166,7 +169,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     return queued;
   }
 
-  function pasteTerminalInput(sessionId: string, command: 'terminal.paste' | 'ssh.paste'): Promise<TerminalActionReply> {
+  function pasteTerminalInput(sessionId: string, command: 'terminal.paste' | 'ssh.paste' | 'telnet.paste'): Promise<TerminalActionReply> {
     const existing = terminalInputBarriers.get(sessionId);
     if (existing?.closing) return Promise.resolve({ requestId: requestId(), ...failure('CANCELLED', 'terminal') });
     if (existing && (existing.pendingPaste || existing.pendingWrites.size > 0)) {
@@ -221,6 +224,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
 
   function voidRequest(command: 'terminal.write' | 'terminal.paste' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' |
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
+    'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
     'session.folder.delete' | 'session.move', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
@@ -266,6 +270,30 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     closeSshTerminal(sessionId: string): Promise<TerminalActionReply> {
       const request = voidRequest('ssh.close', { sessionId });
+      return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
+    },
+    openTelnetTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenTelnetTerminalReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumeTelnetConsent(sessionId, host, port)).then(authorized => {
+        if (!authorized) return { requestId: id, ...failure('FORBIDDEN') };
+        return send({ command: 'telnet.open', requestId: id, contractVersion: CONTRACT_VERSION,
+          payload: { sessionId, host, port, columns, rows } }, TELNET_OPEN_TIMEOUT_MS);
+      }, () => ({ requestId: id, ...failure('FORBIDDEN') }));
+    },
+    writeTelnetTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
+      return writeTerminalInput(sessionId, data, 'telnet.write');
+    },
+    pasteTelnetTerminal(sessionId: string): Promise<TerminalActionReply> {
+      return pasteTerminalInput(sessionId, 'telnet.paste');
+    },
+    resizeTelnetTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
+      return send(voidRequest('telnet.resize', { sessionId, columns, rows }), 5_000);
+    },
+    acknowledgeTelnetTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply> {
+      return send(voidRequest('telnet.ack', { sessionId, sequence }), 5_000);
+    },
+    closeTelnetTerminal(sessionId: string): Promise<TerminalActionReply> {
+      const request = voidRequest('telnet.close', { sessionId });
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     approveSshHost(token: string): Promise<TerminalActionReply> {

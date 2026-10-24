@@ -4,6 +4,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
@@ -207,6 +209,85 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
+test('Telnet requires plaintext consent and carries terminal input through the worker to a saved-profile reconnect', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-telnet-e2e-'));
+  const sockets = new Set<Socket>();
+  let connectionNumber = 0;
+  let observedInput = false;
+  const server = createServer(socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    const markerNumber = ++connectionNumber;
+    let clientBytes = Buffer.alloc(0);
+    socket.write(Buffer.from([255, 251, 1, 255, 251, 3, 255, 253, 3, 255, 251, 0, 255, 253, 0, 255, 253, 24, 255, 253, 31]));
+    socket.write(Buffer.from([255, 250, 24, 1, 255, 240]));
+    socket.write(`MRT-TELNET-READY-${markerNumber}\r\n`);
+    socket.on('data', data => {
+      clientBytes = Buffer.concat([clientBytes, data]);
+      // The fixture accepts BINARY, so NVT's CR NUL mapping no longer applies.
+      if (observedInput || !clientBytes.includes(Buffer.from('mrt-e2e-input\r'))) return;
+      observedInput = true;
+      socket.write('MRT-TELNET-INPUT-ACK\r\n');
+    });
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', resolveListen);
+    });
+    const address = server.address() as AddressInfo;
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Connect to Telnet (plaintext)', exact: true }).first().click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
+    await expect(connectDialog.getByText('Telnet traffic is sent in plaintext.')).toBeVisible();
+    const connect = connectDialog.getByRole('button', { name: 'Connect', exact: true });
+    await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connectDialog.getByLabel('Port').fill(String(address.port));
+    await connect.click();
+
+    const telnetTab = page.getByRole('tab').filter({ hasText: /Telnet \(plaintext\)/ }).first();
+    await expect(telnetTab).toBeVisible({ timeout: 15_000 });
+    const telnetPanelId = await telnetTab.getAttribute('aria-controls');
+    if (!telnetPanelId) throw new Error('Missing Telnet terminal panel');
+    const telnetPanel = page.locator(`#${telnetPanelId}`);
+    await expect(telnetPanel.locator('.xterm-rows')).toContainText('MRT-TELNET-READY-1', { timeout: 10_000 });
+    await telnetPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await page.keyboard.type('mrt-e2e-input');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => observedInput, { timeout: 10_000 }).toBe(true);
+    await expect(telnetPanel.locator('.xterm-rows')).toContainText('MRT-TELNET-INPUT-ACK', { timeout: 10_000 });
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Reusable Telnet');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const savedTelnet = page.getByRole('button', { name: 'Open Reusable Telnet', exact: true });
+    await expect(savedTelnet).toBeVisible();
+
+    await confirmCloseActiveTerminal(page, 'Telnet (plaintext)');
+    await savedTelnet.click();
+    const reconnectDialog = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
+    await expect(reconnectDialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
+    await expect(reconnectDialog.getByLabel('Port')).toHaveValue(String(address.port));
+    await reconnectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const reopenedTab = page.getByRole('tab').filter({ hasText: 'Reusable Telnet' });
+    await expect(reopenedTab).toBeVisible({ timeout: 15_000 });
+    const reopenedPanelId = await reopenedTab.getAttribute('aria-controls');
+    if (!reopenedPanelId) throw new Error('Missing reopened Telnet terminal panel');
+    await expect(page.locator(`#${reopenedPanelId} .xterm-rows`)).toContainText('MRT-TELNET-READY-2', { timeout: 10_000 });
+  } finally {
+    await app?.close();
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('saved sessions save, search, favorite, reopen and delete through the workbench', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-session-catalog-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
@@ -311,8 +392,8 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await expect(tab).toBeFocused();
 
     const outputMarker = rows.getByText(marker, { exact: true });
+    await expect.poll(() => outputMarker.boundingBox(), { timeout: 5_000 }).not.toBeNull();
     const markerBounds = await outputMarker.boundingBox();
-    expect(markerBounds).not.toBeNull();
     if (!markerBounds) throw new Error('The terminal output marker is not visible for clipboard selection.');
     await page.mouse.move(markerBounds.x + 1, markerBounds.y + markerBounds.height / 2);
     await page.mouse.down();
@@ -728,7 +809,9 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
+      'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
+      'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
+      'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',

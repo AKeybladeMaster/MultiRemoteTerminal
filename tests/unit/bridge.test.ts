@@ -12,11 +12,22 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     return valid;
   }, id);
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-    'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
+    'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
+    'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
+    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload refuses direct Telnet opens without a fresh trusted plaintext-consent gesture', async () => {
+  let calls = 0;
+  const bridge = createBridge(async () => { calls++; return { requestId: id(), ok: true, result: {} }; }, id);
+  const reply = await bridge.openTelnetTerminal(id(), 'console.example.com', 23, 80, 24);
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(calls, 0);
 });
 
 test('preload lists an SSH directory using only the fixed validated command', async () => {
@@ -27,6 +38,24 @@ test('preload lists an SSH directory using only the fixed validated command', as
     return { requestId: request.requestId, ok: true, result: listing };
   }, id);
   assert.deepEqual(await bridge.listSshDirectory(sessionId, '.'), { requestId: id(), ok: true, result: listing });
+});
+
+test('preload routes Telnet operations through fixed endpoint-bound commands', async () => {
+  const sessionId = id();
+  const host = 'console.example.com';
+  const port = 23;
+  const seen: string[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request.command);
+    if (request.command === 'telnet.open') return { requestId: id(), ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
+    return { requestId: id(), ok: true, result: {} };
+  }, id, undefined, undefined, undefined, undefined, async () => true);
+  assert.equal((await bridge.openTelnetTerminal(sessionId, host, port, 80, 24)).ok, true);
+  assert.equal((await bridge.writeTelnetTerminal(sessionId, 'whoami\r')).ok, true);
+  assert.equal((await bridge.resizeTelnetTerminal(sessionId, 120, 40)).ok, true);
+  assert.equal((await bridge.acknowledgeTelnetTerminalOutput(sessionId, 1)).ok, true);
+  assert.equal((await bridge.closeTelnetTerminal(sessionId)).ok, true);
+  assert.deepEqual(seen, ['telnet.open', 'telnet.write', 'telnet.resize', 'telnet.ack', 'telnet.close']);
 });
 
 test('preload waits beyond the worker budget for a bounded SFTP directory request', async context => {
@@ -52,9 +81,11 @@ test('preload invokes explicit clipboard paste with only the selected session id
     undefined, undefined, undefined, () => true);
   assert.equal((await bridge.pasteTerminal(sessionId)).ok, true);
   assert.equal((await bridge.pasteSshTerminal(sessionId)).ok, true);
+  assert.equal((await bridge.pasteTelnetTerminal(sessionId)).ok, true);
   assert.deepEqual(seen, [
     { command: 'terminal.paste', requestId: id(), contractVersion: 1, payload: { sessionId } },
-    { command: 'ssh.paste', requestId: id(), contractVersion: 1, payload: { sessionId } }
+    { command: 'ssh.paste', requestId: id(), contractVersion: 1, payload: { sessionId } },
+    { command: 'telnet.paste', requestId: id(), contractVersion: 1, payload: { sessionId } }
   ]);
 });
 

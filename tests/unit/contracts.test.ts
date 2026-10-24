@@ -102,6 +102,30 @@ test('SSH directory browsing accepts bounded paths and exact credential-free lis
   assert.equal(isCommandReply({ ...reply, result: { ...reply.result, secret: 'must not pass' } }, parsed.result), false);
 });
 
+test('Telnet terminal IPC bounds endpoint and stream commands and validates the open reply', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const open = { command: 'telnet.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'Console.Example.com.', port: 23, columns: 80, rows: 24 } };
+  const parsed = parseRequest(open);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'must-not-pass' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, host: ' bad host ' } }).ok, false);
+  if (!parsed.ok) return;
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    sessionId, endpoint: { host: 'console.example.com', port: 23 }, state: 'running'
+  } }, parsed.result), true);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    sessionId, endpoint: { host: 'console.example.com', port: 23 }, state: 'running', password: 'secret'
+  } }, parsed.result), false);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    sessionId, endpoint: { host: 'attacker.example', port: 23 }, state: 'running'
+  } }, parsed.result), false);
+  assert.equal(parseRequest({ command: 'telnet.write', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, data: 'hello\r' } }).ok, true);
+  assert.equal(parseRequest({ command: 'telnet.paste', requestId: request.requestId, contractVersion: 1, payload: { sessionId } }).ok, true);
+});
+
 test('saved-session IPC accepts only supported non-secret definitions and validated catalog actions', () => {
   const create = { command: 'session.create', requestId: request.requestId, contractVersion: 1,
     payload: { kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 } };
