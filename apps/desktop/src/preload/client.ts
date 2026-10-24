@@ -1,7 +1,7 @@
-import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
+import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
-import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply } from '../../../../packages/contracts/src/commands.ts';
+import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
@@ -10,6 +10,7 @@ import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
+import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
@@ -18,6 +19,7 @@ type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
 type ConsumeTelnetConsent = (sessionId: string, host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeFtpConsent = (sessionId: string, host: string, port: number, secure: boolean) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
+type ListenSshTransfer = Listen;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
@@ -25,6 +27,8 @@ const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
 const FTP_LIST_TIMEOUT_MS = 25_000;
 const FTP_CANCEL_TIMEOUT_MS = 45_000;
+const SSH_TRANSFER_TIMEOUT_MS = 60 * 60_000 + 5_000;
+const SSH_CANCEL_TIMEOUT_MS = 45_000;
 interface TerminalInputBarrier {
   tail: Promise<void>;
   readonly pendingWrites: Set<Promise<void>>;
@@ -36,7 +40,7 @@ interface TerminalInputBarrier {
 export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {},
   cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false,
   consumeTelnetConsent: ConsumeTelnetConsent = () => false, consumeFtpConsent: ConsumeFtpConsent = () => false,
-  listenFtpTransfer: ListenFtpTransfer = () => () => {}): DesktopBridge {
+  listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {}): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -59,7 +63,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     try {
       return Promise.race([received, new Promise<CommandReply<T>>(resolve => {
         timer = setTimeout(() => {
-          if (request.command.startsWith('session.') || request.command === 'ssh.files.list' || request.command.startsWith('ftp.')) {
+          if (request.command.startsWith('session.') || request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.')) {
             const reportTimeout = () => resolve({ requestId, ...failure('TIMEOUT') });
             try { void Promise.resolve(cancelCatalogRequest(requestId)).then(reportTimeout, reportTimeout); }
             catch { reportTimeout(); }
@@ -234,7 +238,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
-    'session.folder.delete' | 'session.move' | 'ftp.files.cancel' | 'ftp.close', payload: Record<string, unknown>): CommandRequest {
+    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -315,6 +319,17 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply> {
       return send({ command: 'ssh.files.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, path } }, SSH_DIRECTORY_TIMEOUT_MS);
+    },
+    uploadSshFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<SshTransferReply> {
+      return send({ command: 'ssh.files.upload', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, operationId, remoteDirectory } }, SSH_TRANSFER_TIMEOUT_MS);
+    },
+    downloadSshFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTransferReply> {
+      return send({ command: 'ssh.files.download', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, operationId, remotePath } }, SSH_TRANSFER_TIMEOUT_MS);
+    },
+    cancelSshTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.files.cancel', { sessionId, operationId }), SSH_CANCEL_TIMEOUT_MS);
     },
     openFtpFiles(sessionId: string, host: string, port: number, secure: boolean): Promise<OpenFtpFilesReply> {
       const id = requestId();
@@ -403,6 +418,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       try {
         return listenFtpTransfer(value => {
           if (isFtpTransferEvent(value)) {
+            try { listener(value); } catch { /* A renderer progress handler cannot interrupt IPC ownership. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onSshTransferProgress(listener: (event: FileTransferProgress) => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenSshTransfer(value => {
+          if (isSshTransferEvent(value)) {
             try { listener(value); } catch { /* A renderer progress handler cannot interrupt IPC ownership. */ }
           }
         });

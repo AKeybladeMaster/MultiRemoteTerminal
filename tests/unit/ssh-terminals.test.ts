@@ -8,6 +8,7 @@ import type { HostTrustManager, HostTrustDecision, HostTrustResolution } from '.
 import type { HostKeyEvidence, SshHostEndpoint } from '../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
 import type { CancellationSignal } from '../../packages/application/src/cancellation.ts';
+import type { FileTransferProgress, FileTransferResult } from '../../packages/domain/src/file-transfer.ts';
 
 const sessionId = '11111111-1111-4111-8111-111111111111';
 const keyBytes = hostKey();
@@ -78,6 +79,9 @@ class FakeProvider implements SshTerminalProvider {
   waitForDirectoryCancellation = false;
   directoryError: Error | undefined;
   directoryListStarted: (() => void) | undefined;
+  waitForTransferCancellation = false;
+  transferStarted: (() => void) | undefined;
+  readonly transferCancellations: Array<CancellationSignal | undefined> = [];
 
   async open(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, _size: { columns: number; rows: number }, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>) {
     this.opened.push({ sessionId: session, endpoint, credentials });
@@ -99,6 +103,23 @@ class FakeProvider implements SshTerminalProvider {
     }
     if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
     return { path: path === '.' ? '/home/alice' : path, entries: [], truncated: false };
+  }
+  async uploadRemoteFile(session: string, operationId: string, _localPath: string, _directory: string, fileName: string,
+    _policy: 'overwrite' | 'rename' | 'skip', cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult> {
+    this.transferCancellations.push(cancellation);
+    if (this.waitForTransferCancellation && cancellation) {
+      await new Promise<void>((_resolve, reject) => {
+        const cancel = () => { cancellation.removeEventListener('abort', cancel); reject(new SshTerminalProviderError('CANCELLED')); };
+        cancellation.addEventListener('abort', cancel, { once: true });
+        if (cancellation.aborted) cancel();
+        this.transferStarted?.();
+      });
+    }
+    onProgress?.({ sessionId: session, operationId, direction: 'upload', phase: 'transferring', fileName, bytesTransferred: 0, totalBytes: 0 });
+    return { direction: 'upload' as const, fileName, bytesTransferred: 4, state: 'completed' as const };
+  }
+  async downloadRemoteFile(_session: string, _operationId: string, remotePath: string): Promise<FileTransferResult> {
+    return { direction: 'download' as const, fileName: remotePath.slice(remotePath.lastIndexOf('/') + 1), bytesTransferred: 4, state: 'completed' as const };
   }
   async close(session: string): Promise<void> { this.closed.push(session); }
   async shutdown(): Promise<void> {}
@@ -147,6 +168,42 @@ test('SFTP controller forwards teardown cancellation and returns a stable CANCEL
   assert.equal(reply.ok, false);
   if (!reply.ok) assert.equal(reply.error.code, 'CANCELLED');
   assert.equal(provider.listedDirectories[0]?.cancellation?.aborted, true);
+  await controller.dispose();
+});
+
+test('SFTP controller scopes cancellation by operation and waits for transfer cleanup before closing SSH', async () => {
+  const provider = new FakeProvider();
+  provider.waitForTransferCancellation = true;
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+  assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+
+  const firstOperation = '22222222-2222-4222-8222-222222222222';
+  let signalStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { signalStarted = resolve; });
+  provider.transferStarted = signalStarted;
+  const first = controller.uploadRemoteFile(sessionId, firstOperation, 'C:\\private\\report.txt', '/home/alice', 'report.txt', 'rename');
+  await firstStarted;
+  assert.equal(provider.transferCancellations[0]?.aborted, false);
+  const cancelled = await controller.cancelTransfer(sessionId, firstOperation);
+  assert.equal(cancelled.ok, true);
+  const firstResult = await first;
+  assert.equal(firstResult.ok, false);
+  if (!firstResult.ok) assert.equal(firstResult.error.code, 'CANCELLED');
+
+  const secondOperation = '33333333-3333-4333-8333-333333333333';
+  let closeStarted!: () => void;
+  const secondStarted = new Promise<void>(resolve => { closeStarted = resolve; });
+  provider.transferStarted = closeStarted;
+  const second = controller.uploadRemoteFile(sessionId, secondOperation, 'C:\\private\\report.txt', '/home/alice', 'report.txt', 'rename');
+  await secondStarted;
+  const closing = controller.close(sessionId);
+  const secondResult = await second;
+  assert.equal(secondResult.ok, false);
+  if (!secondResult.ok) assert.equal(secondResult.error.code, 'CANCELLED');
+  assert.equal((await closing).ok, true);
+  assert.deepEqual(provider.closed, [sessionId]);
   await controller.dispose();
 });
 

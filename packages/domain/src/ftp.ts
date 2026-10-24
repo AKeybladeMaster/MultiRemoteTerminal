@@ -2,58 +2,29 @@ import { canonicalizeRemoteEndpoint } from './remote-endpoint.ts';
 import type { RemoteEndpoint } from './remote-endpoint.ts';
 import { isRemoteDirectoryListing, isRemotePath, MAX_REMOTE_FILE_NAME_CHARS } from './remote-files.ts';
 import type { RemoteDirectoryListing } from './remote-files.ts';
+import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferResult } from './file-transfer.ts';
+import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress, FileTransferResult } from './file-transfer.ts';
 
 export interface FtpEndpoint extends RemoteEndpoint {
   /** True for explicit FTPS. False means FTP sends control and credentials without encryption. */
   readonly secure: boolean;
 }
 
-export type FtpTransferConflictPolicy = 'overwrite' | 'rename' | 'skip';
-export type FtpTransferDirection = 'upload' | 'download';
-
-export interface FtpTransferProgress {
-  readonly sessionId: string;
-  readonly operationId: string;
-  readonly direction: FtpTransferDirection;
-  readonly phase: 'transferring' | 'committing';
-  readonly fileName: string;
-  readonly bytesTransferred: number;
-  readonly totalBytes: number | null;
-}
-
-export interface FtpTransferResult {
-  readonly direction: FtpTransferDirection;
-  readonly fileName: string;
-  readonly bytesTransferred: number;
-  readonly state: 'completed' | 'skipped';
-}
-
-const FTP_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export type FtpTransferConflictPolicy = FileTransferConflictPolicy;
+export type FtpTransferDirection = FileTransferDirection;
+export type FtpTransferProgress = FileTransferProgress;
+export type FtpTransferResult = FileTransferResult;
 
 export function isFtpTransferConflictPolicy(value: unknown): value is FtpTransferConflictPolicy {
-  return value === 'overwrite' || value === 'rename' || value === 'skip';
+  return isFileTransferConflictPolicy(value);
 }
 
 export function isFtpTransferProgress(value: unknown): value is FtpTransferProgress {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const input = value as Record<string, unknown>;
-  return Object.keys(input).length === 7 && Object.hasOwn(input, 'sessionId') && Object.hasOwn(input, 'operationId') &&
-    Object.hasOwn(input, 'direction') && Object.hasOwn(input, 'phase') && Object.hasOwn(input, 'fileName') && Object.hasOwn(input, 'bytesTransferred') &&
-    Object.hasOwn(input, 'totalBytes') && typeof input.sessionId === 'string' && FTP_UUID.test(input.sessionId) &&
-    typeof input.operationId === 'string' && FTP_UUID.test(input.operationId) &&
-    (input.direction === 'upload' || input.direction === 'download') && (input.phase === 'transferring' || input.phase === 'committing') && isFtpFileName(input.fileName) &&
-    Number.isSafeInteger(input.bytesTransferred) && (input.bytesTransferred as number) >= 0 &&
-    (input.totalBytes === null || (Number.isSafeInteger(input.totalBytes) && (input.totalBytes as number) >= 0));
+  return isFileTransferProgress(value, isFtpFileName);
 }
 
 export function isFtpTransferResult(value: unknown): value is FtpTransferResult {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const input = value as Record<string, unknown>;
-  return Object.keys(input).length === 4 && Object.hasOwn(input, 'direction') && Object.hasOwn(input, 'fileName') &&
-    Object.hasOwn(input, 'bytesTransferred') && Object.hasOwn(input, 'state') &&
-    (input.direction === 'upload' || input.direction === 'download') && isFtpFileName(input.fileName) &&
-    Number.isSafeInteger(input.bytesTransferred) && (input.bytesTransferred as number) >= 0 &&
-    (input.state === 'completed' || input.state === 'skipped');
+  return isFileTransferResult(value, isFtpFileName);
 }
 
 export function canonicalizeFtpEndpoint(value: unknown): FtpEndpoint | undefined {

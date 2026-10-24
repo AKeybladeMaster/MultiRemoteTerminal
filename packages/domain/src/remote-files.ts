@@ -19,6 +19,11 @@ export interface RemoteDirectoryListing {
   readonly truncated: boolean;
 }
 
+export function isRemoteFileName(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_REMOTE_FILE_NAME_CHARS &&
+    value !== '.' && value !== '..' && !value.includes('/') && !value.includes('\0');
+}
+
 export function isRemotePath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_REMOTE_PATH_CHARS || value.includes('\0')) return false;
   if (value === '.') return true;
@@ -64,8 +69,7 @@ export function remoteParentPath(path: string): string {
 }
 
 export function remoteChildPath(parent: string, name: string): string | undefined {
-  if (!isRemotePath(parent) || typeof name !== 'string' || name.length === 0 || name.length > MAX_REMOTE_FILE_NAME_CHARS ||
-      name === '.' || name === '..' || name.includes('/') || name.includes('\0')) return undefined;
+  if (!isRemotePath(parent) || !isRemoteFileName(name)) return undefined;
   if (parent === '.' || parent === '') return name;
   if (parent.endsWith('/')) return `${parent}${name}`;
   return `${parent}/${name}`;

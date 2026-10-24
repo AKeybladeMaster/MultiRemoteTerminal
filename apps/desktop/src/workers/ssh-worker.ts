@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type * as Ssh2 from 'ssh2';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import { createSshTransportProvider } from './ssh-transport-provider.ts';
 import { parseSshWorkerInput, SSH_WORKER_PROTOCOL_VERSION } from './ssh-protocol.ts';
 import type { SshWorkerRequest, SshWorkerErrorCode } from './ssh-protocol.ts';
@@ -98,6 +99,29 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     } catch (error) {
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
     } finally { pendingFileOperations.delete(request.requestId); }
+    return;
+  }
+  if (request.command === 'files.upload' || request.command === 'files.download') {
+    if (pendingFileOperations.has(request.operationId)) {
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: 'BUSY' });
+      return;
+    }
+    const cancellation = new AbortController();
+    pendingFileOperations.set(request.operationId, { sessionId: request.sessionId, cancellation });
+    const onProgress = (progress: FileTransferProgress) =>
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'progress', requestId: request.requestId, progress });
+    try {
+      const result = request.command === 'files.upload'
+        ? await provider.uploadRemoteFile(request.sessionId, request.operationId, request.localPath, request.remoteDirectory,
+          request.fileName, request.conflictPolicy, cancellation.signal, onProgress)
+        : await provider.downloadRemoteFile(request.sessionId, request.operationId, request.remotePath, request.localPath,
+          request.conflictPolicy, cancellation.signal, onProgress);
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
+    } catch (error) {
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
+    } finally {
+      if (pendingFileOperations.get(request.operationId)?.cancellation === cancellation) pendingFileOperations.delete(request.operationId);
+    }
     return;
   }
   try {

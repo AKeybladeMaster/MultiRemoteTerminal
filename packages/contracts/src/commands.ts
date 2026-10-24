@@ -21,6 +21,8 @@ import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/s
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../domain/src/session-folder-bundle.ts';
 import { isRemoteDirectoryListing, isRemotePath } from '../../domain/src/remote-files.ts';
 import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
+import { isFileTransferProgress, isFileTransferResult } from '../../domain/src/file-transfer.ts';
+import type { FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -29,6 +31,7 @@ export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
+export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
 export const APP_URL = 'mrt://app/index.html';
@@ -80,6 +83,9 @@ export type CloseTelnetTerminalRequest = Request<'telnet.close', { readonly sess
 export type DecideSshHostRequest = Request<'ssh.host.approve' | 'ssh.host.reject', { readonly token: string }>;
 export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: string; readonly port: number }>;
 export type ListSshDirectoryRequest = Request<'ssh.files.list', { readonly sessionId: string; readonly path: string }>;
+export type UploadSshFileRequest = Request<'ssh.files.upload', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string }>;
+export type DownloadSshFileRequest = Request<'ssh.files.download', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
+export type CancelSshTransferRequest = Request<'ssh.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
 export type OpenFtpFilesRequest = Request<'ftp.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly secure: boolean }>;
 export type ListFtpDirectoryRequest = Request<'ftp.files.list', { readonly sessionId: string; readonly path: string }>;
 export type UploadFtpFileRequest = Request<'ftp.files.upload', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string }>;
@@ -100,6 +106,7 @@ export type ImportSessionFolderRequest = Request<'session.folder.import', Record
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
+  UploadSshFileRequest | DownloadSshFileRequest | CancelSshTransferRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
@@ -114,6 +121,7 @@ export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
 export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
+export type SshTransferReply = CommandReply<FileTransferResult>;
 export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type FtpTransferReply = CommandReply<FtpTransferResult>;
@@ -149,6 +157,9 @@ export interface DesktopBridge {
   rejectSshHost(token: string): Promise<TerminalActionReply>;
   revokeSshHost(host: string, port: number): Promise<TerminalActionReply>;
   listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply>;
+  uploadSshFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<SshTransferReply>;
+  downloadSshFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTransferReply>;
+  cancelSshTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
   openFtpFiles(sessionId: string, host: string, port: number, secure: boolean): Promise<OpenFtpFilesReply>;
   listFtpDirectory(sessionId: string, path: string): Promise<ListFtpDirectoryReply>;
   uploadFtpFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<FtpTransferReply>;
@@ -170,6 +181,7 @@ export interface DesktopBridge {
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onFtpTransferProgress(listener: (event: FtpTransferProgress) => void): () => void;
+  onSshTransferProgress(listener: (event: FileTransferProgress) => void): () => void;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -286,6 +298,16 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'ssh.files.list' && exactKeys(payload, ['sessionId', 'path']) && typeof payload.sessionId === 'string' &&
       UUID.test(payload.sessionId) && isRemotePath(payload.path)) return { ok: true, result: value as unknown as ListSshDirectoryRequest };
+  if (value.command === 'ssh.files.upload' && exactKeys(payload, ['sessionId', 'operationId', 'remoteDirectory']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
+      isRemotePath(payload.remoteDirectory)) return { ok: true, result: value as unknown as UploadSshFileRequest };
+  if (value.command === 'ssh.files.download' && exactKeys(payload, ['sessionId', 'operationId', 'remotePath']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
+      isRemotePath(payload.remotePath)) return { ok: true, result: value as unknown as DownloadSshFileRequest };
+  if (value.command === 'ssh.files.cancel' && exactKeys(payload, ['sessionId', 'operationId']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId)) {
+    return { ok: true, result: value as unknown as CancelSshTransferRequest };
+  }
   if (value.command === 'session.list' && exactKeys(payload, ['query']) && normalizeSessionSearch(payload.query) !== undefined) {
     return { ok: true, result: value as unknown as ListSessionsRequest };
   }
@@ -315,6 +337,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
+    'ssh.files.upload', 'ssh.files.download', 'ssh.files.cancel',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
@@ -374,9 +397,12 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
+    if (request.command === 'ssh.files.upload') return isFileTransferResult(value.result) && value.result.direction === 'upload';
+    if (request.command === 'ssh.files.download') return isFileTransferResult(value.result) && value.result.direction === 'download';
     if (request.command === 'ftp.open') return validFtpOpenResult(value.result, request);
     if (request.command === 'ftp.files.list') return isFtpDirectoryListing(value.result);
-    if (request.command === 'ftp.files.upload' || request.command === 'ftp.files.download') return isFtpTransferResult(value.result);
+    if (request.command === 'ftp.files.upload') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
+    if (request.command === 'ftp.files.download') return isFtpTransferResult(value.result) && value.result.direction === 'download';
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.create') return isSavedSessionDefinition(value.result);
     if (request.command === 'session.folder.list') return Array.isArray(value.result) && value.result.every(isSavedSessionFolder);
@@ -439,4 +465,8 @@ export function isTerminalEvent(value: unknown): value is LocalTerminalEvent {
 
 export function isFtpTransferEvent(value: unknown): value is FtpTransferProgress {
   return isFtpTransferProgress(value);
+}
+
+export function isSshTransferEvent(value: unknown): value is FileTransferProgress {
+  return isFileTransferProgress(value);
 }

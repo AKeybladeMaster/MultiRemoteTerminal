@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
-import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
+import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 
 interface RemoteFilesPaneProps {
   readonly sessionId: string;
@@ -12,7 +12,7 @@ interface RemoteFilesPaneProps {
 
 const FILE_SIZE_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
-interface ActiveFtpTransfer extends Pick<FtpTransferProgress, 'operationId' | 'direction' | 'fileName' | 'bytesTransferred' | 'totalBytes'> {
+interface ActiveFileTransfer extends Pick<FileTransferProgress, 'operationId' | 'direction' | 'fileName' | 'bytesTransferred' | 'totalBytes'> {
   readonly phase: 'preparing' | 'transferring' | 'committing';
   readonly cancelling: boolean;
 }
@@ -24,6 +24,8 @@ function describeError(code: string, transport: 'sftp' | 'ftp'): string {
     : 'The remote file request timed out. Refresh to try a new SFTP channel.';
   if (code === 'BUSY') return 'A remote file request is still in progress. Try again shortly.';
   if (code === 'NOT_FOUND') return transport === 'ftp' ? 'This FTP connection is no longer active.' : 'This SSH connection is no longer active.';
+  if (code === 'CONFLICT') return 'The selected file or destination changed during transfer. Review it and try again.';
+  if (code === 'FORBIDDEN') return 'The local file or remote destination denied access.';
   if (code === 'OUTPUT_LIMIT') return 'The remote directory exceeds the configured listing limit.';
   return transport === 'ftp'
     ? 'The FTP connection is no longer available. Reconnect and check the server path and permissions.'
@@ -54,7 +56,7 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
   const started = useRef(false);
   const pathRow = useRef<HTMLDivElement>(null);
   const activeTransferId = useRef<string | undefined>(undefined);
-  const [transfer, setTransfer] = useState<ActiveFtpTransfer>();
+  const [transfer, setTransfer] = useState<ActiveFileTransfer>();
   const [transferNotice, setTransferNotice] = useState<string>();
 
   const load = useCallback(async (path: string, restoreFocus = false) => {
@@ -87,8 +89,10 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
   }, [active, load]);
 
   useEffect(() => {
-    if (transport !== 'ftp') return;
-    return window.multiRemoteTerminal.onFtpTransferProgress(progress => {
+    const subscribe = transport === 'ftp'
+      ? window.multiRemoteTerminal.onFtpTransferProgress
+      : window.multiRemoteTerminal.onSshTransferProgress;
+    return subscribe(progress => {
       if (progress.sessionId !== sessionId || activeTransferId.current !== progress.operationId) return;
       setTransfer({
         operationId: progress.operationId,
@@ -104,19 +108,26 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
 
   useEffect(() => () => {
     const operationId = activeTransferId.current;
-    if (operationId) void window.multiRemoteTerminal.cancelFtpTransfer(sessionId, operationId);
-  }, [sessionId]);
+    if (operationId) {
+      const cancel = transport === 'ftp' ? window.multiRemoteTerminal.cancelFtpTransfer : window.multiRemoteTerminal.cancelSshTransfer;
+      void cancel(sessionId, operationId);
+    }
+  }, [sessionId, transport]);
 
   const transferFile = useCallback(async (direction: 'upload' | 'download', remotePath: string) => {
-    if (transport !== 'ftp' || activeTransferId.current) return;
+    if (activeTransferId.current) return;
     const operationId = globalThis.crypto.randomUUID();
     activeTransferId.current = operationId;
     setTransferNotice(undefined);
     setTransfer({ operationId, direction, fileName: direction === 'download' ? remotePath.slice(remotePath.lastIndexOf('/') + 1) : 'Choose a local file',
       bytesTransferred: 0, totalBytes: null, phase: 'preparing', cancelling: false });
     const reply = direction === 'upload'
-      ? await window.multiRemoteTerminal.uploadFtpFile(sessionId, operationId, remotePath)
-      : await window.multiRemoteTerminal.downloadFtpFile(sessionId, operationId, remotePath);
+      ? transport === 'ftp'
+        ? await window.multiRemoteTerminal.uploadFtpFile(sessionId, operationId, remotePath)
+        : await window.multiRemoteTerminal.uploadSshFile(sessionId, operationId, remotePath)
+      : transport === 'ftp'
+        ? await window.multiRemoteTerminal.downloadFtpFile(sessionId, operationId, remotePath)
+        : await window.multiRemoteTerminal.downloadSshFile(sessionId, operationId, remotePath);
     if (activeTransferId.current !== operationId) return;
     activeTransferId.current = undefined;
     setTransfer(undefined);
@@ -125,31 +136,37 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
         setTransferNotice(direction === 'upload'
           ? 'Upload cancelled. The server may retain a partial file if cleanup was interrupted.'
           : 'Download cancelled.');
-        void load(direction === 'upload' ? remotePath : remoteParentPath(remotePath) ?? '.');
+        void load(direction === 'upload' ? remotePath : listing?.path ?? '.');
       } else if (reply.error.code === 'NOT_SUPPORTED') {
-        setTransferNotice('This FTP server does not support safe unique-name uploads. No existing remote file was replaced.');
+        setTransferNotice(transport === 'ftp'
+          ? 'This FTP server does not support safe unique-name uploads. No existing remote file was replaced.'
+          : 'This SSH server does not provide SFTP file transfers.');
       } else {
-        setTransferNotice(reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
-          : reply.error.code === 'NOT_FOUND' ? 'The selected local file is no longer available. Choose it again.'
-            : reply.error.code === 'FORBIDDEN' ? 'Windows denied access to the selected local file or destination.'
-              : 'The file transfer failed. Check the connection and server permissions.');
+        setTransferNotice(reply.error.code === 'NOT_FOUND' && direction === 'upload'
+          ? 'The selected local file is no longer available. Choose it again.'
+          : reply.error.code === 'NOT_FOUND' && transport === 'sftp'
+            ? 'The remote file is no longer available. Refresh the folder and try again.'
+            : reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
+              : reply.error.code === 'FORBIDDEN' ? 'The local file or remote destination denied access.'
+                : 'The file transfer failed. Check the connection and server permissions.');
       }
       return;
     }
     setTransferNotice(reply.result.state === 'skipped' ? `Skipped ${reply.result.fileName}.`
       : `${direction === 'upload' ? 'Uploaded' : 'Downloaded'} ${reply.result.fileName} (${formatFileSize(reply.result.bytesTransferred)}).`);
     if (direction === 'upload') void load(remotePath);
-  }, [load, sessionId, transport]);
+  }, [listing?.path, load, sessionId, transport]);
 
   const cancelTransfer = useCallback(async () => {
     const current = transfer;
     if (!current || current.phase !== 'transferring' || current.cancelling) return;
     setTransfer({ ...current, cancelling: true });
-    const reply = await window.multiRemoteTerminal.cancelFtpTransfer(sessionId, current.operationId);
+    const cancel = transport === 'ftp' ? window.multiRemoteTerminal.cancelFtpTransfer : window.multiRemoteTerminal.cancelSshTransfer;
+    const reply = await cancel(sessionId, current.operationId);
     if (!reply.ok && reply.error.code !== 'NOT_FOUND') {
       setTransferNotice(reply.error.code === 'CONFLICT' ? 'The transfer is finishing and can no longer be cancelled.' : 'The transfer could not be cancelled.');
     }
-  }, [sessionId, transfer]);
+  }, [sessionId, transfer, transport]);
 
   const parentPath = listing ? remoteParentPath(listing.path) : undefined;
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
@@ -157,8 +174,8 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
     <div className="remote-file-heading">
       <h2>{transport === 'ftp' ? 'FTP files' : 'Remote files'}</h2>
       <div className="remote-file-heading-actions">
-        {transport === 'ftp' && <button type="button" className="remote-file-upload" disabled={loading || !listing || Boolean(transfer)}
-          onClick={() => void transferFile('upload', listing?.path ?? '.')}>Upload file</button>}
+        <button type="button" className="remote-file-upload" disabled={loading || !listing || Boolean(transfer)}
+          onClick={() => void transferFile('upload', listing?.path ?? '.')}>Upload file</button>
         <button type="button" className="remote-file-refresh" aria-label="Refresh remote folder" title="Refresh remote folder"
           disabled={loading} onClick={() => void load(requestedPath ?? listing?.path ?? '.')}>↻</button>
       </div>
@@ -168,7 +185,7 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
         disabled={loading || !listing || parentPath === listing.path} onClick={() => { if (parentPath) void load(parentPath, true); }}>↑</button>
       <code className="remote-file-path" translate="no" title={displayedPath}>{displayedPath}</code>
     </div>
-    {transport === 'ftp' && <p className="remote-file-status">FTP assigns a unique name to each upload; the server-selected name appears when it finishes.</p>}
+    {transport === 'ftp' && <p className="remote-file-status">FTP may assign a unique name to each upload; the server-selected name appears when it finishes.</p>}
     {loading && <p className="remote-file-status" role="status">Reading remote directory…</p>}
     {error && <p className="remote-file-error" role="alert">{error}</p>}
     {error && transport === 'ftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"
@@ -207,7 +224,7 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
             <span className="remote-file-name"><span className={`remote-file-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'symlink' ? '↗' : '·'}</span>
               <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
             <span className="remote-file-file-actions"><span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
-              {transport === 'ftp' && entry.kind === 'file' && <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
+              {entry.kind === 'file' && <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
                 disabled={loading || Boolean(transfer)} onClick={() => void transferFile('download', entry.path)}>Download</button>}</span>
           </div>}
       </li>)}

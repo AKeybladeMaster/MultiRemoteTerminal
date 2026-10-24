@@ -7,6 +7,8 @@ import type { LocalTerminalEvent } from '../../../../packages/application/src/lo
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import { isRemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
+import { isFileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
+import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { parseSshWorkerMessage, SSH_WORKER_PROTOCOL_VERSION } from '../workers/ssh-protocol.ts';
 import type { SshWorkerErrorCode, SshWorkerRequest } from '../workers/ssh-protocol.ts';
@@ -16,6 +18,10 @@ interface PendingRequest {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly cleanup: () => void;
+  readonly onProgress?: (progress: FileTransferProgress) => void;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
+  timedOut: boolean;
+  progressPhase?: FileTransferProgress['phase'];
 }
 
 interface OwnedSshSession {
@@ -27,13 +33,24 @@ const MAX_PENDING_REQUESTS = 128;
 const OPEN_TIMEOUT_MS = 140_000;
 // 15s setup + 10s listing + 1s channel-close grace leaves 4s for worker IPC within this deadline.
 const FILE_LIST_TIMEOUT_MS = 30_000;
+const FILE_TRANSFER_TIMEOUT_MS = 60 * 60_000;
+const FILE_TRANSFER_CLEANUP_GRACE_MS = 10_000;
+const FILE_COMMIT_SETTLEMENT_GRACE_MS = 2 * 60_000;
+
+function isCancellableFileRequest(request: Extract<SshWorkerRequest, { readonly type: 'request' }>): request is Extract<SshWorkerRequest,
+  { readonly command: 'files.list' | 'files.upload' | 'files.download' }> {
+  return request.command === 'files.list' || request.command === 'files.upload' || request.command === 'files.download';
+}
+
+function isFileTransferRequest(request: Extract<SshWorkerRequest, { readonly type: 'request' }>): request is Extract<SshWorkerRequest,
+  { readonly command: 'files.upload' | 'files.download' }> {
+  return request.command === 'files.upload' || request.command === 'files.download';
+}
 export type SshWorkerLaunchOptions = { readonly cwd: string; readonly env: { readonly MRT_APP_ROOT: string }; readonly serviceName: string; readonly stdio: 'ignore' };
 export type SshWorkerLauncher = (workerPath: string, args: string[], options: SshWorkerLaunchOptions) => UtilityProcess;
 
 function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCode {
-  if (code === 'AUTHENTICATION_FAILED' || code === 'HOST_KEY_REJECTED' || code === 'HOST_KEY_CHANGED' || code === 'TIMEOUT' ||
-      code === 'NOT_SUPPORTED' || code === 'CANCELLED' || code === 'BUSY' || code === 'OUTPUT_LIMIT') return code;
-  return 'UNAVAILABLE';
+  return code;
 }
 
 export class SshTerminalWorkerHost implements SshTerminalProvider {
@@ -90,6 +107,28 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     return result;
   }
 
+  async uploadRemoteFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
+    conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult> {
+    if (!this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.upload',
+      sessionId, operationId, localPath, remoteDirectory, fileName, conflictPolicy } as const satisfies SshWorkerRequest;
+    const result = await this.request(request, FILE_TRANSFER_TIMEOUT_MS, cancellation, onProgress);
+    if (!isFileTransferResult(result) || result.direction !== 'upload') throw new SshTerminalProviderError('UNAVAILABLE');
+    return result;
+  }
+
+  async downloadRemoteFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
+    conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult> {
+    if (!this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.download',
+      sessionId, operationId, remotePath, localPath, conflictPolicy } as const satisfies SshWorkerRequest;
+    const result = await this.request(request, FILE_TRANSFER_TIMEOUT_MS, cancellation, onProgress);
+    if (!isFileTransferResult(result) || result.direction !== 'download') throw new SshTerminalProviderError('UNAVAILABLE');
+    return result;
+  }
+
   async close(sessionId: string): Promise<void> {
     if (!this.sessions.has(sessionId)) return;
     this.sessions.delete(sessionId);
@@ -109,27 +148,43 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     finally { if (this.shuttingDown === operation) this.shuttingDown = undefined; }
   }
 
-  private async request(request: Extract<SshWorkerRequest, { type: 'request' }>, timeoutMs: number, cancellation?: CancellationSignal): Promise<unknown> {
+  private async request(request: Extract<SshWorkerRequest, { type: 'request' }>, timeoutMs: number, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<unknown> {
     if (this.shuttingDown && request.command !== 'shutdown') throw new SshTerminalProviderError('UNAVAILABLE');
     if (this.pending.size >= MAX_PENDING_REQUESTS) throw new SshTerminalProviderError('UNAVAILABLE');
     const worker = this.ensureWorker();
     return new Promise<unknown>((resolve, reject) => {
       let removeCancellation = () => {};
       const timer = setTimeout(() => {
-        removeCancellation();
-        this.pending.delete(request.requestId);
-        reject(new SshTerminalProviderError('TIMEOUT'));
-        void this.killWorker(worker);
+        const pending = this.pending.get(request.requestId);
+        if (!pending) return;
+        pending.timedOut = true;
+        if (isCancellableFileRequest(request) && (!isFileTransferRequest(request) || pending.progressPhase !== 'committing')) sendCancel();
+        this.scheduleWorkerTermination(worker, request.requestId, pending,
+          isFileTransferRequest(request) && pending.progressPhase === 'committing' ? FILE_COMMIT_SETTLEMENT_GRACE_MS : FILE_TRANSFER_CLEANUP_GRACE_MS,
+          new SshTerminalProviderError('TIMEOUT'));
       }, timeoutMs);
-      const cleanup = () => { clearTimeout(timer); removeCancellation(); };
-      this.pending.set(request.requestId, { resolve, reject, timer, cleanup });
-      let cancelOperation = () => {};
-      if (request.command === 'files.list' && cancellation) {
-        cancelOperation = () => {
-          if (this.worker !== worker) return;
-          const cancelRequest = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(),
-            command: 'files.cancel', sessionId: request.sessionId, operationId: request.requestId } as const satisfies SshWorkerRequest;
-          try { worker.postMessage(cancelRequest); } catch { void this.killWorker(worker); }
+      const cleanup = () => { clearTimeout(timer); clearTimeout(current.cleanupTimer); removeCancellation(); };
+      const current: PendingRequest = { resolve, reject, timer, cleanup, timedOut: false, ...(onProgress ? { onProgress } : {}) };
+      this.pending.set(request.requestId, current);
+      const sendCancel = () => {
+        if (this.worker !== worker || !isCancellableFileRequest(request)) return;
+        const operationId = request.command === 'files.list' ? request.requestId : request.operationId;
+        const cancelRequest = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(),
+          command: 'files.cancel', sessionId: request.sessionId, operationId } as const satisfies SshWorkerRequest;
+        try { worker.postMessage(cancelRequest); } catch { void this.killWorker(worker); }
+      };
+      if (isCancellableFileRequest(request) && cancellation) {
+        const cancelOperation = () => {
+          const pending = this.pending.get(request.requestId);
+          if (!pending) return;
+          if (isFileTransferRequest(request) && pending.progressPhase === 'committing') {
+            this.scheduleWorkerTermination(worker, request.requestId, pending, FILE_COMMIT_SETTLEMENT_GRACE_MS,
+              new SshTerminalProviderError('CANCELLED'));
+            return;
+          }
+          sendCancel();
+          this.scheduleWorkerTermination(worker, request.requestId, pending, FILE_TRANSFER_CLEANUP_GRACE_MS, new SshTerminalProviderError('CANCELLED'));
         };
         cancellation.addEventListener('abort', cancelOperation, { once: true });
         removeCancellation = () => cancellation.removeEventListener('abort', cancelOperation);
@@ -142,7 +197,11 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
         void this.killWorker(worker);
         return;
       }
-      if (cancellation?.aborted) cancelOperation();
+      if (cancellation?.aborted) {
+        sendCancel();
+        this.scheduleWorkerTermination(worker, request.requestId, current, FILE_TRANSFER_CLEANUP_GRACE_MS,
+          new SshTerminalProviderError('CANCELLED'));
+      }
     });
   }
 
@@ -164,13 +223,27 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     if (this.worker !== worker) return;
     const message = parseSshWorkerMessage(value);
     if (!message) { void this.killWorker(worker); return; }
+    if (message.type === 'progress') {
+      const pending = this.pending.get(message.requestId);
+      if (!pending) return;
+      const previouslyCommitting = pending.progressPhase === 'committing';
+      pending.progressPhase = message.progress.phase;
+      if (message.progress.phase === 'committing' && !previouslyCommitting && pending.cleanupTimer !== undefined) {
+        this.scheduleWorkerTermination(worker, message.requestId, pending, FILE_COMMIT_SETTLEMENT_GRACE_MS,
+          new SshTerminalProviderError(pending.timedOut ? 'TIMEOUT' : 'CANCELLED'));
+      }
+      try { pending.onProgress?.(message.progress); } catch { /* Progress observers cannot interrupt worker ownership. */ }
+      return;
+    }
     if (message.type === 'reply') {
       const pending = this.pending.get(message.requestId);
       if (!pending) return;
       clearTimeout(pending.timer);
+      clearTimeout(pending.cleanupTimer);
       this.pending.delete(message.requestId);
       pending.cleanup();
-      if (!message.ok) pending.reject(new SshTerminalProviderError(providerErrorCode(message.errorCode)));
+      if (!message.ok) pending.reject(new SshTerminalProviderError(pending.timedOut && message.errorCode === 'CANCELLED'
+        ? 'TIMEOUT' : providerErrorCode(message.errorCode)));
       else pending.resolve(message.result);
       return;
     }
@@ -182,6 +255,17 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     for (const listener of this.listeners) {
       try { listener(message.event); } catch { /* UI subscribers cannot interrupt worker cleanup. */ }
     }
+  }
+
+  private scheduleWorkerTermination(worker: UtilityProcess, requestId: string, pending: PendingRequest, delayMs: number,
+    error: SshTerminalProviderError): void {
+    clearTimeout(pending.cleanupTimer);
+    pending.cleanupTimer = setTimeout(() => {
+      if (this.pending.get(requestId) !== pending) return;
+      this.pending.delete(requestId);
+      pending.cleanup();
+      void this.killWorker(worker).finally(() => pending.reject(error));
+    }, delayMs);
   }
 
   private verifyHostKey(worker: UtilityProcess, sessionId: string, checkId: string, endpoint: SshHostEndpoint, evidence: HostKeyEvidence): void {

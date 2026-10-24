@@ -8,8 +8,10 @@ import type { SshTerminalCredentials } from '../../../../packages/application/sr
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
+import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
+import { createSftpFileTransfers } from './sftp-file-transfers.ts';
 
 const CONNECT_TIMEOUT_MS = 130_000;
 const MAX_TERMINAL_EVENT_CHARS = 16_384;
@@ -44,6 +46,12 @@ export interface SshTransportProvider {
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
   listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing>;
+  uploadRemoteFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
+    conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
+  downloadRemoteFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
+    conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -77,6 +85,7 @@ export function createSshTransportProvider(
   publish: (event: LocalTerminalEvent) => void,
 ): SshTransportProvider {
   const sessions = new Map<string, RuntimeSession>();
+  const fileTransfers = createSftpFileTransfers();
 
   function closeSftpChannel(session: RuntimeSession, channel = session.sftp): Promise<void> {
     if (!channel) return Promise.resolve();
@@ -344,6 +353,32 @@ export function createSshTransportProvider(
           throw new SshTerminalProviderError('CANCELLED');
         }
         return await listSftpDirectory(session, sftp, path, cancellation);
+      } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
+    },
+
+    async uploadRemoteFile(sessionId, operationId, localPath, remoteDirectory, fileName, conflictPolicy, cancellation, onProgress) {
+      const session = sessions.get(sessionId);
+      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+      if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
+      session.sftpBusy = true;
+      try {
+        const channel = await getSftp(session, cancellation);
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        return await fileTransfers.upload(sessionId, operationId, channel, localPath, remoteDirectory, fileName, conflictPolicy, cancellation, onProgress);
+      } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
+    },
+
+    async downloadRemoteFile(sessionId, operationId, remotePath, localPath, conflictPolicy, cancellation, onProgress) {
+      const session = sessions.get(sessionId);
+      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+      if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
+      session.sftpBusy = true;
+      try {
+        const channel = await getSftp(session, cancellation);
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        return await fileTransfers.download(sessionId, operationId, channel, remotePath, localPath, conflictPolicy, cancellation, onProgress);
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
     },
 
