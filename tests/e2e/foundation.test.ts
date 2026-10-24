@@ -255,15 +255,22 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     await openSaved.click();
     await expect(page.getByRole('tab')).toHaveCount(2);
     await expect(page.getByRole('tab').filter({ hasText: 'Reusable PowerShell' })).toHaveCount(1);
-    await page.getByRole('button', { name: 'Actions for saved session Reusable PowerShell' }).click();
-    await expect(page.locator('.saved-session-row').filter({ hasText: 'Reusable PowerShell' }).locator('details.saved-actions-menu')).toHaveAttribute('open', '');
+    const sessionActions = page.locator('.saved-session-row').filter({ hasText: 'Reusable PowerShell' }).locator('details.saved-actions-menu');
+    const sessionActionsTrigger = page.getByRole('button', { name: 'Actions for saved session Reusable PowerShell' });
+    await sessionActionsTrigger.click();
+    await expect(sessionActions).toHaveAttribute('open', '');
+    await expect(sessionActionsTrigger).toHaveAttribute('aria-expanded', 'true');
+    await page.keyboard.press('Escape');
+    await expect(sessionActions).not.toHaveAttribute('open');
+    await expect(sessionActionsTrigger).toHaveAttribute('aria-expanded', 'false');
+    await expect(sessionActionsTrigger).toBeFocused();
+    await sessionActionsTrigger.click();
+    await expect(sessionActions).toHaveAttribute('open', '');
     const deleteSavedSession = page.getByRole('button', { name: 'Delete saved session Reusable PowerShell', exact: true });
     await expect(deleteSavedSession).toBeVisible();
     await expect(deleteSavedSession).toBeEnabled();
-    await Promise.all([
-      page.waitForEvent('dialog', { timeout: 5_000 }).then(dialog => dialog.accept()),
-      deleteSavedSession.click()
-    ]);
+    page.once('dialog', dialog => { void dialog.accept(); });
+    await deleteSavedSession.click({ timeout: 5_000 });
     await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
   } finally {
     await app.close();
@@ -721,7 +728,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+      'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',

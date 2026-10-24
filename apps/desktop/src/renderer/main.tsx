@@ -12,6 +12,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
+import { SftpPane } from './SftpPane.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -61,36 +62,6 @@ function openingName(opening: OpeningTerminal): string {
 }
 
 function sshEndpointLabel(host: string, port: number): string { return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`; }
-
-function positionSavedActionsPanel(menu: HTMLDetailsElement): void {
-  if (!menu.open) return;
-  const summary = menu.querySelector<HTMLElement>('summary');
-  const panel = menu.querySelector<HTMLElement>('.saved-actions-panel');
-  if (!summary || !panel) return;
-
-  panel.style.position = 'fixed';
-  panel.style.top = '0';
-  panel.style.left = '0';
-  panel.style.right = 'auto';
-  const anchor = summary.getBoundingClientRect();
-  const bounds = panel.getBoundingClientRect();
-  const margin = 8;
-  const left = Math.max(margin, Math.min(anchor.right - bounds.width, window.innerWidth - bounds.width - margin));
-  const below = anchor.bottom + 2;
-  const top = below + bounds.height <= window.innerHeight - margin
-    ? below
-    : Math.max(margin, anchor.top - bounds.height - 2);
-  panel.style.left = `${left}px`;
-  panel.style.top = `${top}px`;
-}
-
-function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>): void {
-  const menu = event.currentTarget.closest('details');
-  if (!menu) return;
-  event.preventDefault();
-  menu.open = !menu.open;
-  positionSavedActionsPanel(menu);
-}
 
 function folderDescendants(folders: readonly SavedSessionFolder[], folderId: string): Set<string> {
   const descendants = new Set<string>([folderId]);
@@ -189,6 +160,7 @@ function Workbench() {
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
+  const [openSavedActionsMenuId, setOpenSavedActionsMenuId] = useState<string>();
   const [saveSessionOpen, setSaveSessionOpen] = useState(false);
   const [saveSessionName, setSaveSessionName] = useState('');
   const [saveSessionError, setSaveSessionError] = useState<string>();
@@ -231,6 +203,29 @@ function Workbench() {
   const firstTabContextAction = useRef<HTMLButtonElement>(null);
   const tabContextReturnFocus = useRef<HTMLElement | null>(null);
   const focusTerminalOnActiveChange = useRef(true);
+
+  useEffect(() => {
+    if (!openSavedActionsMenuId) return;
+    const closeOutsideMenu = (event: PointerEvent) => {
+      if (event.target instanceof Node && document.querySelector('details.saved-actions-menu[open]')?.contains(event.target)) return;
+      setOpenSavedActionsMenuId(undefined);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const menu = document.querySelector<HTMLDetailsElement>('details.saved-actions-menu[open]');
+      if (!menu) return;
+      event.preventDefault();
+      const summary = menu.querySelector<HTMLElement>('summary');
+      setOpenSavedActionsMenuId(undefined);
+      requestAnimationFrame(() => summary?.focus());
+    };
+    document.addEventListener('pointerdown', closeOutsideMenu, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOutsideMenu, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [openSavedActionsMenuId]);
 
   const showTerminalError = useCallback((message: string) => setAlert(message), []);
   const loadSavedSessions = useCallback(async (search: string): Promise<readonly SavedSessionDefinition[] | undefined> => {
@@ -821,6 +816,8 @@ function Workbench() {
   const excludedMoveTargetIds = folderDialog?.mode === 'move-folder' ? folderDescendants(savedFolders, folderDialog.folder.id) : new Set<string>();
 
   function renderSavedSession(session: SavedSessionDefinition, depth: number): ReactElement {
+    const menuId = `session:${session.id}`;
+    const menuOpen = openSavedActionsMenuId === menuId;
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
@@ -832,14 +829,14 @@ function Workbench() {
       <div className="saved-session-actions">
         <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
           aria-pressed={session.favorite} disabled={catalogBusy} onClick={() => void toggleSavedFavorite(session)}>{session.favorite ? '★' : '☆'}</button>
-        <details className="saved-actions-menu">
+        <details className="saved-actions-menu" open={menuOpen}>
           <summary role="button" aria-label={`Actions for saved session ${session.name}`} title={`Actions for ${session.name}`}
-            onClick={toggleSavedActionsMenu}>···</summary>
+            aria-expanded={menuOpen} onClick={event => toggleSavedActionsMenu(event, menuId)}>···</summary>
           <div className="saved-actions-panel" aria-label={`Saved-session actions for ${session.name}`}>
             <button type="button" disabled={catalogBusy} aria-label={`Move saved session ${session.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'move-session', session }); }}>Move to folder</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); openSavedFolderDialog({ mode: 'move-session', session }); }}>Move to folder</button>
             <button type="button" disabled={catalogBusy} aria-label={`Delete saved session ${session.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); void deleteSavedSession(session); }}>Delete</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); void deleteSavedSession(session); }}>Delete</button>
           </div>
         </details>
       </div>
@@ -847,6 +844,8 @@ function Workbench() {
   }
 
   function renderSavedFolder(folder: SavedSessionFolder, depth: number): ReactElement {
+    const menuId = `folder:${folder.id}`;
+    const menuOpen = openSavedActionsMenuId === menuId;
     const sessionsHere = sessionsByFolder.get(folder.id) ?? [];
     const children = (folderChildren.get(folder.id) ?? []).filter(child => visibleFolderIds.has(child.id));
     const expanded = expandedFolderIds.has(folder.id) || (Boolean(savedSearch) && (sessionsHere.length > 0 || children.length > 0));
@@ -865,20 +864,20 @@ function Workbench() {
           <span className="saved-folder-name" translate="no">{folder.name}</span>
           <span className="saved-folder-count">{sessionsHere.length}</span>
         </button>
-        <details className="saved-actions-menu">
+        <details className="saved-actions-menu" open={menuOpen}>
           <summary role="button" aria-label={`Actions for folder ${folder.name}`} title={`Actions for ${folder.name}`}
-            onClick={toggleSavedActionsMenu}>···</summary>
+            aria-expanded={menuOpen} onClick={event => toggleSavedActionsMenu(event, menuId)}>···</summary>
           <div className="saved-actions-panel" aria-label={`Folder actions for ${folder.name}`}>
             <button type="button" disabled={catalogBusy} aria-label={`Create subfolder in ${folder.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'create', parentId: folder.id }); }}>New subfolder</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); openSavedFolderDialog({ mode: 'create', parentId: folder.id }); }}>New subfolder</button>
             <button type="button" disabled={catalogBusy} aria-label={`Export folder ${folder.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); void exportSavedFolder(folder); }}>Export folder</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); void exportSavedFolder(folder); }}>Export folder</button>
             <button type="button" disabled={catalogBusy} aria-label={`Rename folder ${folder.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'rename', folder }); }}>Rename</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); openSavedFolderDialog({ mode: 'rename', folder }); }}>Rename</button>
             <button type="button" disabled={catalogBusy} aria-label={`Move folder ${folder.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'move-folder', folder }); }}>Move</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); openSavedFolderDialog({ mode: 'move-folder', folder }); }}>Move</button>
             <button type="button" disabled={catalogBusy} aria-label={`Delete folder ${folder.name}`}
-              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); void deleteSavedFolder(folder); }}>Delete</button>
+              onClick={() => { setOpenSavedActionsMenuId(undefined); void deleteSavedFolder(folder); }}>Delete</button>
           </div>
         </details>
       </div>
@@ -892,6 +891,11 @@ function Workbench() {
   function openSavedSession(session: SavedSessionDefinition) {
     if (session.kind === 'local') void openTerminal(session.shell, session.name);
     else void openSshTerminal(session.host, String(session.port), session.name);
+  }
+
+  function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string): void {
+    event.preventDefault();
+    setOpenSavedActionsMenuId(current => current === menuId ? undefined : menuId);
   }
 
   function beginSaveActiveSession() {
@@ -1218,10 +1222,16 @@ function Workbench() {
         <div className="terminal-stack">
           {sessions.map(session => <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
             aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
-            <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
-              transport={session.transport}
-              canWrite={session.state === 'running'} theme={theme} fontSize={fontSize} onReady={terminalReady}
-              onError={showTerminalError} />
+            <div className={`terminal-panel-layout ${session.transport === 'ssh' && session.state === 'running' ? 'with-remote-files' : ''}`}>
+              <div className="terminal-pane-stage">
+                <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
+                  transport={session.transport}
+                  canWrite={session.state === 'running'} theme={theme} fontSize={fontSize} onReady={terminalReady}
+                  onError={showTerminalError} />
+              </div>
+              {session.transport === 'ssh' && session.state === 'running' &&
+                <SftpPane sessionId={session.sessionId} active={session.sessionId === activeId} />}
+            </div>
           </section>)}
           {sessions.length === 0 && <div className="empty-terminal">
             <span className="empty-mark" aria-hidden="true">›_</span>

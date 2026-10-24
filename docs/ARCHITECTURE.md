@@ -163,6 +163,8 @@ stateDiagram-v2
 
 **SFTP upload/download:** resolve destination + symlink policy -> offer overwrite/rename/skip -> copy to temporary path -> optionally verify size/digest if available -> atomically rename in destination when possible; clean partial temp on cancel. Treat path values as data, never shell-interpolate.
 
+**WP-05A directory listing:** a trusted, running SSH session may open its SFTP subsystem on demand and list one remote directory. The application validates the requested path, resolves it through SFTP `realpath`, reads a bounded directory handle, caps output at 500 entries, and reports truncation. The renderer receives only validated names, metadata and normalized paths through the typed `ssh.files.list` command. Symlinks are identified and displayed without following them. Cancellation or a listing timeout closes the active SFTP channel while preserving the shell when possible; only one SFTP operation may run per SSH session. This slice does not implement transfers or standalone SFTP sessions.
+
 ## 8. SQLite logical schema (v1)
 
 Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique constraints, WAL mode, transactional migrations. Database file stored in per-user `app.getPath('userData')`. Database has no secret plaintext; `credential_ref` points to the vault. The selected built-in `node:sqlite` driver runs only in the storage utility process; see [ADR-0005](adr/ADR-0005-node-sqlite-storage-worker.md) and the [WP-03 runtime review](dependencies/WP-03.md).

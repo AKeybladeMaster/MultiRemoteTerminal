@@ -252,9 +252,10 @@ function boot(): void {
     const catalogRequest = parsed.ok && parsed.result.command.startsWith('session.') && owned && mainFrame && isAppDocument(frameUrl);
     const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
+    const fileListRequest = parsed.ok && parsed.result.command === 'ssh.files.list' && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
     const trackedRequestId = catalogRequest && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
-    const observeSenderLifecycle = catalogRequest || pasteRequest;
+    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,

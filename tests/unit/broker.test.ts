@@ -19,7 +19,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
-    write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp, approveHostKey: noOp,
+    write: noOp, resize: noOp, acknowledgeOutput: noOp, listRemoteDirectory: async () => ({ ok: true, result: { path: '/', entries: [], truncated: false } }), close: noOp, approveHostKey: noOp,
     rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
@@ -57,6 +57,21 @@ test('host-trust reset dispatches only the validated canonical endpoint', async 
     payload: { host: 'server.example.com', port: 22 } };
   assert.deepEqual(await dispatchCommand(owner, input, withRevoke, () => {}), { requestId: request.requestId, ok: true, result: {} });
   assert.deepEqual(revoked, { host: 'server.example.com', port: 22 });
+});
+
+test('SSH remote-directory browsing forwards the validated path and cancellation signal', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const cancellation = new AbortController().signal;
+  let observed: { readonly sessionId: string; readonly path: string; readonly signal: unknown } | undefined;
+  const base = actions();
+  const withSftp: CommandActions = { ...base, cancellation, sshTerminals: { ...base.sshTerminals, async listRemoteDirectory(id, path, signal) {
+    observed = { sessionId: id, path, signal };
+    return { ok: true, result: { path, entries: [], truncated: false } };
+  } } };
+  const reply = await dispatchCommand(owner, { command: 'ssh.files.list', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, path: '/home/alice' } }, withSftp, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: true, result: { path: '/home/alice', entries: [], truncated: false } });
+  assert.deepEqual(observed, { sessionId, path: '/home/alice', signal: cancellation });
 });
 
 test('saved-session IPC dispatches only validated catalog operations', async () => {

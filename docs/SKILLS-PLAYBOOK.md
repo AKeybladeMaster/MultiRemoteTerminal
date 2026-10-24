@@ -56,11 +56,14 @@ The skill is a guide, not proof the analysis engine is installed. In the user's 
 | WP-01 App shell | `frontend-design`, `ui-taste`, `web-design-guidelines` |
 | WP-02 SSH / local terminal | `codebase-design`, `diagnosing-bugs` as needed |
 | WP-03 Sessions / vault | `codebase-design`, `requesting-code-review`, `code-review` |
-| WP-04 SFTP / tunnels | `codebase-design`, `diagnosing-bugs`, `code-review` |
-| WP-05 Macros / settings | `frontend-design`, `code-review` |
-| WP-06 Windows release | `web-design-guidelines`, `requesting-code-review`, `code-review` |
-| WP-07 Reference-specific feature gaps | `reverse-engineer-anything` as applicable, `codebase-design` |
-| WP-08 Architecture improvement | `improve-codebase-architecture` |
+| WP-04 SSH jump hosts / forwarding | `codebase-design`, `diagnosing-bugs`, `requesting-code-review`, `code-review` |
+| WP-05 SFTP browser / transfers | `codebase-design`, `frontend-design`, `web-design-guidelines`, `requesting-code-review`, `code-review` |
+| WP-06 Macros / MultiExec | `codebase-design`, `frontend-design`, `code-review` |
+| WP-07 Security / Windows release | `devops-and-deployment`, `web-design-guidelines`, `requesting-code-review`, `code-review` |
+| WP-08 RDP/VNC / local editor | `codebase-design`, `frontend-design`, `code-review` |
+| WP-09 Serial / FTP / legacy protocols / Mosh | `codebase-design`, `diagnosing-bugs`, `code-review` |
+| WP-10 X11 / XDMCP / daemons | `codebase-design`, `performance-and-safe-coding`, `code-review` |
+| WP-11 Unix tools / parity review | `reverse-engineer-anything` as applicable, `codebase-design`, `requesting-code-review`, `code-review` |
 
 ## Request template for Codex
 

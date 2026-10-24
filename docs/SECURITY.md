@@ -14,7 +14,7 @@
 | X11 exposure | X server accepts unauthenticated remote clients | Local-only X listener, MIT-MAGIC-COOKIE when supported, disable TCP by default, no `-ac` | Unauthorized connection denied |
 | Unrestricted tunnel | Forwarded listener exposed to LAN | Bind loopback by default, explicit nonlocal bind opt-in; warn for reverse/dynamic | Default socket binds 127.0.0.1; no 0.0.0.0 |
 | Legacy insecure protocols | Plaintext passwords over FTP/Telnet/Rlogin | Disabled by default, warning and local user action before use | Confirmation and transport label |
-| Path traversal / symlink attacks | SFTP remote path tricks and download escapes | Normalize local destination, enforce chosen target root, safe temporary files, symlink awareness | traversal fixture does not overwrite outside chosen dir |
+| Path traversal / symlink attacks | SFTP remote path tricks and download escapes | Treat remote paths as data; bound and validate each path component; identify symlinks without following them in the browser; for future downloads, normalize the local destination and enforce the chosen target root with safe temporary files | WP-05A unit tests reject traversal-shaped paths and mismatched entry paths; Windows SFTP traversal/transfer fixture remains required |
 | Macro secrets | Recorded passwords replayed to wrong host | Secret-input suppression, target scope, explicit MultiExec confirm, no automatic reconnect replay | Secret mask and target tests |
 | Third-party supply chain | Untrusted binary/provider injection | Signed/pinned installer deps, license inventory, hash/provenance and opt-in tools | SBOM + allowed binary provenance |
 | Unexpected daemon exposure | User starts public listener unknowingly | Loopback default, UI display bind/port, require explicit approval, firewall notes | Daemon exposure test |
@@ -41,6 +41,7 @@
 - Limit connection/login retry frequency and cancellation; do not log authentication payloads.
 - High-risk operation output may be sensitive; no transcript logging by default.
 - Installers/updates and downloaded tools use HTTPS and integrity validation.
+- The WP-05A SFTP browser is reachable only from a trusted, running SSH session. Listing paths and replies are validated at the application, worker protocol and domain boundaries; directory results are capped at 500 entries. Symlink entries are visible but not navigable. Cancellation and timeout close the SFTP channel, and no remote filename is interpreted as a shell command. These controls do not yet cover transfer destinations because upload/download is not implemented.
 
 ## Master-password threat model
 

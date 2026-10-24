@@ -6,6 +6,8 @@ import type { TerminalSize } from '../../../../packages/domain/src/local-termina
 import type { SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
+import { isRemoteDirectoryListing, isRemotePath } from '../../../../packages/domain/src/remote-files.ts';
+import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
 
 export const SSH_WORKER_PROTOCOL_VERSION = 1;
 export const MAX_SSH_PASSWORD_LENGTH = 65_536;
@@ -16,20 +18,22 @@ export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'write'; readonly sessionId: string; readonly data: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'resize'; readonly sessionId: string; readonly size: TerminalSize }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'ack'; readonly sessionId: string; readonly sequence: number }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.list'; readonly sessionId: string; readonly path: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.cancel'; readonly sessionId: string; readonly operationId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'close'; readonly sessionId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' }
   | { readonly version: 1; readonly type: 'host-key-result'; readonly sessionId: string; readonly checkId: string; readonly accepted: boolean };
 
-export type SshWorkerErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'BUSY' | 'TIMEOUT' | 'OUTPUT_LIMIT' | 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED';
+export type SshWorkerErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'NOT_SUPPORTED' | 'CANCELLED' | 'BUSY' | 'TIMEOUT' | 'OUTPUT_LIMIT' | 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED';
 
 export type SshWorkerMessage =
-  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> }
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: SshWorkerErrorCode }
   | { readonly version: 1; readonly type: 'event'; readonly event: LocalTerminalEvent }
   | { readonly version: 1; readonly type: 'host-key'; readonly sessionId: string; readonly checkId: string; readonly endpoint: SshHostEndpoint; readonly evidence: { readonly algorithm: string; readonly fingerprint: string; readonly publicKey: Uint8Array } };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ERROR_CODES: readonly SshWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'BUSY', 'TIMEOUT', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
+const ERROR_CODES: readonly SshWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'NOT_SUPPORTED', 'CANCELLED', 'BUSY', 'TIMEOUT', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -69,6 +73,10 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
       isUuid(value.sessionId) && isTerminalSize(value.size)) return value as unknown as SshWorkerRequest;
   if (value.command === 'ack' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'sequence']) &&
       isUuid(value.sessionId) && Number.isSafeInteger(value.sequence) && (value.sequence as number) > 0) return value as unknown as SshWorkerRequest;
+  if (value.command === 'files.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'path']) &&
+      isUuid(value.sessionId) && isRemotePath(value.path)) return value as unknown as SshWorkerRequest;
+  if (value.command === 'files.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId']) &&
+      isUuid(value.sessionId) && isUuid(value.operationId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'close' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId']) && isUuid(value.sessionId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as SshWorkerRequest;
   return undefined;
@@ -77,7 +85,8 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
 export function parseSshWorkerMessage(value: unknown): SshWorkerMessage | undefined {
   if (!record(value) || value.version !== SSH_WORKER_PROTOCOL_VERSION || typeof value.type !== 'string') return undefined;
   if (value.type === 'reply' && isUuid(value.requestId) && typeof value.ok === 'boolean') {
-    if (value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) && record(value.result) && exactKeys(value.result, [])) {
+    if (value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) && record(value.result) &&
+        (exactKeys(value.result, []) || isRemoteDirectoryListing(value.result))) {
       return value as unknown as SshWorkerMessage;
     }
     if (!value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode']) && ERROR_CODES.includes(value.errorCode as SshWorkerErrorCode)) {

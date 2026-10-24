@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createSshTerminalController } from '../../packages/application/src/ssh-terminals.ts';
+import { createSshTerminalController, SshTerminalProviderError } from '../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalCredentials, SshTerminalProvider } from '../../packages/application/src/ssh-terminals.ts';
 import type { CredentialPrompt, CredentialPromptCancellation, CredentialPromptResult } from '../../packages/application/src/credential-prompt.ts';
 import type { HostTrustManager, HostTrustDecision, HostTrustResolution } from '../../packages/application/src/host-trust.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
+import type { CancellationSignal } from '../../packages/application/src/cancellation.ts';
 
 const sessionId = '11111111-1111-4111-8111-111111111111';
 const keyBytes = hostKey();
@@ -73,6 +74,9 @@ class FakeProvider implements SshTerminalProvider {
   readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshTerminalCredentials }> = [];
   readonly closed: string[] = [];
   readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
+  readonly listedDirectories: Array<{ readonly sessionId: string; readonly path: string; readonly cancellation?: CancellationSignal }> = [];
+  waitForDirectoryCancellation = false;
+  directoryListStarted: (() => void) | undefined;
 
   async open(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, _size: { columns: number; rows: number }, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>) {
     this.opened.push({ sessionId: session, endpoint, credentials });
@@ -81,10 +85,64 @@ class FakeProvider implements SshTerminalProvider {
   async write(): Promise<void> {}
   async resize(): Promise<void> {}
   async acknowledgeOutput(): Promise<void> {}
+  async listRemoteDirectory(session: string, path: string, cancellation?: CancellationSignal) {
+    this.listedDirectories.push({ sessionId: session, path, ...(cancellation ? { cancellation } : {}) });
+    if (this.waitForDirectoryCancellation && cancellation) {
+      await new Promise<never>((_resolve, reject) => {
+        const cancel = () => { cancellation.removeEventListener('abort', cancel); reject(new SshTerminalProviderError('CANCELLED')); };
+        cancellation.addEventListener('abort', cancel, { once: true });
+        if (cancellation.aborted) cancel();
+        this.directoryListStarted?.();
+      });
+    }
+    if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+    return { path: path === '.' ? '/home/alice' : path, entries: [], truncated: false };
+  }
   async close(session: string): Promise<void> { this.closed.push(session); }
   async shutdown(): Promise<void> {}
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 }
+
+test('SFTP directory listing is available only on a running trusted SSH session and validates provider output', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+
+  assert.deepEqual(await controller.listRemoteDirectory(sessionId, '.'), {
+    ok: false, error: { code: 'NOT_FOUND', target: 'terminal', retryable: false }
+  });
+  assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+  const listing = await controller.listRemoteDirectory(sessionId, '.');
+  assert.deepEqual(listing, { ok: true, result: { path: '/home/alice', entries: [], truncated: false } });
+  assert.deepEqual(await controller.listRemoteDirectory(sessionId, 'bad\0path'), {
+    ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false }
+  });
+  assert.equal(provider.listedDirectories.length, 1);
+  assert.equal((await controller.close(sessionId)).ok, true);
+  await controller.dispose();
+});
+
+test('SFTP controller forwards teardown cancellation and returns a stable CANCELLED result', async () => {
+  const provider = new FakeProvider();
+  provider.waitForDirectoryCancellation = true;
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+  assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  provider.directoryListStarted = markStarted;
+  const cancellation = new AbortController();
+  const pending = controller.listRemoteDirectory(sessionId, '.', cancellation.signal);
+  await started;
+  cancellation.abort();
+  const reply = await pending;
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'CANCELLED');
+  assert.equal(provider.listedDirectories[0]?.cancellation?.aborted, true);
+  await controller.dispose();
+});
 
 function promptWith(result: CredentialPromptResult): CredentialPrompt {
   return { prompt: async () => result };
