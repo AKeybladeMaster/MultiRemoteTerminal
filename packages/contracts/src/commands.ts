@@ -9,9 +9,10 @@ import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
 import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../domain/src/remote-endpoint.ts';
-import { canonicalizeFtpEndpoint } from '../../domain/src/ftp.ts';
+import { canonicalizeFtpEndpoint, isFtpTransferProgress, isFtpTransferResult } from '../../domain/src/ftp.ts';
 import { isCanonicalFtpEndpoint } from '../../domain/src/ftp.ts';
 import { isFtpDirectoryListing, isFtpRemotePath } from '../../domain/src/ftp.ts';
+import type { FtpTransferProgress, FtpTransferResult } from '../../domain/src/ftp.ts';
 import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
 import { isSessionFolderId } from '../../domain/src/session-definition.ts';
@@ -27,6 +28,7 @@ export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
+export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
 export const APP_URL = 'mrt://app/index.html';
@@ -80,6 +82,9 @@ export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: s
 export type ListSshDirectoryRequest = Request<'ssh.files.list', { readonly sessionId: string; readonly path: string }>;
 export type OpenFtpFilesRequest = Request<'ftp.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly secure: boolean }>;
 export type ListFtpDirectoryRequest = Request<'ftp.files.list', { readonly sessionId: string; readonly path: string }>;
+export type UploadFtpFileRequest = Request<'ftp.files.upload', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string }>;
+export type DownloadFtpFileRequest = Request<'ftp.files.download', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
+export type CancelFtpTransferRequest = Request<'ftp.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
 export type CloseFtpFilesRequest = Request<'ftp.close', { readonly sessionId: string }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
 export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
@@ -96,7 +101,7 @@ export type MoveSessionRequest = Request<'session.move', { readonly id: string; 
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
-  OpenFtpFilesRequest | ListFtpDirectoryRequest | CloseFtpFilesRequest |
+  OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest;
 
@@ -111,6 +116,7 @@ export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
+export type FtpTransferReply = CommandReply<FtpTransferResult>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
 export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
 export type ListSessionFoldersReply = CommandReply<readonly SavedSessionFolder[]>;
@@ -145,6 +151,9 @@ export interface DesktopBridge {
   listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply>;
   openFtpFiles(sessionId: string, host: string, port: number, secure: boolean): Promise<OpenFtpFilesReply>;
   listFtpDirectory(sessionId: string, path: string): Promise<ListFtpDirectoryReply>;
+  uploadFtpFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<FtpTransferReply>;
+  downloadFtpFile(sessionId: string, operationId: string, remotePath: string): Promise<FtpTransferReply>;
+  cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
   closeFtpFiles(sessionId: string): Promise<TerminalActionReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
   createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
@@ -160,6 +169,7 @@ export interface DesktopBridge {
   moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
+  onFtpTransferProgress(listener: (event: FtpTransferProgress) => void): () => void;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -254,6 +264,16 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'ftp.files.list' && exactKeys(payload, ['sessionId', 'path']) && typeof payload.sessionId === 'string' &&
       UUID.test(payload.sessionId) && isFtpRemotePath(payload.path)) return { ok: true, result: value as unknown as ListFtpDirectoryRequest };
+  if (value.command === 'ftp.files.upload' && exactKeys(payload, ['sessionId', 'operationId', 'remoteDirectory']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
+      isFtpRemotePath(payload.remoteDirectory)) return { ok: true, result: value as unknown as UploadFtpFileRequest };
+  if (value.command === 'ftp.files.download' && exactKeys(payload, ['sessionId', 'operationId', 'remotePath']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
+      isFtpRemotePath(payload.remotePath)) return { ok: true, result: value as unknown as DownloadFtpFileRequest };
+  if (value.command === 'ftp.files.cancel' && exactKeys(payload, ['sessionId', 'operationId']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId)) {
+    return { ok: true, result: value as unknown as CancelFtpTransferRequest };
+  }
   if (value.command === 'ftp.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseFtpFilesRequest };
   }
@@ -296,7 +316,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
-    'ftp.open', 'ftp.files.list', 'ftp.close',
+    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move'].includes(value.command)) {
     return failure('INVALID_REQUEST');
@@ -356,6 +376,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'ftp.open') return validFtpOpenResult(value.result, request);
     if (request.command === 'ftp.files.list') return isFtpDirectoryListing(value.result);
+    if (request.command === 'ftp.files.upload' || request.command === 'ftp.files.download') return isFtpTransferResult(value.result);
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.create') return isSavedSessionDefinition(value.result);
     if (request.command === 'session.folder.list') return Array.isArray(value.result) && value.result.every(isSavedSessionFolder);
@@ -414,4 +435,8 @@ export function isTerminalEvent(value: unknown): value is LocalTerminalEvent {
   if (value.kind === 'exit') return exactKeys(value, ['kind', 'sessionId', 'exitCode']) && Number.isSafeInteger(value.exitCode);
   if (value.kind === 'failure') return exactKeys(value, ['kind', 'sessionId', 'error']) && validError(value.error) && value.error.target === 'terminal';
   return false;
+}
+
+export function isFtpTransferEvent(value: unknown): value is FtpTransferProgress {
+  return isFtpTransferProgress(value);
 }

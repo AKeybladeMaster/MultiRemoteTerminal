@@ -15,10 +15,10 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
-    'openFtpFiles', 'listFtpDirectory', 'closeFtpFiles',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-    'onTerminalEvent', 'onSshTrustEvent']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress']);
   assert.deepEqual(await bridge.describe(), valid);
 });
 
@@ -196,6 +196,20 @@ test('saved-folder native picker requests wait for user dismissal without an IPC
   await Promise.resolve();
   assert.equal(settled, false);
   finish({ requestId: id(), ok: true, result: { folderCount: 1, sessionCount: 0, createdFolderCount: 1, createdSessionCount: 0 } });
+  assert.equal((await pending).ok, true);
+});
+
+test('FTP transfer requests remain pending while native file and conflict dialogs are open', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish!: (value: unknown) => void;
+  const bridge = createBridge(() => new Promise(resolve => { finish = resolve; }), id);
+  let settled = false;
+  const pending = bridge.uploadFtpFile(id(), id(), '/incoming').then(reply => { settled = true; return reply; });
+  await Promise.resolve();
+  context.mock.timers.tick(120_000);
+  await Promise.resolve();
+  assert.equal(settled, false, 'the upload may be waiting for an explicit native picker/conflict decision');
+  finish({ requestId: id(), ok: true, result: { direction: 'upload', fileName: 'archive.zip', bytesTransferred: 5, state: 'completed' } });
   assert.equal((await pending).ok, true);
 });
 

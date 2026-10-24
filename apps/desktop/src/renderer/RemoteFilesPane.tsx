@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
+import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 
 interface RemoteFilesPaneProps {
   readonly sessionId: string;
@@ -10,6 +11,11 @@ interface RemoteFilesPaneProps {
 }
 
 const FILE_SIZE_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+
+interface ActiveFtpTransfer extends Pick<FtpTransferProgress, 'operationId' | 'direction' | 'fileName' | 'bytesTransferred' | 'totalBytes'> {
+  readonly phase: 'preparing' | 'transferring' | 'committing';
+  readonly cancelling: boolean;
+}
 
 function describeError(code: string, transport: 'sftp' | 'ftp'): string {
   if (code === 'NOT_SUPPORTED') return 'This SSH server did not open an SFTP subsystem. Check that SFTP is enabled on the server.';
@@ -47,6 +53,9 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
   const requestGeneration = useRef(0);
   const started = useRef(false);
   const pathRow = useRef<HTMLDivElement>(null);
+  const activeTransferId = useRef<string | undefined>(undefined);
+  const [transfer, setTransfer] = useState<ActiveFtpTransfer>();
+  const [transferNotice, setTransferNotice] = useState<string>();
 
   const load = useCallback(async (path: string, restoreFocus = false) => {
     const generation = ++requestGeneration.current;
@@ -77,23 +86,110 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
     }
   }, [active, load]);
 
+  useEffect(() => {
+    if (transport !== 'ftp') return;
+    return window.multiRemoteTerminal.onFtpTransferProgress(progress => {
+      if (progress.sessionId !== sessionId || activeTransferId.current !== progress.operationId) return;
+      setTransfer({
+        operationId: progress.operationId,
+        direction: progress.direction,
+        fileName: progress.fileName,
+        bytesTransferred: progress.bytesTransferred,
+        totalBytes: progress.totalBytes,
+        phase: progress.phase,
+        cancelling: false
+      });
+    });
+  }, [sessionId, transport]);
+
+  useEffect(() => () => {
+    const operationId = activeTransferId.current;
+    if (operationId) void window.multiRemoteTerminal.cancelFtpTransfer(sessionId, operationId);
+  }, [sessionId]);
+
+  const transferFile = useCallback(async (direction: 'upload' | 'download', remotePath: string) => {
+    if (transport !== 'ftp' || activeTransferId.current) return;
+    const operationId = globalThis.crypto.randomUUID();
+    activeTransferId.current = operationId;
+    setTransferNotice(undefined);
+    setTransfer({ operationId, direction, fileName: direction === 'download' ? remotePath.slice(remotePath.lastIndexOf('/') + 1) : 'Choose a local file',
+      bytesTransferred: 0, totalBytes: null, phase: 'preparing', cancelling: false });
+    const reply = direction === 'upload'
+      ? await window.multiRemoteTerminal.uploadFtpFile(sessionId, operationId, remotePath)
+      : await window.multiRemoteTerminal.downloadFtpFile(sessionId, operationId, remotePath);
+    if (activeTransferId.current !== operationId) return;
+    activeTransferId.current = undefined;
+    setTransfer(undefined);
+    if (!reply.ok) {
+      if (reply.error.code === 'CANCELLED') {
+        setTransferNotice(direction === 'upload'
+          ? 'Upload cancelled. The server may retain a partial file if cleanup was interrupted.'
+          : 'Download cancelled.');
+        void load(direction === 'upload' ? remotePath : remoteParentPath(remotePath) ?? '.');
+      } else if (reply.error.code === 'NOT_SUPPORTED') {
+        setTransferNotice('This FTP server does not support safe unique-name uploads. No existing remote file was replaced.');
+      } else {
+        setTransferNotice(reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
+          : reply.error.code === 'NOT_FOUND' ? 'The selected local file is no longer available. Choose it again.'
+            : reply.error.code === 'FORBIDDEN' ? 'Windows denied access to the selected local file or destination.'
+              : 'The file transfer failed. Check the connection and server permissions.');
+      }
+      return;
+    }
+    setTransferNotice(reply.result.state === 'skipped' ? `Skipped ${reply.result.fileName}.`
+      : `${direction === 'upload' ? 'Uploaded' : 'Downloaded'} ${reply.result.fileName} (${formatFileSize(reply.result.bytesTransferred)}).`);
+    if (direction === 'upload') void load(remotePath);
+  }, [load, sessionId, transport]);
+
+  const cancelTransfer = useCallback(async () => {
+    const current = transfer;
+    if (!current || current.phase !== 'transferring' || current.cancelling) return;
+    setTransfer({ ...current, cancelling: true });
+    const reply = await window.multiRemoteTerminal.cancelFtpTransfer(sessionId, current.operationId);
+    if (!reply.ok && reply.error.code !== 'NOT_FOUND') {
+      setTransferNotice(reply.error.code === 'CONFLICT' ? 'The transfer is finishing and can no longer be cancelled.' : 'The transfer could not be cancelled.');
+    }
+  }, [sessionId, transfer]);
+
   const parentPath = listing ? remoteParentPath(listing.path) : undefined;
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
   return <aside className="remote-file-panel" aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser">
     <div className="remote-file-heading">
       <h2>{transport === 'ftp' ? 'FTP files' : 'Remote files'}</h2>
-      <button type="button" className="remote-file-refresh" aria-label="Refresh remote folder" title="Refresh remote folder"
-        disabled={loading} onClick={() => void load(requestedPath ?? listing?.path ?? '.')}>↻</button>
+      <div className="remote-file-heading-actions">
+        {transport === 'ftp' && <button type="button" className="remote-file-upload" disabled={loading || !listing || Boolean(transfer)}
+          onClick={() => void transferFile('upload', listing?.path ?? '.')}>Upload file</button>}
+        <button type="button" className="remote-file-refresh" aria-label="Refresh remote folder" title="Refresh remote folder"
+          disabled={loading} onClick={() => void load(requestedPath ?? listing?.path ?? '.')}>↻</button>
+      </div>
     </div>
     <div ref={pathRow} className="remote-file-path-row" tabIndex={-1} aria-live="polite" aria-atomic="true">
       <button type="button" className="remote-file-up" aria-label="Open parent folder"
         disabled={loading || !listing || parentPath === listing.path} onClick={() => { if (parentPath) void load(parentPath, true); }}>↑</button>
       <code className="remote-file-path" translate="no" title={displayedPath}>{displayedPath}</code>
     </div>
+    {transport === 'ftp' && <p className="remote-file-status">FTP assigns a unique name to each upload; the server-selected name appears when it finishes.</p>}
     {loading && <p className="remote-file-status" role="status">Reading remote directory…</p>}
     {error && <p className="remote-file-error" role="alert">{error}</p>}
     {error && transport === 'ftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"
       disabled={loading} onClick={onReconnect}>Reconnect to file server</button>}
+    {transfer && <div className="remote-file-transfer" role="status" aria-live="polite">
+      <div className="remote-file-transfer-label"><span>{transfer.phase === 'preparing'
+        ? `Choose ${transfer.direction === 'upload' ? 'a local file to upload' : `a local destination for ${transfer.fileName}`}`
+        : transfer.phase === 'committing' ? `Finishing ${transfer.direction} of ${transfer.fileName}`
+          : `${transfer.direction === 'upload' ? 'Uploading' : 'Downloading'} ${transfer.fileName}`}</span>
+        {transfer.phase === 'transferring' && <button type="button" disabled={transfer.cancelling} onClick={() => void cancelTransfer()}>
+          {transfer.cancelling ? 'Cancelling…' : 'Cancel'}</button>}
+      </div>
+      {(transfer.phase === 'transferring' || transfer.phase === 'committing') && <>
+        {transfer.totalBytes !== null && transfer.totalBytes > 0
+          ? <progress aria-label={`${transfer.direction === 'upload' ? 'Upload' : 'Download'} progress`} max={transfer.totalBytes}
+            value={Math.min(transfer.bytesTransferred, transfer.totalBytes)} />
+          : <progress aria-label={`${transfer.direction === 'upload' ? 'Upload' : 'Download'} progress`} />}
+        <span className="remote-file-transfer-count">{formatFileSize(transfer.bytesTransferred)}{transfer.totalBytes === null ? ' transferred' : ` of ${formatFileSize(transfer.totalBytes)}`}</span>
+      </>}
+    </div>}
+    {transferNotice && <p className="remote-file-status" role="status">{transferNotice}</p>}
     {!loading && !error && listing?.entries.length === 0 && <p className="remote-file-status" role="status">This folder is empty.</p>}
     {!loading && !error && listing && listing.entries.length > 0 && <p className="remote-file-status" role="status">
       {listing.entries.length} {listing.entries.length === 1 ? 'item' : 'items'} in this folder.
@@ -110,7 +206,9 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
           : <div className={`remote-file-row remote-file-static ${entry.kind === 'symlink' ? 'is-link' : ''}`}>
             <span className="remote-file-name"><span className={`remote-file-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'symlink' ? '↗' : '·'}</span>
               <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
-            <span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
+            <span className="remote-file-file-actions"><span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
+              {transport === 'ftp' && entry.kind === 'file' && <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
+                disabled={loading || Boolean(transfer)} onClick={() => void transferFile('download', entry.path)}>Download</button>}</span>
           </div>}
       </li>)}
     </ul>}

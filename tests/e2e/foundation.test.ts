@@ -3,11 +3,11 @@ import type { Page } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
 const unicodeSample = String.fromCodePoint(0x416, 0x96ea, 0x1f642);
@@ -291,12 +291,26 @@ test('Telnet requires plaintext consent and carries terminal input through the w
 test('FTP shows plaintext risk, browses through the utility worker, and persists a credential-free profile for reconnect', async () => {
   test.setTimeout(75_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ftp-e2e-'));
+  const uploadSource = join(profile, 'e2e-upload.txt');
+  const uploadContents = Buffer.alloc(4 * 1024 * 1024, 65);
+  const downloadRoot = join(profile, 'downloads');
+  await writeFile(uploadSource, uploadContents);
+  await mkdir(downloadRoot);
+  const remoteFiles = new Map<string, Buffer>([
+    ['readme.txt', Buffer.from('hello remote')],
+    ['documents/nested.txt', Buffer.from('nested content abc')]
+  ]);
   const controlSockets = new Set<Socket>();
   let connectionCount = 0;
   let acceptedUsername = false;
   let acceptedPassword = false;
   const ftpCommandVerbs: string[] = [];
   const ftpListArguments: string[] = [];
+  const ftpStouCommands: string[] = [];
+  const ftpCwdArguments: string[] = [];
+  const ftpDeleteArguments: string[] = [];
+  let stouCount = 0;
+  let uploadTransferStartedCount = 0;
   const control = createServer(socket => {
     controlSockets.add(socket);
     socket.on('error', () => {});
@@ -308,7 +322,11 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     let transferSocket: Socket | undefined;
     let listRequested = false;
     let requestedListingPath = '.';
+    let currentDirectory = '/';
     let transferStarted = false;
+    let uploadName: string | undefined;
+    let downloadName: string | undefined;
+    let renameSource: string | undefined;
     const reply = (line: string) => { if (!socket.destroyed) socket.write(`${line}\r\n`); };
     const beginPassive = (extended: boolean) => {
       passive?.close();
@@ -316,6 +334,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
         transferSocket = dataSocket;
         dataSocket.once('error', () => {});
         if (listRequested) sendListing();
+        else if (uploadName) receiveUpload();
+        else if (downloadName) sendDownload();
       });
       passive.on('error', () => {});
       transferSocket = undefined;
@@ -336,14 +356,57 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
       if (transferStarted || !transferSocket) return;
       transferStarted = true;
       const requestedName = requestedListingPath.trim().split(/\s+/u).at(-1)?.replace(/\/+$/u, '').split('/').at(-1);
-      const listing = requestedName === 'documents'
-        ? '-rw-r--r-- 1 owner group 18 Oct 24 12:00 nested.txt\r\n'
-        : '-rw-r--r-- 1 owner group 12 Oct 24 12:00 readme.txt\r\ndrwxr-xr-x 1 owner group 0 Oct 24 12:00 documents\r\n';
+      const files = [...remoteFiles.entries()].filter(([path]) => requestedName === 'documents'
+        ? path.startsWith('documents/') : !path.includes('/'));
+      const listing = files.map(([path, contents]) => {
+        const name = path.slice(path.lastIndexOf('/') + 1);
+        return `-rw-r--r-- 1 owner group ${contents.length} Oct 24 12:00 ${name}\r\n`;
+      }).join('') + (requestedName === 'documents' ? '' : 'drwxr-xr-x 1 owner group 0 Oct 24 12:00 documents\r\n');
       transferSocket.end(listing);
       transferSocket.once('close', () => {
         reply('226 Directory send complete');
         passive?.close();
         passive = undefined;
+        transferSocket = undefined;
+        listRequested = false;
+        transferStarted = false;
+      });
+    };
+    const finishTransfer = () => {
+      passive?.close();
+      passive = undefined;
+      transferSocket = undefined;
+      uploadName = undefined;
+      downloadName = undefined;
+      transferStarted = false;
+    };
+    const receiveUpload = () => {
+      if (transferStarted || !transferSocket || !uploadName) return;
+      transferStarted = true;
+      uploadTransferStartedCount++;
+      if (stouCount === 2) {
+        transferSocket.pause();
+        setTimeout(() => transferSocket?.resume(), 1_500);
+      }
+      const name = uploadName;
+      const chunks: Buffer[] = [];
+      transferSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      transferSocket.once('end', () => {
+        remoteFiles.set(posix.join(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
+        transferSocket?.end();
+        reply('226 Transfer complete');
+        finishTransfer();
+      });
+    };
+    const sendDownload = () => {
+      if (transferStarted || !transferSocket || !downloadName) return;
+      transferStarted = true;
+      const contents = remoteFiles.get(downloadName);
+      if (!contents) { reply('550 File not found'); transferSocket.destroy(); finishTransfer(); return; }
+      transferSocket.end(contents);
+      transferSocket.once('close', () => {
+        reply('226 Transfer complete');
+        finishTransfer();
       });
     };
     socket.on('data', chunk => {
@@ -361,8 +424,12 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
         else if (verb === 'FEAT') socket.write('211-Features\r\n EPSV\r\n PASV\r\n211 End\r\n');
         else if (verb === 'SYST') reply('215 UNIX Type: L8');
         else if (verb === 'TYPE' || verb === 'OPTS' || verb === 'NOOP') reply('200 Command okay');
-        else if (verb === 'PWD') reply('257 "/" is current directory');
-        else if (verb === 'CWD') reply('250 Directory changed');
+        else if (verb === 'PWD') reply(`257 "${currentDirectory}" is current directory`);
+        else if (verb === 'CWD') {
+          ftpCwdArguments.push(argument);
+          currentDirectory = posix.resolve(currentDirectory, argument || '.');
+          reply('250 Directory changed');
+        }
         else if (verb === 'PASV') beginPassive(false);
         else if (verb === 'EPSV') beginPassive(true);
         else if (verb === 'LIST' || verb === 'NLST') {
@@ -372,6 +439,43 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           reply('150 Opening data connection');
           sendListing();
         }
+        else if (verb === 'STOU') {
+          ftpStouCommands.push(command);
+          if (argument !== '') { reply('501 STOU does not accept a pathname'); continue; }
+          stouCount++;
+          const requestedName = 'mrt-server-generated.txt';
+          const extensionAt = requestedName.lastIndexOf('.');
+          const extension = extensionAt > 0 ? requestedName.slice(extensionAt) : '';
+          const stem = extension ? requestedName.slice(0, -extension.length) : requestedName;
+          uploadName = requestedName;
+          const prefix = currentDirectory === '/' ? '' : `${currentDirectory.replace(/^\//u, '')}/`;
+          for (let ordinal = 1; remoteFiles.has(`${prefix}${uploadName}`); ordinal++) uploadName = `${stem} (${ordinal})${extension}`;
+          reply(`150 FILE: ${uploadName}`);
+          receiveUpload();
+        }
+        else if (verb === 'STOR') {
+          uploadName = argument.slice(argument.lastIndexOf('/') + 1);
+          reply('150 Opening upload connection');
+          receiveUpload();
+        }
+        else if (verb === 'RETR') {
+          downloadName = argument.slice(argument.lastIndexOf('/') + 1);
+          reply('150 Opening download connection');
+          sendDownload();
+        }
+        else if (verb === 'RNFR') { renameSource = argument.slice(argument.lastIndexOf('/') + 1); reply('350 Ready for destination'); }
+        else if (verb === 'RNTO') {
+          const target = argument.slice(argument.lastIndexOf('/') + 1);
+          const contents = renameSource ? remoteFiles.get(renameSource) : undefined;
+          if (!renameSource || !contents) reply('550 Source file not found');
+          else { remoteFiles.delete(renameSource); remoteFiles.set(target, contents); reply('250 Rename successful'); }
+          renameSource = undefined;
+        }
+        else if (verb === 'DELE') {
+          ftpDeleteArguments.push(argument);
+          remoteFiles.delete(posix.resolve(currentDirectory, argument).replace(/^\//u, ''));
+          reply('250 Delete successful');
+        }
         else if (verb === 'QUIT') { reply('221 Goodbye'); socket.end(); }
         else reply('502 Command not implemented');
       }
@@ -380,7 +484,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   });
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   const launch = async () => electron.launch({
-    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials'],
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials', '--mrt-e2e-ftp-transfers',
+      `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
     env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
   try {
@@ -407,8 +512,27 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect(browser.getByRole('button', { name: 'Open folder documents', exact: true })).toBeVisible();
     await browser.getByRole('button', { name: 'Open folder documents', exact: true }).click();
     await expect(browser.getByText('nested.txt', { exact: true }), `FTP LIST arguments=${ftpListArguments.join('|')}`).toBeVisible({ timeout: 10_000 });
+    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect.poll(() => ftpStouCommands.length).toBe(1);
+    expect(ftpStouCommands).toEqual(['STOU']);
+    expect(ftpCwdArguments).toEqual(['documents', '/']);
+    await expect.poll(() => remoteFiles.get('documents/mrt-server-generated.txt')?.length).toBe(uploadContents.length);
+    await expect(browser.getByText(/^Uploaded mrt-server-generated\.txt \(/u)).toBeVisible({ timeout: 10_000 });
+
+    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect.poll(() => ftpStouCommands.length).toBe(2);
+    await expect.poll(() => uploadTransferStartedCount).toBe(2);
+    await browser.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(browser.getByText('Upload cancelled. The server may retain a partial file if cleanup was interrupted.')).toBeVisible({ timeout: 10_000 });
+    await expect.poll(() => ftpDeleteArguments.length, { timeout: 10_000 }).toBe(1);
+    expect(remoteFiles.has('documents/mrt-server-generated (1).txt')).toBe(false);
+    expect(ftpStouCommands).toEqual(['STOU', 'STOU']);
+    expect(ftpCwdArguments).toEqual(['documents', '/', 'documents', '/']);
     await browser.getByRole('button', { name: 'Open parent folder', exact: true }).click();
     await expect(browser.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 });
+    await browser.getByRole('button', { name: 'Download readme.txt', exact: true }).click();
+    await expect.poll(() => readFile(join(downloadRoot, 'readme.txt'), 'utf8').catch(() => undefined)).toBe('hello remote');
+    await expect(browser.getByText('Downloaded readme.txt (12 B).', { exact: true })).toBeVisible({ timeout: 10_000 });
     expect(acceptedUsername).toBe(true);
     expect(acceptedPassword).toBe(true);
     expect(await page.locator('body').innerText()).not.toContain('ftp-e2e-secret');
@@ -991,11 +1115,11 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
-      'openFtpFiles', 'listFtpDirectory', 'closeFtpFiles',
+      'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-      'onTerminalEvent', 'onSshTrustEvent']);
+      'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);
