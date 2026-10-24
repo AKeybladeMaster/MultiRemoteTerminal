@@ -91,6 +91,12 @@ function focusWindow(): void {
   current.focus();
 }
 
+function canWriteClipboard(contents: Electron.WebContents | null, mainFrame: boolean, requestingUrl: string): boolean {
+  const current = window;
+  return Boolean(current && !current.isDestroyed() && contents === current.webContents && !contents.isDestroyed() && mainFrame &&
+    isAppDocument(requestingUrl) && isAppDocument(contents.getURL()));
+}
+
 async function cancelCatalogCommand(event: Electron.IpcMainInvokeEvent, input: unknown): Promise<void> {
   const current = window;
   const requestId = parseCatalogCancellationRequest(input, {
@@ -182,8 +188,14 @@ function boot(): void {
   stopActiveTerminals = () => { void stopTerminals(); };
 
   Menu.setApplicationMenu(null);
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const trustedMainFrame = 'requestingUrl' in details && 'isMainFrame' in details &&
+      canWriteClipboard(contents, details.isMainFrame, details.requestingUrl);
+    callback(permission === 'clipboard-sanitized-write' && trustedMainFrame);
+  });
+  session.defaultSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) =>
+    permission === 'clipboard-sanitized-write' && requestingOrigin === 'mrt://app' &&
+    canWriteClipboard(contents, details.isMainFrame, details.requestingUrl ?? ''));
   session.defaultSession.on('will-download', event => event.preventDefault());
   // Defense in depth: the app makes no external requests in WP-01, including subresources.
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {

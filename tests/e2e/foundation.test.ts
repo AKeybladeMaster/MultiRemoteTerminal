@@ -273,6 +273,36 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await expect(menu).toBeVisible();
     await page.screenshot({ path: 'test-results/terminal-tab-context-menu.png', fullPage: true });
     await expect(menu.getByRole('menuitem', { name: 'Copy selection' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(menu).toHaveCount(0);
+    await expect(tab).toBeFocused();
+
+    await tab.click({ button: 'right' });
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(tab).toBeFocused();
+
+    await tab.click({ button: 'right' });
+    await expect(menu).toBeVisible();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1060, 720));
+    await expect(menu).toHaveCount(0);
+    await expect(tab).toBeFocused();
+
+    const outputMarker = rows.getByText(marker, { exact: true });
+    const markerBounds = await outputMarker.boundingBox();
+    expect(markerBounds).not.toBeNull();
+    if (!markerBounds) throw new Error('The terminal output marker is not visible for clipboard selection.');
+    await page.mouse.move(markerBounds.x + 1, markerBounds.y + markerBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(markerBounds.x + markerBounds.width + 2, markerBounds.y + markerBounds.height / 2);
+    await page.mouse.up();
+    await tab.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Copy selection' }).click();
+    await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(marker);
+
+    await tab.click({ button: 'right' });
+    await expect(menu).toBeVisible();
     await menu.getByRole('menuitem', { name: 'Clear terminal' }).click();
     await expect(rows).not.toContainText(marker);
 
@@ -315,6 +345,19 @@ test('saved-session folders create, nest, move, rename, delete safely and persis
     await dialog.getByLabel('Session name').fill('Folder saved shell');
     await dialog.getByRole('button', { name: 'Save session', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Open Folder saved shell', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Save active session' });
+    await dialog.getByLabel('Session name').fill('Second saved shell');
+    await dialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.locator('.saved-session-count')).toHaveText('2');
+    await page.getByRole('searchbox', { name: 'Search saved sessions' }).fill('Folder saved shell');
+    await expect(page.locator('.saved-session-open')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Open Folder saved shell', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open Second saved shell', exact: true })).toHaveCount(0);
+    await expect(page.locator('.saved-session-count')).toHaveText('2');
+    await page.getByRole('searchbox', { name: 'Search saved sessions' }).clear();
+    await expect(page.locator('.saved-session-open')).toHaveCount(2);
+    await expect(page.getByRole('button', { name: 'Open Second saved shell', exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: '+ Folder', exact: true }).click();
     dialog = page.getByRole('dialog', { name: 'Create folder' });

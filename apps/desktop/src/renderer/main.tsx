@@ -168,6 +168,7 @@ function Workbench() {
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
   const [sshTrustBusy, setSshTrustBusy] = useState(false);
   const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
+  const [savedSessionCount, setSavedSessionCount] = useState(0);
   const [savedFolders, setSavedFolders] = useState<readonly SavedSessionFolder[]>([]);
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
@@ -220,13 +221,21 @@ function Workbench() {
     const request = ++savedSessionsRequest.current;
     setSavedSessionsLoading(true);
     try {
-      const reply = await window.multiRemoteTerminal.listSavedSessions(search);
+      const [reply, totalReply] = await Promise.all([
+        window.multiRemoteTerminal.listSavedSessions(search),
+        search ? window.multiRemoteTerminal.listSavedSessions('') : undefined
+      ]);
       if (request !== savedSessionsRequest.current) return undefined;
       if (!reply.ok) {
         setAlert(`Saved sessions could not be loaded (${reply.error.code}).`);
         return undefined;
       }
+      if (totalReply && !totalReply.ok) {
+        setAlert(`Saved-session count could not be loaded (${totalReply.error.code}).`);
+        return undefined;
+      }
       setSavedSessions(reply.result);
+      setSavedSessionCount(totalReply?.result.length ?? reply.result.length);
       return reply.result;
     } catch {
       if (request === savedSessionsRequest.current) setAlert('Saved sessions could not be loaded.');
@@ -344,7 +353,7 @@ function Workbench() {
       if (event.target instanceof Node && tabContextMenuElement.current?.contains(event.target)) return;
       setTabContextMenu(undefined);
     };
-    const dismissOnResize = () => setTabContextMenu(undefined);
+    const dismissOnResize = () => closeTerminalTabContextMenu(true);
     document.addEventListener('pointerdown', dismissOutsideMenu, true);
     window.addEventListener('resize', dismissOnResize);
     return () => {
@@ -637,7 +646,8 @@ function Workbench() {
           event.preventDefault();
           closeTerminalTabContextMenu(true);
         } else if (event.key === 'Tab') {
-          setTabContextMenu(undefined);
+          event.preventDefault();
+          closeTerminalTabContextMenu(true);
         }
         return;
       }
@@ -1074,7 +1084,7 @@ function Workbench() {
           </ul>
         </div>}
         <section className="saved-session-group" aria-labelledby="saved-sessions-heading">
-          <div className="saved-session-heading"><div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span className="saved-session-count" aria-label={`${savedSessions.length} saved ${savedSessions.length === 1 ? 'session' : 'sessions'}`}>{savedSessions.length}</span></div>
+          <div className="saved-session-heading"><div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span className="saved-session-count" aria-label={`${savedSessionCount} saved ${savedSessionCount === 1 ? 'session' : 'sessions'}`}>{savedSessionCount}</span></div>
             <button className="saved-folder-create" type="button" disabled={catalogBusy} onClick={() => openSavedFolderDialog({ mode: 'create', parentId: null })}>+ Folder</button>
           </div>
           <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>

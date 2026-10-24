@@ -26,7 +26,7 @@
 ## Electron minimum configuration
 
 - Current patched Electron version; renderer `sandbox=true`, `contextIsolation=true`, `nodeIntegration=false`, secure custom app protocol, `webSecurity=true`.
-- Deny unnecessary permissions and navigation, require explicit permission handling and external URL allowlisting.
+- Deny unnecessary permissions and navigation. The only current permission exception is `clipboard-sanitized-write` for the trusted `mrt://app` main frame; clipboard reads, subframes and all other origins remain denied. The renderer requests a write only from the explicit terminal-tab Copy selection action. External URL access requires allowlisting.
 - Strict CSP; no unsafe-eval, no arbitrary HTML/JS rendering of terminal output.
 - Validate IPC origin/sender and schemas for **every** command; do not expose raw `ipcRenderer` from preload.
 - Main or privileged worker owns filesystem, system processes and vault. Distinguish worker process isolation from a strong OS sandbox.
