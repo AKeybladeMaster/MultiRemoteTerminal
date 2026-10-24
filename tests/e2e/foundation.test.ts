@@ -314,6 +314,7 @@ test('a second application process exits and shows and focuses the primary windo
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(true);
     await app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.hide());
     await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(false);
     const executable = await app.evaluate(() => process.execPath);
