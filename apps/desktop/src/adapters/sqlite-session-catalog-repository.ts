@@ -12,6 +12,7 @@ import { createSessionFolderBundle, MAX_SESSION_FOLDER_BUNDLE_BYTES, MAX_SESSION
 import type { SessionFolderBundle, SessionFolderExportResult, SessionFolderImportResult } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import { isLocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 
 interface SavedSessionRow {
   readonly id: unknown;
@@ -57,15 +58,15 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     this.listByQuery = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
       FROM session_definitions
-      WHERE kind IN ('local', 'ssh') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      WHERE kind IN ('local', 'ssh', 'telnet') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
       ORDER BY favorite DESC, updated_at DESC, id ASC
     `);
     this.insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
     `);
-    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\')');
-    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\')');
+    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\')');
+    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\')');
     this.listFoldersStatement = database.prepare('SELECT id, parent_id, name FROM folders ORDER BY parent_id, name COLLATE NOCASE, id');
     this.findFolder = database.prepare('SELECT id, parent_id, name FROM folders WHERE id = ?');
     this.findFolderName = database.prepare(`
@@ -98,7 +99,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       ) SELECT session.id, session.folder_id, session.kind, session.name, session.host, session.port,
         session.options_json, session.favorite, session.created_at, session.updated_at
       FROM session_definitions session JOIN subtree ON subtree.id = session.folder_id
-      WHERE session.kind IN ('local', 'ssh') ORDER BY session.id LIMIT ?
+      WHERE session.kind IN ('local', 'ssh', 'telnet') ORDER BY session.id LIMIT ?
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
     this.insertImportedSession = database.prepare(`
@@ -125,9 +126,9 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       const local = draft.kind === 'local';
       const options = local ? JSON.stringify({ shell: draft.shell }) : '{}';
       this.insertSession.run(id, draft.kind, draft.name, local ? null : draft.host, local ? null : draft.port, options, timestamp, timestamp);
-      return local
-        ? { id, folderId: null, kind: 'local', name: draft.name, shell: draft.shell, favorite: false, createdAt: timestamp, updatedAt: timestamp }
-        : { id, folderId: null, kind: 'ssh', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      if (draft.kind === 'local') return { id, folderId: null, kind: 'local', name: draft.name, shell: draft.shell, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      if (draft.kind === 'ssh') return { id, folderId: null, kind: 'ssh', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      return { id, folderId: null, kind: 'telnet', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
     } catch (error) { throw mapStorageError(error); }
   }
 
@@ -348,8 +349,10 @@ function orderBundleFolders(bundle: SessionFolderBundle): SavedSessionFolder[] {
 function sameSessionDefinition(left: SavedSessionDefinition, right: SavedSessionDefinition): boolean {
   if (left.id !== right.id || left.folderId !== right.folderId || left.kind !== right.kind || left.name !== right.name ||
       left.favorite !== right.favorite || left.createdAt !== right.createdAt || left.updatedAt !== right.updatedAt) return false;
-  return left.kind === 'local' && right.kind === 'local' ? left.shell === right.shell :
-    left.kind === 'ssh' && right.kind === 'ssh' && left.host === right.host && left.port === right.port;
+  if (left.kind === 'local' && right.kind === 'local') return left.shell === right.shell;
+  if (left.kind === 'ssh' && right.kind === 'ssh') return left.host === right.host && left.port === right.port;
+  if (left.kind === 'telnet' && right.kind === 'telnet') return left.host === right.host && left.port === right.port;
+  return false;
 }
 
 async function writeSessionFolderBundle(path: string, temporaryPath: string, contents: Buffer): Promise<void> {
@@ -447,6 +450,12 @@ function decodeSessionRow(row: SavedSessionRow): SavedSessionDefinition {
     const endpoint = canonicalizeSshHostEndpoint({ host: row.host, port: row.port });
     if (!endpoint || endpoint.host !== row.host || endpoint.port !== row.port || !exactKeys(options, [])) throw new StorageOperationError('corrupt');
     return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'ssh', name: row.name, host: endpoint.host, port: endpoint.port, favorite: row.favorite === 1,
+      createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  if (row.kind === 'telnet') {
+    const endpoint = canonicalizeRemoteEndpoint({ host: row.host, port: row.port });
+    if (!endpoint || endpoint.host !== row.host || endpoint.port !== row.port || !exactKeys(options, [])) throw new StorageOperationError('corrupt');
+    return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'telnet', name: row.name, host: endpoint.host, port: endpoint.port, favorite: row.favorite === 1,
       createdAt: row.created_at, updatedAt: row.updated_at };
   }
   throw new StorageOperationError('corrupt');

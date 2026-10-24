@@ -108,6 +108,8 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   assert.equal(parseRequest(create).ok, true);
   assert.equal(parseRequest({ ...create, payload: { ...create.payload, password: 'must-not-pass' } }).ok, false);
   assert.equal(parseRequest({ ...create, payload: { ...create.payload, port: 65_536 } }).ok, false);
+  assert.equal(parseRequest({ ...create, payload: { kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23 } }).ok, true);
+  assert.equal(parseRequest({ ...create, payload: { kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23, password: 'must-not-pass' } }).ok, false);
 
   const list = { command: 'session.list', requestId: request.requestId, contractVersion: 1, payload: { query: 'build' } };
   assert.equal(parseRequest(list).ok, true);

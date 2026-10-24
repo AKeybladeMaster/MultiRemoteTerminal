@@ -18,9 +18,13 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     new SqliteHostTrustRepository(database).migrate();
     const catalog = new SqliteSessionCatalogRepository(database);
     const ssh = await catalog.createSession({ kind: 'ssh', name: 'Production gateway', host: 'SSH.Example.com.', port: 2222 });
+    const telnet = await catalog.createSession({ kind: 'telnet', name: 'Legacy switch', host: 'TELNET.Example.com.', port: 23 });
     const local = await catalog.createSession({ kind: 'local', name: 'Local PowerShell', shell: 'powershell' });
     const bash = await catalog.createSession({ kind: 'local', name: 'Local Bash', shell: 'bash' });
     assert.equal(ssh.kind, 'ssh');
+    assert.equal(telnet.kind, 'telnet');
+    if (telnet.kind !== 'telnet') throw new Error('Expected Telnet definition');
+    assert.deepEqual({ host: telnet.host, port: telnet.port }, { host: 'telnet.example.com', port: 23 });
     assert.equal(bash.kind, 'local');
     if (bash.kind !== 'local') throw new Error('Expected Bash definition');
     assert.equal(bash.shell, 'bash');
@@ -28,15 +32,16 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.deepEqual({ host: ssh.host, port: ssh.port }, { host: 'ssh.example.com', port: 2222 });
     assert.ok((await catalog.listSessions('GATEWAY')).some(item => item.id === ssh.id));
     assert.ok((await catalog.listSessions('ssh.example')).some(item => item.id === ssh.id));
+    assert.ok((await catalog.listSessions('telnet.example')).some(item => item.id === telnet.id));
 
     for (let index = 0; index < 1_000; index += 1) {
       await catalog.createSession({ kind: 'local', name: `Connection ${String(index).padStart(4, '0')}`, shell: index % 2 === 0 ? 'powershell' : 'cmd' });
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
-    assert.equal((await catalog.listSessions('')).length, 1_003);
+    assert.equal((await catalog.listSessions('')).length, 1_004);
     assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
-    assert.equal((await catalog.listSessions(''))[0]?.id, ssh.id);
+    assert.equal(await catalog.setFavorite(telnet.id, true), true);
     assert.equal(await catalog.removeSession(local.id), true);
     assert.equal(await catalog.removeSession(local.id), false);
 
@@ -45,7 +50,14 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     };
     assert.equal(persistedSsh.credential_ref, null);
     assert.equal(persistedSsh.options_json, '{}');
+    const persistedTelnet = database.prepare('SELECT credential_ref, options_json FROM session_definitions WHERE id = ?').get(telnet.id) as {
+      readonly credential_ref: string | null; readonly options_json: string;
+    };
+    assert.equal(persistedTelnet.credential_ref, null);
+    assert.equal(persistedTelnet.options_json, '{}');
     assert.equal((await catalog.listSessions('password')).length, 0);
+    const favorites = await catalog.listSessions('');
+    assert.deepEqual(new Set(favorites.slice(0, 2).map(item => item.id)), new Set([ssh.id, telnet.id]));
   } finally {
     database.close();
   }
@@ -208,32 +220,38 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const unicodeUpper = await source.createFolder({ name: 'Device Ä', parentId: root.id });
     const unicodeLower = await source.createFolder({ name: 'Device ä', parentId: root.id });
     const session = await source.createSession({ kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 });
+    const telnet = await source.createSession({ kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23 });
     await source.moveSession(session.id, child.id);
+    await source.moveSession(telnet.id, root.id);
     await source.setFavorite(session.id, true);
     const path = join(directory, 'project.mrt-session-folder.json');
 
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 1 });
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 1 },
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 2 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 2 },
       'exporting again to the selected file replaces it atomically');
     const text = await readFile(path, 'utf8');
     assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
     assert.doesNotMatch(text, /password|credential|privateKey/i);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 1, createdFolderCount: 4, createdSessionCount: 1
+      folderCount: 4, sessionCount: 2, createdFolderCount: 4, createdSessionCount: 2
     });
     assert.deepEqual(new Set((await destination.listFolders()).map(folder => folder.name)),
       new Set([root.name, child.name, unicodeUpper.name, unicodeLower.name]));
     const importedSessions = await destination.listSessions('');
-    assert.equal(importedSessions.length, 1);
-    const importedSession = importedSessions[0];
+    assert.equal(importedSessions.length, 2);
+    const importedSession = importedSessions.find(item => item.kind === 'ssh');
     assert.ok(importedSession?.kind === 'ssh');
     if (importedSession?.kind !== 'ssh') throw new Error('Expected an imported SSH definition');
     assert.deepEqual({ id: importedSession.id, folderId: importedSession.folderId, kind: importedSession.kind, name: importedSession.name,
       host: importedSession.host, port: importedSession.port, favorite: importedSession.favorite }, {
       id: session.id, folderId: child.id, kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222, favorite: true
     });
+    assert.deepEqual(importedSessions.find(item => item.kind === 'telnet'), {
+      id: telnet.id, folderId: root.id, kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23,
+      favorite: false, createdAt: telnet.createdAt, updatedAt: telnet.updatedAt
+    });
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 1, createdFolderCount: 0, createdSessionCount: 0
+      folderCount: 4, sessionCount: 2, createdFolderCount: 0, createdSessionCount: 0
     });
   } finally {
     sourceDatabase.close();

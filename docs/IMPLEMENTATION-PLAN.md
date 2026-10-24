@@ -125,6 +125,8 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 **Tests:** each actual protocol, disable/enable, credentials redaction, serial unplug, Mosh UDP mobility.  
 **Gate:** never present plain protocol as encrypted.
 
+**WP-09A — Telnet profile foundation (partial):** A shared domain endpoint validator now supports credential-free Telnet saved-session metadata, SQLite catalog operations and saved-folder bundle round-trips. This is not live Telnet support: P-04 remains planned until the warning-gated terminal transport and Windows loopback E2E acceptance are complete. See [WP-09A results](results/WP-09A-telnet-profile-2026-10-24.md).
+
 ### WP-10 — X11, XDMCP and daemons
 
 **Requires:** WP-02/provider registry; separate security review before release.  
