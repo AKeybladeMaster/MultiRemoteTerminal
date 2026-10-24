@@ -63,11 +63,11 @@ export function isMacroDefinition(value: unknown): value is MacroDefinition {
 function normalizeMacroStep(value: unknown): MacroStep | undefined {
   if (!isPlainRecord(value) || typeof value.kind !== 'string') return undefined;
   if (value.kind === 'send' && hasExactKeys(value, ['kind', 'text'])) {
-    const text = normalizeText(value.text, MAX_MACRO_SEND_CHARS);
+    const text = normalizeStepText(value.text, MAX_MACRO_SEND_CHARS);
     return text ? { kind: 'send', text } : undefined;
   }
   if (value.kind === 'waitForText' && hasExactKeys(value, ['kind', 'text', 'timeoutMs'])) {
-    const text = normalizeText(value.text, MAX_MACRO_WAIT_TEXT_CHARS);
+    const text = normalizeStepText(value.text, MAX_MACRO_WAIT_TEXT_CHARS);
     if (!text || !Number.isSafeInteger(value.timeoutMs) || (value.timeoutMs as number) < 1_000 || (value.timeoutMs as number) > 120_000) return undefined;
     return { kind: 'waitForText', text, timeoutMs: value.timeoutMs as number };
   }
@@ -86,6 +86,11 @@ function normalizeText(value: unknown, maxLength: number, allowEmpty = false): s
   if (typeof value !== 'string' || value.length > maxLength || CONTROL.test(value)) return undefined;
   const normalized = value.trim();
   return allowEmpty || normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeStepText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string' || value.length > maxLength || CONTROL.test(value) || value.trim().length === 0) return undefined;
+  return value;
 }
 
 function isCanonicalTimestamp(value: unknown): value is string {

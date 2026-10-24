@@ -27,3 +27,14 @@ test('stored macros require a canonical versioned shape with no credential field
   assert.equal(isMacroDefinition({ ...value, credentials: { password: 'secret' } }), false);
   assert.equal(isMacroDefinition({ ...value, schemaVersion: 2 }), false);
 });
+
+test('macro send commands and literal wait text preserve authored boundary spaces', () => {
+  const draft = normalizeMacroDraft({ name: 'Whitespace', steps: [
+    { kind: 'send', text: '  echo ready  ' },
+    { kind: 'waitForText', text: ' ready ', timeoutMs: 10_000 }
+  ] });
+  assert.deepEqual(draft?.steps, [
+    { kind: 'send', text: '  echo ready  ' },
+    { kind: 'waitForText', text: ' ready ', timeoutMs: 10_000 }
+  ]);
+});

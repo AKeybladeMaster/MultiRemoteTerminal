@@ -24,7 +24,8 @@ Ran `corepack pnpm check` on Windows x64 with Node 24.14.1 and Electron 45.0.0:
 
 - TypeScript typecheck: passed.
 - ESLint and static import-boundary checks: passed.
-- Unit suite: 242 passed, 0 failed.
+- Unit suite: 243 passed, 0 failed, including the boundary-whitespace regression
+  for `send` commands and literal wait text.
 - Native module and renderer build: passed. Vite reports that the renderer
   bundle exceeds its 500 kB warning threshold.
 - Electron E2E: 18 passed, 0 failed. The macro scenario creates a typed
