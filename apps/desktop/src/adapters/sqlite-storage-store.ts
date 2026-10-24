@@ -292,8 +292,8 @@ class StorageWorkerClient {
           if (!pending) return;
           this.clearPending(requestId, pending);
           publishStorageDiagnostic('request-timeout', 'BUSY');
-          reject(new HostTrustStoreError('busy'));
-          void this.terminate(worker);
+          const error = new HostTrustStoreError('busy');
+          void this.terminate(worker).then(() => reject(error), () => reject(error));
         }, timeoutMs);
         const pending: PendingRequest = {
           resolve, reject, timer,
@@ -306,8 +306,8 @@ class StorageWorkerClient {
             if (this.pending.get(requestId) !== pending) return;
             this.clearPending(requestId, pending);
             publishStorageDiagnostic('request-cancelled', 'CANCELLED');
-            reject(new HostTrustStoreError('cancelled'));
-            void this.terminate(worker);
+            const error = new HostTrustStoreError('cancelled');
+            void this.terminate(worker).then(() => reject(error), () => reject(error));
           };
           pending.abortListener = abortListener;
           cancellation.addEventListener('abort', abortListener, { once: true });

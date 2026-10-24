@@ -8,6 +8,8 @@ import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlit
 import { SqliteSessionCatalogRepository } from '../../apps/desktop/src/adapters/sqlite-session-catalog-repository.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode } from '../../apps/desktop/src/workers/storage-protocol.ts';
 import { createSessionCatalog } from '../../packages/application/src/session-catalog.ts';
+import type { SessionCatalogStore } from '../../packages/application/src/session-catalog.ts';
+import type { CancellationSignal } from '../../packages/application/src/cancellation.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 
 test('SQLite catalog creates, searches, favorites and deletes over one thousand non-secret definitions', async () => {
@@ -127,6 +129,55 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
   const result = await catalog.list('prod', cancellation);
   assert.equal(forwarded, cancellation);
   assert.deepEqual(result, { ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false } });
+});
+
+test('folder bundle pickers return CANCELLED on dismissal and discard paths selected after caller cancellation', async () => {
+  const folderId = '11111111-1111-4111-8111-111111111111';
+  let exportCalls = 0;
+  let importCalls = 0;
+  const store = {
+    async listFolders() { return [{ id: folderId, parentId: null, name: 'Project' }]; },
+    async exportFolderToFile() { exportCalls += 1; return { folderCount: 1, sessionCount: 0 }; },
+    async importFolderFromFile() { importCalls += 1; return { folderCount: 1, sessionCount: 0, createdFolderCount: 1, createdSessionCount: 0 }; }
+  } as unknown as SessionCatalogStore;
+
+  const dismissed = createSessionCatalog(store, {
+    async selectExportPath() { return undefined; },
+    async selectImportPath() { return undefined; }
+  });
+  assert.deepEqual(await dismissed.importFolder(), {
+    ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false }
+  });
+  assert.deepEqual(await dismissed.exportFolder(folderId), {
+    ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false }
+  });
+
+  let resolveImportPath!: (path: string | undefined) => void;
+  let resolveExportPath!: (path: string | undefined) => void;
+  const pendingPickers = createSessionCatalog(store, {
+    selectExportPath() { return new Promise(resolve => { resolveExportPath = resolve; }); },
+    selectImportPath() { return new Promise(resolve => { resolveImportPath = resolve; }); }
+  });
+  let aborted = false;
+  const cancelled = { get aborted() { return aborted; }, addEventListener() {}, removeEventListener() {} } satisfies CancellationSignal;
+  const pendingImport = pendingPickers.importFolder(cancelled);
+  assert.equal(typeof resolveImportPath, 'function', 'the import picker is open before cancellation');
+  aborted = true;
+  resolveImportPath('C:\\tmp\\sessions.json');
+  assert.deepEqual(await pendingImport, {
+    ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false }
+  });
+  aborted = false;
+  const pendingExport = pendingPickers.exportFolder(folderId, cancelled);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(typeof resolveExportPath, 'function', 'the export picker is open before cancellation');
+  aborted = true;
+  resolveExportPath('C:\\tmp\\sessions.json');
+  assert.deepEqual(await pendingExport, {
+    ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false }
+  });
+  assert.equal(exportCalls, 0, 'a path selected after cancellation must not start export storage work');
+  assert.equal(importCalls, 0, 'a path selected after cancellation must not start import storage work');
 });
 
 test('storage worker retains busy and corrupt categories from shared storage errors', () => {
