@@ -18,6 +18,9 @@ const profile: SavedSessionDefinition = { id: profileId, folderId: null, kind: '
 function harness(overrides: {
   readonly startForward?: () => Promise<number>;
   readonly open?: SshTerminalController['openFiles'];
+  readonly newId?: () => string;
+  readonly getTunnel?: (id: string) => Promise<LocalTunnelDefinition | undefined>;
+  readonly getProfile?: (id: string) => Promise<SavedSessionDefinition | undefined>;
 } = {}) {
   const saved = new Map<string, LocalTunnelDefinition>();
   saved.set(tunnelId, definition);
@@ -26,7 +29,7 @@ function harness(overrides: {
   const calls = { opened: [] as string[], closed: [] as string[], forwarded: [] as string[], stopped: [] as string[] };
   const catalog: LocalTunnelCatalog = {
     async listLocalTunnels() { return [...saved.values()]; },
-    async getLocalTunnel(id) { return saved.get(id); },
+    async getLocalTunnel(id) { return overrides.getTunnel ? overrides.getTunnel(id) : saved.get(id); },
     async saveLocalTunnel(draft) {
       const result: LocalTunnelDefinition = { ...draft, id: draft.id ?? tunnelId, createdAt: definition.createdAt };
       saved.set(result.id, result);
@@ -34,7 +37,9 @@ function harness(overrides: {
     },
     async removeLocalTunnel(id) { return saved.delete(id); }
   };
-  const profiles: SavedSessionReader = { async getSessionDefinition(id) { return id === profileId ? profile : undefined; } };
+  const profiles: SavedSessionReader = { async getSessionDefinition(id) {
+    return overrides.getProfile ? overrides.getProfile(id) : id === profileId ? profile : undefined;
+  } };
   const ssh: Pick<SshTerminalController, 'openFiles' | 'close' | 'subscribe'> = {
     async openFiles(sessionId) {
       calls.opened.push(sessionId);
@@ -47,7 +52,7 @@ function harness(overrides: {
     async startLocalForward(sessionId, id) { calls.forwarded.push(`${sessionId}:${id}`); return overrides.startForward ? overrides.startForward() : 51_234; },
     async stopLocalForward(sessionId, id) { calls.stopped.push(`${sessionId}:${id}`); }
   };
-  const controller = createSshTunnelController(catalog, profiles, ssh, forwarding, () => runtimeId);
+  const controller = createSshTunnelController(catalog, profiles, ssh, forwarding, overrides.newId ?? (() => runtimeId));
   controller.subscribe(status => events.push(status));
   return { controller, calls, events, sshEvents, saved };
 }
@@ -68,6 +73,50 @@ test('local tunnel starts through a files-only SSH runtime and closes both liste
   assert.deepEqual(calls.closed, [runtimeId]);
   assert.deepEqual(events.map(event => event.state), ['starting', 'active', 'stopping', 'stopped']);
   assert.equal((await controller.list()).ok, true);
+  await controller.dispose();
+});
+
+test('concurrent starts for the same tunnel share one runtime and listener', async () => {
+  let nextRuntime = 0;
+  const { controller, calls } = harness({ newId: () => `00000000-0000-4000-8000-00000000000${++nextRuntime}` });
+
+  const [first, second] = await Promise.all([controller.start(tunnelId), controller.start(tunnelId)]);
+
+  assert.deepEqual(first, second);
+  assert.equal(calls.opened.length, 1);
+  assert.equal(calls.forwarded.length, 1);
+  await controller.stop(tunnelId);
+  assert.equal(calls.stopped.length, 1);
+  assert.equal(calls.closed.length, 1);
+  await controller.dispose();
+});
+
+test('controller allows more than sixteen active saved tunnels', async () => {
+  let nextRuntime = 100;
+  const { controller, calls, saved } = harness({ newId: () => `00000000-0000-4000-8000-${String(++nextRuntime).padStart(12, '0')}` });
+  const tunnelIds = Array.from({ length: 17 }, (_, index) => `00000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`);
+  for (const [index, id] of tunnelIds.entries()) saved.set(id, { ...definition, id, name: `Tunnel ${index + 1}` });
+
+  const results = await Promise.all(tunnelIds.map(id => controller.start(id)));
+
+  assert.ok(results.every(result => result.ok));
+  assert.equal(calls.opened.length, 17);
+  await controller.closeAll();
+  assert.equal(calls.closed.length, 17);
+  await controller.dispose();
+});
+
+test('closeAll cancels startup waiting on profile lookup before it opens SSH', async () => {
+  let releaseProfile!: (value: SavedSessionDefinition | undefined) => void;
+  const { controller, calls } = harness({ getProfile: () => new Promise(resolve => { releaseProfile = resolve; }) });
+  const starting = controller.start(tunnelId);
+  await new Promise(resolve => setImmediate(resolve));
+
+  await controller.closeAll();
+  releaseProfile(profile);
+
+  assert.deepEqual(await starting, { ok: false, error: { code: 'CANCELLED', target: 'terminal', retryable: false } });
+  assert.deepEqual(calls.opened, []);
   await controller.dispose();
 });
 

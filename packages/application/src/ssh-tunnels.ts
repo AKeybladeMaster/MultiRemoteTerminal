@@ -51,8 +51,13 @@ interface RuntimeTunnel {
   failureCode?: ErrorCode;
 }
 
+interface StartAttempt {
+  cancelled: boolean;
+  runtime?: RuntimeTunnel;
+  promise: Promise<Outcome<TunnelRunStatus>>;
+}
+
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
-const MAX_ACTIVE_TUNNELS = 16;
 const TERMINAL_ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'NOT_SUPPORTED',
   'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CANCELLED', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
 
@@ -64,6 +69,7 @@ export function createSshTunnelController(
   newId: () => string,
 ): SshTunnelController {
   const runtimes = new Map<string, RuntimeTunnel>();
+  const startingRequests = new Map<string, StartAttempt>();
   const statuses = new Map<string, TunnelRunStatus>();
   const listeners = new Set<(status: TunnelRunStatus) => void>();
   let disposed = false;
@@ -140,35 +146,70 @@ export function createSshTunnelController(
     catch (error) { return failure(storageErrorCode(error)); }
   }
 
-  async function start(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>> {
-    if (disposed) return failure('CANCELLED');
-    if (cancellation?.aborted) return failure('CANCELLED', 'terminal');
-    if (!isTunnelId(id)) return failure('INVALID_REQUEST');
+  function start(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>> {
+    if (disposed) return Promise.resolve(failure('CANCELLED'));
+    if (cancellation?.aborted) return Promise.resolve(failure('CANCELLED', 'terminal'));
+    if (!isTunnelId(id)) return Promise.resolve(failure('INVALID_REQUEST'));
+    const pending = startingRequests.get(id);
+    if (pending) return observeStart(pending, cancellation);
     const current = runtimes.get(id);
-    if (current) return current.status.state === 'starting' && current.startPromise ? current.startPromise : failure('BUSY', 'terminal');
-    if (runtimes.size >= MAX_ACTIVE_TUNNELS) return failure('BUSY', 'terminal');
+    if (current) {
+      if (current.status.state !== 'starting' || !current.startPromise) return Promise.resolve(failure('BUSY', 'terminal'));
+      const attempt = { cancelled: false, runtime: current, promise: current.startPromise };
+      return observeStart(attempt, cancellation);
+    }
 
+    const attempt: StartAttempt = { cancelled: false, promise: Promise.resolve(failure('UNAVAILABLE')) };
+    startingRequests.set(id, attempt);
+    attempt.promise = performStartRequest(id, attempt).finally(() => {
+      if (startingRequests.get(id) === attempt) startingRequests.delete(id);
+    });
+    return observeStart(attempt, cancellation);
+  }
+
+  function observeStart(attempt: StartAttempt, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>> {
+    if (!cancellation) return attempt.promise;
+    const cancel = () => cancelAttempt(attempt);
+    cancellation.addEventListener('abort', cancel, { once: true });
+    if (cancellation.aborted) cancel();
+    return attempt.promise.finally(() => cancellation.removeEventListener('abort', cancel));
+  }
+
+  function cancelAttempt(attempt: StartAttempt): void {
+    if (attempt.cancelled) return;
+    attempt.cancelled = true;
+    if (attempt.runtime) void requestStop(attempt.runtime);
+    else {
+      for (const [id, candidate] of startingRequests) {
+        if (candidate === attempt) startingRequests.delete(id);
+      }
+    }
+  }
+
+  async function performStartRequest(id: string, attempt: StartAttempt): Promise<Outcome<TunnelRunStatus>> {
+    if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
     let definition: LocalTunnelDefinition | undefined;
     let profile: SavedSessionDefinition | undefined;
     try {
       definition = await catalog.getLocalTunnel(id);
+      if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
       if (!definition) return failure('NOT_FOUND');
       profile = await profiles.getSessionDefinition(definition.sessionId);
-    } catch (error) { return failure(storageErrorCode(error)); }
+    } catch (error) {
+      return disposed || attempt.cancelled ? failure('CANCELLED', 'terminal') : failure(storageErrorCode(error));
+    }
+    if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
     if (!profile) return failure('NOT_FOUND');
     if ((profile.kind !== 'ssh' && profile.kind !== 'sftp') || !profile.host || !profile.port) return failure('INVALID_REQUEST');
 
     const runtime: RuntimeTunnel = { definition, sshSessionId: newId(), status: { tunnelId: id, state: 'starting' }, stopRequested: false, bound: false };
     if (!isTunnelId(runtime.sshSessionId)) return failure('UNAVAILABLE');
+    attempt.runtime = runtime;
     runtimes.set(id, runtime);
     setStatus(runtime, runtime.status);
     const operation = performStart(runtime, profile.host, profile.port);
     runtime.startPromise = operation;
-    const cancelStartup = () => { void requestStop(runtime); };
-    cancellation?.addEventListener('abort', cancelStartup, { once: true });
-    if (cancellation?.aborted) cancelStartup();
-    try { return await operation; }
-    finally { cancellation?.removeEventListener('abort', cancelStartup); }
+    return operation;
   }
 
   async function performStart(runtime: RuntimeTunnel, host: string, port: number): Promise<Outcome<TunnelRunStatus>> {
@@ -263,12 +304,14 @@ export function createSshTunnelController(
     start,
     stop,
     async closeAll() {
+      for (const attempt of startingRequests.values()) cancelAttempt(attempt);
       await Promise.all([...runtimes.values()].map(runtime => requestStop(runtime)));
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async dispose() {
       if (disposed) return;
       disposed = true;
+      for (const attempt of startingRequests.values()) cancelAttempt(attempt);
       const active = [...runtimes.values()];
       await Promise.all(active.map(runtime => requestStop(runtime)));
       stopSshEvents();
