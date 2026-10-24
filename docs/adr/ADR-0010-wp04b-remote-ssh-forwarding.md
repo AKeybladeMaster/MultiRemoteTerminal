@@ -1,4 +1,4 @@
-# ADR-0010: WP-04B loopback remote SSH forwarding
+# ADR-0010: WP-04B loopback-requested remote SSH forwarding
 
 **Status:** Accepted for WP-04B (2026-10-24)
 
@@ -9,6 +9,10 @@ persisted tunnel catalog, explicit start/stop, host trust, and a dedicated
 files-only SSH runtime for local forwarding. Remote forwarding adds a server
 listener and sends accepted SSH channels back to a destination on the user's
 computer. Non-loopback listeners need a separate exposure and consent policy.
+An SSH server's `GatewayPorts` policy can override a requested loopback bind,
+so the client cannot guarantee that the listener remains private to the server.
+The [OpenBSD `sshd_config(5)` reference](https://man.openbsd.org/sshd_config#GatewayPorts)
+documents that `GatewayPorts yes` forces wildcard binding.
 
 ## Decision
 
@@ -20,8 +24,10 @@ computer. Non-loopback listeners need a separate exposure and consent policy.
   request a shell, PTY or SFTP subsystem.
 - Request the remote bind with `forwardIn('127.0.0.1', port)`. When port `0` is
   selected, publish the assigned server port only after the server confirms the
-  bind. The SSH worker accepts each matching forwarded channel, connects to the
-  configured local destination and relays data between the two streams.
+  bind. Warn in the manager before start that server `GatewayPorts` policy may
+  expose the listener on other interfaces. The SSH worker accepts each matching
+  forwarded channel, connects to the configured local destination and relays
+  data between the two streams.
 - Bound remote bind setup to 10 seconds, channel setup to 15 seconds, unbind
   acknowledgement to 1.5 seconds, and each definition to 64 open or pending
   channels. Stop removes the remote bind, closes paired channels and sockets,
@@ -37,18 +43,19 @@ computer. Non-loopback listeners need a separate exposure and consent policy.
 ## Consequences
 
 The tunnel model, storage, typed IPC and manager now share local and remote
-definitions without widening renderer capabilities. The requested remote bind
-is loopback-only, but the actual bind behavior still depends on the SSH server;
-the fixture verifies the requested address and does not prove behavior on every
-server configuration. P-24 remains partial until broader server behavior and
-protected nonlocal-listener consent are implemented and verified.
+definitions without widening renderer capabilities. The app requests loopback
+and warns that server policy can widen the actual bind; the fixture verifies
+the requested address and visible warning, not behavior on every server
+configuration. P-24 remains partial until broader server behavior and protected
+nonlocal-listener consent are implemented and verified.
 
 ## Acceptance evidence
 
 WP-04B requires domain and protocol validation for the remote mode, SQLite
 round-trip, worker-level channel-to-local-socket forwarding and cleanup, plus a
 Windows E2E from the tunnel manager through the utility worker to a loopback
-destination. The E2E must verify the requested `127.0.0.1` bind, server-assigned
-port reporting, explicit stop, app-shutdown cleanup, no shell request and
-stopped restoration after restart. Broader SSH server interoperability and
-non-loopback exposure are not claimed.
+destination. The E2E must verify the visible server-policy exposure warning,
+requested `127.0.0.1` bind, server-assigned port reporting, explicit stop,
+app-shutdown cleanup, no shell request and stopped restoration after restart.
+Broader SSH server interoperability and actual bind behavior under non-loopback
+server policy are not claimed.

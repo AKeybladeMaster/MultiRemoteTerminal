@@ -30,7 +30,7 @@ const LOCAL_FORWARD_OPEN_TIMEOUT_MS = 15_000;
 const LOCAL_FORWARD_CLOSE_GRACE_MS = 1_000;
 const REMOTE_FORWARD_BIND_TIMEOUT_MS = 10_000;
 const REMOTE_FORWARD_CLOSE_GRACE_MS = 1_500;
-const MAX_LOCAL_FORWARD_CONNECTIONS = 64;
+const MAX_FORWARD_CONNECTIONS = 64;
 
 type SftpChannel = SFTPWrapper & { end(): void };
 
@@ -190,7 +190,7 @@ export function createSshTransportProvider(
       forward.bindPort === details.destPort);
     const forward = matching.length === 1 ? matching[0] : undefined;
     if (!forward || session.closing || sessions.get(session.sessionId) !== session ||
-        forward.connections.size >= MAX_LOCAL_FORWARD_CONNECTIONS) {
+        forward.connections.size >= MAX_FORWARD_CONNECTIONS) {
       reject();
       return;
     }
@@ -244,7 +244,7 @@ export function createSshTransportProvider(
   }
 
   function acceptForwardConnection(session: RuntimeSession, forward: LocalForwardRuntime, socket: Socket): void {
-    if (session.closing || sessions.get(session.sessionId) !== session || forward.connections.size >= MAX_LOCAL_FORWARD_CONNECTIONS) {
+    if (session.closing || sessions.get(session.sessionId) !== session || forward.connections.size >= MAX_FORWARD_CONNECTIONS) {
       socket.destroy();
       return;
     }

@@ -772,6 +772,7 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     await manager.getByRole('button', { name: '+ New tunnel' }).click();
     await manager.getByLabel('Tunnel name').fill(remoteTunnelName);
     await manager.getByLabel('Forward direction').selectOption('remote');
+    await expect(manager.getByRole('note', { name: 'Remote forwarding exposure warning' })).toContainText('GatewayPorts');
     await manager.getByLabel('SSH profile').selectOption({ index: 1 });
     await manager.getByLabel('Remote port').fill('0');
     await manager.getByLabel('Local destination host').fill('127.0.0.1');

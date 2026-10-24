@@ -107,7 +107,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
         <button className="tunnel-close" type="button" aria-label="Close port forwarding" onClick={onClose}>×</button>
       </header>
       <p className="tunnel-manager-description" id="tunnel-manager-description">
-        Local forwards open a port on this computer and reach a service through SSH. Remote forwards request a port on the SSH server and send connections back here. Remote listeners stay bound to 127.0.0.1.
+        Local forwards bind a port on this computer and reach a service through SSH. Remote forwards request 127.0.0.1 on the SSH server, but its forwarding policy may expose the listener on other interfaces; review the warning before starting.
       </p>
       <div className="tunnel-manager-body">
         <section className="tunnel-list-column" aria-label="Saved tunnels">
@@ -141,6 +141,10 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               <option value="local">Local to remote service</option>
               <option value="remote">SSH server to local service</option>
             </select>
+            {mode === 'remote' && <div className="tunnel-exposure-warning" role="note" aria-label="Remote forwarding exposure warning">
+              <strong>The SSH server may expose this listener beyond loopback.</strong>
+              MultiRemoteTerminal requests 127.0.0.1, but the server's GatewayPorts policy may override that request. Confirm the server's forwarding policy before starting.
+            </div>}
 
             <label htmlFor="tunnel-profile">SSH profile</label>
             <select id="tunnel-profile" name="sshProfileId" required disabled={locked || busy || eligibleProfiles.length === 0} value={sessionId}
@@ -157,7 +161,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               </div>
               <div className="tunnel-bind-host"><span className="tunnel-field-label">{mode === 'local' ? 'Local address' : 'SSH server address'}</span><code>127.0.0.1</code></div>
             </div>
-            <p className="tunnel-hint">{mode === 'local' ? 'Use port 0 to let this computer choose an available port.' : 'Use port 0 to let the SSH server choose an available port. The listener is restricted to loopback.'}</p>
+            <p className="tunnel-hint">{mode === 'local' ? 'Use port 0 to let this computer choose an available port.' : 'Use port 0 to let the SSH server choose an available port. The app requests a loopback bind.'}</p>
 
             <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
             <input id="tunnel-target-host" name="targetHost" type="text" required maxLength={255} autoComplete="off" spellCheck={false} disabled={locked || busy}
