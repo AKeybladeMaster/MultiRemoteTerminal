@@ -2,6 +2,7 @@ import { isAppDocument, parseRequest, requestIdOf } from '../../../../packages/c
 import type { CommandReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -29,6 +30,7 @@ export interface CommandActions {
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
+  readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
 }
 
@@ -67,7 +69,8 @@ export async function dispatchCommand(
   const { requestId } = parsed.result;
   try {
     if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
-        parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close') actions.noteUserActivity();
+        parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close' ||
+        parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close') actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -130,6 +133,28 @@ export async function dispatchCommand(
       case 'ssh.files.list': {
         return { requestId, ...await actions.sshTerminals.listRemoteDirectory(parsed.result.payload.sessionId, parsed.result.payload.path, actions.cancellation) };
       }
+      case 'telnet.open': {
+        const { sessionId, host, port, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.telnetTerminals.open(sessionId, host, port, { columns, rows }) };
+      }
+      case 'telnet.write': {
+        const { sessionId, data } = parsed.result.payload;
+        return { requestId, ...await actions.telnetTerminals.write(sessionId, data) };
+      }
+      case 'telnet.paste': {
+        if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.telnetTerminals.write);
+      }
+      case 'telnet.resize': {
+        const { sessionId, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.telnetTerminals.resize(sessionId, { columns, rows }) };
+      }
+      case 'telnet.ack': {
+        const { sessionId, sequence } = parsed.result.payload;
+        return { requestId, ...await actions.telnetTerminals.acknowledgeOutput(sessionId, sequence) };
+      }
+      case 'telnet.close': return { requestId, ...await actions.telnetTerminals.close(parsed.result.payload.sessionId) };
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
       case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite, actions.cancellation) };

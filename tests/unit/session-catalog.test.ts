@@ -246,10 +246,10 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
       host: importedSession.host, port: importedSession.port, favorite: importedSession.favorite }, {
       id: session.id, folderId: child.id, kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222, favorite: true
     });
-    assert.deepEqual(importedSessions.find(item => item.kind === 'telnet'), {
-      id: telnet.id, folderId: root.id, kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23,
-      favorite: false, createdAt: telnet.createdAt, updatedAt: telnet.updatedAt
-    });
+    const currentSourceTelnet = (await source.listSessions('')).find(item => item.kind === 'telnet');
+    assert.ok(currentSourceTelnet?.kind === 'telnet');
+    assert.deepEqual(importedSessions.find(item => item.kind === 'telnet'), currentSourceTelnet,
+      'the bundle preserves the latest definition timestamp after folder moves');
     assert.deepEqual(await destination.importFolderFromFile(path), {
       folderCount: 4, sessionCount: 2, createdFolderCount: 0, createdSessionCount: 0
     });

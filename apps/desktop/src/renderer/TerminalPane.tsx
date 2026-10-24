@@ -17,7 +17,7 @@ export interface TerminalUiHandle {
 interface Props {
   readonly sessionId: string;
   readonly title: string;
-  readonly transport: 'local' | 'ssh';
+  readonly transport: 'local' | 'ssh' | 'telnet';
   readonly active: boolean;
   readonly canWrite: boolean;
   readonly theme: TerminalTheme;
@@ -48,7 +48,9 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       if (!canWriteRef.current) return;
       const sent = transport === 'ssh'
         ? window.multiRemoteTerminal.writeSshTerminal(sessionId, data)
-        : window.multiRemoteTerminal.writeTerminal(sessionId, data);
+        : transport === 'telnet'
+          ? window.multiRemoteTerminal.writeTelnetTerminal(sessionId, data)
+          : window.multiRemoteTerminal.writeTerminal(sessionId, data);
       void sent.then(reply => {
         if (!reply.ok) onError(`Terminal input could not be sent (${reply.error.code}).`);
       });
@@ -58,7 +60,9 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       event.preventDefault();
       const pasted = transport === 'ssh'
         ? window.multiRemoteTerminal.pasteSshTerminal(sessionId)
-        : window.multiRemoteTerminal.pasteTerminal(sessionId);
+        : transport === 'telnet'
+          ? window.multiRemoteTerminal.pasteTelnetTerminal(sessionId)
+          : window.multiRemoteTerminal.pasteTerminal(sessionId);
       void pasted.then(reply => {
         if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
       });
@@ -68,7 +72,9 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       if (!canWriteRef.current) return;
       const resized = transport === 'ssh'
         ? window.multiRemoteTerminal.resizeSshTerminal(sessionId, cols, rows)
-        : window.multiRemoteTerminal.resizeTerminal(sessionId, cols, rows);
+        : transport === 'telnet'
+          ? window.multiRemoteTerminal.resizeTelnetTerminal(sessionId, cols, rows)
+          : window.multiRemoteTerminal.resizeTerminal(sessionId, cols, rows);
       void resized.then(reply => {
         if (!reply.ok) onError(`Terminal size could not be updated (${reply.error.code}).`);
       });
@@ -91,7 +97,9 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       acknowledgeOutput: async (sequence: number) => {
         const reply = transport === 'ssh'
           ? await window.multiRemoteTerminal.acknowledgeSshTerminalOutput(sessionId, sequence)
-          : await window.multiRemoteTerminal.acknowledgeTerminalOutput(sessionId, sequence);
+          : transport === 'telnet'
+            ? await window.multiRemoteTerminal.acknowledgeTelnetTerminalOutput(sessionId, sequence)
+            : await window.multiRemoteTerminal.acknowledgeTerminalOutput(sessionId, sequence);
         if (!reply.ok) onError(`Terminal output could not be acknowledged (${reply.error.code}).`);
       }
     });

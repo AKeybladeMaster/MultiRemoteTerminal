@@ -42,7 +42,7 @@
 - High-risk operation output may be sensitive; no transcript logging by default.
 - Installers/updates and downloaded tools use HTTPS and integrity validation.
 - The WP-05A SFTP browser is reachable only from a trusted, running SSH session. Listing paths and replies are validated at the application, worker protocol and domain boundaries; directory results are capped at 500 entries. Symlink entries are visible but not navigable. Cancellation and timeout close the SFTP channel, and no remote filename is interpreted as a shell command. These controls do not yet cover transfer destinations because upload/download is not implemented.
-- Telnet is inherently plaintext. The Telnet provider must store only a canonical host and port in profiles, require the user to acknowledge the plaintext warning before each connection, and leave credentials to interactive input in the terminal rather than app storage. Do not present this transport as suitable for secrets or untrusted network access.
+- Telnet is inherently plaintext. The Telnet provider stores only a canonical host and port in profiles, requires a fresh user acknowledgement of the visible plaintext warning before every connection (including saved-profile reopen), and leaves credentials to interactive terminal input rather than app storage. The terminal/status label identifies Telnet as plaintext. The TCP worker has bounded input/output queues, bounded subnegotiation and explicit connect/IPC deadlines, and closes sockets on cancellation, failure, worker crash and shutdown. This transport is not suitable for secrets or untrusted networks; no Telnet traffic is encrypted or transcript-logged by the app.
 
 ## Master-password threat model
 

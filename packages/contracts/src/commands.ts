@@ -4,8 +4,10 @@ import { isLocalShell, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT_CHARS, MAX_TERMI
 import type { LocalShell } from '../../domain/src/local-terminal.ts';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../application/src/local-terminals.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
+import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
 import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
+import { canonicalizeRemoteEndpoint } from '../../domain/src/remote-endpoint.ts';
 import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
 import { isSessionFolderId } from '../../domain/src/session-definition.ts';
@@ -61,6 +63,12 @@ export type PasteSshTerminalRequest = Request<'ssh.paste', { readonly sessionId:
 export type ResizeSshTerminalRequest = Request<'ssh.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeSshTerminalRequest = Request<'ssh.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseSshTerminalRequest = Request<'ssh.close', { readonly sessionId: string }>;
+export type OpenTelnetTerminalRequest = Request<'telnet.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number }>;
+export type WriteTelnetTerminalRequest = Request<'telnet.write', { readonly sessionId: string; readonly data: string }>;
+export type PasteTelnetTerminalRequest = Request<'telnet.paste', { readonly sessionId: string }>;
+export type ResizeTelnetTerminalRequest = Request<'telnet.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
+export type AcknowledgeTelnetTerminalRequest = Request<'telnet.ack', { readonly sessionId: string; readonly sequence: number }>;
+export type CloseTelnetTerminalRequest = Request<'telnet.close', { readonly sessionId: string }>;
 export type DecideSshHostRequest = Request<'ssh.host.approve' | 'ssh.host.reject', { readonly token: string }>;
 export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: string; readonly port: number }>;
 export type ListSshDirectoryRequest = Request<'ssh.files.list', { readonly sessionId: string; readonly path: string }>;
@@ -78,6 +86,7 @@ export type ImportSessionFolderRequest = Request<'session.folder.import', Record
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
+  OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest;
 
@@ -85,8 +94,10 @@ export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
 export type OpenTerminalResult = Pick<LocalTerminalSession, 'sessionId' | 'shell' | 'state'>;
 export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
+export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
+export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
 export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
@@ -110,6 +121,12 @@ export interface DesktopBridge {
   resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeSshTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeSshTerminal(sessionId: string): Promise<TerminalActionReply>;
+  openTelnetTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenTelnetTerminalReply>;
+  writeTelnetTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
+  pasteTelnetTerminal(sessionId: string): Promise<TerminalActionReply>;
+  resizeTelnetTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
+  acknowledgeTelnetTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
+  closeTelnetTerminal(sessionId: string): Promise<TerminalActionReply>;
   approveSshHost(token: string): Promise<TerminalActionReply>;
   rejectSshHost(token: string): Promise<TerminalActionReply>;
   revokeSshHost(host: string, port: number): Promise<TerminalActionReply>;
@@ -195,6 +212,23 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'ssh.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseSshTerminalRequest };
   }
+  if (value.command === 'telnet.open' && exactKeys(payload, ['sessionId', 'host', 'port', 'columns', 'rows']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      canonicalizeRemoteEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
+    return { ok: true, result: value as unknown as OpenTelnetTerminalRequest };
+  }
+  if (value.command === 'telnet.write' && exactKeys(payload, ['sessionId', 'data']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      typeof payload.data === 'string' && payload.data.length <= MAX_TERMINAL_INPUT_CHARS) return { ok: true, result: value as unknown as WriteTelnetTerminalRequest };
+  if (value.command === 'telnet.paste' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as PasteTelnetTerminalRequest };
+  }
+  if (value.command === 'telnet.resize' && exactKeys(payload, ['sessionId', 'columns', 'rows']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      validSize(payload.columns, payload.rows)) return { ok: true, result: value as unknown as ResizeTelnetTerminalRequest };
+  if (value.command === 'telnet.ack' && exactKeys(payload, ['sessionId', 'sequence']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      Number.isSafeInteger(payload.sequence) && (payload.sequence as number) > 0) return { ok: true, result: value as unknown as AcknowledgeTelnetTerminalRequest };
+  if (value.command === 'telnet.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as CloseTelnetTerminalRequest };
+  }
   if ((value.command === 'ssh.host.approve' || value.command === 'ssh.host.reject') && exactKeys(payload, ['token']) &&
       typeof payload.token === 'string' && TRUST_TOKEN.test(payload.token)) return { ok: true, result: value as unknown as DecideSshHostRequest };
   if (value.command === 'ssh.host.revoke' && exactKeys(payload, ['host', 'port'])) {
@@ -233,6 +267,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
+    'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move'].includes(value.command)) {
     return failure('INVALID_REQUEST');
@@ -265,6 +300,14 @@ function validSshOpenResult(value: unknown, request: OpenSshTerminalRequest): va
     endpoint.port === requested.port && ['running', 'exited', 'failed'].includes(value.state as string);
 }
 
+function validTelnetOpenResult(value: unknown, request: OpenTelnetTerminalRequest): value is OpenTelnetTerminalResult {
+  if (!record(value) || !exactKeys(value, ['sessionId', 'endpoint', 'state'])) return false;
+  const endpoint = canonicalizeRemoteEndpoint(value.endpoint);
+  const requested = canonicalizeRemoteEndpoint({ host: request.payload.host, port: request.payload.port });
+  return value.sessionId === request.payload.sessionId && endpoint !== undefined && requested !== undefined && endpoint.host === requested.host &&
+    endpoint.port === requested.port && ['running', 'exited', 'failed'].includes(value.state as string);
+}
+
 export function isCommandReply(value: unknown, request: CommandRequest): value is CommandReply<unknown> {
   if (!record(value) || value.requestId !== request.requestId || typeof value.ok !== 'boolean') return false;
   if (value.ok) {
@@ -272,6 +315,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'app.describe') return validSnapshot(value.result);
     if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.shell);
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
+    if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.create') return isSavedSessionDefinition(value.result);
