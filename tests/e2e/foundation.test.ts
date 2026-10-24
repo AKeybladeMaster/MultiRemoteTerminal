@@ -417,7 +417,10 @@ test('trusted SSH sessions upload and download files through their SFTP subsyste
         const stream = acceptShell();
         stream.write('MRT-SFTP-READY\r\n');
       });
-      session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => { fixtureEvents.push('sftp'); startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp); });
+      session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
+        fixtureEvents.push('sftp');
+        startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp);
+      });
     });
     });
   });

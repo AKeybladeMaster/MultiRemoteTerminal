@@ -124,7 +124,7 @@ test('FTP transfers keep local paths in main, forward explicit conflict choices,
   const base = actions();
   const withTransfers: CommandActions = { ...base, cancellation,
     selectFtpUploadFile: async () => ({ localPath: 'C:\\private\\archive.bin', fileName: 'archive.bin' }),
-    selectFtpDownloadPath: async name => { observed.push(`select-download:${name}`); return 'C:\\private\\download.bin'; },
+    selectFtpDownloadPath: async name => { observed.push(`select-download:${name}`); return 'C:\\private\\chosen-download.bin'; },
     resolveFtpTransferConflict: async (direction, name) => { observed.push(`policy:${direction}:${name}`); return direction === 'upload' ? 'rename' : 'overwrite'; },
     reportFtpTransferProgress: event => progressEvents.push(event),
     ftpFiles: { ...base.ftpFiles,
@@ -152,9 +152,10 @@ test('FTP transfers keep local paths in main, forward explicit conflict choices,
   const download = await dispatchCommand(owner, { command: 'ftp.files.download', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, operationId, remotePath: '/incoming/download.bin' } }, withTransfers, () => {});
   assert.equal(download.ok, true);
-  assert.deepEqual(observed.slice(2, 5), ['select-download:download.bin', 'policy:download:download.bin',
-    { kind: 'download', id: sessionId, op: operationId, remotePath: '/incoming/download.bin', localPath: 'C:\\private\\download.bin',
+  assert.deepEqual(observed.slice(2, 5), ['select-download:download.bin', 'policy:download:chosen-download.bin',
+    { kind: 'download', id: sessionId, op: operationId, remotePath: '/incoming/download.bin', localPath: 'C:\\private\\chosen-download.bin',
       policy: 'overwrite', signal: cancellation }]);
+  assert.ok(observed.includes('policy:download:chosen-download.bin'));
   const cancelled = await dispatchCommand(owner, { command: 'ftp.files.cancel', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, operationId } }, withTransfers, () => {});
   assert.deepEqual(cancelled, { requestId: request.requestId, ok: true, result: {} });
@@ -242,7 +243,7 @@ test('SFTP transfer broker keeps local selections in main and forwards explicit 
   const download = await dispatchCommand(owner, { command: 'ssh.files.download', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, operationId, remotePath: '/home/alice/remote.txt' } }, withSftpTransfers, () => {});
   assert.equal(download.ok, true);
-  assert.deepEqual(seen.slice(2, 5), ['select:remote.txt', 'policy:download:remote.txt',
+  assert.deepEqual(seen.slice(2, 5), ['select:remote.txt', 'policy:download:saved.txt',
     { kind: 'download', id: sessionId, op: operationId, remotePath: '/home/alice/remote.txt', localPath: 'C:\\private\\saved.txt',
       policy: 'rename', signal: cancellation }]);
   const cancelled = await dispatchCommand(owner, { command: 'ssh.files.cancel', requestId: request.requestId, contractVersion: 1,

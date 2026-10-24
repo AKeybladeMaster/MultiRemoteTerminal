@@ -78,6 +78,33 @@ class CommittingTransferUtilityProcess extends FakeUtilityProcess {
   }
 }
 
+class DelayedCommitTransferUtilityProcess extends FakeUtilityProcess {
+  transferRequest: Record<string, unknown> | undefined;
+
+  override postMessage(input: unknown): void {
+    const request = input as Record<string, unknown>;
+    this.requests.push(request);
+    if (request.command === 'files.upload') { this.transferRequest = request; return; }
+    queueMicrotask(() => this.emit('message', { version: 1, type: 'reply', requestId: request.requestId, ok: true, result: {} }));
+  }
+
+  emitCommitProgress(): void {
+    const request = this.transferRequest;
+    if (!request) throw new Error('No transfer request is waiting to commit');
+    this.emit('message', { version: 1, type: 'progress', requestId: request.requestId, progress: {
+      sessionId: request.sessionId, operationId: request.operationId, direction: 'upload', phase: 'committing', fileName: 'report.txt',
+      bytesTransferred: 10, totalBytes: 10
+    } });
+  }
+
+  finishTransfer(): void {
+    const request = this.transferRequest;
+    if (!request) throw new Error('No transfer request is waiting to settle');
+    this.emit('message', { version: 1, type: 'reply', requestId: request.requestId, ok: true,
+      result: { direction: 'upload', fileName: 'report.txt', bytesTransferred: 10, state: 'completed' } });
+  }
+}
+
 test('worker host consumes the raw message payload emitted by Electron utilityProcess', async () => {
   const worker = new FakeUtilityProcess();
   const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
@@ -126,6 +153,29 @@ test('worker host lets an SFTP remote commit settle when the renderer closes its
   assert.equal(worker.requests.some(request => request.command === 'files.cancel'), false,
     'a commit cannot be interrupted by a late renderer cancellation');
   assert.equal(worker.killed, false);
+  worker.finishTransfer();
+  assert.deepEqual(await upload, { direction: 'upload', fileName: 'report.txt', bytesTransferred: 10, state: 'completed' });
+  await host.shutdown();
+});
+
+test('worker host extends cleanup grace when commit progress arrives just after cancellation', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const worker = new DelayedCommitTransferUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  await host.open(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' },
+    { columns: 80, rows: 24 }, async () => true);
+  const cancellation = new AbortController();
+  const upload = host.uploadRemoteFile(sessionId, operationId, 'C:\\private\\report.txt', '/home/alice', 'report.txt', 'overwrite', cancellation.signal);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  cancellation.abort();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(worker.requests.some(request => request.command === 'files.cancel'));
+  worker.emitCommitProgress();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(10_001);
+  assert.equal(worker.killed, false, 'the original cancellation grace must be extended for commit settlement');
   worker.finishTransfer();
   assert.deepEqual(await upload, { direction: 'upload', fileName: 'report.txt', bytesTransferred: 10, state: 'completed' });
   await host.shutdown();

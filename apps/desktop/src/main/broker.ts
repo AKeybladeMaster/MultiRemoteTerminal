@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 import { isAppDocument, parseRequest, requestIdOf } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
@@ -172,7 +173,7 @@ export async function dispatchCommand(
         const fileName = remotePath.slice(remotePath.lastIndexOf('/') + 1);
         const localPath = await actions.selectSshDownloadPath(fileName);
         if (!localPath || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        const conflictPolicy = await actions.resolveSshTransferConflict('download', fileName);
+        const conflictPolicy = await actions.resolveSshTransferConflict('download', basename(localPath));
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         return { requestId, ...await actions.sshTerminals.downloadRemoteFile(sessionId, operationId, remotePath, localPath,
           conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
@@ -227,7 +228,7 @@ export async function dispatchCommand(
         const fileName = remotePath.slice(remotePath.lastIndexOf('/') + 1);
         const localPath = await actions.selectFtpDownloadPath(fileName);
         if (!localPath || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        const conflictPolicy = await actions.resolveFtpTransferConflict('download', fileName);
+        const conflictPolicy = await actions.resolveFtpTransferConflict('download', basename(localPath));
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         return { requestId, ...await actions.ftpFiles.downloadFile(sessionId, operationId, remotePath, localPath,
           conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };

@@ -16,6 +16,7 @@ import { isAbsoluteNormalizedLocalPath, LocalTransferTargetError, mapLocalTransf
 
 const SFTP_OPERATION_TIMEOUT_MS = 10_000;
 const TRANSFER_IDLE_TIMEOUT_MS = 30_000;
+const PROGRESS_INTERVAL_MS = 100;
 const MAX_COPY_NAME_ATTEMPTS = 9_999;
 const TRANSFER_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -127,6 +128,29 @@ async function remoteLstat(channel: SFTPWrapper, path: string): Promise<SftpStat
   }
 }
 
+async function remoteRealpath(channel: SFTPWrapper, path: string): Promise<string> {
+  try {
+    const resolved = await sftpCall<string>(channel, callback => channel.realpath(path, callback));
+    if (!isRemotePath(resolved) || !resolved.startsWith('/')) throw new SshTerminalProviderError('INVALID_REQUEST');
+    return resolved;
+  } catch (error) {
+    throw error instanceof SshTerminalProviderError ? error : mappedSftpError(error);
+  }
+}
+
+/** Requires canonical resolution to preserve the normalized path, rejecting symlinked ancestors. */
+async function assertRemotePathComponents(channel: SFTPWrapper, path: string, finalKind: 'directory' | 'file'): Promise<SftpStats> {
+  const expected = path.startsWith('/') ? posix.normalize(path) : posix.resolve(await remoteRealpath(channel, '.'), path);
+  const actual = await remoteRealpath(channel, path);
+  if (actual !== expected) throw new SshTerminalProviderError('INVALID_REQUEST');
+  const stats = await remoteLstat(channel, path);
+  if (!stats) throw new SshTerminalProviderError('NOT_FOUND');
+  if (stats.isSymbolicLink() || (finalKind === 'directory' ? !stats.isDirectory() : !stats.isFile())) {
+    throw new SshTerminalProviderError('INVALID_REQUEST');
+  }
+  return stats;
+}
+
 async function unlinkRemote(channel: SFTPWrapper, path: string): Promise<void> {
   try { await sftpCall<void>(channel, callback => channel.unlink(path, callback)); }
   catch (error) {
@@ -172,7 +196,15 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
   const abortController = new AbortController();
   let abortCode: 'CANCELLED' | 'TIMEOUT' | undefined;
   let transferred = 0;
+  let lastProgressAt = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const emitProgress = (force = false) => {
+    const now = Date.now();
+    if (force || now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
+      report(onProgress, sessionId, operationId, direction, 'transferring', fileName, transferred, totalBytes);
+      lastProgressAt = now;
+    }
+  };
   const abort = (code: 'CANCELLED' | 'TIMEOUT') => {
     if (abortController.signal.aborted) return;
     abortCode = code;
@@ -188,16 +220,17 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
       if (!Number.isSafeInteger(transferred + bytes)) { callback(new SshTerminalProviderError('OUTPUT_LIMIT')); return; }
       transferred += bytes;
       resetIdleTimer();
-      report(onProgress, sessionId, operationId, direction, 'transferring', fileName, transferred, totalBytes);
+      emitProgress();
       callback(null, chunk);
     }
   });
   const cancel = () => abort('CANCELLED');
   cancellation?.addEventListener('abort', cancel, { once: true });
-  report(onProgress, sessionId, operationId, direction, 'transferring', fileName, 0, totalBytes);
+  emitProgress(true);
   resetIdleTimer();
   try {
     await pipeline(source, meter, destination, { signal: abortController.signal });
+    emitProgress(true);
     return transferred;
   } catch (error) {
     if (abortCode === 'CANCELLED' || cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
@@ -214,6 +247,7 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
 
 async function remoteCommit(channel: SFTPWrapper, temporaryPath: string, finalPath: string, originalName: string, expected: SftpStats | undefined,
   conflictPolicy: FileTransferConflictPolicy, beginCommit: () => boolean): Promise<{ readonly path: string; readonly fileName: string; readonly skipped: boolean }> {
+  await assertRemotePathComponents(channel, posix.dirname(finalPath), 'directory');
   if (!beginCommit()) throw new SshTerminalProviderError('CANCELLED');
   const parent = posix.dirname(finalPath);
   const requestedName = posix.basename(finalPath);
@@ -311,6 +345,7 @@ export function createSftpFileTransfers(): SftpFileTransfers {
       }
       if (wasCancelled()) throw new SshTerminalProviderError('CANCELLED');
 
+      await assertRemotePathComponents(channel, remoteDirectory, 'directory');
       const requestedPath = remoteChildPath(remoteDirectory, fileName);
       if (!requestedPath) throw new SshTerminalProviderError('INVALID_REQUEST');
       let finalPath = requestedPath;
@@ -322,6 +357,7 @@ export function createSftpFileTransfers(): SftpFileTransfers {
       }
       temporaryPath = remoteChildPath(remoteDirectory, `.mrt-${randomUUID()}.partial`);
       if (!temporaryPath) throw new SshTerminalProviderError('INVALID_REQUEST');
+      await assertRemotePathComponents(channel, remoteDirectory, 'directory');
       source = sourceFile.createReadStream({ autoClose: false });
       destination = channel.createWriteStream(temporaryPath, { flags: 'wx', mode: 0o600 });
       destination.once('open', () => { temporaryOwned = true; });
@@ -379,9 +415,7 @@ export function createSftpFileTransfers(): SftpFileTransfers {
       return true;
     };
     try {
-      const remoteStats = await remoteLstat(channel, remotePath);
-      if (!remoteStats) throw new SshTerminalProviderError('NOT_FOUND');
-      if (remoteStats.isSymbolicLink() || !remoteStats.isFile()) throw new SshTerminalProviderError('INVALID_REQUEST');
+      const remoteStats = await assertRemotePathComponents(channel, remotePath, 'file');
       const totalBytes = Number.isSafeInteger(remoteStats.size) && remoteStats.size >= 0 ? remoteStats.size : null;
       try { target = await prepareLocalTransferTarget(localPath, conflictPolicy); }
       catch (error) {
@@ -391,10 +425,16 @@ export function createSftpFileTransfers(): SftpFileTransfers {
       if (wasCancelled()) throw new SshTerminalProviderError('CANCELLED');
       if (target.state === 'skipped') return transferResult('download', target.fileName, 0, 'skipped');
       if (!target.stream) throw new SshTerminalProviderError('UNAVAILABLE');
+      const beforeRead = await assertRemotePathComponents(channel, remotePath, 'file');
+      if (!sameIdentity(identity(remoteStats), identity(beforeRead))) throw new SshTerminalProviderError('CONFLICT');
       source = channel.createReadStream(remotePath, { flags: 'r' });
       bytesTransferred = await runStreamTransfer(sessionId, operationId, 'download', target.fileName, totalBytes, source, target.stream,
         cancellation, onProgress);
       if (wasCancelled()) throw new SshTerminalProviderError('CANCELLED');
+      const afterRead = await assertRemotePathComponents(channel, remotePath, 'file');
+      if (!sameIdentity(identity(remoteStats), identity(afterRead)) || (totalBytes !== null && bytesTransferred !== totalBytes)) {
+        throw new SshTerminalProviderError('CONFLICT');
+      }
       const result = await target.complete(() => {
         report(onProgress, sessionId, operationId, 'download', 'committing', target!.fileName, bytesTransferred, totalBytes);
         return beginCommit();

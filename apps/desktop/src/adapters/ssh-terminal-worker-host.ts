@@ -228,9 +228,9 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
       if (!pending) return;
       const previouslyCommitting = pending.progressPhase === 'committing';
       pending.progressPhase = message.progress.phase;
-      if (pending.timedOut && message.progress.phase === 'committing' && !previouslyCommitting) {
+      if (message.progress.phase === 'committing' && !previouslyCommitting && pending.cleanupTimer !== undefined) {
         this.scheduleWorkerTermination(worker, message.requestId, pending, FILE_COMMIT_SETTLEMENT_GRACE_MS,
-          new SshTerminalProviderError('TIMEOUT'));
+          new SshTerminalProviderError(pending.timedOut ? 'TIMEOUT' : 'CANCELLED'));
       }
       try { pending.onProgress?.(message.progress); } catch { /* Progress observers cannot interrupt worker ownership. */ }
       return;

@@ -332,7 +332,7 @@ function boot(): void {
           return result.response === 0;
         },
         async selectFtpUploadFile() {
-          const e2ePath = e2eFtpTransferPath('--mrt-e2e-ftp-upload-file=');
+          const e2ePath = e2eTransferPath('--mrt-e2e-ftp-upload-file=', '--mrt-e2e-ftp-transfers');
           if (e2ePath) return { localPath: e2ePath, fileName: basename(e2ePath) };
           const options: Electron.OpenDialogOptions = {
             title: 'Choose a file to upload', buttonLabel: 'Upload', properties: ['openFile']
@@ -346,7 +346,7 @@ function boot(): void {
           return { localPath, fileName: basename(localPath) };
         },
         async selectFtpDownloadPath(fileName: string) {
-          const e2eRoot = e2eFtpTransferPath('--mrt-e2e-ftp-download-root=');
+          const e2eRoot = e2eTransferPath('--mrt-e2e-ftp-download-root=', '--mrt-e2e-ftp-transfers');
           if (e2eRoot) return join(e2eRoot, safeFtpDownloadName(fileName));
           const options: Electron.SaveDialogOptions = {
             title: 'Save downloaded file', defaultPath: safeFtpDownloadName(fileName), buttonLabel: 'Download'
@@ -358,7 +358,8 @@ function boot(): void {
           return result.canceled ? undefined : result.filePath;
         },
         async resolveFtpTransferConflict(direction: FtpTransferDirection, fileName: string): Promise<FtpTransferConflictPolicy | undefined> {
-          if (e2eFtpTransferPath('--mrt-e2e-ftp-upload-file=') || e2eFtpTransferPath('--mrt-e2e-ftp-download-root=')) return 'rename';
+          if (e2eTransferPath('--mrt-e2e-ftp-upload-file=', '--mrt-e2e-ftp-transfers') ||
+              e2eTransferPath('--mrt-e2e-ftp-download-root=', '--mrt-e2e-ftp-transfers')) return 'rename';
           const options: Electron.MessageBoxOptions = {
             type: 'question', title: 'FTP transfer options',
             message: `${direction === 'upload' ? 'Upload' : 'Download'} ${fileName}`,
@@ -376,7 +377,7 @@ function boot(): void {
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(FTP_TRANSFER_EVENT_CHANNEL, progress);
         },
         async selectSshUploadFile() {
-          const e2ePath = e2eSshTransferPath('--mrt-e2e-sftp-upload-file=');
+          const e2ePath = e2eTransferPath('--mrt-e2e-sftp-upload-file=', '--mrt-e2e-sftp-transfers');
           if (e2ePath) return { localPath: e2ePath, fileName: basename(e2ePath) };
           const options: Electron.OpenDialogOptions = {
             title: 'Choose a file to upload', buttonLabel: 'Upload', properties: ['openFile']
@@ -390,7 +391,7 @@ function boot(): void {
           return { localPath, fileName: basename(localPath) };
         },
         async selectSshDownloadPath(fileName: string) {
-          const e2eRoot = e2eSshTransferPath('--mrt-e2e-sftp-download-root=');
+          const e2eRoot = e2eTransferPath('--mrt-e2e-sftp-download-root=', '--mrt-e2e-sftp-transfers');
           if (e2eRoot) return join(e2eRoot, safeFtpDownloadName(fileName));
           const options: Electron.SaveDialogOptions = {
             title: 'Save downloaded file', defaultPath: safeFtpDownloadName(fileName), buttonLabel: 'Download'
@@ -402,7 +403,8 @@ function boot(): void {
           return result.canceled ? undefined : result.filePath;
         },
         async resolveSshTransferConflict(direction: FileTransferDirection, fileName: string): Promise<FileTransferConflictPolicy | undefined> {
-          if (e2eSshTransferPath('--mrt-e2e-sftp-upload-file=') || e2eSshTransferPath('--mrt-e2e-sftp-download-root=')) return 'rename';
+          if (e2eTransferPath('--mrt-e2e-sftp-upload-file=', '--mrt-e2e-sftp-transfers') ||
+              e2eTransferPath('--mrt-e2e-sftp-download-root=', '--mrt-e2e-sftp-transfers')) return 'rename';
           const options: Electron.MessageBoxOptions = {
             type: 'question', title: 'SFTP transfer options',
             message: `${direction === 'upload' ? 'Upload' : 'Download'} ${fileName}`,
@@ -508,14 +510,8 @@ function safeFtpDownloadName(value: string): string {
   return /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(name) ? `_${name}` : name;
 }
 
-function e2eFtpTransferPath(prefix: string): string | undefined {
-  if (app.isPackaged || process.env.MRT_E2E !== '1' || !process.argv.includes('--mrt-e2e-ftp-transfers')) return undefined;
-  const value = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length);
-  return value && resolve(value) === value ? value : undefined;
-}
-
-function e2eSshTransferPath(prefix: string): string | undefined {
-  if (app.isPackaged || process.env.MRT_E2E !== '1' || !process.argv.includes('--mrt-e2e-sftp-transfers')) return undefined;
+function e2eTransferPath(prefix: string, testModeFlag: string): string | undefined {
+  if (app.isPackaged || process.env.MRT_E2E !== '1' || !process.argv.includes(testModeFlag)) return undefined;
   const value = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length);
   return value && resolve(value) === value ? value : undefined;
 }

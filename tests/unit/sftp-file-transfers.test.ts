@@ -4,13 +4,14 @@ import { EventEmitter } from 'node:events';
 import { Readable, Writable } from 'node:stream';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { createSftpFileTransfers } from '../../apps/desktop/src/workers/sftp-file-transfers.ts';
 
 interface FakeFile {
   data: Buffer;
   readonly kind: 'file' | 'directory' | 'symlink';
   mtime: number;
+  readonly reportedSize?: number;
 }
 
 class FakeStats {
@@ -22,7 +23,7 @@ class FakeStats {
   readonly mtime: number;
   constructor(file: FakeFile) {
     this.mode = file.kind === 'directory' ? 0o040700 : file.kind === 'symlink' ? 0o120777 : 0o100600;
-    this.size = file.data.length;
+    this.size = file.reportedSize ?? file.data.length;
     this.mtime = file.mtime;
   }
   isDirectory(): boolean { return (this.mode & 0o170000) === 0o040000; }
@@ -37,7 +38,9 @@ class FakeStats {
 class FakeSftp extends EventEmitter {
   readonly files = new Map<string, FakeFile>([['/', { data: Buffer.alloc(0), kind: 'directory', mtime: 1_800_000_000 }],
     ['/home', { data: Buffer.alloc(0), kind: 'directory', mtime: 1_800_000_000 }]]);
+  readonly realpathOverrides = new Map<string, string>();
   delayWrites = false;
+  writeDelayMs = 20;
   ended = false;
   beforeRename?: (source: string, destination: string) => void;
   renameFailureCode?: number;
@@ -46,6 +49,10 @@ class FakeSftp extends EventEmitter {
     const file = this.files.get(path);
     if (!file) { callback(Object.assign(new Error('Missing file'), { code: 2 }), undefined as never); return; }
     callback(null, new FakeStats(file));
+  }
+
+  realpath(path: string, callback: (error: Error | null, resolvedPath: string) => void): void {
+    callback(null, this.realpathOverrides.get(path) ?? (path.startsWith('/') ? posix.normalize(path) : posix.resolve('/home', path)));
   }
 
   createReadStream(path: string): Readable {
@@ -65,7 +72,7 @@ class FakeSftp extends EventEmitter {
     const stream = new Writable({
       write: (chunk: Buffer, _encoding, callback) => {
         const append = () => { file.data = Buffer.concat([file.data, Buffer.from(chunk)]); callback(); };
-        if (this.delayWrites) setTimeout(append, 20);
+        if (this.delayWrites) setTimeout(append, this.writeDelayMs);
         else append();
       }
     });
@@ -214,5 +221,56 @@ test('SFTP download rejects remote symbolic links and absent paths before creati
     await assert.rejects(transfers.download(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never,
       '/home/missing.txt', join(directory, 'missing.txt'), 'overwrite'), error => (error as { code?: string }).code === 'NOT_FOUND');
     assert.deepEqual(await readdir(directory), []);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP upload and download reject symlinked remote parent directories', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-parent-symlink-'));
+  const sourcePath = join(directory, 'source.txt');
+  await writeFile(sourcePath, 'upload');
+  const sftp = new FakeSftp();
+  sftp.files.set('/home/alias', { data: Buffer.alloc(0), kind: 'symlink', mtime: 1_800_000_000 });
+  sftp.files.set('/home/alias/remote.txt', { data: Buffer.from('download'), kind: 'file', mtime: 1_800_000_000 });
+  sftp.realpathOverrides.set('/home/alias', '/home/real-target');
+  sftp.realpathOverrides.set('/home/alias/remote.txt', '/home/real-target/remote.txt');
+  try {
+    await assert.rejects(transfers.upload(sessionId, operationId, sftp as never, sourcePath, '/home/alias', 'source.txt', 'rename'),
+      error => (error as { code?: string }).code === 'INVALID_REQUEST');
+    await assert.rejects(transfers.download(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never,
+      '/home/alias/remote.txt', join(directory, 'download.txt'), 'overwrite'),
+    error => (error as { code?: string }).code === 'INVALID_REQUEST');
+    assert.equal([...sftp.files.keys()].some(path => path.endsWith('.partial')), false);
+    assert.deepEqual(await readdir(directory), ['source.txt']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP download rejects a short remote stream without replacing the selected local target', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-short-download-'));
+  const targetPath = join(directory, 'report.txt');
+  await writeFile(targetPath, 'preserve existing content');
+  const sftp = new FakeSftp();
+  sftp.files.set('/home/report.txt', { data: Buffer.from('short'), reportedSize: 30, kind: 'file', mtime: 1_800_000_000 });
+  try {
+    await assert.rejects(transfers.download(sessionId, operationId, sftp as never, '/home/report.txt', targetPath, 'overwrite'),
+      error => (error as { code?: string }).code === 'CONFLICT');
+    assert.equal(await readFile(targetPath, 'utf8'), 'preserve existing content');
+    assert.deepEqual((await readdir(directory)).sort(), ['report.txt']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP progress reports are coalesced during multi-chunk transfers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-progress-'));
+  const sourcePath = join(directory, 'large.bin');
+  await writeFile(sourcePath, Buffer.alloc(1024 * 1024, 3));
+  const sftp = new FakeSftp();
+  sftp.delayWrites = true;
+  sftp.writeDelayMs = 5;
+  const progress: Array<{ phase: string; bytesTransferred: number }> = [];
+  try {
+    await transfers.upload(sessionId, operationId, sftp as never, sourcePath, '/home', 'large.bin', 'rename', undefined,
+      event => progress.push({ phase: event.phase, bytesTransferred: event.bytesTransferred }));
+    const transferProgress = progress.filter(event => event.phase === 'transferring');
+    assert.ok(transferProgress.length <= 4, `expected throttled progress updates, received ${transferProgress.length}`);
+    assert.equal(transferProgress.at(-1)?.bytesTransferred, 1024 * 1024);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
