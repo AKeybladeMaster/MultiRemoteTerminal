@@ -147,7 +147,8 @@ function boot(): void {
   const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
     if (!delayFirstOpenReply) return;
     delayFirstOpenReply = false;
-    await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 750));
+    // Leave enough time for Windows process discovery in the E2E cancellation test under full-suite load.
+    await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 5_000));
   } : undefined;
   const terminalHost = new TerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath(), openReplyBarrier
