@@ -1,4 +1,4 @@
-export type LocalShell = 'powershell' | 'cmd';
+export type LocalShell = 'powershell' | 'cmd' | 'bash';
 
 export interface TerminalSize {
   readonly columns: number;
@@ -11,7 +11,7 @@ export const MAX_TERMINAL_INPUT_CHARS = 16_384;
 export const MAX_QUEUED_TERMINAL_INPUT_CHARS = 65_536;
 
 export function isLocalShell(value: unknown): value is LocalShell {
-  return value === 'powershell' || value === 'cmd';
+  return value === 'powershell' || value === 'cmd' || value === 'bash';
 }
 
 export function isTerminalSize(value: unknown): value is TerminalSize {

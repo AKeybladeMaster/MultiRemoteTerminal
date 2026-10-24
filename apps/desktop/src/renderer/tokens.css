@@ -124,6 +124,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .saved-session-empty { margin: 0; padding: 7px 9px; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .shell-glyph { display: inline-flex; align-items: center; justify-content: center; min-width: 23px; height: 21px; color: var(--accent); font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; }
 .shell-glyph.cmd { color: var(--muted); }
+.shell-glyph.bash { min-width: 34px; font-size: 9px; letter-spacing: .04em; }
 .shell-glyph.ssh { min-width: 30px; font-size: 10px; letter-spacing: .04em; }
 .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .state-dot.running { background: #86c997; }

@@ -197,7 +197,7 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 
 | Feature | First provider route | Fallback or caveat |
 |---|---|---|
-| Local terminal | `node-pty` + Windows ConPTY | PowerShell/cmd; WSL if installed; ConPTY-compatible OS required |
+| Local terminal | `node-pty` + Windows ConPTY | PowerShell/cmd plus explicitly selected installed Git Bash; broader WSL integration remains future work |
 | SSH interactive | `ssh2` interactive shell | Optional separate Windows OpenSSH provider for advanced SSH config, hardware keys |
 | SFTP | `ssh2` SFTP subsystem | Reuse trusted SSH lifecycle; shared host identity |
 | SSH L/R/D tunnels | `ssh2` forwarding | Validate actual reverse and SOCKS5 support in contract tests |

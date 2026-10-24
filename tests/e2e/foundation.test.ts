@@ -2,6 +2,7 @@ import { test, expect, _electron as electron } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,6 +56,12 @@ function systemExecutable(name: string): string {
 
 function windowsPowerShellExecutable(): string {
   return join(systemExecutable(''), 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+function installedGitBashExecutable(): string | undefined {
+  const roots = [process.env.ProgramW6432, process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs') : undefined];
+  return roots.filter((root): root is string => Boolean(root)).map(root => join(root, 'Git', 'bin', 'bash.exe')).find(existsSync);
 }
 
 function processIsRunning(pid: number): boolean {
@@ -835,6 +842,34 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     await runPaletteCommand(page, 'New PowerShell terminal');
     await expect(page.getByRole('tab', { name: /PowerShell session 14/ })).toBeVisible();
     await sendLine(page, 'PowerShell session 14', "Write-Output ('MRT-WORKER:' + 'restarted')", 'MRT-WORKER:restarted');
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Git Bash runs in a local terminal and saved Bash sessions reopen', async () => {
+  test.skip(process.platform !== 'win32', 'ConPTY acceptance evidence is required on Windows');
+  test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash acceptance test');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-bash-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New Bash terminal');
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
+    const versionCommand = "printf 'MRT-BASH:%s\\n' \"$BASH_VERSION\"";
+    await sendLine(page, 'Bash session 1', versionCommand, /MRT-BASH:\d+\.\d+/);
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Reusable Bash');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const openSaved = page.getByRole('button', { name: 'Open Reusable Bash', exact: true });
+    await expect(openSaved).toBeVisible();
+    await openSaved.click();
+    await expect(page.getByRole('tab', { name: 'Reusable Bash', exact: true })).toBeVisible({ timeout: 15_000 });
+    await sendLine(page, 'Reusable Bash', versionCommand, /MRT-BASH:\d+\.\d+/);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
