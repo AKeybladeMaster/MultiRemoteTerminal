@@ -29,6 +29,7 @@ function hostKey(): Uint8Array {
 
 class FakeTrust implements HostTrustManager {
   readonly revoked: SshHostEndpoint[] = [];
+  readonly inspected: SshHostEndpoint[] = [];
   cancellationLookup = false;
   inspectionStarted: (() => void) | undefined;
   inspectionCancellation: CredentialPromptCancellation | undefined;
@@ -39,8 +40,10 @@ class FakeTrust implements HostTrustManager {
   private readonly resolvers = new Map<string, (value: HostTrustResolution) => void>();
 
   async inspect(endpoint: unknown, evidence: unknown, cancellation?: CredentialPromptCancellation) {
-    void endpoint;
     void evidence;
+    if (typeof endpoint === 'object' && endpoint !== null && 'host' in endpoint && 'port' in endpoint) {
+      this.inspected.push({ host: String(endpoint.host), port: Number(endpoint.port) });
+    }
     this.inspectionCancellation = cancellation;
     this.inspectionStarted?.();
     if (this.cancellationLookup) {
@@ -73,6 +76,8 @@ class FakeTrust implements HostTrustManager {
 
 class FakeProvider implements SshTerminalProvider {
   readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshTerminalCredentials }> = [];
+  readonly gatewayRoutes: SshHostEndpoint[][] = [];
+  readonly gatewayCredentialRefs: Array<{ username: string; password: string }> = [];
   readonly closed: string[] = [];
   readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   readonly listedDirectories: Array<{ readonly sessionId: string; readonly path: string; readonly cancellation?: CancellationSignal }> = [];
@@ -83,13 +88,19 @@ class FakeProvider implements SshTerminalProvider {
   transferStarted: (() => void) | undefined;
   readonly transferCancellations: Array<CancellationSignal | undefined> = [];
 
-  async open(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, _size: { columns: number; rows: number }, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>) {
+  async open(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, _size: { columns: number; rows: number },
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops: readonly { readonly endpoint: SshHostEndpoint; readonly credentials: { username: string; password: string } }[] = []) {
     this.opened.push({ sessionId: session, endpoint, credentials });
-    if (!await verifyHost(evidence)) throw new Error('Host verification failed');
+    this.gatewayRoutes.push(gatewayHops.map(hop => ({ ...hop.endpoint })));
+    this.gatewayCredentialRefs.push(...gatewayHops.map(hop => hop.credentials));
+    for (const hop of gatewayHops) if (!await verifyHost(hop.endpoint, evidence)) throw new Error('Gateway host verification failed');
+    if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
-  async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>) {
+  async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>) {
     this.opened.push({ sessionId: session, endpoint, credentials });
-    if (!await verifyHost(evidence)) throw new Error('Host verification failed');
+    if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
   async write(): Promise<void> {}
   async resize(): Promise<void> {}
@@ -229,9 +240,31 @@ test('SFTP controller scopes cancellation by operation and waits for transfer cl
   await controller.dispose();
 });
 
-function promptWith(result: CredentialPromptResult): CredentialPrompt {
-  return { prompt: async () => result };
+function promptWith(result: CredentialPromptResult, contexts?: string[]): CredentialPrompt {
+  return { prompt: async (_purpose, _signal, context) => { if (context) contexts?.push(context); return result; } };
 }
+
+test('SSH jump routes prompt and verify each gateway and destination in route order', async () => {
+  const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
+  const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
+  const destination = { host: 'target.example.net', port: 22 };
+  const prompts: string[] = [];
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'operation-secret' }, prompts), trust);
+
+  const opened = await controller.open(sessionId, destination.host, destination.port, { columns: 80, rows: 24 }, [gatewayOne, gatewayTwo]);
+
+  assert.equal(opened.ok, true);
+  assert.deepEqual(prompts, ['Gateway 1: gateway-one.example.net:2201', 'Gateway 2: gateway-two.example.net:2202',
+    'SSH destination: target.example.net:22']);
+  assert.deepEqual(provider.gatewayRoutes, [[gatewayOne, gatewayTwo]]);
+  assert.deepEqual(trust.inspected, [gatewayOne, gatewayTwo, destination]);
+  assert.ok(provider.gatewayCredentialRefs.every(credentials => credentials.username === '' && credentials.password === ''),
+    'gateway credentials are cleared after the operation');
+  await controller.dispose();
+});
 
 test('SSH open prompts only on explicit action and blocks on unknown host until exact approval', async () => {
   const provider = new FakeProvider();

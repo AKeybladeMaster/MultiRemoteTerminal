@@ -11,5 +11,5 @@ export type CredentialPromptResult =
 export type CredentialPromptCancellation = CancellationSignal;
 
 export interface CredentialPrompt {
-  prompt(purpose: CredentialPromptPurpose, signal?: CredentialPromptCancellation): Promise<CredentialPromptResult>;
+  prompt(purpose: CredentialPromptPurpose, signal?: CredentialPromptCancellation, context?: string): Promise<CredentialPromptResult>;
 }

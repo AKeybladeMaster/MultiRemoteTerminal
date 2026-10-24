@@ -522,6 +522,165 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
   }
 });
 
+test('SSH saved-profile jump routes verify every hop and clean up one- and two-gateway chains', async () => {
+  test.setTimeout(120_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const clients = new Set<Ssh2FixtureClient>();
+  const relaySockets = new Set<Socket>();
+  const fixtureEvents: string[] = [];
+  const servers: Array<{ readonly name: string; readonly server: Ssh2FixtureServer; address?: AddressInfo }> = [];
+  const createFixture = (name: string, target: boolean): Ssh2FixtureServer => {
+    const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+    const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+      const client = rawClient as Ssh2FixtureClient;
+      clients.add(client);
+      client.once('close', () => clients.delete(client));
+      client.on('error', error => fixtureEvents.push(`${name}:client-error:${error.message}`));
+      client.on('authentication', (rawContext: unknown) => {
+        const context = rawContext as Ssh2AuthenticationContext;
+        fixtureEvents.push(`${name}:auth:${context.username}`);
+        if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+        else context.reject();
+      });
+      client.on('ready', () => {
+        fixtureEvents.push(`${name}:authenticated`);
+        if (!target) client.on('tcpip', (acceptChannel: () => Duplex, rejectChannel: () => void, rawInfo: unknown) => {
+          const info = rawInfo as { readonly destIP: string; readonly destPort: number };
+          if (info.destIP !== '127.0.0.1' || !servers.some(item => item.address?.port === info.destPort)) {
+            fixtureEvents.push(`${name}:rejected:${info.destIP}:${info.destPort}`);
+            rejectChannel();
+            return;
+          }
+          const channel = acceptChannel();
+          const socket = connectTcp(info.destPort, '127.0.0.1');
+          relaySockets.add(socket);
+          socket.once('close', () => relaySockets.delete(socket));
+          const closeRelay = (): void => {
+            if (!socket.destroyed) socket.destroy();
+            if (!channel.destroyed) channel.destroy();
+          };
+          socket.once('error', error => { fixtureEvents.push(`${name}:relay-error:${error.message}`); closeRelay(); });
+          socket.once('close', closeRelay);
+          channel.once('error', closeRelay);
+          channel.once('close', closeRelay);
+          socket.once('connect', () => fixtureEvents.push(`${name}:relay:${info.destPort}`));
+          channel.pipe(socket).pipe(channel);
+        });
+        if (target) client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+          const session = acceptSession();
+          session.on('pty', (accept: () => void) => accept());
+          session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+            fixtureEvents.push(`${name}:shell`);
+            acceptShell().write('MRT-JUMP-TARGET-READY\r\n');
+          });
+        });
+      });
+    });
+    server.on('error', error => fixtureEvents.push(`${name}:server-error:${error.message}`));
+    servers.push({ name, server });
+    return server;
+  };
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    createFixture('gateway-one', false);
+    createFixture('gateway-two', false);
+    createFixture('target', true);
+    for (const fixture of servers) {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        fixture.server.once('error', rejectListen);
+        fixture.server.listen(0, '127.0.0.1', () => {
+          const address = fixture.server.address();
+          if (!address || typeof address === 'string') { rejectListen(new Error(`${fixture.name} did not bind a loopback port`)); return; }
+          fixture.address = address;
+          resolveListen();
+        });
+      });
+    }
+    const gatewayOnePort = servers[0]?.address?.port;
+    const gatewayTwoPort = servers[1]?.address?.port;
+    const targetPort = servers[2]?.address?.port;
+    if (!gatewayOnePort || !gatewayTwoPort || !targetPort) throw new Error('The SSH route fixture did not expose all ports');
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const profileIds = await page.evaluate(async ports => {
+      const replies = await Promise.all([
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway one', host: '127.0.0.1', port: ports.gatewayOne }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway two', host: '127.0.0.1', port: ports.gatewayTwo }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Target profile', host: '127.0.0.1', port: ports.target })
+      ]);
+      const ids: string[] = [];
+      for (const reply of replies) {
+        if (!reply.ok) throw new Error(`Could not create a route fixture profile (${reply.error.code})`);
+        ids.push(reply.result.id);
+      }
+      return ids;
+    }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort });
+    expect(profileIds).toHaveLength(3);
+    await page.reload();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    const openRoute = async (secondGateway: boolean): Promise<void> => {
+      await page.getByRole('button', { name: 'Actions for saved session Target profile' }).click();
+      await page.getByRole('button', { name: 'Connect Target profile through gateways' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Connect Target profile through gateways' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
+      await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
+      await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
+      if (secondGateway) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
+      await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+      const trustPorts = secondGateway ? [gatewayOnePort, gatewayTwoPort, targetPort] : [];
+      for (let trustIndex = 0; trustIndex < trustPorts.length; trustIndex += 1) {
+        const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+        await expect(trust).toBeVisible({ timeout: 15_000 });
+        await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${trustPorts[trustIndex]}`);
+        await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+      }
+      const tab = page.getByRole('tab').filter({ hasText: 'Target profile' }).last();
+      await expect(tab).toBeVisible({ timeout: 25_000 });
+      const panelId = await tab.getAttribute('aria-controls');
+      if (!panelId) throw new Error('Missing routed SSH terminal panel');
+      await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-JUMP-TARGET-READY', { timeout: 15_000 });
+      await confirmCloseActiveTerminal(page, secondGateway ? 'Gateway one → Gateway two → Target profile' : 'Gateway one → Target profile');
+    };
+    const waitForRelayCleanup = async (): Promise<void> => {
+      try { await expect.poll(() => relaySockets.size).toBe(0); }
+      catch (error) {
+        const remaining = [...relaySockets].map(socket => ({ localPort: socket.localPort, remotePort: socket.remotePort,
+          destroyed: socket.destroyed, readableEnded: socket.readableEnded, writableEnded: socket.writableEnded }));
+        throw new Error(`${error instanceof Error ? error.message : 'Relay cleanup timed out'}\nRemaining route relays: ${JSON.stringify(remaining)}`);
+      }
+    };
+
+    await openRoute(true);
+    await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(1);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + targetPort);
+    expect(fixtureEvents.filter(event => event === 'gateway-one:authenticated')).toHaveLength(1);
+    expect(fixtureEvents.filter(event => event === 'gateway-two:authenticated')).toHaveLength(1);
+    expect(fixtureEvents.filter(event => event === 'target:authenticated')).toHaveLength(1);
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+
+    await openRoute(false);
+    await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(2);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + targetPort);
+    expect(fixtureEvents.filter(event => event === 'gateway-two:authenticated')).toHaveLength(1);
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    for (const socket of relaySockets) socket.destroy();
+    for (const fixture of servers) await new Promise<void>(resolveClose => fixture.server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('saved SSH profiles start loopback forwards, relay traffic and restore stopped tunnels after restart', async () => {
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-forward-e2e-'));

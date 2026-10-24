@@ -52,6 +52,20 @@ class FakeClient extends EventEmitter {
   end(): this { this.ended = true; return this; }
 }
 
+class RoutedFakeClient extends FakeClient {
+  readonly routeRequests: Array<{ readonly host: string; readonly port: number }> = [];
+  readonly routeChannels: PassThrough[] = [];
+
+  forwardOut(_sourceAddress: string, _sourcePort: number, host: string, port: number,
+    callback: (error: Error | undefined, channel: ClientChannel) => void): this {
+    this.routeRequests.push({ host, port });
+    const channel = new PassThrough();
+    this.routeChannels.push(channel);
+    callback(undefined, channel as unknown as ClientChannel);
+    return this;
+  }
+}
+
 class ForwardingFakeClient extends FakeClient {
   forwardOut(_sourceAddress: string, _sourcePort: number, destinationAddress: string, destinationPort: number,
     callback: (error: Error | undefined, channel: ClientChannel) => void): this {
@@ -156,7 +170,7 @@ test('SSH provider verifies the raw host key, clears its password after auth, an
   const events: LocalTerminalEvent[] = [];
   const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, event => events.push(event));
   const verified: HostKeyEvidence[] = [];
-  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, size, async evidence => {
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, size, async (_endpoint, evidence) => {
     verified.push(evidence);
     return true;
   });
@@ -196,6 +210,53 @@ test('SSH provider verifies the raw host key, clears its password after auth, an
   await provider.close(sessionId);
   assert.equal(client.ended, true);
   await provider.acknowledgeOutput(sessionId, 2);
+});
+
+test('SSH provider opens a bounded jump route over nested channels and closes the complete chain', async () => {
+  const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
+  const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
+  const destination = { host: 'target.example.net', port: 22 };
+  const clients: RoutedFakeClient[] = [];
+  const provider = createSshTransportProvider({ create: () => {
+    const client = new RoutedFakeClient();
+    clients.push(client);
+    return client as unknown as Client;
+  }, parseHostKey: keyParser() }, () => {});
+  const verified: string[] = [];
+  const opened = provider.open(sessionId, destination, { username: 'target-user', password: 'target-secret' }, size,
+    async remote => { verified.push(remote.host); return true; }, [
+      { endpoint: gatewayOne, credentials: { username: 'gateway-one-user', password: 'gateway-one-secret' } },
+      { endpoint: gatewayTwo, credentials: { username: 'gateway-two-user', password: 'gateway-two-secret' } }
+    ]);
+
+  const authorizeAndAdvance = async (index: number, expectedHost: string): Promise<void> => {
+    const client = clients[index];
+    assert.ok(client);
+    assert.equal(client.config?.host, expectedHost);
+    const verifier = client.config?.hostVerifier as (key: Buffer, callback: (accepted: boolean) => void) => void;
+    const accepted = new Promise<boolean>(resolve => verifier(hostKey(), resolve));
+    assert.equal(await accepted, true);
+    client.emit('ready');
+    await new Promise<void>(resolve => setImmediate(resolve));
+  };
+
+  await authorizeAndAdvance(0, gatewayOne.host);
+  assert.equal(clients[1]?.config?.host, gatewayTwo.host);
+  assert.equal(clients[1]?.config?.sock, clients[0]?.routeChannels[0]);
+  await authorizeAndAdvance(1, gatewayTwo.host);
+  assert.equal(clients[2]?.config?.host, destination.host);
+  assert.equal(clients[2]?.config?.sock, clients[1]?.routeChannels[0]);
+  await authorizeAndAdvance(2, destination.host);
+  await opened;
+
+  assert.deepEqual(verified, [gatewayOne.host, gatewayTwo.host, destination.host]);
+  assert.deepEqual(clients[0]?.routeRequests, [gatewayTwo]);
+  assert.deepEqual(clients[1]?.routeRequests, [destination]);
+  assert.deepEqual(clients[2]?.shellSize, { term: 'xterm-256color', cols: size.columns, rows: size.rows });
+  const routeChannels = clients.flatMap(client => client.routeChannels);
+  await provider.close(sessionId);
+  assert.ok(clients.every(client => client.ended));
+  assert.ok(routeChannels.every(channel => channel.destroyed), 'closing the session destroys every inter-hop channel');
 });
 
 test('SSH authentication failure is categorized and closes the transport', async () => {

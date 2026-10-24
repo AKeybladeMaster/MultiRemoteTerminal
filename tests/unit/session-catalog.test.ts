@@ -36,6 +36,14 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.equal(bash.shell, 'bash');
     if (ssh.kind !== 'ssh') throw new Error('Expected SSH definition');
     assert.deepEqual({ host: ssh.host, port: ssh.port }, { host: 'ssh.example.com', port: 2222 });
+    const applicationCatalog = createSessionCatalog(catalog, unusedBundleDialog);
+    assert.deepEqual(await applicationCatalog.get(ssh.id), { ok: true, result: ssh });
+    assert.deepEqual(await applicationCatalog.get('33333333-3333-4333-8333-333333333333'), {
+      ok: false, error: { code: 'NOT_FOUND', target: 'application', retryable: false }
+    });
+    assert.deepEqual(await applicationCatalog.get('invalid'), {
+      ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false }
+    });
     assert.ok((await catalog.listSessions('GATEWAY')).some(item => item.id === ssh.id));
     assert.ok((await catalog.listSessions('ssh.example')).some(item => item.id === ssh.id));
     assert.ok((await catalog.listSessions('ssh.example')).some(item => item.id === sftp.id));
@@ -151,6 +159,7 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
   let forwarded: unknown;
   const catalog = createSessionCatalog({
     async listSessions(_query, cancellation) { forwarded = cancellation; throw new StorageOperationError('cancelled'); },
+    async getSessionDefinition() { throw new Error('not called'); },
     async createSession() { throw new Error('not called'); },
     async setFavorite() { throw new Error('not called'); },
     async removeSession() { throw new Error('not called'); },

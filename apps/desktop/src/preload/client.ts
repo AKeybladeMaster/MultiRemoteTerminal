@@ -270,8 +270,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       const request = voidRequest('terminal.close', { sessionId });
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
-    openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenSshTerminalReply> {
-      return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port, columns, rows } }, SSH_OPEN_TIMEOUT_MS);
+    openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
+      gatewayProfileIds?: readonly string[]): Promise<OpenSshTerminalReply> {
+      return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }) } }, SSH_OPEN_TIMEOUT_MS);
     },
     openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply> {
       return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port } }, SSH_OPEN_TIMEOUT_MS);

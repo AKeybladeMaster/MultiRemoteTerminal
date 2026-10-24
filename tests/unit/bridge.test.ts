@@ -348,6 +348,17 @@ test('preload validates SSH open replies and filters trust events before exposin
   assert.equal(receivedTrustEvents, 1);
 });
 
+test('preload includes only selected saved profile IDs in an SSH route request', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const bridge = createBridge(async request => {
+    assert.deepEqual(request, { command: 'ssh.open', requestId: id(), contractVersion: 1,
+      payload: { sessionId, host: 'target.example.net', port: 22, columns: 80, rows: 24, gatewayProfileIds } });
+    return { requestId: id(), ok: true, result: { sessionId, endpoint: { host: 'target.example.net', port: 22 }, state: 'running' } };
+  }, id);
+  assert.equal((await bridge.openSshTerminal(sessionId, 'target.example.net', 22, 80, 24, gatewayProfileIds)).ok, true);
+});
+
 test('preload carries a caller-known session id so an opening terminal can be cancelled', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const bridge = createBridge(async request => {

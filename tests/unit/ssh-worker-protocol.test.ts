@@ -21,6 +21,18 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
     size: { columns: 80, rows: 24 }
   };
   assert.equal(parseSshWorkerInput(open)?.type, 'request');
+  const gatewayHops = [
+    { endpoint: { host: 'gateway-one.example.net', port: 2201 }, credentials: { username: 'gateway-one', password: 'secret-one' } },
+    { endpoint: { host: 'gateway-two.example.net', port: 2202 }, credentials: { username: 'gateway-two', password: 'secret-two' } }
+  ];
+  const firstGateway = gatewayHops[0]!;
+  const secondGateway = gatewayHops[1]!;
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [...gatewayHops, firstGateway] }), undefined, 'routes are bounded to two gateways');
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [{ ...firstGateway, endpoint: open.endpoint }] }), undefined, 'the target cannot also be a gateway');
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [{ ...firstGateway, credentials: { ...firstGateway.credentials, token: 'unexpected' } }] }), undefined);
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [firstGateway, { ...secondGateway, endpoint: firstGateway.endpoint }] }), undefined,
+    'a route cannot repeat an endpoint');
   assert.equal(parseSshWorkerInput({ ...open, unexpected: true }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, endpoint: { host: 'Server.Example.Net.', port: 22 } }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, credentials: { username: 'alice', password: 'x'.repeat(65_537) } }), undefined);

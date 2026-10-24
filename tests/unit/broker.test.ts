@@ -41,6 +41,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     cancelTransfer: noOp, close: noOp
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
+    get: async () => ({ ok: true, result: emptySavedSession }),
     create: async () => ({ ok: true, result: emptySavedSession }),
     setFavorite: noOp, remove: noOp, listFolders: async () => ({ ok: true, result: [] }),
     createFolder: async () => ({ ok: true, result: { id: emptySavedSession.id, parentId: null, name: 'Folder' } }),
@@ -73,6 +74,36 @@ test('standalone SFTP broker path opens and closes an SSH-backed files session',
   assert.equal(listing.ok, true);
   assert.equal(close.ok, true);
   assert.deepEqual(calls, [`open-files:${sessionId}:server.example.net:22`, `list:${sessionId}:.`, `close:${sessionId}`]);
+});
+
+test('SSH broker resolves selected gateway profile IDs before opening the route', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const gatewayOneId = '11111111-1111-4111-8111-111111111111';
+  const gatewayTwoId = '22222222-2222-4222-8222-222222222222';
+  const profiles = new Map([
+    [gatewayOneId, { ...emptySavedSession, id: gatewayOneId, kind: 'ssh' as const, name: 'First gateway', host: 'first.example.net', port: 2201 }],
+    [gatewayTwoId, { ...emptySavedSession, id: gatewayTwoId, kind: 'ssh' as const, name: 'Second gateway', host: 'second.example.net', port: 2202 }]
+  ]);
+  const selected: unknown[] = [];
+  const base = actions();
+  const routed: CommandActions = { ...base,
+    sessionCatalog: { ...base.sessionCatalog, async get(id) {
+      const profile = profiles.get(id as string);
+      return profile ? { ok: true, result: profile } : { ok: false, error: { code: 'NOT_FOUND', target: 'application', retryable: false } };
+    } },
+    sshTerminals: { ...base.sshTerminals, async open(id, host, port, _size, route) {
+      selected.push(route);
+      return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1, payload: {
+    sessionId, host: 'target.example.net', port: 22, columns: 80, rows: 24, gatewayProfileIds: [gatewayOneId, gatewayTwoId]
+  } }, routed, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(selected, [[
+    { host: 'first.example.net', port: 2201 },
+    { host: 'second.example.net', port: 2202 }
+  ]]);
 });
 
 test('Telnet open requires a fresh plaintext-consent gesture at the main-process broker', async () => {
@@ -285,6 +316,7 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
   const base = actions();
   const withCatalog: CommandActions = { ...base, cancellation, sessionCatalog: {
     async list(query, signal) { calls.push(`list:${query}`); forwardedCancellations.push(signal); return { ok: true, result: [] }; },
+    async get(id, signal) { calls.push(`get:${id}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async create(draft, signal) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async setFavorite(id, favorite, signal) { calls.push(`favorite:${id}:${favorite}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
     async remove(id, signal) { calls.push(`remove:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },

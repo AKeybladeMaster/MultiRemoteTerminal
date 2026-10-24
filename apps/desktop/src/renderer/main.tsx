@@ -201,6 +201,10 @@ function Workbench() {
   const [selectedCommand, setSelectedCommand] = useState(0);
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
   const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
+  const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' }>>();
+  const [sshGatewayProfiles, setSshGatewayProfiles] = useState<readonly Extract<SavedSessionDefinition, { kind: 'ssh' }>[]>([]);
+  const [sshGatewayOne, setSshGatewayOne] = useState('');
+  const [sshGatewayTwo, setSshGatewayTwo] = useState('');
   const [sshHost, setSshHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
   const [sshConnectError, setSshConnectError] = useState<string>();
@@ -486,6 +490,10 @@ function Workbench() {
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSshConnectMode(mode);
+    setSshGatewayTarget(undefined);
+    setSshGatewayProfiles([]);
+    setSshGatewayOne('');
+    setSshGatewayTwo('');
     setSshHost(host);
     setSshPort(String(port));
     setSshSavedTitle(savedTitle);
@@ -667,7 +675,7 @@ function Workbench() {
     setActiveId(reply.result.sessionId);
   }, []);
 
-  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
+  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = []) => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -681,10 +689,14 @@ function Workbench() {
     setSshConnectError(undefined);
     sshTrustReturnFocus.current = sshConnectReturnFocus.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setSshConnectOpen(false);
+    setSshGatewayTarget(undefined);
+    setSshGatewayProfiles([]);
+    setSshGatewayOne('');
+    setSshGatewayTwo('');
     setPaletteOpen(false);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
-    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24);
+    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24, gatewayProfileIds);
     pendingOpenRequests.current.set(sessionId, { transport: 'ssh', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'ssh', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -993,9 +1005,9 @@ function Workbench() {
         return;
       }
       if (sshConnectOpen) {
-        if (event.key === 'Escape') { event.preventDefault(); setSshConnectOpen(false); }
+        if (event.key === 'Escape') { event.preventDefault(); cancelSshConnect(); }
         else if (event.key === 'Tab') {
-          const focusable = [...(sshConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? [])];
+          const focusable = [...(sshConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)') ?? [])];
           if (focusable.length) {
             event.preventDefault();
             const current = focusable.indexOf(document.activeElement as HTMLElement);
@@ -1097,8 +1109,11 @@ function Workbench() {
   }, [paletteOpen]);
 
   useLayoutEffect(() => {
-    if (sshConnectOpen) sshHostInput.current?.focus();
-  }, [sshConnectOpen]);
+    if (sshConnectOpen) {
+      if (sshGatewayTarget) document.getElementById('ssh-gateway-one')?.focus();
+      else sshHostInput.current?.focus();
+    }
+  }, [sshConnectOpen, sshGatewayTarget]);
 
   useLayoutEffect(() => {
     if (tunnelManagerOpen) requestAnimationFrame(() => tunnelManagerDialog.current?.querySelector<HTMLElement>('select, input, button')?.focus());
@@ -1257,6 +1272,8 @@ function Workbench() {
           <summary role="button" aria-label={`Actions for saved session ${session.name}`} title={`Actions for ${session.name}`}
             aria-expanded={menuOpen} onClick={event => toggleSavedActionsMenu(event, menuId)}>···</summary>
           <div className="saved-actions-panel" aria-label={`Saved-session actions for ${session.name}`}>
+            {session.kind === 'ssh' && <button type="button" disabled={catalogBusy} aria-label={`Connect ${session.name} through gateways`}
+              onClick={() => { setOpenSavedActionsMenuId(undefined); void openSavedSshThroughGateways(session); }}>Connect through gateways…</button>}
             <button type="button" disabled={catalogBusy} aria-label={`Move saved session ${session.name}`}
               onClick={() => { setOpenSavedActionsMenuId(undefined); openSavedFolderDialog({ mode: 'move-session', session }); }}>Move to folder</button>
             <button type="button" disabled={catalogBusy} aria-label={`Delete saved session ${session.name}`}
@@ -1318,6 +1335,41 @@ function Workbench() {
     else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
     else openFtpConnect(session.host, session.port, session.secure, session.name);
+  }
+
+  async function openSavedSshThroughGateways(session: Extract<SavedSessionDefinition, { kind: 'ssh' }>) {
+    const reply = await window.multiRemoteTerminal.listSavedSessions('');
+    if (!reply.ok) {
+      setAlert(`Saved SSH gateways could not be loaded (${reply.error.code}).`);
+      return;
+    }
+    const profiles = reply.result.filter((profile): profile is Extract<SavedSessionDefinition, { kind: 'ssh' }> =>
+      profile.kind === 'ssh' && profile.id !== session.id && !(profile.host === session.host && profile.port === session.port));
+    if (profiles.length === 0) {
+      setAlert('Save another SSH session to use it as a gateway.');
+      return;
+    }
+    openSshConnect('terminal', session.host, session.port, session.name);
+    setSshGatewayTarget(session);
+    setSshGatewayProfiles(profiles);
+  }
+
+  function cancelSshConnect() {
+    setSshConnectOpen(false);
+    setSshGatewayTarget(undefined);
+    setSshGatewayProfiles([]);
+    setSshGatewayOne('');
+    setSshGatewayTwo('');
+  }
+
+  function connectThroughSelectedGateways() {
+    if (!sshGatewayTarget || !sshGatewayOne) {
+      setSshConnectError('Choose the first SSH gateway.');
+      return;
+    }
+    const selected = [sshGatewayOne, sshGatewayTwo].filter(Boolean);
+    const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
+    void openSshTerminal(sshHost, sshPort, [...names, sshGatewayTarget.name].join(' → '), selected);
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string): void {
@@ -1814,27 +1866,45 @@ function Workbench() {
         </form>
       </section>
     </div>}
-    {sshConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSshConnectOpen(false); }}>
+    {sshConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) cancelSshConnect(); }}>
       <section ref={sshConnectDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
         aria-labelledby="ssh-connect-heading" aria-describedby="ssh-connect-description">
-        <h2 id="ssh-connect-heading">{sshConnectMode === 'sftp' ? 'Connect to SFTP files' : 'Connect to an SSH server'}</h2>
+        <h2 id="ssh-connect-heading">{sshGatewayTarget ? `Connect ${sshGatewayTarget.name} through gateways` : sshConnectMode === 'sftp' ? 'Connect to SFTP files' : 'Connect to an SSH server'}</h2>
         <p id="ssh-connect-description">{sshConnectMode === 'sftp'
           ? 'Connect with SSH credentials and verified host identity. This opens the SFTP file browser without starting a remote shell.'
-          : 'Enter the server address. The Windows credential prompt will collect your username and password after you connect.'}</p>
+          : sshGatewayTarget
+            ? 'Choose one or two saved SSH sessions as gateways. This route applies to this connection only; each gateway and the destination will have its own credential and host verification prompts.'
+            : 'Enter the server address. The Windows credential prompt will collect your username and password after you connect.'}</p>
         <form onSubmit={event => { event.preventDefault();
           if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle);
+          else if (sshGatewayTarget) connectThroughSelectedGateways();
           else void openSshTerminal(sshHost, sshPort, sshSavedTitle);
         }}>
           <label htmlFor="ssh-host">Host name or IP address</label>
           <input ref={sshHostInput} id="ssh-host" name="host" type="text" autoComplete="off" spellCheck={false}
-            placeholder="server.example.com…" value={sshHost} onChange={event => setSshHost(event.target.value)} />
+            placeholder="server.example.com…" disabled={Boolean(sshGatewayTarget)} value={sshHost} onChange={event => setSshHost(event.target.value)} />
           <label htmlFor="ssh-port">Port</label>
           <input ref={sshPortInput} id="ssh-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
-            value={sshPort} onChange={event => setSshPort(event.target.value)} />
+            disabled={Boolean(sshGatewayTarget)} value={sshPort} onChange={event => setSshPort(event.target.value)} />
+          {sshGatewayTarget && <>
+            <label htmlFor="ssh-gateway-one">SSH gateway 1</label>
+            <select id="ssh-gateway-one" value={sshGatewayOne} onChange={event => { setSshGatewayOne(event.target.value); setSshGatewayTwo(''); }}>
+              <option value="">Choose a saved SSH profile</option>
+              {sshGatewayProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} — {sshEndpointLabel(profile.host, profile.port)}</option>)}
+            </select>
+            <label htmlFor="ssh-gateway-two">SSH gateway 2 (optional)</label>
+            <select id="ssh-gateway-two" value={sshGatewayTwo} onChange={event => setSshGatewayTwo(event.target.value)} disabled={!sshGatewayOne}>
+              <option value="">No second gateway</option>
+              {sshGatewayProfiles.filter(profile => profile.id !== sshGatewayOne && (() => {
+                const first = sshGatewayProfiles.find(item => item.id === sshGatewayOne);
+                return !first || profile.host !== first.host || profile.port !== first.port;
+              })()).map(profile => <option key={profile.id} value={profile.id}>{profile.name} — {sshEndpointLabel(profile.host, profile.port)}</option>)}
+            </select>
+          </>}
           {sshConnectError && <p className="dialog-error" role="alert">{sshConnectError}</p>}
           <div className="ssh-connect-actions">
-            <button type="button" onClick={() => setSshConnectOpen(false)}>Cancel</button>
-            <button type="submit" className="ssh-primary">Connect</button>
+            <button type="button" onClick={cancelSshConnect}>Cancel</button>
+            <button type="submit" className="ssh-primary" disabled={Boolean(sshGatewayTarget && !sshGatewayOne)}>Connect</button>
           </div>
         </form>
       </section>

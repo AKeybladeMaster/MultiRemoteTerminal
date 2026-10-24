@@ -1,6 +1,7 @@
 import type { CredentialPrompt, CredentialPromptCancellation } from './credential-prompt.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../domain/src/host-trust.ts';
-import { canonicalizeSshHostEndpoint, isHostKeyEvidence } from '../../domain/src/host-trust.ts';
+import { canonicalizeSshHostEndpoint, hostEndpointKey, isHostKeyEvidence } from '../../domain/src/host-trust.ts';
+import { normalizeSshGatewayRoute } from '../../domain/src/ssh-route.ts';
 import { failure } from '../../domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../domain/src/errors.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS, isTerminalSize } from '../../domain/src/local-terminal.ts';
@@ -16,6 +17,11 @@ import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResu
 export interface SshTerminalCredentials {
   readonly username: string;
   readonly password: string;
+}
+
+export interface SshConnectionGatewayCredentials {
+  readonly endpoint: SshHostEndpoint;
+  readonly credentials: { username: string; password: string };
 }
 
 export type SshTerminalProviderErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'NOT_SUPPORTED' | 'CANCELLED' | 'TIMEOUT' | 'BUSY' | 'OUTPUT_LIMIT' |
@@ -37,13 +43,14 @@ export interface SshTerminalProvider {
     endpoint: SshHostEndpoint,
     credentials: SshTerminalCredentials,
     size: TerminalSize,
-    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>,
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops?: readonly SshConnectionGatewayCredentials[],
   ): Promise<void>;
   openFiles(
     sessionId: string,
     endpoint: SshHostEndpoint,
     credentials: SshTerminalCredentials,
-    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>,
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
   ): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
@@ -71,7 +78,7 @@ export type SshTrustEvent =
   | { readonly kind: 'changed'; readonly sessionId: string; readonly host: string; readonly port: number; readonly algorithm: string; readonly fingerprint: string };
 
 export interface SshTerminalController {
-  open(sessionId: string, host: string, port: number, size: TerminalSize): Promise<Outcome<SshTerminalSession>>;
+  open(sessionId: string, host: string, port: number, size: TerminalSize, gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<SshTerminalSession>>;
   openFiles(sessionId: string, host: string, port: number): Promise<Outcome<SshTerminalSession>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
@@ -97,6 +104,7 @@ export interface SshTerminalController {
 interface SessionState {
   readonly sessionId: string;
   readonly endpoint: SshHostEndpoint;
+  readonly endpoints: readonly SshHostEndpoint[];
   readonly cancellation: CancellationSource;
   readonly mode: 'terminal' | 'files';
   state: SshTerminalSession['state'];
@@ -209,10 +217,11 @@ export function createSshTerminalController(
     return failure(code, 'terminal');
   }
 
-  async function verifyHost(session: SessionState, evidence: HostKeyEvidence): Promise<boolean> {
-    if (session.cancellation.token.aborted || sessions.get(session.sessionId) !== session || !isHostKeyEvidence(evidence)) return false;
+  async function verifyHost(session: SessionState, endpoint: SshHostEndpoint, evidence: HostKeyEvidence): Promise<boolean> {
+    if (session.cancellation.token.aborted || sessions.get(session.sessionId) !== session || !isHostKeyEvidence(evidence) ||
+        !session.endpoints.some(candidate => hostEndpointKey(candidate) === hostEndpointKey(endpoint))) return false;
     let inspected: Outcome<HostTrustDecision>;
-    try { inspected = await hostTrust.inspect(session.endpoint, evidence, session.cancellation.token); }
+    try { inspected = await hostTrust.inspect(endpoint, evidence, session.cancellation.token); }
     catch { return false; }
     if (!inspected.ok) return false;
     const decision = inspected.result;
@@ -238,19 +247,36 @@ export function createSshTerminalController(
     return resolution === 'approved' && !session.cancellation.token.aborted && sessions.get(session.sessionId) === session;
   }
 
-  async function openConnection(sessionId: string, host: string, port: number, size?: TerminalSize): Promise<Outcome<SshTerminalSession>> {
+  async function openConnection(sessionId: string, host: string, port: number, size?: TerminalSize,
+    gatewayEndpoints: readonly SshHostEndpoint[] = []): Promise<Outcome<SshTerminalSession>> {
     if (disposed) return failure('CANCELLED', 'terminal');
     if (shutdownPromise) return failure('BUSY', 'terminal');
     const endpoint = canonicalizeSshHostEndpoint({ host, port });
     if (!SESSION_ID.test(sessionId) || !endpoint || (size !== undefined && !isTerminalSize(size)) || sessions.has(sessionId)) return failure('INVALID_REQUEST');
+    const gateways = normalizeSshGatewayRoute(gatewayEndpoints, endpoint);
+    if (!gateways) return failure('INVALID_REQUEST');
     const mode = size === undefined ? 'files' : 'terminal';
-    const session: SessionState = { sessionId, endpoint, cancellation: createCancellationSource(), mode, state: 'starting', pendingInputChars: 0, pendingEvents: [] };
+    const session: SessionState = { sessionId, endpoint, endpoints: [...gateways, endpoint], cancellation: createCancellationSource(), mode,
+      state: 'starting', pendingInputChars: 0, pendingEvents: [] };
     sessions.set(sessionId, session);
 
     let username = '';
     let password = '';
+    const gatewayCredentials: SshConnectionGatewayCredentials[] = [];
     try {
-      const credential = await credentialPrompt.prompt('ssh-password', session.cancellation.token);
+      for (const [index, gatewayEndpoint] of gateways.entries()) {
+        const credential = await credentialPrompt.prompt('ssh-password', session.cancellation.token,
+          `Gateway ${index + 1}: ${gatewayEndpoint.host}:${gatewayEndpoint.port}`);
+        if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
+        if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
+        if (credential.kind !== 'provided') return failOpen(session, credential.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
+        if (credential.username.length === 0 || credential.username.trim() !== credential.username || credential.username.includes('\0') || credential.secret.includes('\0')) {
+          return failOpen(session, 'INVALID_REQUEST');
+        }
+        gatewayCredentials.push({ endpoint: gatewayEndpoint, credentials: { username: credential.username, password: credential.secret } });
+      }
+
+      const credential = await credentialPrompt.prompt('ssh-password', session.cancellation.token, `SSH destination: ${endpoint.host}:${endpoint.port}`);
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
       if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
       if (credential.kind !== 'provided') return failOpen(session, credential.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
@@ -258,8 +284,9 @@ export function createSshTerminalController(
       password = credential.secret;
       if (username.length === 0 || username.trim() !== username || username.includes('\0') || password.includes('\0')) return failOpen(session, 'INVALID_REQUEST');
 
-      if (size === undefined) await provider.openFiles(sessionId, endpoint, { username, password }, evidence => verifyHost(session, evidence));
-      else await provider.open(sessionId, endpoint, { username, password }, size, evidence => verifyHost(session, evidence));
+      const verifyEndpoint = (remoteEndpoint: SshHostEndpoint, evidence: HostKeyEvidence) => verifyHost(session, remoteEndpoint, evidence);
+      if (size === undefined) await provider.openFiles(sessionId, endpoint, { username, password }, verifyEndpoint);
+      else await provider.open(sessionId, endpoint, { username, password }, size, verifyEndpoint, gatewayCredentials);
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session || session.state === 'closing') {
         await provider.close(sessionId).catch(() => undefined);
         return failOpen(session, 'CANCELLED');
@@ -279,11 +306,16 @@ export function createSshTerminalController(
     } finally {
       username = '';
       password = '';
+      for (const gateway of gatewayCredentials) {
+        gateway.credentials.username = '';
+        gateway.credentials.password = '';
+      }
     }
   }
 
-  async function open(sessionId: string, host: string, port: number, size: TerminalSize): Promise<Outcome<SshTerminalSession>> {
-    return openConnection(sessionId, host, port, size);
+  async function open(sessionId: string, host: string, port: number, size: TerminalSize,
+    gatewayEndpoints: readonly SshHostEndpoint[] = []): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port, size, gatewayEndpoints);
   }
 
   async function openFiles(sessionId: string, host: string, port: number): Promise<Outcome<SshTerminalSession>> {
