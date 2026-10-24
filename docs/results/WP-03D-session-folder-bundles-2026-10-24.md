@@ -15,7 +15,7 @@ Review follow-up: bundle sibling-name validation now matches SQLite's ASCII-only
 - Windows Electron E2E — exported a saved folder using the app command wired to the native save-dialog adapter, imported it into a fresh profile using the open-dialog adapter, verified the folder/session and count, then restarted the target profile and verified they remained persisted. The test substitutes native dialog results with test-owned paths; the file write, read, SQLite workers and renderer/preload/main flow are real.
 - `git diff --check` — passed before commit.
 
-Review follow-up tests cover Unicode sibling-name round-trip, exact temporary-path validation, removal of a partial export after worker cancellation or timeout, native Cancel and caller cancellation while a picker is open, and a native picker request pending beyond the former 75-second IPC deadline.
+Review follow-up tests cover Unicode sibling-name round-trip, exact temporary-path validation, removal of a partial export after worker cancellation, and a timeout test that holds cleanup open to verify the request remains pending until deletion finishes. Picker tests cover native Cancel and caller cancellation while the dialog is open; the preload test keeps a native picker request pending beyond the former 75-second IPC deadline.
 
 ## Security and remaining work
 

@@ -78,9 +78,10 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
   private migration: SharedMigration | undefined;
   private migrated = false;
 
-  constructor(databasePath: string, legacyFilePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher) {
+  constructor(databasePath: string, legacyFilePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher,
+    removeTemporaryFile: (path: string) => Promise<void> = path => rm(path, { force: true })) {
     this.legacyStore = new HostTrustJsonStore(legacyFilePath);
-    this.worker = new StorageWorkerClient(databasePath, workerPath, appRoot, launchWorker);
+    this.worker = new StorageWorkerClient(databasePath, workerPath, appRoot, launchWorker, removeTemporaryFile);
   }
 
   async find(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<TrustedHostKey | undefined> {
@@ -258,6 +259,7 @@ class StorageWorkerClient {
   private readonly workerPath: string;
   private readonly appRoot: string;
   private readonly launchWorker: StorageWorkerLauncher;
+  private readonly removeTemporaryFile: (path: string) => Promise<void>;
   private worker: UtilityProcess | undefined;
   private shuttingDown = false;
   private requesters = 0;
@@ -267,11 +269,13 @@ class StorageWorkerClient {
   private readyResolve: (() => void) | undefined;
   private readyReject: ((error: Error) => void) | undefined;
 
-  constructor(databasePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher) {
+  constructor(databasePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher,
+    removeTemporaryFile: (path: string) => Promise<void>) {
     this.databasePath = databasePath;
     this.workerPath = workerPath;
     this.appRoot = appRoot;
     this.launchWorker = launchWorker;
+    this.removeTemporaryFile = removeTemporaryFile;
   }
 
   async request(command: StorageWorkerCommand, cancellation?: CredentialPromptCancellation): Promise<StorageWorkerResult> {
@@ -416,7 +420,7 @@ class StorageWorkerClient {
     const temporaryPaths = [...this.exportTemporaryPaths];
     this.exportTemporaryPaths.clear();
     void Promise.all(temporaryPaths.map(async path => {
-      await rm(path, { force: true }).catch(() => undefined);
+      try { await this.removeTemporaryFile(path); } catch { /* Failed best-effort cleanup cannot block worker recovery. */ }
     })).then(() => {
       for (const [requestId, pending] of this.pending) {
         this.clearPending(requestId, pending);

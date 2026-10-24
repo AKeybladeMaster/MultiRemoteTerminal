@@ -409,10 +409,18 @@ test('timed-out folder export waits for partial temp-file cleanup before rejecti
   const destinationPath = join(directory, 'sessions.json');
   let resolveStalled!: () => void;
   const stalled = new Promise<void>(resolve => { resolveStalled = resolve; });
+  let resolveCleanupStarted!: () => void;
+  const cleanupStarted = new Promise<void>(resolve => { resolveCleanupStarted = resolve; });
+  let releaseCleanup!: () => void;
+  const cleanupRelease = new Promise<void>(resolve => { releaseCleanup = resolve; });
   let worker: FakeStorageWorker | undefined;
   const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
     worker = new FakeStorageWorker(databasePath, false, 'session.folder.export', resolveStalled);
     return worker as unknown as UtilityProcess;
+  }, async path => {
+    resolveCleanupStarted();
+    await cleanupRelease;
+    await rm(path, { force: true });
   });
   try {
     const pending = store.exportFolderToFile('11111111-1111-4111-8111-111111111111', destinationPath);
@@ -421,12 +429,20 @@ test('timed-out folder export waits for partial temp-file cleanup before rejecti
     assert.ok(temporaryPath);
     assert.equal((await stat(temporaryPath)).isFile(), true);
 
+    let settled = false;
+    const observed = pending.then(() => { settled = true; }, () => { settled = true; });
     context.mock.timers.tick(60_000);
+    await cleanupStarted;
+    await Promise.resolve();
+    assert.equal(settled, false, 'timeout must remain pending while temporary-file cleanup is blocked');
+    releaseCleanup();
     await assert.rejects(pending, (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'busy');
+    await observed;
     await assert.rejects(stat(temporaryPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
     await assert.rejects(stat(destinationPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
     assert.equal(worker?.killed, true);
   } finally {
+    releaseCleanup();
     context.mock.timers.reset();
     await store.shutdown();
     await rm(directory, { recursive: true, force: true });
