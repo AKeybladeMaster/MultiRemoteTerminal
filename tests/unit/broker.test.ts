@@ -24,7 +24,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     create: async () => ({ ok: true, result: emptySavedSession }),
     setFavorite: noOp, remove: noOp, listFolders: async () => ({ ok: true, result: [] }),
     createFolder: async () => ({ ok: true, result: { id: emptySavedSession.id, parentId: null, name: 'Folder' } }),
-    renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp
+    renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp,
+    exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
+    importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
   }
 });
 
@@ -70,7 +72,9 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
     async renameFolder(id, name, signal) { calls.push(`rename-folder:${id}:${name}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
     async moveFolder(id, parentId, signal) { calls.push(`move-folder:${id}:${parentId}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
     async removeFolder(id, signal) { calls.push(`remove-folder:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
-    async moveSession(id, folderId, signal) { calls.push(`move-session:${id}:${folderId}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; }
+    async moveSession(id, folderId, signal) { calls.push(`move-session:${id}:${folderId}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
+    async exportFolder(id, signal) { calls.push(`export-folder:${id}`); forwardedCancellations.push(signal); return { ok: true, result: { folderCount: 1, sessionCount: 0 } }; },
+    async importFolder(signal) { calls.push('import-folder'); forwardedCancellations.push(signal); return { ok: true, result: { folderCount: 1, sessionCount: 0, createdFolderCount: 1, createdSessionCount: 0 } }; }
   } };
   const requestId = request.requestId;
   const replies = await Promise.all([
@@ -80,11 +84,15 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
     dispatchCommand(owner, { command: 'session.favorite', requestId, contractVersion: 1,
       payload: { id: emptySavedSession.id, favorite: true } }, withCatalog, () => {}),
     dispatchCommand(owner, { command: 'session.delete', requestId, contractVersion: 1,
-      payload: { id: emptySavedSession.id } }, withCatalog, () => {})
+      payload: { id: emptySavedSession.id } }, withCatalog, () => {}),
+    dispatchCommand(owner, { command: 'session.folder.export', requestId, contractVersion: 1,
+      payload: { id: emptySavedSession.id } }, withCatalog, () => {}),
+    dispatchCommand(owner, { command: 'session.folder.import', requestId, contractVersion: 1, payload: {} }, withCatalog, () => {})
   ]);
   assert.ok(replies.every(reply => reply.ok));
-  assert.deepEqual(calls, ['list:Prod', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`]);
-  assert.deepEqual(forwardedCancellations, Array(4).fill(cancellation));
+  assert.deepEqual(calls, ['list:Prod', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`,
+    `export-folder:${emptySavedSession.id}`, 'import-folder']);
+  assert.deepEqual(forwardedCancellations, Array(6).fill(cancellation));
 });
 
 test('only validated local or SSH terminal open, write and close commands count as user activity', async () => {

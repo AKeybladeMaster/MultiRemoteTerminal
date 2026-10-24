@@ -99,4 +99,9 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   const folderMove = { command: 'session.folder.move', requestId: request.requestId, contractVersion: 1,
     payload: { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', parentId: null } };
   assert.equal(parseRequest(folderMove).ok, true);
+  assert.equal(parseRequest({ command: 'session.folder.export', requestId: request.requestId, contractVersion: 1,
+    payload: { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087' } }).ok, true);
+  assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1, payload: {} }).ok, true);
+  assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1,
+    payload: { path: 'C:\\private.json' } }).ok, false, 'the renderer cannot provide a filesystem path');
 });

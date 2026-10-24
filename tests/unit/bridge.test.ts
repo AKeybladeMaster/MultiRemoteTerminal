@@ -14,9 +14,26 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
-    'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'moveSavedSession',
+    'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload exposes saved-folder import and export through fixed commands', async () => {
+  const folderId = '18f2f903-7b6f-4c8d-9c42-b63a58c4b087';
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return request.command === 'session.folder.export'
+      ? { requestId: id(), ok: true, result: { folderCount: 2, sessionCount: 4 } }
+      : { requestId: id(), ok: true, result: { folderCount: 2, sessionCount: 4, createdFolderCount: 2, createdSessionCount: 4 } };
+  }, id);
+  assert.equal((await bridge.exportSavedSessionFolder(folderId)).ok, true);
+  assert.equal((await bridge.importSavedSessionFolder()).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'session.folder.export', requestId: id(), contractVersion: 1, payload: { id: folderId } },
+    { command: 'session.folder.import', requestId: id(), contractVersion: 1, payload: {} }
+  ]);
 });
 
 test('preload routes saved-session commands through fixed validated requests', async () => {

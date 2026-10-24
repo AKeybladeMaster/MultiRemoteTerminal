@@ -14,7 +14,7 @@ export interface HostTrustStore {
 }
 
 export class HostTrustStoreError extends StorageOperationError {
-  constructor(kind: 'busy' | 'cancelled' | 'conflict' | 'corrupt' | 'not-found' | 'unavailable') {
+  constructor(kind: 'busy' | 'cancelled' | 'conflict' | 'corrupt' | 'invalid' | 'not-found' | 'unavailable') {
     super(kind);
     this.name = 'HostTrustStoreError';
   }

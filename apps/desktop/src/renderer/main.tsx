@@ -127,6 +127,14 @@ function savedFolderError(code: string): string {
   return `The folder operation failed (${code}).`;
 }
 
+function savedBundleError(code: string): string {
+  if (code === 'CANCELLED') return '';
+  if (code === 'CONFLICT') return 'Import stopped because a folder or saved connection conflicts with existing data. No changes were applied.';
+  if (code === 'INVALID_REQUEST') return 'The selected file is not a supported saved-folder bundle. It may be damaged or contain unsupported fields.';
+  if (code === 'BUSY' || code === 'TIMEOUT') return 'The saved-folder operation took too long. Try again with a smaller folder.';
+  return `The saved-folder operation failed (${code}).`;
+}
+
 function terminalStatus(session: WorkbenchTerminal | undefined): string {
   if (!session) return 'No active terminal';
   if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
@@ -852,6 +860,8 @@ function Workbench() {
           <div className="saved-actions-panel" aria-label={`Folder actions for ${folder.name}`}>
             <button type="button" disabled={catalogBusy} aria-label={`Create subfolder in ${folder.name}`}
               onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'create', parentId: folder.id }); }}>New subfolder</button>
+            <button type="button" disabled={catalogBusy} aria-label={`Export folder ${folder.name}`}
+              onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); void exportSavedFolder(folder); }}>Export folder</button>
             <button type="button" disabled={catalogBusy} aria-label={`Rename folder ${folder.name}`}
               onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); openSavedFolderDialog({ mode: 'rename', folder }); }}>Rename</button>
             <button type="button" disabled={catalogBusy} aria-label={`Move folder ${folder.name}`}
@@ -1039,6 +1049,45 @@ function Workbench() {
     }
   }
 
+  async function exportSavedFolder(folder: SavedSessionFolder) {
+    if (catalogBusy) return;
+    setCatalogBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.exportSavedSessionFolder(folder.id);
+      if (!reply.ok) {
+        const message = savedBundleError(reply.error.code);
+        if (message) setAlert(message);
+      } else {
+        setAlert(`Exported ${reply.result.folderCount} ${reply.result.folderCount === 1 ? 'folder' : 'folders'} and ${reply.result.sessionCount} ${reply.result.sessionCount === 1 ? 'saved session' : 'saved sessions'}. The JSON file contains no credentials.`);
+      }
+    } catch {
+      setAlert('The folder export could not be confirmed. Check the selected destination before retrying.');
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
+  async function importSavedFolder() {
+    if (catalogBusy) return;
+    setCatalogBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.importSavedSessionFolder();
+      if (!reply.ok) {
+        const message = savedBundleError(reply.error.code);
+        if (message) setAlert(message);
+        return;
+      }
+      const folders = await loadSavedFolders();
+      await loadSavedSessions(savedSearch);
+      if (folders) setExpandedFolderIds(current => new Set([...current, ...folders.filter(folder => folder.parentId === null).map(folder => folder.id)]));
+      setAlert(`Imported ${reply.result.folderCount} ${reply.result.folderCount === 1 ? 'folder' : 'folders'} and ${reply.result.sessionCount} ${reply.result.sessionCount === 1 ? 'saved session' : 'saved sessions'} (${reply.result.createdFolderCount} folders and ${reply.result.createdSessionCount} sessions added).`);
+    } catch {
+      setAlert('The folder import could not be confirmed. Refresh the saved-session list before retrying.');
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
+
   function runCommand(command: PaletteCommand | undefined) {
     if (!command) return;
     setPaletteOpen(false);
@@ -1085,6 +1134,7 @@ function Workbench() {
         </div>}
         <section className="saved-session-group" aria-labelledby="saved-sessions-heading">
           <div className="saved-session-heading"><div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span className="saved-session-count" aria-label={`${savedSessionCount} saved ${savedSessionCount === 1 ? 'session' : 'sessions'}`}>{savedSessionCount}</span></div>
+            <button className="saved-folder-create" type="button" disabled={catalogBusy} aria-label="Import a saved session folder" onClick={() => void importSavedFolder()}>Import</button>
             <button className="saved-folder-create" type="button" disabled={catalogBusy} onClick={() => openSavedFolderDialog({ mode: 'create', parentId: null })}>+ Folder</button>
           </div>
           <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>

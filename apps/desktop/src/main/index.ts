@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -160,7 +160,31 @@ function boot(): void {
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
   );
   const hostTrust = createHostTrustManager(storageStore, sshTrustRuntime);
-  const sessionCatalog = createSessionCatalog(storageStore);
+  const bundleDialog = {
+    async selectExportPath(folderName: string): Promise<string | undefined> {
+      const options: Electron.SaveDialogOptions = {
+        title: 'Export saved session folder',
+        defaultPath: `${safeFileStem(folderName)}.mrt-session-folder.json`,
+        buttonLabel: 'Export',
+        filters: [{ name: 'Session folder bundle', extensions: ['json'] }]
+      };
+      const current = window;
+      const result = current && !current.isDestroyed() ? await dialog.showSaveDialog(current, options) : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    },
+    async selectImportPath(): Promise<string | undefined> {
+      const options: Electron.OpenDialogOptions = {
+        title: 'Import saved session folder',
+        buttonLabel: 'Import',
+        properties: ['openFile'],
+        filters: [{ name: 'Session folder bundle', extensions: ['json'] }]
+      };
+      const current = window;
+      const result = current && !current.isDestroyed() ? await dialog.showOpenDialog(current, options) : await dialog.showOpenDialog(options);
+      return result.canceled ? undefined : result.filePaths[0];
+    }
+  };
+  const sessionCatalog = createSessionCatalog(storageStore, bundleDialog);
   const systemDirectory = {
     getSystemDirectory(): string {
       const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
@@ -282,6 +306,11 @@ function boot(): void {
 function scheduleTimeout(callback: () => void, delayMs: number): () => void {
   const timer = setTimeout(callback, delayMs);
   return () => clearTimeout(timer);
+}
+
+function safeFileStem(value: string): string {
+  const safe = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 96).trim();
+  return safe.length > 0 ? safe : 'saved-sessions';
 }
 
 // Do not await readiness at ESM top level: Electron 45 delays ready until module evaluation completes.

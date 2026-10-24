@@ -5,6 +5,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
+import { isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -25,6 +26,8 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.rename'; readonly id: string; readonly name: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.move'; readonly id: string; readonly parentId: string | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.export'; readonly folderId: string; readonly path: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.import'; readonly path: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
 
@@ -38,9 +41,11 @@ export type StorageWorkerResult =
   | { readonly kind: 'folder'; readonly value: SavedSessionFolder }
   | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
   | { readonly kind: 'changed'; readonly value: boolean }
+  | { readonly kind: 'folderExport'; readonly value: { readonly folderCount: number; readonly sessionCount: number } }
+  | { readonly kind: 'folderImport'; readonly value: { readonly folderCount: number; readonly sessionCount: number; readonly createdFolderCount: number; readonly createdSessionCount: number } }
   | { readonly kind: 'shutdown' };
 
-export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'NOT_FOUND' | 'UNAVAILABLE';
+export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
 
 export type StorageWorkerMessage =
   | { readonly version: 1; readonly type: 'ready' }
@@ -53,6 +58,7 @@ export function storageWorkerErrorCode(error: unknown): StorageWorkerErrorCode {
     if (error.kind === 'busy') return 'BUSY';
     if (error.kind === 'conflict') return 'CONFLICT';
     if (error.kind === 'corrupt') return 'CORRUPT';
+    if (error.kind === 'invalid') return 'INVALID_BUNDLE';
     if (error.kind === 'not-found') return 'NOT_FOUND';
   }
   return 'UNAVAILABLE';
@@ -115,6 +121,11 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.folder.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionFolderId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.folder.export' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'folderId', 'path']) &&
+      isSessionFolderId(value.folderId) && isFilePath(value.path)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.import' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path']) && isFilePath(value.path)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'session.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'folderId']) &&
       isSessionDefinitionId(value.id) && (value.folderId === null || isSessionFolderId(value.folderId))) return value as unknown as StorageWorkerRequest;
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
@@ -143,9 +154,24 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'folder' && exactKeys(value, ['kind', 'value']) && isSavedSessionFolder(value.value)) return true;
   if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
   if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
+  if (value.kind === 'folderExport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value, ['folderCount', 'sessionCount'])) return true;
+  if (value.kind === 'folderImport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value,
+    ['folderCount', 'sessionCount', 'createdFolderCount', 'createdSessionCount'])) {
+    const counts = value.value as Record<'folderCount' | 'sessionCount' | 'createdFolderCount' | 'createdSessionCount', number>;
+    return counts.folderCount > 0 && counts.createdFolderCount <= counts.folderCount && counts.createdSessionCount <= counts.sessionCount &&
+      counts.folderCount + counts.sessionCount <= MAX_MIGRATION_ENTRIES;
+  }
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 
+function isRecordCounts(value: unknown, keys: readonly string[]): value is Record<string, number> {
+  return record(value) && exactKeys(value, keys) && keys.every(key => Number.isSafeInteger(value[key]) && (value[key] as number) >= 0 && (value[key] as number) <= MAX_MIGRATION_ENTRIES);
+}
+
+function isFilePath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32_767 && !value.includes('\0') && isAbsolute(value);
+}
+
 function isErrorCode(value: unknown): value is StorageWorkerErrorCode {
-  return value === 'BUSY' || value === 'CONFLICT' || value === 'CORRUPT' || value === 'NOT_FOUND' || value === 'UNAVAILABLE';
+  return value === 'BUSY' || value === 'CONFLICT' || value === 'CORRUPT' || value === 'INVALID_BUNDLE' || value === 'NOT_FOUND' || value === 'UNAVAILABLE';
 }

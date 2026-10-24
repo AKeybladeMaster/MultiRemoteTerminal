@@ -11,10 +11,12 @@ import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, n
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
+import type { SessionFolderExportResult, SessionFolderImportResult } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
 import type { StorageWorkerErrorCode } from '../workers/storage-protocol.ts';
 import type { StorageWorkerRequest, StorageWorkerResult } from '../workers/storage-protocol.ts';
+import { isAbsolute } from 'node:path';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const START_TIMEOUT_MS = 5_000;
@@ -25,7 +27,7 @@ const storageDiagnostics = channel(STORAGE_DIAGNOSTICS_CHANNEL_NAME);
 type StorageDiagnosticEvent = {
   readonly component: 'storage';
   readonly event: 'protocol-invalid' | 'request-cancelled' | 'request-timeout' | 'startup-error' | 'startup-timeout' | 'worker-exit';
-  readonly code: 'BUSY' | 'CANCELLED' | 'CONFLICT' | 'CORRUPT' | 'NOT_FOUND' | 'UNAVAILABLE';
+  readonly code: 'BUSY' | 'CANCELLED' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
 };
 
 function publishStorageDiagnostic(event: StorageDiagnosticEvent['event'], code: StorageDiagnosticEvent['code']): void {
@@ -181,6 +183,22 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
     return result.value;
   }
 
+  async exportFolderToFile(folderId: string, path: string, cancellation?: CancellationSignal): Promise<SessionFolderExportResult> {
+    if (!isSessionFolderId(folderId) || !isFilePath(path)) throw new HostTrustStoreError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.export', folderId, path }, cancellation);
+    if (result.kind !== 'folderExport') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async importFolderFromFile(path: string, cancellation?: CancellationSignal): Promise<SessionFolderImportResult> {
+    if (!isFilePath(path)) throw new HostTrustStoreError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.import', path }, cancellation);
+    if (result.kind !== 'folderImport') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
   async shutdown(): Promise<void> {
     await this.worker.shutdown();
   }
@@ -263,7 +281,8 @@ class StorageWorkerClient {
       const requestId = randomUUID();
       const request = { version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'request', requestId, ...command } as StorageWorkerRequest;
       return await new Promise<StorageWorkerResult>((resolve, reject) => {
-        const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 : REQUEST_TIMEOUT_MS;
+        const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 :
+          request.command === 'session.folder.import' || request.command === 'session.folder.export' ? 60_000 : REQUEST_TIMEOUT_MS;
         const timer = setTimeout(() => {
           const pending = this.pending.get(requestId);
           if (!pending) return;
@@ -411,7 +430,12 @@ export { SqliteStorageStore as SqliteHostTrustStore };
 function storeError(code: StorageWorkerErrorCode): HostTrustStoreError {
   if (code === 'CONFLICT') return new HostTrustStoreError('conflict');
   if (code === 'NOT_FOUND') return new HostTrustStoreError('not-found');
+  if (code === 'INVALID_BUNDLE') return new HostTrustStoreError('invalid');
   return new HostTrustStoreError(code.toLowerCase() as 'busy' | 'corrupt' | 'unavailable');
+}
+
+function isFilePath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32_767 && !value.includes('\0') && isAbsolute(value);
 }
 
 function throwIfCancelled(cancellation?: CredentialPromptCancellation): void {

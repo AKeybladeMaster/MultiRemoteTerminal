@@ -1,6 +1,6 @@
 import { CONTRACT_VERSION, isCommandReply, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
-  OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+  ExportSessionFolderReply, ImportSessionFolderReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
@@ -148,6 +148,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     deleteSavedSessionFolder(id: string): Promise<TerminalActionReply> {
       return send(voidRequest('session.folder.delete', { id }), 8_000);
+    },
+    exportSavedSessionFolder(id: string): Promise<ExportSessionFolderReply> {
+      return send({ command: 'session.folder.export', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, 75_000);
+    },
+    importSavedSessionFolder(): Promise<ImportSessionFolderReply> {
+      return send({ command: 'session.folder.import', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 75_000);
     },
     moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply> {
       return send(voidRequest('session.move', { id, folderId }), 8_000);

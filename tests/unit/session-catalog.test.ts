@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { SqliteSessionCatalogRepository } from '../../apps/desktop/src/adapters/sqlite-session-catalog-repository.ts';
-import { storageWorkerErrorCode } from '../../apps/desktop/src/workers/storage-protocol.ts';
+import { parseStorageWorkerRequest, storageWorkerErrorCode } from '../../apps/desktop/src/workers/storage-protocol.ts';
 import { createSessionCatalog } from '../../packages/application/src/session-catalog.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 
@@ -72,7 +75,7 @@ test('folder moves reject cycles and folder deletion preserves children and sess
       (id, folder_id, kind, name, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, 'rdp', 'Future viewer', '{}', 1, 0, ?, ?)`)
       .run(futureSessionId, work.id, timestamp, timestamp);
-    const applicationCatalog = createSessionCatalog(catalog);
+    const applicationCatalog = createSessionCatalog(catalog, unusedBundleDialog);
     assert.equal(await catalog.moveSession(rootSession.id, work.id), true);
     assert.equal(await catalog.moveSession(childSession.id, lab.id), true);
     assert.equal((await catalog.listSessions('')).find(item => item.id === childSession.id)?.folderId, lab.id);
@@ -116,8 +119,10 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
     async renameFolder() { throw new Error('not called'); },
     async moveFolder() { throw new Error('not called'); },
     async removeFolder() { throw new Error('not called'); },
-    async moveSession() { throw new Error('not called'); }
-  });
+    async moveSession() { throw new Error('not called'); },
+    async exportFolderToFile() { throw new Error('not called'); },
+    async importFolderFromFile() { throw new Error('not called'); }
+  }, unusedBundleDialog);
   const cancellation = { aborted: false, addEventListener() {}, removeEventListener() {} };
   const result = await catalog.list('prod', cancellation);
   assert.equal(forwarded, cancellation);
@@ -130,4 +135,100 @@ test('storage worker retains busy and corrupt categories from shared storage err
   assert.equal(storageWorkerErrorCode(new StorageOperationError('corrupt')), 'CORRUPT');
   assert.equal(storageWorkerErrorCode(new StorageOperationError('not-found')), 'NOT_FOUND');
   assert.equal(storageWorkerErrorCode(new StorageOperationError('unavailable')), 'UNAVAILABLE');
+  assert.equal(storageWorkerErrorCode(new StorageOperationError('invalid')), 'INVALID_BUNDLE');
 });
+
+test('SQLite folder bundle export/import round-trips a subtree without credentials and is idempotent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-folder-bundle-'));
+  const sourceDatabase = new DatabaseSync(':memory:');
+  const destinationDatabase = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(sourceDatabase).migrate();
+    new SqliteHostTrustRepository(destinationDatabase).migrate();
+    const source = new SqliteSessionCatalogRepository(sourceDatabase);
+    const destination = new SqliteSessionCatalogRepository(destinationDatabase);
+    const root = await source.createFolder({ name: 'Project', parentId: null });
+    const child = await source.createFolder({ name: 'Lab', parentId: root.id });
+    const session = await source.createSession({ kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 });
+    await source.moveSession(session.id, child.id);
+    await source.setFavorite(session.id, true);
+    const path = join(directory, 'project.mrt-session-folder.json');
+
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 2, sessionCount: 1 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 2, sessionCount: 1 },
+      'exporting again to the selected file replaces it atomically');
+    const text = await readFile(path, 'utf8');
+    assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
+    assert.doesNotMatch(text, /password|credential|privateKey/i);
+    assert.deepEqual(await destination.importFolderFromFile(path), {
+      folderCount: 2, sessionCount: 1, createdFolderCount: 2, createdSessionCount: 1
+    });
+    assert.deepEqual(await destination.listFolders(), [root, child]);
+    const importedSessions = await destination.listSessions('');
+    assert.equal(importedSessions.length, 1);
+    const importedSession = importedSessions[0];
+    assert.ok(importedSession?.kind === 'ssh');
+    if (importedSession?.kind !== 'ssh') throw new Error('Expected an imported SSH definition');
+    assert.deepEqual({ id: importedSession.id, folderId: importedSession.folderId, kind: importedSession.kind, name: importedSession.name,
+      host: importedSession.host, port: importedSession.port, favorite: importedSession.favorite }, {
+      id: session.id, folderId: child.id, kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222, favorite: true
+    });
+    assert.deepEqual(await destination.importFolderFromFile(path), {
+      folderCount: 2, sessionCount: 1, createdFolderCount: 0, createdSessionCount: 0
+    });
+  } finally {
+    sourceDatabase.close();
+    destinationDatabase.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('invalid and conflicting folder imports leave the SQLite catalog unchanged', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-folder-bundle-'));
+  const sourceDatabase = new DatabaseSync(':memory:');
+  const destinationDatabase = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(sourceDatabase).migrate();
+    new SqliteHostTrustRepository(destinationDatabase).migrate();
+    const source = new SqliteSessionCatalogRepository(sourceDatabase);
+    const destination = new SqliteSessionCatalogRepository(destinationDatabase);
+    const root = await source.createFolder({ name: 'Project', parentId: null });
+    const child = await source.createFolder({ name: 'Lab', parentId: root.id });
+    const leaf = await source.createFolder({ name: 'Tools', parentId: child.id });
+    const path = join(directory, 'project.mrt-session-folder.json');
+    await source.exportFolderToFile(root.id, path);
+
+    const existingRoot = await destination.createFolder({ name: root.name, parentId: null });
+    destinationDatabase.prepare('UPDATE folders SET id = ? WHERE id = ?').run(root.id, existingRoot.id);
+    const conflictingLeaf = await destination.createFolder({ name: 'Different name', parentId: root.id });
+    destinationDatabase.prepare('UPDATE folders SET id = ? WHERE id = ?').run(leaf.id, conflictingLeaf.id);
+    const before = await destination.listFolders();
+    await assert.rejects(destination.importFolderFromFile(path), (error: unknown) =>
+      error instanceof StorageOperationError && error.kind === 'conflict');
+    assert.deepEqual(await destination.listFolders(), before, 'the newly inserted child must roll back with the later ID conflict');
+
+    const invalidPath = join(directory, 'invalid.json');
+    await writeFile(invalidPath, '{"format":"bad","password":"secret"}');
+    await assert.rejects(destination.importFolderFromFile(invalidPath), (error: unknown) =>
+      error instanceof StorageOperationError && error.kind === 'invalid');
+    assert.deepEqual(await destination.listFolders(), before);
+  } finally {
+    sourceDatabase.close();
+    destinationDatabase.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('storage worker bundle requests require exact absolute bounded paths', () => {
+  const base = { version: 1, type: 'request', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6' } as const;
+  assert.deepEqual(parseStorageWorkerRequest({ ...base, command: 'session.folder.import', path: 'C:\\tmp\\sessions.json' })?.command,
+    'session.folder.import');
+  assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.import', path: 'relative.json' }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.export', folderId: 'bad', path: 'C:\\tmp\\sessions.json' }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.import', path: 'C:\\tmp\\sessions.json', secret: 'hidden' }), undefined);
+});
+
+const unusedBundleDialog = {
+  async selectExportPath() { return undefined; },
+  async selectImportPath() { return undefined; }
+};

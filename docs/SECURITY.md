@@ -62,6 +62,8 @@ The SQLite storage adapter exposes only static `{component, event, code}` failur
 - Accept known host certificate authorities only after verified implementation of SSH certificate semantics; do not pretend simple fingerprints cover OpenSSH hashed host entries/CA policies.
 - Never automatically parse arbitrary SSH configs with command substitutions.
 
+Saved-folder bundle files are explicit user-selected imports/exports through Electron's native file dialogs. Version 1 accepts only exact folder and local/SSH connection metadata schemas, with a 16 MiB file limit and 100,000-record limit; credentials, private keys and terminal history are rejected or absent. Export writes a temporary file and renames it into place. Import validates the complete file before a single SQLite transaction; any conflicting folder/session ID or uniqueness constraint rolls back the whole import. The bundle format does not encrypt data, so it contains host names, ports, shell choices, folder names and saved-session metadata; users should store it as they would other connection configuration.
+
 ## Third-party licensing and integrity
 
 Every bundled or launched provider has `name`, `source`, `version`, `license`, `distribution-rights`, `hash/signature-check`, `update-policy`, `vulnerability-scan-status`. GPL/LGPL components require counsel/maintenance review before bundling; prefer explicit user-installed providers if unclear. Never copy comparison-product proprietary assets or internal scripts.

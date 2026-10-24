@@ -5,6 +5,7 @@ import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, n
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/src/session-folder.ts';
+import type { SessionFolderExportResult, SessionFolderImportResult } from '../../domain/src/session-folder-bundle.ts';
 import { StorageOperationError } from './storage-errors.ts';
 
 export interface SessionCatalogStore {
@@ -18,6 +19,13 @@ export interface SessionCatalogStore {
   moveFolder(id: string, parentId: string | null, cancellation?: CancellationSignal): Promise<boolean>;
   removeFolder(id: string, cancellation?: CancellationSignal): Promise<boolean>;
   moveSession(id: string, folderId: string | null, cancellation?: CancellationSignal): Promise<boolean>;
+  exportFolderToFile(folderId: string, path: string, cancellation?: CancellationSignal): Promise<SessionFolderExportResult>;
+  importFolderFromFile(path: string, cancellation?: CancellationSignal): Promise<SessionFolderImportResult>;
+}
+
+export interface SessionFolderBundleFileDialog {
+  selectExportPath(folderName: string): Promise<string | undefined>;
+  selectImportPath(): Promise<string | undefined>;
 }
 
 export interface SessionCatalog {
@@ -31,11 +39,13 @@ export interface SessionCatalog {
   moveFolder(id: unknown, parentId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   removeFolder(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   moveSession(id: unknown, folderId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
+  exportFolder(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SessionFolderExportResult>>;
+  importFolder(cancellation?: CancellationSignal): Promise<Outcome<SessionFolderImportResult>>;
 }
 
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
 
-export function createSessionCatalog(store: SessionCatalogStore): SessionCatalog {
+export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: SessionFolderBundleFileDialog): SessionCatalog {
   return {
     async list(query: unknown, cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionDefinition[]>> {
       const normalized = normalizeSessionSearch(query);
@@ -111,13 +121,42 @@ export function createSessionCatalog(store: SessionCatalogStore): SessionCatalog
       if (cancellation?.aborted) return failure('CANCELLED');
       try { return await store.moveSession(id, folderId, cancellation) ? { ok: true, result: EMPTY_RESULT } : failure('NOT_FOUND'); }
       catch (error) { return failure(errorCode(error)); }
+    },
+    async exportFolder(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SessionFolderExportResult>> {
+      if (!isSessionFolderId(id)) return failure('INVALID_REQUEST');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try {
+        const folders = await store.listFolders(cancellation);
+        const folder = folders.find(item => item.id === id);
+        if (!folder) return failure('NOT_FOUND');
+        const path = await bundleDialog.selectExportPath(folder.name);
+        if (cancellation?.aborted) return failure('CANCELLED');
+        if (path === undefined) return failure('CANCELLED');
+        if (!isFilePath(path)) return failure('INVALID_REQUEST');
+        return { ok: true, result: await store.exportFolderToFile(id, path, cancellation) };
+      } catch (error) { return failure(errorCode(error)); }
+    },
+    async importFolder(cancellation?: CancellationSignal): Promise<Outcome<SessionFolderImportResult>> {
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try {
+        const path = await bundleDialog.selectImportPath();
+        if (cancellation?.aborted) return failure('CANCELLED');
+        if (path === undefined) return failure('CANCELLED');
+        if (!isFilePath(path)) return failure('INVALID_REQUEST');
+        return { ok: true, result: await store.importFolderFromFile(path, cancellation) };
+      } catch (error) { return failure(errorCode(error)); }
     }
   };
+}
+
+function isFilePath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32_767;
 }
 
 function errorCode(error: unknown): ErrorCode {
   if (error instanceof StorageOperationError) {
     if (error.kind === 'busy') return 'BUSY';
+    if (error.kind === 'invalid') return 'INVALID_REQUEST';
     if (error.kind === 'cancelled') return 'CANCELLED';
     if (error.kind === 'conflict') return 'CONFLICT';
     if (error.kind === 'not-found') return 'NOT_FOUND';
