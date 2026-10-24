@@ -23,6 +23,7 @@ interface PendingHostCheck {
 }
 
 const pendingHostChecks = new Map<string, PendingHostCheck>();
+const pendingFileOperations = new Map<string, { readonly sessionId: string; readonly cancellation: AbortController }>();
 let shuttingDown = false;
 
 function send(value: unknown): void {
@@ -73,10 +74,32 @@ async function stop(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const sessionId of new Set([...pendingHostChecks.values()].map(pending => pending.sessionId))) cancelHostChecksForSession(sessionId);
+  for (const pending of pendingFileOperations.values()) pending.cancellation.abort();
   await provider.shutdown().catch(() => undefined);
 }
 
+function cancelFileOperationsForSession(sessionId: string): void {
+  for (const pending of pendingFileOperations.values()) if (pending.sessionId === sessionId) pending.cancellation.abort();
+}
+
 async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): Promise<void> {
+  if (request.command === 'files.cancel') {
+    const pending = pendingFileOperations.get(request.operationId);
+    if (pending?.sessionId === request.sessionId) pending.cancellation.abort();
+    send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: {} });
+    return;
+  }
+  if (request.command === 'files.list') {
+    const cancellation = new AbortController();
+    pendingFileOperations.set(request.requestId, { sessionId: request.sessionId, cancellation });
+    try {
+      const result = await provider.listRemoteDirectory(request.sessionId, request.path, cancellation.signal);
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
+    } catch (error) {
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
+    } finally { pendingFileOperations.delete(request.requestId); }
+    return;
+  }
   try {
     if (request.command === 'open') {
       try {
@@ -92,6 +115,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     else if (request.command === 'ack') await provider.acknowledgeOutput(request.sessionId, request.sequence);
     else if (request.command === 'close') {
       cancelHostChecksForSession(request.sessionId);
+      cancelFileOperationsForSession(request.sessionId);
       await provider.close(request.sessionId);
     }
     else await stop();

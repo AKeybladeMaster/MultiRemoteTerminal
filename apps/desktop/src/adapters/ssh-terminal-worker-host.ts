@@ -4,14 +4,18 @@ import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/doma
 import type { SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
+import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
+import { isRemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
+import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { parseSshWorkerMessage, SSH_WORKER_PROTOCOL_VERSION } from '../workers/ssh-protocol.ts';
 import type { SshWorkerErrorCode, SshWorkerRequest } from '../workers/ssh-protocol.ts';
 
 interface PendingRequest {
-  readonly resolve: () => void;
+  readonly resolve: (result: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
+  readonly cleanup: () => void;
 }
 
 interface OwnedSshSession {
@@ -21,11 +25,14 @@ interface OwnedSshSession {
 
 const MAX_PENDING_REQUESTS = 128;
 const OPEN_TIMEOUT_MS = 140_000;
+// 15s setup + 10s listing + 1s channel-close grace leaves 4s for worker IPC within this deadline.
+const FILE_LIST_TIMEOUT_MS = 30_000;
 export type SshWorkerLaunchOptions = { readonly cwd: string; readonly env: { readonly MRT_APP_ROOT: string }; readonly serviceName: string; readonly stdio: 'ignore' };
 export type SshWorkerLauncher = (workerPath: string, args: string[], options: SshWorkerLaunchOptions) => UtilityProcess;
 
 function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCode {
-  if (code === 'AUTHENTICATION_FAILED' || code === 'HOST_KEY_REJECTED' || code === 'HOST_KEY_CHANGED' || code === 'TIMEOUT') return code;
+  if (code === 'AUTHENTICATION_FAILED' || code === 'HOST_KEY_REJECTED' || code === 'HOST_KEY_CHANGED' || code === 'TIMEOUT' ||
+      code === 'NOT_SUPPORTED' || code === 'CANCELLED' || code === 'BUSY' || code === 'OUTPUT_LIMIT') return code;
   return 'UNAVAILABLE';
 }
 
@@ -74,6 +81,15 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     await this.request({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'ack', sessionId, sequence }, 5_000);
   }
 
+  async listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing> {
+    if (!this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
+    if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.list', sessionId, path } as const satisfies SshWorkerRequest;
+    const result = await this.request(request, FILE_LIST_TIMEOUT_MS, cancellation);
+    if (!isRemoteDirectoryListing(result)) throw new SshTerminalProviderError('UNAVAILABLE');
+    return result;
+  }
+
   async close(sessionId: string): Promise<void> {
     if (!this.sessions.has(sessionId)) return;
     this.sessions.delete(sessionId);
@@ -93,24 +109,40 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     finally { if (this.shuttingDown === operation) this.shuttingDown = undefined; }
   }
 
-  private async request(request: Extract<SshWorkerRequest, { type: 'request' }>, timeoutMs: number): Promise<void> {
+  private async request(request: Extract<SshWorkerRequest, { type: 'request' }>, timeoutMs: number, cancellation?: CancellationSignal): Promise<unknown> {
     if (this.shuttingDown && request.command !== 'shutdown') throw new SshTerminalProviderError('UNAVAILABLE');
     if (this.pending.size >= MAX_PENDING_REQUESTS) throw new SshTerminalProviderError('UNAVAILABLE');
     const worker = this.ensureWorker();
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
+      let removeCancellation = () => {};
       const timer = setTimeout(() => {
+        removeCancellation();
         this.pending.delete(request.requestId);
         reject(new SshTerminalProviderError('TIMEOUT'));
         void this.killWorker(worker);
       }, timeoutMs);
-      this.pending.set(request.requestId, { resolve, reject, timer });
+      const cleanup = () => { clearTimeout(timer); removeCancellation(); };
+      this.pending.set(request.requestId, { resolve, reject, timer, cleanup });
+      let cancelOperation = () => {};
+      if (request.command === 'files.list' && cancellation) {
+        cancelOperation = () => {
+          if (this.worker !== worker) return;
+          const cancelRequest = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(),
+            command: 'files.cancel', sessionId: request.sessionId, operationId: request.requestId } as const satisfies SshWorkerRequest;
+          try { worker.postMessage(cancelRequest); } catch { void this.killWorker(worker); }
+        };
+        cancellation.addEventListener('abort', cancelOperation, { once: true });
+        removeCancellation = () => cancellation.removeEventListener('abort', cancelOperation);
+      }
       try { worker.postMessage(request); }
       catch {
-        clearTimeout(timer);
+        cleanup();
         this.pending.delete(request.requestId);
         reject(new SshTerminalProviderError('UNAVAILABLE'));
         void this.killWorker(worker);
+        return;
       }
+      if (cancellation?.aborted) cancelOperation();
     });
   }
 
@@ -137,8 +169,9 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
       if (!pending) return;
       clearTimeout(pending.timer);
       this.pending.delete(message.requestId);
+      pending.cleanup();
       if (!message.ok) pending.reject(new SshTerminalProviderError(providerErrorCode(message.errorCode)));
-      else pending.resolve();
+      else pending.resolve(message.result);
       return;
     }
     if (message.type === 'host-key') { this.verifyHostKey(worker, message.sessionId, message.checkId, message.endpoint, message.evidence); return; }
@@ -171,6 +204,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     const wasShuttingDown = this.shuttingDown !== undefined;
     for (const [requestId, pending] of this.pending) {
       clearTimeout(pending.timer);
+      pending.cleanup();
       pending.reject(new SshTerminalProviderError('UNAVAILABLE'));
       this.pending.delete(requestId);
     }

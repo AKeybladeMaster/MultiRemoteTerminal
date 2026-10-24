@@ -94,6 +94,8 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 **Tests:** directory navigation, 1KB/100MB files, disconnect, symlinks, conflicts, path traversal, partial cleanup.  
 **Gate:** no unexpected local overwrite outside user-selected path.
 
+**WP-05A — contextual directory browsing (partial):** The app now opens a narrow remote-files pane beside a running SSH terminal and supports bounded directory listing/navigation over the authenticated SSH connection. Listing work is cancellable, serialized per connection, and bounded to 500 entries. It does not follow symlinks. No file transfer, standalone SFTP connection, or SFTP-backed Windows acceptance fixture is included in this slice. See [WP-05A results](results/WP-05A-sftp-directory-browser-2026-10-24.md). Keep the WP-05 gate open.
+
 ### WP-06 — Macros and MultiExec
 
 **Requires:** WP-01/02/03.  

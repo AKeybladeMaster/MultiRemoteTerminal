@@ -100,11 +100,14 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .saved-folder-icon::after { position: absolute; inset: 3px 0 0; border: 1px solid currentColor; border-radius: 2px; background: color-mix(in srgb, var(--accent) 10%, transparent); content: ""; }
 .saved-folder-name { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .saved-folder-count { flex: 0 0 auto; min-width: 20px; padding: 2px 5px; border-radius: 9px; background: color-mix(in srgb, var(--surface-raised) 70%, transparent); color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; text-align: center; }
-.saved-actions-menu { position: relative; flex: 0 0 auto; }
-.saved-actions-menu > summary { display: flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border: 1px solid transparent; border-radius: 3px; color: var(--muted); cursor: pointer; font-weight: 700; list-style: none; }
+.saved-actions-menu { position: relative; flex: 0 0 auto; anchor-scope: --saved-actions-anchor; }
+.saved-actions-menu > summary { anchor-name: --saved-actions-anchor; display: flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; border: 1px solid transparent; border-radius: 3px; color: var(--muted); cursor: pointer; font-weight: 700; list-style: none; }
 .saved-actions-menu > summary::-webkit-details-marker { display: none; }
 .saved-actions-menu > summary:hover, .saved-actions-menu[open] > summary { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
 .saved-actions-panel { position: absolute; z-index: 4; top: calc(100% + 2px); right: 0; display: grid; gap: 2px; min-width: 172px; padding: 5px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); box-shadow: 0 6px 20px #0007; }
+@supports (position-anchor: --saved-actions-anchor) and (anchor-scope: --saved-actions-anchor) {
+  .saved-actions-panel { position: fixed; position-anchor: --saved-actions-anchor; top: anchor(bottom); right: auto; left: anchor(left); margin-top: 2px; position-try-fallbacks: flip-block; }
+}
 .saved-actions-panel button { min-height: 32px; padding: 5px 8px; border: 1px solid transparent; border-radius: 2px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .saved-actions-panel button:hover:not(:disabled) { border-color: var(--line); background: var(--surface-raised); }
 .saved-actions-panel button:disabled { cursor: wait; opacity: .65; }
@@ -156,10 +159,37 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .add-tab:hover, .font-controls button:hover { background: var(--surface-raised); }
 .terminal-stack, .terminal-panel { position: relative; min-width: 0; min-height: 0; height: 100%; }
 .terminal-panel[hidden] { display: none; }
+.terminal-panel-layout { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.terminal-pane-stage { flex: 1 1 0; min-width: 0; min-height: 0; }
 .terminal-host { width: 100%; height: 100%; padding: 12px 14px; overflow: hidden; background: var(--terminal-background); }
 .terminal-host:focus-within { outline: 2px solid var(--accent); outline-offset: -3px; }
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { scrollbar-width: thin; }
+.remote-file-panel { display: flex; flex: 0 0 clamp(225px, 28vw, 320px); flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
+.remote-file-heading { display: flex; align-items: center; justify-content: space-between; min-height: 43px; padding: 0 11px 0 14px; border-bottom: 1px solid var(--line); }
+.remote-file-heading h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.remote-file-refresh, .remote-file-up { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 30px; height: 30px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
+.remote-file-refresh:hover:not(:disabled), .remote-file-up:hover:not(:disabled) { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
+.remote-file-refresh:disabled, .remote-file-up:disabled { opacity: .5; cursor: default; }
+.remote-file-path-row { display: flex; align-items: center; gap: 7px; min-height: 42px; padding: 5px 9px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 55%, transparent); }
+.remote-file-path { min-width: 0; overflow: hidden; color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.remote-file-status, .remote-file-error { margin: 0; padding: 12px 13px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.remote-file-error { border-left: 2px solid var(--error); color: var(--text); }
+.remote-file-limit { margin-top: auto; border-top: 1px solid var(--line); }
+.remote-file-list { min-height: 0; margin: 0; padding: 4px 0; overflow: auto; list-style: none; scrollbar-width: thin; }
+.remote-file-list li { content-visibility: auto; contain-intrinsic-size: 34px; }
+.remote-file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 4px 11px; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; font-size: 12px; }
+.remote-file-folder { cursor: pointer; }
+.remote-file-folder:hover:not(:disabled), .remote-file-folder:focus-visible { background: var(--surface-raised); }
+.remote-file-folder:disabled { opacity: .55; cursor: default; }
+.remote-file-static { color: var(--muted); }
+.remote-file-static.is-link { color: var(--muted); }
+.remote-file-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.remote-file-icon { display: inline-flex; flex: 0 0 17px; align-items: center; justify-content: center; width: 17px; height: 17px; color: var(--muted); font: 13px "Cascadia Mono", Consolas, monospace; }
+.remote-file-icon.folder { color: var(--accent); font-size: 11px; }
+.remote-file-icon.symlink { color: var(--focus); font-size: 15px; }
+.remote-file-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-file-meta { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .empty-terminal { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; height: 100%; padding: 32px clamp(24px, 5vw, 72px); background: var(--terminal-background); }
 .empty-mark { color: var(--accent); font: 600 24px "Cascadia Mono", Consolas, monospace; }
 .empty-terminal h2 { margin: 0; font-size: 22px; font-weight: 600; }
@@ -249,18 +279,20 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
   .session-rail { padding-right: 7px; padding-left: 7px; }
   .tab-item { min-width: 112px; }
   .terminal-host { padding: 8px; }
+  .remote-file-panel { flex-basis: 225px; }
   .app-header, .status-bar { padding-right: 12px; padding-left: 12px; }
 }
 @media (max-width: 740px) {
   .workspace { grid-template-columns: 164px minmax(0, 1fr); }
   .build-label { display: none; }
+  .remote-file-panel { flex-basis: 210px; }
   .palette-hint { flex-wrap: wrap; gap: 3px 4px; }
   .palette-hint > span { flex: 0 0 100%; white-space: nowrap; }
 }
 @media (forced-colors: active) {
   .new-terminal, .connect-ssh-button, .save-session-button, .saved-folder-create, .saved-folder-toggle, .saved-actions-menu > summary,
   .saved-session-search, .saved-session-row, .saved-session-actions button, .session-item, .tab-item, .tab-close, .font-controls button,
-  .command-palette, .close-confirmation, .ssh-connect-dialog, .ssh-trust-dialog, .terminal-tab-menu { border: 1px solid ButtonText; }
+  .command-palette, .close-confirmation, .ssh-connect-dialog, .ssh-trust-dialog, .terminal-tab-menu, .remote-file-panel { border: 1px solid ButtonText; }
   .session-item.selected, .tab-item.selected { outline: 2px solid Highlight; }
   .state-dot { background: CanvasText; outline: 1px solid CanvasText; }
 }

@@ -1,6 +1,6 @@
 import { CONTRACT_VERSION, isCommandReply, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
-  ExportSessionFolderReply, ImportSessionFolderReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, OpenSshTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
@@ -15,6 +15,7 @@ type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
 type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
+const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 interface TerminalInputBarrier {
   tail: Promise<void>;
   readonly pendingWrites: Set<Promise<void>>;
@@ -275,6 +276,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     revokeSshHost(host: string, port: number): Promise<TerminalActionReply> {
       return send(voidRequest('ssh.host.revoke', { host, port }), 8_000);
+    },
+    listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply> {
+      return send({ command: 'ssh.files.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, path } }, SSH_DIRECTORY_TIMEOUT_MS);
     },
     listSavedSessions(query: string): Promise<ListSessionsReply> {
       return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);

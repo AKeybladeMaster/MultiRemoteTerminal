@@ -7,13 +7,16 @@ import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS, isTerminalSi
 import type { TerminalSize } from '../../domain/src/local-terminal.ts';
 import type { HostKeyChallenge, HostTrustDecision, HostTrustManager } from './host-trust.ts';
 import type { LocalTerminalEvent } from './local-terminals.ts';
+import type { CancellationSignal } from './cancellation.ts';
+import { isRemoteDirectoryListing, isRemotePath } from '../../domain/src/remote-files.ts';
+import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
 
 export interface SshTerminalCredentials {
   readonly username: string;
   readonly password: string;
 }
 
-export type SshTerminalProviderErrorCode = 'UNAVAILABLE' | 'TIMEOUT' | 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED';
+export type SshTerminalProviderErrorCode = 'UNAVAILABLE' | 'NOT_SUPPORTED' | 'CANCELLED' | 'TIMEOUT' | 'BUSY' | 'OUTPUT_LIMIT' | 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED';
 
 export class SshTerminalProviderError extends Error {
   readonly code: SshTerminalProviderErrorCode;
@@ -36,6 +39,7 @@ export interface SshTerminalProvider {
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
+  listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void;
@@ -56,6 +60,7 @@ export interface SshTerminalController {
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
+  listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<Outcome<RemoteDirectoryListing>>;
   close(sessionId: string): Promise<Outcome<Record<string, never>>>;
   approveHostKey(token: string): Promise<Outcome<Record<string, never>>>;
   rejectHostKey(token: string): Outcome<Record<string, never>>;
@@ -265,6 +270,26 @@ export function createSshTerminalController(
     catch { return failure('UNAVAILABLE', 'terminal'); }
   }
 
+  async function listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<Outcome<RemoteDirectoryListing>> {
+    const session = sessions.get(sessionId);
+    if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
+    if (!isRemotePath(path)) return failure('INVALID_REQUEST');
+    if (cancellation?.aborted) return failure('CANCELLED', 'terminal');
+    try {
+      const listing = await provider.listRemoteDirectory(sessionId, path, cancellation);
+      if (cancellation?.aborted) return failure('CANCELLED', 'terminal');
+      if (!isRemoteDirectoryListing(listing)) return failure('OUTPUT_LIMIT', 'terminal');
+      return { ok: true, result: listing };
+    } catch (error) {
+      if (cancellation?.aborted || error instanceof SshTerminalProviderError && error.code === 'CANCELLED') return failure('CANCELLED', 'terminal');
+      if (error instanceof SshTerminalProviderError && error.code === 'NOT_SUPPORTED') return failure('NOT_SUPPORTED', 'terminal');
+      if (error instanceof SshTerminalProviderError && error.code === 'TIMEOUT') return failure('TIMEOUT', 'terminal');
+      if (error instanceof SshTerminalProviderError && error.code === 'BUSY') return failure('BUSY', 'terminal');
+      if (error instanceof SshTerminalProviderError && error.code === 'OUTPUT_LIMIT') return failure('OUTPUT_LIMIT', 'terminal');
+      return failure('UNAVAILABLE', 'terminal');
+    }
+  }
+
   async function close(sessionId: string): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
     if (!session) return failure('NOT_FOUND', 'terminal');
@@ -279,7 +304,7 @@ export function createSshTerminalController(
   }
 
   return Object.freeze({
-    open, write, resize, acknowledgeOutput, close,
+    open, write, resize, acknowledgeOutput, listRemoteDirectory, close,
     async approveHostKey(token: string): Promise<Outcome<Record<string, never>>> {
       if (!sessionByTrustToken.has(token)) return failure('NOT_FOUND');
       const approved = await hostTrust.approve(token);

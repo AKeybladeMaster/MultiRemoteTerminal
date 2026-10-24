@@ -13,6 +13,7 @@ WP-01 verifies P-01's ten-tab local-terminal workflow in [Windows acceptance evi
 WP-01D adds confirmed `Ctrl+W` and middle-click tab closure, a terminal-tab-only context menu, and contrast-checked ANSI palettes; see [terminal interaction evidence](results/WP-01D-terminal-interactions-2026-10-24.md). P-30 remains planned because configurable command/syntax highlighting is not implemented.
 WP-01E adds an explicitly selected Bash terminal through an installed Git for Windows runtime. Windows E2E covers a shell command, BMP Unicode clipboard paste, resize, saved-session reopen and Ctrl+W closure; paste requires a trusted, session-bound one-use gesture, and multiline text requires native confirmation. Terminal input is ordered across a pending paste, and renderer teardown cancels the pending paste before it writes. App-controlled clipboard access remains in main. An exploratory clipboard probe observed supplementary-character replacement; the observation is not yet a checked-in regression assertion. P-02 is PARTIAL because broader WSL and Unix-tool coverage is not implemented; see [WP-01E evidence](results/WP-01E-bash-2026-10-24.md).
 WP-03D adds native-dialog saved-folder JSON export/import, exact credential-free schema validation, bounded files, idempotent merge behavior and transactional rollback on conflict. Windows round-trip and restart evidence is in [WP-03D results](results/WP-03D-session-folder-bundles-2026-10-24.md). This does not complete F-018: profile templates and encrypted secret export remain planned.
+WP-05A adds the first code slice for an automatic SFTP directory browser beside a running SSH terminal. It lists and navigates a bounded remote directory through the same trusted SSH connection; transfers, standalone SFTP sessions and their Windows acceptance remain incomplete. P-11 and P-15 remain planned, and F-005/P-14 are not verified; see [WP-05A evidence](results/WP-05A-sftp-directory-browser-2026-10-24.md).
 
 | ID | Reference feature | Planned architecture/provider | Phase | Verification/interpretation |
 |---|---|---|---|---|
@@ -26,10 +27,10 @@ WP-03D adds native-dialog saved-folder JSON export/import, exact credential-free
 | P-08 | VNC desktop | Audited external viewer provider initially | Next | Valid working screen + keyboard/mouse session |
 | P-09 | XDMCP desktop | Approved local X server capable of XDMCP | Parity | Live XDMCP session; insecure configuration explicitly gated |
 | P-10 | FTP sessions | Opt-in FTP provider | Next | Actual list/download/upload; plaintext warning |
-| P-11 | Standalone SFTP sessions | SSH/SFTP adapter | MVP | Standalone session with remote browser |
+| P-11 | Standalone SFTP sessions | SSH/SFTP adapter | MVP | Planned; WP-05A only browses SFTP contextually within a running SSH terminal |
 | P-12 | Serial/COM sessions | Windows serial adapter | Next | Port list, baud, parity, flow control, hot-unplug |
 | P-13 | Auto-saved sessions sidebar (PARTIAL) | Catalog and recently-used UI | MVP | Windows E2E verifies explicit save, search, reopen, favorites and folder groups; automatic save preference remains pending. See WP-03B/WP-03C evidence. |
-| P-14 | Graphical automatic SFTP browser | SFTP module + sidebar | MVP | Open after SSH if server supports SFTP; clear fallback when not |
+| P-14 | Graphical automatic SFTP browser | SFTP module + sidebar | MVP | Partial code in WP-05A: contextual listing/navigation only; Windows SFTP fixture acceptance and transfer behavior remain pending |
 | P-15 | File drag & drop | Transfer job module | MVP | Upload and download with overwrite/cancel/error |
 | P-16 | X11 server | Capability-checked local licensed X server provider | Parity | Remote X client displayed, lifecycle supervised |
 | P-17 | SSH X11 forwarding | SSH X11 channel forwarded to X server | Parity | DISPLAY negotiation + host-trust test; no open public X access |

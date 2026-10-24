@@ -147,7 +147,8 @@ function boot(): void {
   const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
     if (!delayFirstOpenReply) return;
     delayFirstOpenReply = false;
-    await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 750));
+    // Leave enough time for Windows process discovery in the E2E cancellation test under full-suite load.
+    await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 5_000));
   } : undefined;
   const terminalHost = new TerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath(), openReplyBarrier
@@ -252,9 +253,10 @@ function boot(): void {
     const catalogRequest = parsed.ok && parsed.result.command.startsWith('session.') && owned && mainFrame && isAppDocument(frameUrl);
     const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
+    const fileListRequest = parsed.ok && parsed.result.command === 'ssh.files.list' && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
     const trackedRequestId = catalogRequest && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
-    const observeSenderLifecycle = catalogRequest || pasteRequest;
+    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,

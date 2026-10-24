@@ -18,7 +18,7 @@ const rawFixture = {
 const configured = Object.values(rawFixture).some(value => value !== undefined);
 const complete = Object.values(rawFixture).every(value => typeof value === 'string' && value.length > 0);
 
-test('password SSH transport accepts a verified disposable OpenSSH fixture and fails closed on bad credentials or key', {
+test('password SSH and SFTP reuse a verified disposable OpenSSH connection and reject bad credentials or key', {
   skip: configured ? false : 'Set MRT_TEST_SSH_HOST, PORT, USERNAME, PASSWORD and FINGERPRINT to run the disposable OpenSSH acceptance test',
   timeout: 60_000
 }, async () => {
@@ -42,6 +42,9 @@ test('password SSH transport accepts a verified disposable OpenSSH fixture and f
     await accepted.open(sessionId, endpoint, credentials, size, async evidence => evidence.fingerprint === rawFixture.fingerprint);
     await accepted.write(sessionId, 'echo MRT-OPENSSH-ACCEPT\r');
     await waitForTerminalOutput(acceptedEvents, sessionId, 'MRT-OPENSSH-ACCEPT');
+    const remoteDirectory = await accepted.listRemoteDirectory(sessionId, '.');
+    assert.ok(remoteDirectory.path.startsWith('/'), 'SFTP resolves a canonical remote directory path');
+    assert.ok(remoteDirectory.entries.length <= 500, 'SFTP listings have a bounded response size');
     await accepted.close(sessionId);
     await assert.rejects(accepted.write(sessionId, 'echo CLOSED\r'), error => (error as { code?: string }).code === 'UNAVAILABLE');
   } finally {

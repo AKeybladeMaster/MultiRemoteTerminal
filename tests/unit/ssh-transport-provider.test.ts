@@ -28,6 +28,13 @@ class FakeClient extends EventEmitter {
   ended = false;
   shellSize: { cols?: number; rows?: number; term?: string } | undefined;
   windowSize: [number, number, number, number] | undefined;
+  readonly sftpChannel: FakeSftp | undefined;
+  readonly sftpError: Error | undefined;
+  constructor(sftpChannel?: FakeSftp, sftpError?: Error) {
+    super();
+    this.sftpChannel = sftpChannel;
+    this.sftpError = sftpError;
+  }
 
   connect(config: ConnectConfig): this { this.config = config; return this; }
   shell(window: { cols?: number; rows?: number; term?: string }, callback: (error: Error | undefined, channel?: ClientChannel) => void): this {
@@ -36,7 +43,43 @@ class FakeClient extends EventEmitter {
     callback(undefined, this.channel);
     return this;
   }
+  sftp(callback: (error: Error | undefined, channel?: unknown) => void): this {
+    callback(this.sftpError, this.sftpChannel);
+    return this;
+  }
   end(): this { this.ended = true; return this; }
+}
+
+class DelayedSftpClient extends FakeClient {
+  sftpCalls = 0;
+  readonly sftpCallbacks: Array<(error: Error | undefined, channel?: unknown) => void> = [];
+  override sftp(callback: (error: Error | undefined, channel?: unknown) => void): this {
+    this.sftpCalls += 1;
+    this.sftpCallbacks.push(callback);
+    return this;
+  }
+}
+
+class FakeSftp extends EventEmitter {
+  ended = false;
+  private readCount = 0;
+  readonly entries: Array<{ readonly filename: string; readonly attrs: {
+    readonly size: number; readonly mtime: number; isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean
+  } }>;
+  readonly delayRead: boolean;
+  constructor(entries: Array<{ readonly filename: string; readonly attrs: {
+    readonly size: number; readonly mtime: number; isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean
+  } }>, delayRead = false) { super(); this.entries = entries; this.delayRead = delayRead; }
+  realpath(_path: string, callback: (error: Error | undefined, path: string) => void): void { callback(undefined, '/home/alice'); }
+  opendir(_path: string, callback: (error: Error | undefined, handle: Buffer) => void): void { callback(undefined, Buffer.from('dir')); }
+  readdir(_handle: Buffer, callback: (error: Error | undefined, entries: typeof this.entries) => void): void {
+    this.readCount += 1;
+    if (this.readCount === 1 && this.delayRead) return;
+    else if (this.readCount === 1) callback(undefined, this.entries);
+    else callback(Object.assign(new Error('End of file'), { code: 1 }), []);
+  }
+  close(_handle: Buffer, callback: (error?: Error) => void): void { callback(); }
+  end(): void { this.ended = true; this.emit('close'); }
 }
 
 function keyParser(): SshHostKeyParser {
@@ -127,4 +170,130 @@ test('SSH close during handshake ends the socket and rejects a late host approva
   releaseTrust(true);
   assert.equal(await verification, false);
   assert.equal(client.ended, true);
+});
+
+test('SSH SFTP browser reuses the trusted connection, identifies links, bounds listings and closes its channel', async () => {
+  const entries = Array.from({ length: 505 }, (_, index) => ({
+    filename: `item-${String(index).padStart(3, '0')}`,
+    attrs: {
+      size: index, mtime: 1_800_000_000,
+      isSymbolicLink: () => index === 1,
+      isDirectory: () => index === 0,
+      isFile: () => index > 1
+    }
+  }));
+  const sftp = new FakeSftp(entries);
+  const client = new FakeClient(sftp);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  const listing = await provider.listRemoteDirectory(sessionId, '.');
+  assert.equal(listing.path, '/home/alice');
+  assert.equal(listing.entries.length, 500);
+  assert.equal(listing.truncated, true);
+  assert.equal(listing.entries[0]?.kind, 'directory');
+  assert.equal(listing.entries.find(entry => entry.name === 'item-001')?.kind, 'symlink');
+  assert.equal(client.sftpChannel, sftp, 'the SFTP subsystem is opened on the existing SSH client');
+  await provider.close(sessionId);
+  assert.equal(sftp.ended, true);
+  assert.equal(client.ended, true);
+});
+
+test('cancelling a remote listing closes only the SFTP channel and leaves the SSH terminal usable', async () => {
+  const sftp = new FakeSftp([], true);
+  const client = new FakeClient(sftp);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  const cancellation = new AbortController();
+  const listing = provider.listRemoteDirectory(sessionId, '.', cancellation.signal);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  cancellation.abort();
+  await assert.rejects(listing, error => (error as { code?: string }).code === 'CANCELLED');
+  assert.equal(sftp.ended, true);
+  await provider.write(sessionId, 'echo still connected\r');
+  assert.equal(client.ended, false);
+  await provider.close(sessionId);
+});
+
+test('cancelling while the SFTP subsystem is opening settles immediately and closes a late channel', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const sftp = new FakeSftp([]);
+  const client = new DelayedSftpClient(sftp);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  const cancellation = new AbortController();
+  const listing = provider.listRemoteDirectory(sessionId, '.', cancellation.signal);
+  assert.equal(client.sftpCalls, 1);
+  cancellation.abort();
+  const result = await Promise.race([
+    listing.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
+    new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
+  ]);
+  const competing = provider.listRemoteDirectory(sessionId, '.');
+  const competingResult = await Promise.race([
+    competing.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
+    new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
+  ]);
+  const openCountAfterRetry = client.sftpCalls;
+  const shellSurvivedCancellation = !client.ended;
+  client.sftpCallbacks[0]?.(undefined, sftp);
+  client.sftpCallbacks[1]?.(undefined, new FakeSftp([]));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  await Promise.allSettled([competing]);
+  const lateChannelClosed = sftp.ended;
+  await provider.close(sessionId);
+  context.mock.timers.reset();
+
+  assert.equal(result, 'CANCELLED');
+  assert.equal(competingResult, 'BUSY');
+  assert.equal(openCountAfterRetry, 1);
+  assert.equal(shellSurvivedCancellation, true);
+  assert.equal(lateChannelClosed, true);
+});
+
+test('an unanswered cancelled SFTP open stays guarded until its watchdog closes the transport', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new DelayedSftpClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  const cancellation = new AbortController();
+  const listing = provider.listRemoteDirectory(sessionId, '.', cancellation.signal);
+  cancellation.abort();
+  await assert.rejects(listing, error => (error as { code?: string }).code === 'CANCELLED');
+  const retry = provider.listRemoteDirectory(sessionId, '.');
+  const retryResult = await Promise.race([
+    retry.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
+    new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
+  ]);
+  const openCountAfterRetry = client.sftpCalls;
+
+  context.mock.timers.tick(15_000);
+  assert.equal(client.ended, true);
+  await assert.rejects(provider.listRemoteDirectory(sessionId, '.'), error => (error as { code?: string }).code === 'UNAVAILABLE');
+  context.mock.timers.reset();
+  assert.equal(retryResult, 'BUSY');
+  assert.equal(openCountAfterRetry, 1);
+});
+
+test('an unavailable SFTP subsystem produces a clear capability error without closing SSH', async () => {
+  const client = new FakeClient(undefined, new Error('Unable to start subsystem: sftp'));
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+  await assert.rejects(provider.listRemoteDirectory(sessionId, '.'), error => (error as { code?: string }).code === 'NOT_SUPPORTED');
+  assert.equal(client.ended, false);
+  await provider.write(sessionId, 'echo still connected\r');
+  await provider.close(sessionId);
 });

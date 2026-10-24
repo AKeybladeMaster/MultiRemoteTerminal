@@ -12,6 +12,8 @@ import { isSessionFolderId } from '../../domain/src/session-definition.ts';
 import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/src/session-folder.ts';
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../domain/src/session-folder-bundle.ts';
+import { isRemoteDirectoryListing, isRemotePath } from '../../domain/src/remote-files.ts';
+import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -61,6 +63,7 @@ export type AcknowledgeSshTerminalRequest = Request<'ssh.ack', { readonly sessio
 export type CloseSshTerminalRequest = Request<'ssh.close', { readonly sessionId: string }>;
 export type DecideSshHostRequest = Request<'ssh.host.approve' | 'ssh.host.reject', { readonly token: string }>;
 export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: string; readonly port: number }>;
+export type ListSshDirectoryRequest = Request<'ssh.files.list', { readonly sessionId: string; readonly path: string }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
 export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
 export type SetSessionFavoriteRequest = Request<'session.favorite', { readonly id: string; readonly favorite: boolean }>;
@@ -74,7 +77,7 @@ export type ExportSessionFolderRequest = Request<'session.folder.export', { read
 export type ImportSessionFolderRequest = Request<'session.folder.import', Record<string, never>>;
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
-  OpenSshTerminalRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest |
+  OpenSshTerminalRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest;
 
@@ -84,6 +87,7 @@ export type OpenTerminalResult = Pick<LocalTerminalSession, 'sessionId' | 'shell
 export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
+export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
 export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
 export type ListSessionFoldersReply = CommandReply<readonly SavedSessionFolder[]>;
@@ -109,6 +113,7 @@ export interface DesktopBridge {
   approveSshHost(token: string): Promise<TerminalActionReply>;
   rejectSshHost(token: string): Promise<TerminalActionReply>;
   revokeSshHost(host: string, port: number): Promise<TerminalActionReply>;
+  listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
   createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
   setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply>;
@@ -135,7 +140,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRUST_TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
-const ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CANCELLED', 'OUTPUT_LIMIT',
+const ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'NOT_SUPPORTED', 'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CANCELLED', 'OUTPUT_LIMIT',
   'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
 
 export function parsePasteGestureRequest(value: unknown): string | undefined {
@@ -197,6 +202,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     if (endpoint && endpoint.host === payload.host && endpoint.port === payload.port) return { ok: true, result: value as unknown as RevokeSshHostRequest };
     return failure('INVALID_REQUEST');
   }
+  if (value.command === 'ssh.files.list' && exactKeys(payload, ['sessionId', 'path']) && typeof payload.sessionId === 'string' &&
+      UUID.test(payload.sessionId) && isRemotePath(payload.path)) return { ok: true, result: value as unknown as ListSshDirectoryRequest };
   if (value.command === 'session.list' && exactKeys(payload, ['query']) && normalizeSessionSearch(payload.query) !== undefined) {
     return { ok: true, result: value as unknown as ListSessionsRequest };
   }
@@ -225,7 +232,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'session.move' && exactKeys(payload, ['id', 'folderId']) && isSessionDefinitionId(payload.id) &&
       (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
-    'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke',
+    'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move'].includes(value.command)) {
     return failure('INVALID_REQUEST');
@@ -265,6 +272,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'app.describe') return validSnapshot(value.result);
     if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.shell);
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
+    if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.create') return isSavedSessionDefinition(value.result);
     if (request.command === 'session.folder.list') return Array.isArray(value.result) && value.result.every(isSavedSessionFolder);

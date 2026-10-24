@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APP_URL, isDescribeReply, isSshTrustEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
+import { APP_URL, isCommandReply, isDescribeReply, isSshTrustEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -82,6 +82,24 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest(revoke).ok, true);
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, host: 'Server.example.com' } }).ok, false);
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, port: 65_536 } }).ok, false);
+});
+
+test('SSH directory browsing accepts bounded paths and exact credential-free listing replies', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const list = { command: 'ssh.files.list', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, path: '/home/alice' } };
+  const parsed = parseRequest(list);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: 'x'.repeat(4_097) } }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '../outside' } }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '/home/alice/../outside' } }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '/home/alice', credential: 'secret' } }).ok, false);
+  if (!parsed.ok) return;
+  const reply = { requestId: request.requestId, ok: true, result: { path: '/home/alice', entries: [
+    { name: 'docs', path: '/home/alice/docs', kind: 'directory', size: 0, modifiedAt: null }
+  ], truncated: false } };
+  assert.equal(isCommandReply(reply, parsed.result), true);
+  assert.equal(isCommandReply({ ...reply, result: { ...reply.result, secret: 'must not pass' } }, parsed.result), false);
 });
 
 test('saved-session IPC accepts only supported non-secret definitions and validated catalog actions', () => {

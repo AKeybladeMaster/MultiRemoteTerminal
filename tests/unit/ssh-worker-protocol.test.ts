@@ -47,3 +47,15 @@ test('SSH worker events reject invalid error categories and oversized terminal c
   const data = { version: 1, type: 'event', event: { kind: 'data', sessionId, sequence: 1, data: 'x'.repeat(16_385) } };
   assert.equal(parseSshWorkerMessage(data), undefined);
 });
+
+test('SSH worker validates bounded remote-directory requests and listing replies', () => {
+  const list = { version: 1, type: 'request', requestId, command: 'files.list', sessionId, path: '/home/alice' };
+  assert.equal(parseSshWorkerInput(list)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...list, path: 'x'.repeat(4_097) }), undefined);
+  assert.equal(parseSshWorkerInput({ ...list, path: '/home/alice', secret: 'private' }), undefined);
+  const cancel = { version: 1, type: 'request', requestId, command: 'files.cancel', sessionId, operationId: '33333333-3333-4333-8333-333333333333' };
+  assert.equal(parseSshWorkerInput(cancel)?.type, 'request');
+  const result = { path: '/home/alice', entries: [{ name: 'docs', path: '/home/alice/docs', kind: 'directory', size: 0, modifiedAt: 1_800_000_000 }], truncated: false };
+  assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result })?.type, 'reply');
+  assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { ...result, secret: 'private' } }), undefined);
+});

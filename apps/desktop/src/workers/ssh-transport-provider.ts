@@ -1,16 +1,31 @@
 import type { Client, ClientChannel, ConnectConfig, VerifyCallback } from 'ssh2';
+import type { FileEntryWithStats, SFTPWrapper } from 'ssh2';
+import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
+import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
+import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS } from '../../../../packages/domain/src/remote-files.ts';
+import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
 
 const CONNECT_TIMEOUT_MS = 130_000;
 const MAX_TERMINAL_EVENT_CHARS = 16_384;
 const MAX_PENDING_REMOTE_TEXT_CHARS = 131_072;
 const PAUSE_OUTPUT_BYTES = 128 * 1024;
 const MAX_UNACKNOWLEDGED_OUTPUT_BYTES = 256 * 1024;
+const SFTP_OPEN_TIMEOUT_MS = 15_000;
+const SFTP_OPERATION_TIMEOUT_MS = 10_000;
+const SFTP_CLOSE_GRACE_MS = 1_000;
+const SFTP_STATUS_EOF = 1;
+
+type SftpChannel = SFTPWrapper & { end(): void };
+
+interface PendingSftpOpen {
+  cancel(error: Error): void;
+}
 
 export type SshTransportClient = Client;
 export type SshTransportChannel = ClientChannel;
@@ -28,6 +43,7 @@ export interface SshTransportProvider {
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
+  listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -36,6 +52,9 @@ interface RuntimeSession {
   readonly sessionId: string;
   readonly client: Client;
   channel?: ClientChannel;
+  sftp: SftpChannel | undefined;
+  sftpBusy: boolean;
+  sftpOpenAttempt: PendingSftpOpen | undefined;
   opening: boolean;
   closing: boolean;
   terminalEventSent: boolean;
@@ -59,10 +78,31 @@ export function createSshTransportProvider(
 ): SshTransportProvider {
   const sessions = new Map<string, RuntimeSession>();
 
+  function closeSftpChannel(session: RuntimeSession, channel = session.sftp): Promise<void> {
+    if (!channel) return Promise.resolve();
+    if (session.sftp === channel) session.sftp = undefined;
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        channel.removeListener('close', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, SFTP_CLOSE_GRACE_MS);
+      channel.once('close', finish);
+      try { channel.end(); } catch { finish(); }
+    });
+  }
+
   function terminate(session: RuntimeSession): void {
     if (session.closing) return;
     session.closing = true;
     sessions.delete(session.sessionId);
+    session.sftpOpenAttempt?.cancel(new SshTerminalProviderError('CANCELLED'));
+    session.sftpOpenAttempt = undefined;
+    session.sftpBusy = false;
     session.clearPassword();
     clearTimeout(session.openTimer);
     session.pendingText = '';
@@ -70,6 +110,7 @@ export function createSshTransportProvider(
     session.pendingOutputBytes = 0;
     try { session.channel?.end(); } catch { /* Session teardown continues if the channel has already closed. */ }
     try { session.channel?.destroy(); } catch { /* Session teardown continues if the channel has already closed. */ }
+    void closeSftpChannel(session);
     try { session.client.end(); } catch { /* Session teardown continues if the connection has already closed. */ }
     if (session.opening) {
       session.opening = false;
@@ -163,6 +204,7 @@ export function createSshTransportProvider(
       const client = clients.create();
       const session: RuntimeSession = {
         sessionId, client, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
+        sftp: undefined, sftpBusy: false, sftpOpenAttempt: undefined,
         nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
         outputBytesBySequence: new Map(), outputPaused: false, clearPassword: () => {},
         openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
@@ -288,6 +330,23 @@ export function createSshTransportProvider(
       flushPendingText(session);
     },
 
+    async listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing> {
+      const session = sessions.get(sessionId);
+      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (!isRemotePath(path)) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+      if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
+      session.sftpBusy = true;
+      try {
+        const sftp = await getSftp(session, cancellation);
+        if (cancellation?.aborted) {
+          await closeSftpChannel(session, sftp);
+          throw new SshTerminalProviderError('CANCELLED');
+        }
+        return await listSftpDirectory(session, sftp, path, cancellation);
+      } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
+    },
+
     async close(sessionId): Promise<void> {
       const session = sessions.get(sessionId);
       if (session) terminate(session);
@@ -297,5 +356,167 @@ export function createSshTransportProvider(
       for (const session of [...sessions.values()]) terminate(session);
     }
   };
+
+  function getSftp(session: RuntimeSession, cancellation?: CancellationSignal): Promise<SftpChannel> {
+    if (session.sftp) return Promise.resolve(session.sftp);
+    if (session.closing || cancellation?.aborted) return Promise.reject(new SshTerminalProviderError('CANCELLED'));
+    if (session.sftpOpenAttempt) return Promise.reject(new SshTerminalProviderError('BUSY'));
+    return new Promise((resolve, reject) => {
+      let callerSettled = false;
+      let callbackSettled = false;
+      let removeCancellation = () => {};
+      const timer = setTimeout(() => {
+        const timeout = new SshTerminalProviderError('TIMEOUT');
+        session.failureCode = 'TIMEOUT';
+        emitFailure(session, 'TIMEOUT');
+        attempt.cancel(timeout);
+        terminate(session);
+      }, SFTP_OPEN_TIMEOUT_MS);
+      const attempt: PendingSftpOpen = {
+        cancel(error) {
+          if (callbackSettled) return;
+          callbackSettled = true;
+          clearTimeout(timer);
+          removeCancellation();
+          if (session.sftpOpenAttempt === attempt) session.sftpOpenAttempt = undefined;
+          session.sftpBusy = false;
+          if (!callerSettled) { callerSettled = true; reject(error); }
+        }
+      };
+      session.sftpOpenAttempt = attempt;
+      const cancelCaller = () => {
+        if (callerSettled) return;
+        callerSettled = true;
+        removeCancellation();
+        reject(new SshTerminalProviderError('CANCELLED'));
+        // Keep the open attempt and watchdog until its callback arrives or the SSH session is closed.
+      };
+      if (cancellation) {
+        cancellation.addEventListener('abort', cancelCaller, { once: true });
+        removeCancellation = () => cancellation.removeEventListener('abort', cancelCaller);
+      }
+      if (cancellation?.aborted) { cancelCaller(); return; }
+      try {
+        session.client.sftp((error, rawChannel) => {
+          const channel = rawChannel as SftpChannel | undefined;
+          if (callbackSettled) { if (channel) void closeSftpChannel(session, channel); return; }
+          callbackSettled = true;
+          clearTimeout(timer);
+          removeCancellation();
+          if (session.sftpOpenAttempt === attempt) session.sftpOpenAttempt = undefined;
+          if (callerSettled) {
+            if (channel) void closeSftpChannel(session, channel);
+            session.sftpBusy = false;
+            return;
+          }
+          callerSettled = true;
+          if (error) { session.sftpBusy = false; reject(new SshTerminalProviderError('NOT_SUPPORTED')); return; }
+          if (!channel || session.closing) {
+            if (channel) void closeSftpChannel(session, channel);
+            session.sftpBusy = false;
+            reject(new SshTerminalProviderError('UNAVAILABLE'));
+            return;
+          }
+          if (cancellation?.aborted) {
+            session.sftpBusy = false;
+            void closeSftpChannel(session, channel).finally(() => reject(new SshTerminalProviderError('CANCELLED')));
+            return;
+          }
+          session.sftp = channel;
+          channel.on('error', () => { if (session.sftp === channel) session.sftp = undefined; });
+          channel.once('close', () => { if (session.sftp === channel) session.sftp = undefined; });
+          resolve(channel);
+        });
+      } catch { attempt.cancel(new SshTerminalProviderError('UNAVAILABLE')); }
+    });
+  }
+
+  async function listSftpDirectory(
+    session: RuntimeSession, channel: SftpChannel, path: string, cancellation?: CancellationSignal
+  ): Promise<RemoteDirectoryListing> {
+    const operation = listSftpDirectoryEntries(channel, path);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let ending = false;
+      const finish = (error?: Error, listing?: RemoteDirectoryListing) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        cancellation?.removeEventListener('abort', cancel);
+        if (error) reject(error);
+        else if (!listing) reject(new SshTerminalProviderError('UNAVAILABLE'));
+        else resolve(listing);
+      };
+      const cancel = () => {
+        if (ending || settled) return;
+        ending = true;
+        void closeSftpChannel(session, channel).finally(() => finish(new SshTerminalProviderError('CANCELLED')));
+      };
+      const timer = setTimeout(() => {
+        if (ending || settled) return;
+        ending = true;
+        void closeSftpChannel(session, channel).finally(() => finish(new SshTerminalProviderError('TIMEOUT')));
+      }, SFTP_OPERATION_TIMEOUT_MS);
+      if (cancellation?.aborted) { cancel(); return; }
+      cancellation?.addEventListener('abort', cancel, { once: true });
+      operation.then(listing => { if (!ending) finish(undefined, listing); }, () => { if (!ending) finish(new SshTerminalProviderError('UNAVAILABLE')); });
+    });
+  }
+
+  async function listSftpDirectoryEntries(channel: SftpChannel, requestedPath: string): Promise<RemoteDirectoryListing> {
+    const path = await sftpCall<string>(callback => channel.realpath(requestedPath, callback));
+    if (!isRemotePath(path)) throw new SshTerminalProviderError('OUTPUT_LIMIT');
+    const handle = await sftpCall<Buffer>(callback => channel.opendir(path, callback));
+    const entries: RemoteFileEntry[] = [];
+    let truncated = false;
+    try {
+      while (!truncated) {
+        let page: FileEntryWithStats[];
+        try { page = await sftpCall<FileEntryWithStats[]>(callback => channel.readdir(handle, callback)); }
+        catch (error) {
+          if (sftpStatusCode(error) === SFTP_STATUS_EOF) break;
+          throw error;
+        }
+        if (page.length === 0) break;
+        for (const entry of page) {
+          if (!validRemoteName(entry.filename)) continue;
+          if (entries.length >= MAX_REMOTE_DIRECTORY_ENTRIES) { truncated = true; break; }
+          const childPath = posix.join(path, entry.filename);
+          if (!isRemotePath(childPath)) continue;
+          const attributes = entry.attrs;
+          const kind: RemoteFileKind = attributes.isSymbolicLink() ? 'symlink' : attributes.isDirectory() ? 'directory'
+            : attributes.isFile() ? 'file' : 'other';
+          const size = Number.isSafeInteger(attributes.size) && attributes.size >= 0 ? attributes.size : 0;
+          const modifiedAt = Number.isSafeInteger(attributes.mtime) && attributes.mtime >= 0 ? attributes.mtime : null;
+          entries.push({ name: entry.filename, path: childPath, kind, size, modifiedAt });
+        }
+      }
+    } finally {
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, SFTP_CLOSE_GRACE_MS);
+        try { channel.close(handle, () => { clearTimeout(timer); resolve(); }); }
+        catch { clearTimeout(timer); resolve(); }
+      });
+    }
+    entries.sort((left, right) => Number(right.kind === 'directory') - Number(left.kind === 'directory') || left.name.localeCompare(right.name));
+    return { path, entries, truncated };
+  }
+
+  function sftpCall<T>(call: (callback: (error: Error | undefined, result: T) => void) => void): Promise<T> {
+    return new Promise((resolve, reject) => {
+      try { call((error, result) => error ? reject(error) : resolve(result)); }
+      catch { reject(new SshTerminalProviderError('UNAVAILABLE')); }
+    });
+  }
+
+  function sftpStatusCode(error: unknown): unknown {
+    return typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  }
+
+  function validRemoteName(name: unknown): name is string {
+    return typeof name === 'string' && name.length > 0 && name.length <= MAX_REMOTE_FILE_NAME_CHARS &&
+      name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\0');
+  }
+
   return Object.freeze(provider);
 }

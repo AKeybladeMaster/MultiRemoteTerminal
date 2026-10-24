@@ -12,11 +12,37 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     return valid;
   }, id);
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-    'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+    'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload lists an SSH directory using only the fixed validated command', async () => {
+  const sessionId = id();
+  const listing = { path: '/home/alice', entries: [], truncated: false };
+  const bridge = createBridge(async request => {
+    assert.deepEqual(request, { command: 'ssh.files.list', requestId: id(), contractVersion: 1, payload: { sessionId, path: '.' } });
+    return { requestId: request.requestId, ok: true, result: listing };
+  }, id);
+  assert.deepEqual(await bridge.listSshDirectory(sessionId, '.'), { requestId: id(), ok: true, result: listing });
+});
+
+test('preload waits beyond the worker budget for a bounded SFTP directory request', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = id();
+  const listing = { path: '/home/alice', entries: [], truncated: false };
+  let finish!: (value: unknown) => void;
+  const bridge = createBridge(() => new Promise(resolve => { finish = resolve; }), id);
+  let settled = false;
+  const pending = bridge.listSshDirectory(sessionId, '/home/alice').then(reply => { settled = true; return reply; });
+  await Promise.resolve();
+  context.mock.timers.tick(31_000);
+  await Promise.resolve();
+  assert.equal(settled, false, 'the renderer deadline must exceed the worker-host 30-second bound');
+  finish({ requestId: id(), ok: true, result: listing });
+  assert.deepEqual(await pending, { requestId: id(), ok: true, result: listing });
 });
 
 test('preload invokes explicit clipboard paste with only the selected session id', async () => {
