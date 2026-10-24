@@ -1,8 +1,8 @@
 # WP-05C — Standalone SFTP-only sessions
 
-**Date:** 2026-10-24  
-**Branch:** `dev-1`  
-**Requirements:** P-11 (verified for the covered workflow); F-005/P-14 (partial); P-15 remains planned.  
+**Date:** 2026-10-24
+**Branch:** `dev-1`
+**Requirements:** P-11 (verified for the covered workflow); F-005/P-14 (partial); P-15 remains planned.
 **Status:** Standalone files-only SSH/SFTP connection, saved-profile reopen and credential-free bundle support implemented. WP-05 remains open.
 
 ## Behavior
