@@ -142,6 +142,23 @@ test('SSH authentication failure is categorized and closes the transport', async
   assert.equal(client.ended, true);
 });
 
+test('standalone SFTP authenticates without requesting a shell and lists files over the same transport', async () => {
+  const sftp = new FakeSftp([]);
+  const client = new FakeClient(sftp);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+  client.emit('ready');
+  await opened;
+
+  assert.equal(client.shellSize, undefined, 'file-only connections do not request a shell channel');
+  assert.equal(client.config?.password, undefined, 'the in-memory SSH client password is cleared after authentication');
+  assert.deepEqual(await provider.listRemoteDirectory(sessionId, '.'), { path: '/home/alice', entries: [], truncated: false });
+  await assert.rejects(provider.write(sessionId, 'whoami'), error => (error as { code?: string }).code === 'UNAVAILABLE');
+  await provider.close(sessionId);
+  assert.equal(sftp.ended, true);
+  assert.equal(client.ended, true);
+});
+
 test('SSH host-key rejection keeps its security category when ssh2 reports the handshake failure', async () => {
   const client = new FakeClient();
   const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});

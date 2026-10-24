@@ -1,15 +1,15 @@
 # Implementation Plan — Independent Vertical Slices for Codex
 
-**Start point:** only these documentation files are required. No code needs to be imported from a prior generated archive.
+**Current starting point:** this repository now contains implementation and Windows acceptance evidence. Inspect and preserve the current source and Git history; continue at the next open work package instead of recreating the original documentation-only bootstrap.
 
 ## Branching and release protocol
 
 - Inspect `git status`, branch graph and `origin` before changes; preserve existing repository contents unless user directs a clean reset.
-- Create or use `dev` from current `main` baseline. Work on `feature/WP-XX` branches or directly on `dev`, but integrate code to `dev` **first**.
-- Keep commits scoped per work package, with spec/acceptance test references. All changes reviewed on `dev`.
-- Merge `dev` -> `main` only after M4 release gate and independent review. Prefer a PR / regular merge commit; no force-push.
+- Use the active `dev-1` branch for feature work; integrate optional `feature/WP-XX` branches into `dev-1` first. `main` is the default branch.
+- Keep commits scoped per work package, with spec/acceptance test references. Review and validate each completed phase on `dev-1`.
+- After a phase passes its acceptance checks and independent review, push `dev-1` and promote it to `main` with a regular merge commit, then return to `dev-1`. The M4 gate remains required before calling a build an MVP release. Do not force-push.
 - Verify remote branch history with `git ls-remote` after publishing. Credentials and GitHub privileges are user-controlled.
-- No direct source pushes to `main` and no blanket claim that dev/main already contain code.
+- No direct source pushes to `main` and no blanket claim that `dev-1` or `main` contains a change until remote refs confirm it.
 
 ## Shared definition of done for every work package
 
@@ -31,7 +31,7 @@
 **Skills:** codebase-design + grill-with-docs when ambiguous.  
 **Gate:** no untrusted renderer code can access privileged APIs.
 
-Implementation checkpoint (2026-10-23): WP-00 source and Windows acceptance tests are on `dev`.
+Implementation checkpoint (2026-10-23): WP-00 source and Windows acceptance tests are on the development history.
 See [contracts and ownership](WP-00-CONTRACTS.md) and [actual results](results/WP-00-2026-10-23.md).
 This checkpoint does not satisfy M1 or the M4 promotion gate. WP-01 is the next independent slice.
 
@@ -94,9 +94,11 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 **Tests:** directory navigation, 1KB/100MB files, disconnect, symlinks, conflicts, path traversal, partial cleanup.  
 **Gate:** no unexpected local overwrite outside user-selected path.
 
-**WP-05A — contextual directory browsing (partial):** The app now opens a narrow remote-files pane beside a running SSH terminal and supports bounded directory listing/navigation over the authenticated SSH connection. Listing work is cancellable, serialized per connection, and bounded to 500 entries. It does not follow symlinks. No file transfer, standalone SFTP connection, or SFTP-backed Windows acceptance fixture is included in this slice. See [WP-05A results](results/WP-05A-sftp-directory-browser-2026-10-24.md). Keep the WP-05 gate open.
+**WP-05A — contextual directory browsing (partial):** The app now opens a narrow remote-files pane beside a running SSH terminal and supports bounded directory listing/navigation over the authenticated SSH connection. Listing work is cancellable, serialized per connection, and bounded to 500 entries. It does not follow symlinks. No file transfer or standalone SFTP connection was included in this slice. See [WP-05A results](results/WP-05A-sftp-directory-browser-2026-10-24.md). Keep the WP-05 gate open.
 
 **WP-05B — contextual SFTP transfers (partial):** The pane now offers button-initiated upload/download through the existing trusted SSH session. Main obtains local paths through native dialogs; a supervised worker streams bytes, reports typed progress, supports cancellation before commit, and stages temporary siblings before applying explicit overwrite/rename/skip policy. Windows loopback E2E verifies the real renderer-to-worker path and uploaded/downloaded contents. Standalone SFTP sessions, drag/drop, 1 KB/100 MB and sustained throughput coverage, disconnect/recovery behavior, and broader server interoperability remain acceptance work. See [WP-05B results](results/WP-05B-sftp-transfers-2026-10-24.md). Keep the WP-05 gate open.
+
+**WP-05C — standalone SFTP-only sessions (partial):** The connection flow reuses SSH host verification and interactive credentials, then authenticates without requesting a shell or PTY. The files-only session supports remote browsing and existing SFTP operations, can be saved/reopened, and uses credential-free saved-folder bundles (format v3); imports of v1/v2 remain supported. Windows loopback E2E verifies listing, save/reopen and no shell request; focused tests cover files-only lifecycle, storage, bundle compatibility and bridge validation. Drag/drop, large-file throughput, disconnect/recovery, configurable browser behavior and broader server interoperability remain acceptance work. See [WP-05C results](results/WP-05C-sftp-only-sessions-2026-10-24.md) and [ADR-0008](adr/ADR-0008-sftp-only-sessions.md). Keep the WP-05 gate open.
 
 ### WP-06 — Macros and MultiExec
 
@@ -111,7 +113,7 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 **Deliver:** UI accessibility audit, sanitized diagnostics, security review, portable + installed distribution, Windows compatibility matrix, user help, third-party attribution.  
 **Tests:** install/uninstall, portable data isolation, local offline use, permissions, high DPI, startup/crash/shutdown, 1,000 records.  
 **Skills:** web-design-guidelines, code-review, requesting-code-review.  
-**Gate:** M4 in spec; merge dev into main only then.
+**Gate:** M4 in spec remains the MVP release gate; phase promotion follows the reviewed branch workflow above.
 
 ### WP-08 — RDP/VNC and local editor
 
@@ -151,8 +153,8 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 
 ## Suggested merge checkpoints
 
-- `dev` can accept small reviewed vertical slices throughout.
-- `main` receives only verified milestones, not task stubs.
+- `dev-1` can accept small reviewed vertical slices throughout.
+- `main` receives completed, reviewed phases through regular merges, not task stubs. A `main` merge does not imply the M4 release gate passed.
 - Release tags like `v0.1.0` mean a *tested MVP*, not completion of all MobaXterm parity features.
 - If already-existing app source contradicts this spec, assess before replacing; `docs/adr/` holds reasoned changes.
 

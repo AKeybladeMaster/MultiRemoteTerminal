@@ -50,7 +50,7 @@ export interface CommandActions {
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
-  readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
+  readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
     'downloadRemoteFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
@@ -93,6 +93,7 @@ export async function dispatchCommand(
   try {
     if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
         parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close' ||
+        parsed.result.command === 'sftp.open' || parsed.result.command === 'sftp.close' ||
         parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' || parsed.result.command === 'ssh.files.cancel' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
@@ -127,6 +128,11 @@ export async function dispatchCommand(
         const { sessionId, host, port, columns, rows } = parsed.result.payload;
         return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }) };
       }
+      case 'sftp.open': {
+        const { sessionId, host, port } = parsed.result.payload;
+        return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
+      }
+      case 'sftp.close': return { requestId, ...await actions.sshTerminals.close(parsed.result.payload.sessionId) };
       case 'ssh.write': {
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.sshTerminals.write(sessionId, data) };

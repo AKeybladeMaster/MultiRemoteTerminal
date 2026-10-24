@@ -129,6 +129,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .shell-glyph.cmd { color: var(--muted); }
 .shell-glyph.bash { min-width: 34px; font-size: 9px; letter-spacing: .04em; }
 .shell-glyph.ssh { min-width: 30px; font-size: 10px; letter-spacing: .04em; }
+.shell-glyph.sftp { min-width: 34px; font-size: 9px; letter-spacing: .035em; }
 .shell-glyph.telnet { min-width: 42px; font-size: 9px; letter-spacing: .035em; }
 .state-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .state-dot.running { background: #86c997; }

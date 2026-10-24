@@ -69,6 +69,8 @@ export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessio
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number }>;
+export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number }>;
+export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
 export type WriteSshTerminalRequest = Request<'ssh.write', { readonly sessionId: string; readonly data: string }>;
 export type PasteSshTerminalRequest = Request<'ssh.paste', { readonly sessionId: string }>;
 export type ResizeSshTerminalRequest = Request<'ssh.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
@@ -105,7 +107,7 @@ export type ExportSessionFolderRequest = Request<'session.folder.export', { read
 export type ImportSessionFolderRequest = Request<'session.folder.import', Record<string, never>>;
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
-  OpenSshTerminalRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
+  OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | DownloadSshFileRequest | CancelSshTransferRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
@@ -119,6 +121,7 @@ export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endp
 export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
+export type OpenSftpFilesReply = CommandReply<OpenSshTerminalResult>;
 export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type SshTransferReply = CommandReply<FileTransferResult>;
@@ -142,11 +145,13 @@ export interface DesktopBridge {
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenSshTerminalReply>;
+  openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   pasteSshTerminal(sessionId: string): Promise<TerminalActionReply>;
   resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeSshTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeSshTerminal(sessionId: string): Promise<TerminalActionReply>;
+  closeSftpFiles(sessionId: string): Promise<TerminalActionReply>;
   openTelnetTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenTelnetTerminalReply>;
   writeTelnetTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   pasteTelnetTerminal(sessionId: string): Promise<TerminalActionReply>;
@@ -239,6 +244,14 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };
+  }
+  if (value.command === 'sftp.open' && exactKeys(payload, ['sessionId', 'host', 'port']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
+    return { ok: true, result: value as unknown as OpenSftpFilesRequest };
+  }
+  if (value.command === 'sftp.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as CloseSftpFilesRequest };
   }
   if (value.command === 'ssh.write' && exactKeys(payload, ['sessionId', 'data']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
       typeof payload.data === 'string' && payload.data.length <= MAX_TERMINAL_INPUT_CHARS) return { ok: true, result: value as unknown as WriteSshTerminalRequest };
@@ -336,7 +349,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'session.move' && exactKeys(payload, ['id', 'folderId']) && isSessionDefinitionId(payload.id) &&
       (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
-    'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
+    'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.download', 'ssh.files.cancel',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
@@ -364,7 +377,7 @@ function validOpenResult(value: unknown, shell: LocalShell): value is OpenTermin
     ['running', 'exited', 'failed'].includes(value.state as string);
 }
 
-function validSshOpenResult(value: unknown, request: OpenSshTerminalRequest): value is OpenSshTerminalResult {
+function validSshOpenResult(value: unknown, request: OpenSshTerminalRequest | OpenSftpFilesRequest): value is OpenSshTerminalResult {
   if (!record(value) || !exactKeys(value, ['sessionId', 'endpoint', 'state'])) return false;
   const endpoint = canonicalizeSshHostEndpoint(value.endpoint);
   const requested = canonicalizeSshHostEndpoint({ host: request.payload.host, port: request.payload.port });
@@ -395,6 +408,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'app.describe') return validSnapshot(value.result);
     if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.shell);
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
+    if (request.command === 'sftp.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'ssh.files.upload') return isFileTransferResult(value.result) && value.result.direction === 'upload';

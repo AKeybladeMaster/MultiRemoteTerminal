@@ -39,6 +39,12 @@ export interface SshTerminalProvider {
     size: TerminalSize,
     verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>,
   ): Promise<void>;
+  openFiles(
+    sessionId: string,
+    endpoint: SshHostEndpoint,
+    credentials: SshTerminalCredentials,
+    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>,
+  ): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
@@ -66,6 +72,7 @@ export type SshTrustEvent =
 
 export interface SshTerminalController {
   open(sessionId: string, host: string, port: number, size: TerminalSize): Promise<Outcome<SshTerminalSession>>;
+  openFiles(sessionId: string, host: string, port: number): Promise<Outcome<SshTerminalSession>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
@@ -91,6 +98,7 @@ interface SessionState {
   readonly sessionId: string;
   readonly endpoint: SshHostEndpoint;
   readonly cancellation: CancellationSource;
+  readonly mode: 'terminal' | 'files';
   state: SshTerminalSession['state'];
   pendingInputChars: number;
   pendingEvents: LocalTerminalEvent[];
@@ -230,12 +238,13 @@ export function createSshTerminalController(
     return resolution === 'approved' && !session.cancellation.token.aborted && sessions.get(session.sessionId) === session;
   }
 
-  async function open(sessionId: string, host: string, port: number, size: TerminalSize): Promise<Outcome<SshTerminalSession>> {
+  async function openConnection(sessionId: string, host: string, port: number, size?: TerminalSize): Promise<Outcome<SshTerminalSession>> {
     if (disposed) return failure('CANCELLED', 'terminal');
     if (shutdownPromise) return failure('BUSY', 'terminal');
     const endpoint = canonicalizeSshHostEndpoint({ host, port });
-    if (!SESSION_ID.test(sessionId) || !endpoint || !isTerminalSize(size) || sessions.has(sessionId)) return failure('INVALID_REQUEST');
-    const session: SessionState = { sessionId, endpoint, cancellation: createCancellationSource(), state: 'starting', pendingInputChars: 0, pendingEvents: [] };
+    if (!SESSION_ID.test(sessionId) || !endpoint || (size !== undefined && !isTerminalSize(size)) || sessions.has(sessionId)) return failure('INVALID_REQUEST');
+    const mode = size === undefined ? 'files' : 'terminal';
+    const session: SessionState = { sessionId, endpoint, cancellation: createCancellationSource(), mode, state: 'starting', pendingInputChars: 0, pendingEvents: [] };
     sessions.set(sessionId, session);
 
     let username = '';
@@ -249,7 +258,8 @@ export function createSshTerminalController(
       password = credential.secret;
       if (username.length === 0 || username.trim() !== username || username.includes('\0') || password.includes('\0')) return failOpen(session, 'INVALID_REQUEST');
 
-      await provider.open(sessionId, endpoint, { username, password }, size, evidence => verifyHost(session, evidence));
+      if (size === undefined) await provider.openFiles(sessionId, endpoint, { username, password }, evidence => verifyHost(session, evidence));
+      else await provider.open(sessionId, endpoint, { username, password }, size, evidence => verifyHost(session, evidence));
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session || session.state === 'closing') {
         await provider.close(sessionId).catch(() => undefined);
         return failOpen(session, 'CANCELLED');
@@ -272,9 +282,17 @@ export function createSshTerminalController(
     }
   }
 
+  async function open(sessionId: string, host: string, port: number, size: TerminalSize): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port, size);
+  }
+
+  async function openFiles(sessionId: string, host: string, port: number): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port);
+  }
+
   async function write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
-    if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
+    if (!session || session.mode !== 'terminal' || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
     if (typeof data !== 'string' || data.length > MAX_TERMINAL_INPUT_CHARS) return failure('INVALID_REQUEST');
     if (session.pendingInputChars + data.length > MAX_QUEUED_TERMINAL_INPUT_CHARS) return failure('BUSY', 'terminal');
     if (data.length === 0) return { ok: true, result: EMPTY_RESULT };
@@ -288,14 +306,15 @@ export function createSshTerminalController(
 
   async function resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
-    if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
+    if (!session || session.mode !== 'terminal' || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
     if (!isTerminalSize(size)) return failure('INVALID_REQUEST');
     try { await provider.resize(sessionId, size); return { ok: true, result: EMPTY_RESULT }; }
     catch { return failure('UNAVAILABLE', 'terminal'); }
   }
 
   async function acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>> {
-    if (!sessions.has(sessionId) || !Number.isSafeInteger(sequence) || sequence < 1) return failure('NOT_FOUND', 'terminal');
+    const session = sessions.get(sessionId);
+    if (!session || session.mode !== 'terminal' || !Number.isSafeInteger(sequence) || sequence < 1) return failure('NOT_FOUND', 'terminal');
     try { await provider.acknowledgeOutput(sessionId, sequence); return { ok: true, result: EMPTY_RESULT }; }
     catch { return failure('UNAVAILABLE', 'terminal'); }
   }
@@ -407,7 +426,7 @@ export function createSshTerminalController(
   }
 
   return Object.freeze({
-    open, write, resize, acknowledgeOutput, listRemoteDirectory, uploadRemoteFile, downloadRemoteFile, cancelTransfer, close,
+    open, openFiles, write, resize, acknowledgeOutput, listRemoteDirectory, uploadRemoteFile, downloadRemoteFile, cancelTransfer, close,
     async approveHostKey(token: string): Promise<Outcome<Record<string, never>>> {
       if (!sessionByTrustToken.has(token)) return failure('NOT_FOUND');
       const approved = await hostTrust.approve(token);

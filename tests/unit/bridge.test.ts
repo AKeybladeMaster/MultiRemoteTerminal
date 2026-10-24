@@ -12,7 +12,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     return valid;
   }, id);
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-    'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
+    'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
@@ -20,6 +20,24 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress', 'onSshTransferProgress']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload sends standalone SFTP commands with only the endpoint and session id', async () => {
+  const sessionId = id();
+  const endpoint = { host: 'server.example.net', port: 22 };
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    if (request.command === 'sftp.open') return { requestId: request.requestId, ok: true,
+      result: { sessionId, endpoint, state: 'running' } };
+    return { requestId: request.requestId, ok: true, result: {} };
+  }, id);
+  assert.equal((await bridge.openSftpFiles(sessionId, endpoint.host, endpoint.port)).ok, true);
+  assert.equal((await bridge.closeSftpFiles(sessionId)).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'sftp.open', requestId: id(), contractVersion: 1, payload: { sessionId, host: endpoint.host, port: endpoint.port } },
+    { command: 'sftp.close', requestId: id(), contractVersion: 1, payload: { sessionId } }
+  ]);
 });
 
 test('preload refuses direct Telnet opens without a fresh trusted plaintext-consent gesture', async () => {

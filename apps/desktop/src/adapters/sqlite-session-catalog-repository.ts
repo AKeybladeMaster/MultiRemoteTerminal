@@ -124,10 +124,13 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       const id = randomUUID();
       const timestamp = new Date().toISOString();
       const local = draft.kind === 'local';
-      const options = local ? JSON.stringify({ shell: draft.shell }) : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure }) : '{}';
-      this.insertSession.run(id, draft.kind, draft.name, local ? null : draft.host, local ? null : draft.port, options, timestamp, timestamp);
+      const storedKind = draft.kind === 'sftp' ? 'ssh' : draft.kind;
+      const options = local ? JSON.stringify({ shell: draft.shell }) : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure })
+        : draft.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}';
+      this.insertSession.run(id, storedKind, draft.name, local ? null : draft.host, local ? null : draft.port, options, timestamp, timestamp);
       if (draft.kind === 'local') return { id, folderId: null, kind: 'local', name: draft.name, shell: draft.shell, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'ssh') return { id, folderId: null, kind: 'ssh', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      if (draft.kind === 'sftp') return { id, folderId: null, kind: 'sftp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'telnet') return { id, folderId: null, kind: 'telnet', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       return { id, folderId: null, kind: 'ftp', name: draft.name, host: draft.host, port: draft.port, secure: draft.secure, favorite: false, createdAt: timestamp, updatedAt: timestamp };
     } catch (error) { throw mapStorageError(error); }
@@ -286,9 +289,11 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
         continue;
       }
       const local = session.kind === 'local';
-      this.insertImportedSession.run(session.id, session.folderId, session.kind, session.name,
+      const storedKind = session.kind === 'sftp' ? 'ssh' : session.kind;
+      this.insertImportedSession.run(session.id, session.folderId, storedKind, session.name,
         local ? null : session.host, local ? null : session.port,
-        local ? JSON.stringify({ shell: session.shell }) : session.kind === 'ftp' ? JSON.stringify({ secure: session.secure }) : '{}',
+        local ? JSON.stringify({ shell: session.shell }) : session.kind === 'ftp' ? JSON.stringify({ secure: session.secure })
+          : session.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}',
         session.favorite ? 1 : 0, session.createdAt, session.updatedAt);
       createdSessionCount += 1;
     }
@@ -353,6 +358,7 @@ function sameSessionDefinition(left: SavedSessionDefinition, right: SavedSession
       left.favorite !== right.favorite || left.createdAt !== right.createdAt || left.updatedAt !== right.updatedAt) return false;
   if (left.kind === 'local' && right.kind === 'local') return left.shell === right.shell;
   if (left.kind === 'ssh' && right.kind === 'ssh') return left.host === right.host && left.port === right.port;
+  if (left.kind === 'sftp' && right.kind === 'sftp') return left.host === right.host && left.port === right.port;
   if (left.kind === 'telnet' && right.kind === 'telnet') return left.host === right.host && left.port === right.port;
   if (left.kind === 'ftp' && right.kind === 'ftp') return left.host === right.host && left.port === right.port && left.secure === right.secure;
   return false;
@@ -451,7 +457,10 @@ function decodeSessionRow(row: SavedSessionRow): SavedSessionDefinition {
   }
   if (row.kind === 'ssh') {
     const endpoint = canonicalizeSshHostEndpoint({ host: row.host, port: row.port });
-    if (!endpoint || endpoint.host !== row.host || endpoint.port !== row.port || !exactKeys(options, [])) throw new StorageOperationError('corrupt');
+    const sftpOnly = exactKeys(options, ['sftpOnly']) && options.sftpOnly === true;
+    if (!endpoint || endpoint.host !== row.host || endpoint.port !== row.port || (!sftpOnly && !exactKeys(options, []))) throw new StorageOperationError('corrupt');
+    if (sftpOnly) return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'sftp', name: row.name, host: endpoint.host, port: endpoint.port,
+      favorite: row.favorite === 1, createdAt: row.created_at, updatedAt: row.updated_at };
     return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'ssh', name: row.name, host: endpoint.host, port: endpoint.port, favorite: row.favorite === 1,
       createdAt: row.created_at, updatedAt: row.updated_at };
   }

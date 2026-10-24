@@ -134,6 +134,15 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
         credentials.password = '';
         credentials.username = '';
       }
+    } else if (request.command === 'open-files') {
+      try {
+        await provider.openFiles(request.sessionId, request.endpoint, request.credentials,
+          evidence => requestHostVerification(request.sessionId, request.endpoint, evidence));
+      } finally {
+        const credentials = request.credentials as { username: string; password: string };
+        credentials.password = '';
+        credentials.username = '';
+      }
     } else if (request.command === 'write') await provider.write(request.sessionId, request.data);
     else if (request.command === 'resize') await provider.resize(request.sessionId, request.size);
     else if (request.command === 'ack') await provider.acknowledgeOutput(request.sessionId, request.sequence);

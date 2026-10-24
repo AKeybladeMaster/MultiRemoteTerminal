@@ -37,21 +37,35 @@ test('session-folder bundles preserve FTP security mode without account credenti
   assert.equal(normalizeSessionFolderBundle({ ...value, sessions: [...value.sessions.slice(0, 1), { ...ftpSession, password: 'secret' }] }), undefined);
 });
 
-test('version-2 bundles import credential-free version-1 profiles and reject unsupported version-1 FTP entries', () => {
+test('session-folder bundles include standalone SFTP profiles without credentials', () => {
   const bundle = validBundle();
-  const legacy = { ...bundle, version: 1 };
-  assert.equal(isSessionFolderBundle(legacy), false, 'the type guard narrows only current-version bundle objects');
+  const sftpSession = { id: '77777777-7777-4777-8777-777777777777', folderId: childId, kind: 'sftp', name: 'Build files',
+    host: 'ssh.example.net', port: 22, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  const value = { ...bundle, sessions: [...bundle.sessions, sftpSession] };
+  assert.deepEqual(normalizeSessionFolderBundle(value), value);
+  assert.equal(normalizeSessionFolderBundle({ ...value, sessions: [...value.sessions.slice(0, 1), { ...sftpSession, privateKey: 'secret' }] }), undefined);
+});
+
+test('version-3 bundles import version-1 and version-2 profiles with their existing kind limits', () => {
+  const bundle = validBundle();
+  const legacyV1 = { ...bundle, version: 1 };
+  const legacyV2 = { ...bundle, version: 2 };
+  assert.equal(isSessionFolderBundle(legacyV1), false, 'the type guard narrows only current-version bundle objects');
   assert.equal(isSessionFolderBundle(bundle), true);
-  assert.deepEqual(normalizeSessionFolderBundle(legacy), bundle);
+  assert.deepEqual(normalizeSessionFolderBundle(legacyV1), bundle);
+  assert.deepEqual(normalizeSessionFolderBundle(legacyV2), bundle);
   const ftpSession = { id: '66666666-6666-4666-8666-666666666666', folderId: childId, kind: 'ftp', name: 'Archive server',
     host: 'files.example.net', port: 2121, secure: true, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
-  assert.equal(normalizeSessionFolderBundle({ ...legacy, sessions: [...bundle.sessions, ftpSession] }), undefined);
+  assert.equal(normalizeSessionFolderBundle({ ...legacyV1, sessions: [...bundle.sessions, ftpSession] }), undefined);
+  const sftpSession = { id: '77777777-7777-4777-8777-777777777777', folderId: childId, kind: 'sftp', name: 'Build files',
+    host: 'ssh.example.net', port: 22, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  assert.equal(normalizeSessionFolderBundle({ ...legacyV2, sessions: [...bundle.sessions, sftpSession] }), undefined);
 });
 
 test('session-folder bundles reject unsupported shape, secret-bearing records and unknown fields', () => {
   const bundle = validBundle();
   assert.equal(normalizeSessionFolderBundle({ ...bundle, extra: 'value' }), undefined);
-  assert.equal(normalizeSessionFolderBundle({ ...bundle, version: 3 }), undefined);
+  assert.equal(normalizeSessionFolderBundle({ ...bundle, version: 4 }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, sessions: [{ ...bundle.sessions[0], password: 'must-not-import' }] }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, exportedAt: 'yesterday' }), undefined);
 });

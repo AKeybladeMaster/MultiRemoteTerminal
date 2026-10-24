@@ -16,12 +16,14 @@ export interface SavedSessionBase {
 export type SavedSessionDefinition =
   | (SavedSessionBase & { readonly kind: 'local'; readonly shell: LocalShell })
   | (SavedSessionBase & { readonly kind: 'ssh'; readonly host: string; readonly port: number })
+  | (SavedSessionBase & { readonly kind: 'sftp'; readonly host: string; readonly port: number })
   | (SavedSessionBase & { readonly kind: 'telnet'; readonly host: string; readonly port: number })
   | (SavedSessionBase & { readonly kind: 'ftp'; readonly host: string; readonly port: number; readonly secure: boolean });
 
 export type SavedSessionDraft =
   | { readonly kind: 'local'; readonly name: string; readonly shell: LocalShell }
   | { readonly kind: 'ssh'; readonly name: string; readonly host: string; readonly port: number }
+  | { readonly kind: 'sftp'; readonly name: string; readonly host: string; readonly port: number }
   | { readonly kind: 'telnet'; readonly name: string; readonly host: string; readonly port: number }
   | { readonly kind: 'ftp'; readonly name: string; readonly host: string; readonly port: number; readonly secure: boolean };
 
@@ -38,6 +40,12 @@ export function normalizeSavedSessionDraft(value: unknown): SavedSessionDraft | 
     const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
     if (!endpoint) return undefined;
     return { kind: 'ssh', name, host: endpoint.host, port: endpoint.port };
+  }
+  if (value.kind === 'sftp') {
+    if (!hasExactKeys(value, ['kind', 'name', 'host', 'port'])) return undefined;
+    const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
+    if (!endpoint) return undefined;
+    return { kind: 'sftp', name, host: endpoint.host, port: endpoint.port };
   }
   if (value.kind === 'telnet') {
     if (!hasExactKeys(value, ['kind', 'name', 'host', 'port'])) return undefined;
@@ -65,6 +73,11 @@ export function isSavedSessionDefinition(value: unknown): value is SavedSessionD
       normalizeName(value.name) !== value.name || typeof value.favorite !== 'boolean' || !isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt)) return false;
   if (value.kind === 'local') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'shell', 'favorite', 'createdAt', 'updatedAt']) && isLocalShell(value.shell);
   if (value.kind === 'ssh') {
+    if (!hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'host', 'port', 'favorite', 'createdAt', 'updatedAt'])) return false;
+    const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
+    return endpoint !== undefined && endpoint.host === value.host && endpoint.port === value.port;
+  }
+  if (value.kind === 'sftp') {
     if (!hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'host', 'port', 'favorite', 'createdAt', 'updatedAt'])) return false;
     const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
     return endpoint !== undefined && endpoint.host === value.host && endpoint.port === value.port;

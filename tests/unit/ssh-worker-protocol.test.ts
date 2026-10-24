@@ -26,6 +26,11 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   assert.equal(parseSshWorkerInput({ ...open, credentials: { username: 'alice', password: 'x'.repeat(65_537) } }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, credentials: { username: 'alice', password: 'x', apiKey: 'secret' } }), undefined);
 
+  const openFiles = { ...open, command: 'open-files' } as Record<string, unknown>;
+  delete openFiles.size;
+  assert.equal(parseSshWorkerInput(openFiles)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...openFiles, size: open.size }), undefined, 'file-only requests cannot smuggle terminal configuration');
+
   const key = hostKey();
   const evidence = {
     algorithm: 'ssh-ed25519',

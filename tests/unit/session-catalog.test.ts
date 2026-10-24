@@ -18,11 +18,13 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     new SqliteHostTrustRepository(database).migrate();
     const catalog = new SqliteSessionCatalogRepository(database);
     const ssh = await catalog.createSession({ kind: 'ssh', name: 'Production gateway', host: 'SSH.Example.com.', port: 2222 });
+    const sftp = await catalog.createSession({ kind: 'sftp', name: 'Build files', host: 'SSH.Example.com.', port: 22 });
     const telnet = await catalog.createSession({ kind: 'telnet', name: 'Legacy switch', host: 'TELNET.Example.com.', port: 23 });
     const ftp = await catalog.createSession({ kind: 'ftp', name: 'Secure file host', host: 'Files.Example.com.', port: 2121, secure: true });
     const local = await catalog.createSession({ kind: 'local', name: 'Local PowerShell', shell: 'powershell' });
     const bash = await catalog.createSession({ kind: 'local', name: 'Local Bash', shell: 'bash' });
     assert.equal(ssh.kind, 'ssh');
+    assert.equal(sftp.kind, 'sftp');
     assert.equal(telnet.kind, 'telnet');
     assert.equal(ftp.kind, 'ftp');
     if (ftp.kind !== 'ftp') throw new Error('Expected FTP definition');
@@ -36,6 +38,7 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.deepEqual({ host: ssh.host, port: ssh.port }, { host: 'ssh.example.com', port: 2222 });
     assert.ok((await catalog.listSessions('GATEWAY')).some(item => item.id === ssh.id));
     assert.ok((await catalog.listSessions('ssh.example')).some(item => item.id === ssh.id));
+    assert.ok((await catalog.listSessions('ssh.example')).some(item => item.id === sftp.id));
     assert.ok((await catalog.listSessions('telnet.example')).some(item => item.id === telnet.id));
     assert.ok((await catalog.listSessions('files.example')).some(item => item.id === ftp.id));
 
@@ -43,7 +46,7 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
       await catalog.createSession({ kind: 'local', name: `Connection ${String(index).padStart(4, '0')}`, shell: index % 2 === 0 ? 'powershell' : 'cmd' });
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
-    assert.equal((await catalog.listSessions('')).length, 1_005);
+    assert.equal((await catalog.listSessions('')).length, 1_006);
     assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
     assert.equal(await catalog.setFavorite(telnet.id, true), true);
@@ -55,6 +58,13 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     };
     assert.equal(persistedSsh.credential_ref, null);
     assert.equal(persistedSsh.options_json, '{}');
+    const persistedSftp = database.prepare('SELECT kind, username, credential_ref, options_json FROM session_definitions WHERE id = ?').get(sftp.id) as {
+      readonly kind: string; readonly username: string | null; readonly credential_ref: string | null; readonly options_json: string;
+    };
+    assert.equal(persistedSftp.kind, 'ssh', 'SFTP-only transport mode is stored in SSH options for compatibility with existing schemas');
+    assert.equal(persistedSftp.username, null);
+    assert.equal(persistedSftp.credential_ref, null);
+    assert.equal(persistedSftp.options_json, '{"sftpOnly":true}');
     const persistedTelnet = database.prepare('SELECT credential_ref, options_json FROM session_definitions WHERE id = ?').get(telnet.id) as {
       readonly credential_ref: string | null; readonly options_json: string;
     };
@@ -233,25 +243,27 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const session = await source.createSession({ kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 });
     const telnet = await source.createSession({ kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23 });
     const ftp = await source.createSession({ kind: 'ftp', name: 'Archive files', host: 'files.example.com', port: 2121, secure: false });
+    const sftp = await source.createSession({ kind: 'sftp', name: 'Build artifacts', host: 'build.example.com', port: 22 });
     await source.moveSession(session.id, child.id);
     await source.moveSession(telnet.id, root.id);
     await source.moveSession(ftp.id, child.id);
+    await source.moveSession(sftp.id, child.id);
     await source.setFavorite(session.id, true);
     const path = join(directory, 'project.mrt-session-folder.json');
 
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 3 });
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 3 },
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 4 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 4 },
       'exporting again to the selected file replaces it atomically');
     const text = await readFile(path, 'utf8');
     assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
     assert.doesNotMatch(text, /password|credential|privateKey/i);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 3, createdFolderCount: 4, createdSessionCount: 3
+      folderCount: 4, sessionCount: 4, createdFolderCount: 4, createdSessionCount: 4
     });
     assert.deepEqual(new Set((await destination.listFolders()).map(folder => folder.name)),
       new Set([root.name, child.name, unicodeUpper.name, unicodeLower.name]));
     const importedSessions = await destination.listSessions('');
-    assert.equal(importedSessions.length, 3);
+    assert.equal(importedSessions.length, 4);
     const importedSession = importedSessions.find(item => item.kind === 'ssh');
     assert.ok(importedSession?.kind === 'ssh');
     if (importedSession?.kind !== 'ssh') throw new Error('Expected an imported SSH definition');
@@ -270,8 +282,15 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
       host: importedFtp.host, port: importedFtp.port, secure: importedFtp.secure }, {
       id: ftp.id, folderId: child.id, kind: 'ftp', name: 'Archive files', host: 'files.example.com', port: 2121, secure: false
     });
+    const importedSftp = importedSessions.find(item => item.kind === 'sftp');
+    assert.ok(importedSftp?.kind === 'sftp');
+    if (importedSftp?.kind !== 'sftp') throw new Error('Expected an imported SFTP definition');
+    assert.deepEqual({ id: importedSftp.id, folderId: importedSftp.folderId, kind: importedSftp.kind, name: importedSftp.name,
+      host: importedSftp.host, port: importedSftp.port }, {
+      id: sftp.id, folderId: child.id, kind: 'sftp', name: 'Build artifacts', host: 'build.example.com', port: 22
+    });
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 3, createdFolderCount: 0, createdSessionCount: 0
+      folderCount: 4, sessionCount: 4, createdFolderCount: 0, createdSessionCount: 0
     });
   } finally {
     sourceDatabase.close();

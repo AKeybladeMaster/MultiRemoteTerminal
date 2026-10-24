@@ -23,13 +23,15 @@ function describeError(code: string, transport: 'sftp' | 'ftp'): string {
     ? 'The FTP connection timed out. Reconnect and enter your credentials again.'
     : 'The remote file request timed out. Refresh to try a new SFTP channel.';
   if (code === 'BUSY') return 'A remote file request is still in progress. Try again shortly.';
-  if (code === 'NOT_FOUND') return transport === 'ftp' ? 'This FTP connection is no longer active.' : 'This SSH connection is no longer active.';
+  if (code === 'NOT_FOUND') return transport === 'ftp' ? 'This FTP connection is no longer active.'
+    : transport === 'sftp' ? 'This SFTP connection is no longer active.' : 'This SSH connection is no longer active.';
   if (code === 'CONFLICT') return 'The selected file or destination changed during transfer. Review it and try again.';
   if (code === 'FORBIDDEN') return 'The local file or remote destination denied access.';
   if (code === 'OUTPUT_LIMIT') return 'The remote directory exceeds the configured listing limit.';
   return transport === 'ftp'
     ? 'The FTP connection is no longer available. Reconnect and check the server path and permissions.'
-    : 'The remote directory could not be read. Check the server path and permissions.';
+    : transport === 'sftp' ? 'The SFTP connection is no longer available. Reconnect and check the server path and permissions.'
+      : 'The remote directory could not be read. Check the server path and permissions.';
 }
 
 function formatFileSize(size: number): string {
@@ -172,7 +174,7 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
   return <aside className="remote-file-panel" aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser">
     <div className="remote-file-heading">
-      <h2>{transport === 'ftp' ? 'FTP files' : 'Remote files'}</h2>
+      <h2>{transport === 'ftp' ? 'FTP files' : transport === 'sftp' ? 'SFTP files' : 'Remote files'}</h2>
       <div className="remote-file-heading-actions">
         <button type="button" className="remote-file-upload" disabled={loading || !listing || Boolean(transfer)}
           onClick={() => void transferFile('upload', listing?.path ?? '.')}>Upload file</button>
@@ -188,8 +190,10 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
     {transport === 'ftp' && <p className="remote-file-status">FTP may assign a unique name to each upload; the server-selected name appears when it finishes.</p>}
     {loading && <p className="remote-file-status" role="status">Reading remote directory…</p>}
     {error && <p className="remote-file-error" role="alert">{error}</p>}
-    {error && transport === 'ftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"
+    {error && transport !== 'sftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"
       disabled={loading} onClick={onReconnect}>Reconnect to file server</button>}
+    {error && transport === 'sftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"
+      disabled={loading} onClick={onReconnect}>Reconnect to SFTP server</button>}
     {transfer && <div className="remote-file-transfer" role="status" aria-live="polite">
       <div className="remote-file-transfer-label"><span>{transfer.phase === 'preparing'
         ? `Choose ${transfer.direction === 'upload' ? 'a local file to upload' : `a local destination for ${transfer.fileName}`}`

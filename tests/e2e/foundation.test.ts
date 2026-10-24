@@ -467,6 +467,38 @@ test('trusted SSH sessions upload and download files through their SFTP subsyste
     await files.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
     await expect(files.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
+
+    const shellRequestsBeforeSftp = fixtureEvents.filter(event => event === 'shell').length;
+    await page.getByRole('button', { name: 'Connect to SFTP files', exact: true }).first().click();
+    const sftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await sftpDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await sftpDialog.getByLabel('Port').fill(String(address.port));
+    await sftpDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const sftpTab = page.getByRole('tab').filter({ hasText: /SFTP/ }).first();
+    await expect(sftpTab).toBeVisible({ timeout: 20_000 });
+    const sftpPanelId = await sftpTab.getAttribute('aria-controls');
+    if (!sftpPanelId) throw new Error('Missing standalone SFTP file panel');
+    const sftpPanel = page.locator(`#${sftpPanelId}`);
+    await expect(sftpPanel.getByTestId('remote-file-browser').getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveSftpDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveSftpDialog.getByLabel('Session name').fill('SFTP loopback');
+    await saveSftpDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const savedSftp = page.getByRole('button', { name: 'Open SFTP loopback', exact: true });
+    await expect(savedSftp).toBeVisible();
+    await page.getByRole('button', { name: 'Close active file session' }).click();
+    const closeSftpDialog = page.getByRole('alertdialog');
+    await closeSftpDialog.getByRole('button', { name: 'Close session' }).click();
+    await savedSftp.click();
+    const reopenedSftpTab = page.getByRole('tab').filter({ hasText: 'SFTP loopback' });
+    await expect(reopenedSftpTab).toBeVisible({ timeout: 20_000 });
+    const reopenedSftpPanelId = await reopenedSftpTab.getAttribute('aria-controls');
+    if (!reopenedSftpPanelId) throw new Error('Missing reopened standalone SFTP panel');
+    await expect(page.locator(`#${reopenedSftpPanelId} [data-testid="remote-file-browser"]`).getByText('remote.txt', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
   } finally {
     for (const client of clients) client.end();
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
@@ -1379,7 +1411,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
+      'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
       'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
