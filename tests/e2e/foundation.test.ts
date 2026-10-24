@@ -1603,6 +1603,67 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
   }
 });
 
+test('macro recorder captures completed terminal lines and suppresses a recognized password prompt', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-recording-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByLabel('New recording name').fill('Secret-safe recording');
+    await dialog.getByRole('button', { name: 'Start recording', exact: true }).click();
+    const banner = page.getByRole('region', { name: 'Macro recording controls' });
+    await expect(banner).toBeVisible();
+
+    const title = 'PowerShell session 1';
+    const secret = 'never-store-this-secret';
+    const promptCommand = "$mrtSecret = Read-Host -Prompt 'Password' -AsSecureString; Write-Output 'MRT-RECORDER-READY'";
+    const panel = await selectTerminal(page, title);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    const pastedCommand = "Write-Output 'MRT-RECORDER-PASTE-OMITTED'";
+    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pastedCommand);
+    await page.keyboard.press('Control+V');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-PASTE-OMITTED', { timeout: 15_000 });
+    await expect(banner).toContainText('0 complete lines');
+    await page.keyboard.type(promptCommand);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('Password:', { timeout: 15_000 });
+    await expect(banner.getByRole('status')).toContainText('recognized secret prompt');
+    await expect(banner).toContainText('1 complete line');
+    await page.keyboard.type(secret);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-READY', { timeout: 15_000 });
+    await expect(banner).toContainText('Recording paused');
+    await banner.getByRole('button', { name: 'Resume recording', exact: true }).click();
+    await expect(banner.locator('[role="status"]')).toHaveCount(0);
+    await page.keyboard.type("Write-Output 'MRT-RECORDER-SAFE'");
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-SAFE', { timeout: 15_000 });
+    await expect(banner).toContainText('2 complete lines');
+
+    await banner.getByRole('button', { name: 'Stop and save', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('Recording saved');
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    const saved = page.getByRole('dialog', { name: 'Macros' });
+    const macro = saved.getByRole('button', { name: /Secret-safe recording/ });
+    await expect(macro).toContainText('2 steps');
+    await macro.click();
+    const first = saved.locator('#macro-step-0-text');
+    const second = saved.locator('#macro-step-1-text');
+    await expect(first).toHaveValue(promptCommand);
+    await expect(second).toHaveValue("Write-Output 'MRT-RECORDER-SAFE'");
+    await expect(first).not.toHaveValue(new RegExp(secret));
+    await expect(second).not.toHaveValue(new RegExp(secret));
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only actions', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-tab-actions-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });

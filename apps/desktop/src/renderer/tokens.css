@@ -141,6 +141,8 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font: 11px "Segoe UI Variable", "Segoe UI", sans-serif; text-align: center; }
 .terminal-workspace { display: grid; grid-template-rows: 48px minmax(0, 1fr); min-width: 0; min-height: 0; outline: none; }
 .terminal-workspace[data-opening="true"] { grid-template-rows: 48px auto minmax(0, 1fr); }
+.terminal-workspace[data-recording="true"] { grid-template-rows: 48px auto minmax(0, 1fr); }
+.terminal-workspace[data-opening="true"][data-recording="true"] { grid-template-rows: 48px auto auto minmax(0, 1fr); }
 .opening-notices { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 5px 14px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 12px; }
 .opening-notice { display: inline-flex; align-items: center; gap: 8px; }
 .opening-notice .quiet-button { min-height: 26px; }
@@ -337,6 +339,22 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .macro-list-item { grid-template-columns: 17px minmax(0, 1fr); align-items: center; min-height: 60px; }
 .macro-list-item:disabled { opacity: .72; cursor: default; }
 .macro-list-mark { color: var(--accent); font-size: 19px; line-height: 1; }
+.macro-record-setup { display: grid; gap: 7px; margin: 12px 0; padding: 11px; border: 1px solid var(--line); border-radius: 3px; background: color-mix(in srgb, var(--canvas) 35%, var(--surface)); }
+.macro-record-setup label { color: var(--muted); font-size: 10px; font-weight: 650; }
+.macro-record-setup input, .macro-record-setup select { min-width: 0; min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: var(--terminal-background); color: var(--text); }
+.macro-record-setup button { min-height: 35px; border: 1px solid var(--accent); border-radius: 3px; background: var(--accent); color: var(--accent-ink); font-weight: 650; cursor: pointer; }
+.macro-record-setup button:disabled { opacity: .55; cursor: default; }
+.macro-record-setup small { color: var(--muted); line-height: 1.4; }
+.macro-record-setup input:focus-visible, .macro-record-setup select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.macro-recording-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, #e59d32 12%, var(--surface)); }
+.macro-recording-copy { display: grid; gap: 3px; min-width: 0; }
+.macro-recording-copy strong { font-size: 12px; }
+.macro-recording-copy span { overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
+.macro-recording-warning { color: var(--error) !important; }
+.macro-recording-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: end; gap: 6px; }
+.macro-recording-actions button { min-height: 32px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); font-size: 11px; cursor: pointer; }
+.macro-recording-actions button:disabled { opacity: .55; cursor: default; }
+.macro-recording-actions .macro-recording-stop { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 650; }
 .macro-editor-column { padding-bottom: 22px; }
 .macro-empty-editor { display: grid; justify-items: start; gap: 10px; max-width: 440px; margin: 26px auto; }
 .macro-empty-editor h3 { margin: 0; font-size: 17px; }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
 import { MAX_MACRO_STEPS, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft, MacroStep } from '../../../../packages/domain/src/macro.ts';
@@ -9,9 +9,12 @@ export interface MacroManagerDialogProps {
   readonly loading: boolean;
   readonly busy: boolean;
   readonly error: string | undefined;
+  readonly recordingTargets: readonly { readonly sessionId: string; readonly title: string }[];
+  readonly recordingActive: boolean;
   readonly onClose: () => void;
   readonly onSave: (id: string | undefined, draft: MacroDraft) => Promise<string | undefined>;
   readonly onDelete: (id: string) => Promise<boolean>;
+  readonly onStartRecording: (name: string, sessionId: string) => boolean;
 }
 
 type MacroStepKind = MacroStep['kind'];
@@ -34,7 +37,7 @@ function updateStep(steps: readonly MacroStep[], index: number, next: MacroStep)
   return steps.map((step, current) => current === index ? next : step);
 }
 
-export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, onClose, onSave, onDelete }: MacroManagerDialogProps): ReactElement {
+export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, recordingTargets, recordingActive, onClose, onSave, onDelete, onStartRecording }: MacroManagerDialogProps): ReactElement {
   const [selectedId, setSelectedId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
@@ -42,11 +45,13 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, on
   const [steps, setSteps] = useState<readonly MacroStep[]>([]);
   const [stepToAdd, setStepToAdd] = useState<MacroStepKind>('send');
   const [deleteConfirmation, setDeleteConfirmation] = useState(false);
+  const [recordingName, setRecordingName] = useState('');
+  const [recordingTargetId, setRecordingTargetId] = useState('');
   const nameInput = useRef<HTMLInputElement>(null);
   const selected = macros.find(macro => macro.id === selectedId);
 
-  useEffect(() => {
-    if (creating) requestAnimationFrame(() => nameInput.current?.focus());
+  useLayoutEffect(() => {
+    if (creating) nameInput.current?.focus();
   }, [creating]);
 
   useEffect(() => {
@@ -103,6 +108,13 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, on
     }
   }
 
+  function submitRecording(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const targetId = recordingTargetId || recordingTargets[0]?.sessionId;
+    if (busy || recordingActive || !targetId || !normalizeMacroDraft({ name: recordingName, steps: [] })) return;
+    if (onStartRecording(recordingName, targetId)) setRecordingName('');
+  }
+
   async function confirmDelete(): Promise<void> {
     if (!selected || busy) return;
     if (await onDelete(selected.id)) {
@@ -122,11 +134,21 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, on
         <div><p className="dialog-eyebrow">Reusable terminal actions</p><h2 id="macro-manager-heading">Macros</h2></div>
         <button className="tunnel-close" type="button" aria-label="Close macro manager" onClick={onClose} disabled={busy}>×</button>
       </header>
-      <p id="macro-manager-description" className="tunnel-manager-description">Create and organize ordered terminal steps. Recording and playback are not available yet.</p>
+      <p id="macro-manager-description" className="tunnel-manager-description">Create typed steps or record complete input lines from one running terminal.</p>
       <p id="macro-storage-warning" className="macro-storage-warning"><strong>Keep secrets out of macro fields.</strong> Names, descriptions and step text are stored in the local database. Do not include passwords, tokens or private key content.</p>
       <div className="tunnel-manager-body macro-manager-body">
         <section className="tunnel-list-column" aria-labelledby="macro-list-heading">
           <div className="tunnel-list-header"><h3 id="macro-list-heading">Saved macros</h3><button className="tunnel-new" type="button" onClick={startNew} disabled={busy}>New macro</button></div>
+          <form className="macro-record-setup" onSubmit={submitRecording}>
+            <label htmlFor="macro-recording-name">New recording name</label>
+            <input id="macro-recording-name" value={recordingName} maxLength={256} onChange={event => setRecordingName(event.target.value)} disabled={busy || recordingActive} required autoComplete="off" />
+            <label htmlFor="macro-recording-target">Running terminal</label>
+            <select id="macro-recording-target" value={recordingTargetId || recordingTargets[0]?.sessionId || ''} onChange={event => setRecordingTargetId(event.target.value)} disabled={busy || recordingTargets.length === 0 || recordingActive}>
+              {recordingTargets.length === 0 ? <option value="">No running terminals</option> : recordingTargets.map(target => <option key={target.sessionId} value={target.sessionId}>{target.title}</option>)}
+            </select>
+            <button type="submit" disabled={busy || recordingActive || recordingTargets.length === 0 || !normalizeMacroDraft({ name: recordingName, steps: [] })}>Start recording</button>
+            {recordingTargets.length === 0 && <small>Open a local, SSH or Telnet terminal first.</small>}
+          </form>
           {loading ? <p className="tunnel-empty" role="status">Loading saved macros…</p> : macros.length === 0
             ? <p className="tunnel-empty">No macros saved yet. Create one to define its steps.</p>
             : <ul className="tunnel-list" aria-label="Saved macros">
