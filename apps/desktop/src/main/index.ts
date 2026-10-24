@@ -101,6 +101,7 @@ function focusWindow(): void {
   focusRequested = false;
   if (current.isMinimized()) current.restore();
   if (!current.isVisible()) current.show();
+  app.focus();
   current.focus();
 }
 

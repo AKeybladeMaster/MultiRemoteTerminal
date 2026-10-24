@@ -25,6 +25,7 @@ export type FtpWorkerLaunchOptions = {
 export type FtpWorkerLauncher = (workerPath: string, args: string[], options: FtpWorkerLaunchOptions) => UtilityProcess;
 
 const MAX_PENDING_REQUESTS = 128;
+export const MAX_ACTIVE_FTP_SESSIONS = 32;
 const OPEN_TIMEOUT_MS = 45_000;
 const LIST_TIMEOUT_MS = 20_000;
 const ACTION_TIMEOUT_MS = 5_000;
@@ -52,7 +53,7 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
   }
 
   async open(sessionId: string, endpoint: FtpEndpoint, credentials: FtpCredentials, cancellation?: CancellationSignal): Promise<void> {
-    if (this.sessions.has(sessionId)) throw new FtpFilesProviderError('BUSY');
+    if (this.sessions.has(sessionId) || this.sessions.size >= MAX_ACTIVE_FTP_SESSIONS) throw new FtpFilesProviderError('BUSY');
     this.sessions.add(sessionId);
     const credentialsCopy = { username: credentials.username, password: credentials.password };
     const request = { version: FTP_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open', sessionId,

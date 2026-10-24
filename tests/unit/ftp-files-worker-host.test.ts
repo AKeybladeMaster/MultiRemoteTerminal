@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import type { UtilityProcess } from 'electron';
-import { FtpFilesWorkerHost } from '../../apps/desktop/src/adapters/ftp-files-worker-host.ts';
+import { FtpFilesWorkerHost, MAX_ACTIVE_FTP_SESSIONS } from '../../apps/desktop/src/adapters/ftp-files-worker-host.ts';
 
 class FakeFtpWorker extends EventEmitter {
   readonly requests: Array<Record<string, unknown>> = [];
@@ -75,5 +75,30 @@ test('a stale FTP worker exit cannot clear a replacement worker session or reque
   staleWorker.emit('exit', 0);
   replacementWorker.reply(listRequest.requestId as string, { path: '/', entries: [], truncated: false });
   assert.deepEqual(await listing, { ok: true, value: { path: '/', entries: [], truncated: false } });
+  await host.shutdown();
+});
+
+test('FTP worker host caps active connections and releases capacity after close', async () => {
+  const workers: FakeFtpWorker[] = [];
+  const host = new FtpFilesWorkerHost('ftp-worker.js', 'desktop-app', () => {
+    const worker = new FakeFtpWorker(false, true);
+    workers.push(worker);
+    return worker as unknown as UtilityProcess;
+  });
+  const sessionId = (index: number) => `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`;
+  const endpoint = { host: 'files.example.net', port: 21, secure: true };
+  const credentials = { username: 'alice', password: 'secret' };
+
+  await Promise.all(Array.from({ length: MAX_ACTIVE_FTP_SESSIONS }, (_, index) =>
+    host.open(sessionId(index), endpoint, credentials)));
+  assert.equal(workers.length, 1);
+  const worker = workers[0];
+  assert.ok(worker);
+  assert.equal(worker.requests.filter(request => request.command === 'open').length, MAX_ACTIVE_FTP_SESSIONS);
+  await assert.rejects(host.open(sessionId(MAX_ACTIVE_FTP_SESSIONS), endpoint, credentials), { code: 'BUSY' });
+
+  await host.close(sessionId(0));
+  await host.open(sessionId(MAX_ACTIVE_FTP_SESSIONS), endpoint, credentials);
+  assert.equal(worker.requests.filter(request => request.command === 'open').length, MAX_ACTIVE_FTP_SESSIONS + 1);
   await host.shutdown();
 });
