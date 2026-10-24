@@ -16,7 +16,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
-    'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
+    'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
     'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
@@ -310,6 +310,31 @@ test('preload routes saved-session commands through fixed validated requests', a
   }, id);
   const reply = await bridge.createSavedSession({ kind: 'local', name: 'Work shell', shell: 'powershell' });
   assert.equal(reply.ok, true);
+});
+
+test('preload routes macro library operations through fixed credential-free commands', async () => {
+  const macroId = '7c08b18a-57cc-4b44-a8b3-2d404850e81c';
+  const definition = { id: macroId, schemaVersion: 1 as const, name: 'Health check', steps: [{ kind: 'send' as const, text: 'whoami' }],
+    createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return request.command === 'macro.list'
+      ? { requestId: request.requestId, ok: true, result: [definition] }
+      : request.command === 'macro.delete'
+        ? { requestId: request.requestId, ok: true, result: {} }
+        : { requestId: request.requestId, ok: true, result: definition };
+  }, id);
+  assert.equal((await bridge.listMacros()).ok, true);
+  assert.equal((await bridge.createMacro({ name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] })).ok, true);
+  assert.equal((await bridge.updateMacro(macroId, { name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] })).ok, true);
+  assert.equal((await bridge.deleteMacro(macroId)).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'macro.list', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'macro.create', requestId: id(), contractVersion: 1, payload: { name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] } },
+    { command: 'macro.update', requestId: id(), contractVersion: 1, payload: { id: macroId, name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] } },
+    { command: 'macro.delete', requestId: id(), contractVersion: 1, payload: { id: macroId } }
+  ]);
 });
 
 test('preload forwards host-trust reset only for the supplied canonical endpoint', async () => {

@@ -8,6 +8,7 @@ import type { FtpFilesController } from '../../../../packages/application/src/ft
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
+import type { MacroCatalog } from '../../../../packages/application/src/macros.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -58,6 +59,7 @@ export interface CommandActions {
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
+  readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
 }
 
@@ -102,7 +104,7 @@ export async function dispatchCommand(
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
-        parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop') actions.noteUserActivity();
+        parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -270,6 +272,13 @@ export async function dispatchCommand(
       case 'session.folder.export': return { requestId, ...await actions.sessionCatalog.exportFolder(parsed.result.payload.id, actions.cancellation) };
       case 'session.folder.import': return { requestId, ...await actions.sessionCatalog.importFolder(actions.cancellation) };
       case 'session.move': return { requestId, ...await actions.sessionCatalog.moveSession(parsed.result.payload.id, parsed.result.payload.folderId, actions.cancellation) };
+      case 'macro.list': return { requestId, ...await actions.macros.list(actions.cancellation) };
+      case 'macro.create': return { requestId, ...await actions.macros.create(parsed.result.payload, actions.cancellation) };
+      case 'macro.update': {
+        const { id, ...draft } = parsed.result.payload;
+        return { requestId, ...await actions.macros.update(id, draft, actions.cancellation) };
+      }
+      case 'macro.delete': return { requestId, ...await actions.macros.remove(parsed.result.payload.id, actions.cancellation) };
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };
       case 'tunnel.delete': return { requestId, ...await actions.tunnels.remove(parsed.result.payload.id) };

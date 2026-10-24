@@ -331,6 +331,48 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .tunnel-actions .ssh-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 650; }
 .tunnel-actions .tunnel-delete { color: var(--error); }
 .tunnel-actions .tunnel-stop { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.macro-backdrop { z-index: 9; }
+.macro-manager { width: min(1040px, 100%); }
+.macro-manager-body { grid-template-columns: minmax(220px, .72fr) minmax(390px, 1.28fr); }
+.macro-list-item { grid-template-columns: 17px minmax(0, 1fr); align-items: center; min-height: 60px; }
+.macro-list-item:disabled { opacity: .72; cursor: default; }
+.macro-list-mark { color: var(--accent); font-size: 19px; line-height: 1; }
+.macro-editor-column { padding-bottom: 22px; }
+.macro-empty-editor { display: grid; justify-items: start; gap: 10px; max-width: 440px; margin: 26px auto; }
+.macro-empty-editor h3 { margin: 0; font-size: 17px; }
+.macro-empty-editor p { margin: 0; color: var(--muted); line-height: 1.5; }
+.macro-storage-warning { margin: -8px 22px 14px; padding: 9px 11px; border-left: 3px solid #e59d32; background: color-mix(in srgb, #e59d32 12%, var(--surface)); color: var(--text); font-size: 11px; line-height: 1.45; }
+.macro-storage-warning strong { margin-right: 4px; }
+.macro-form input:focus-visible, .macro-form select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.macro-form label span, .macro-steps-heading small { color: var(--muted); font-size: 10px; font-weight: 400; }
+.macro-steps-heading { display: flex; align-items: end; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.macro-steps-heading > div:first-child { display: grid; gap: 3px; }
+.macro-add-step { display: flex; min-width: min(300px, 68%); gap: 5px; }
+.macro-add-step select, .macro-step-heading select {
+  min-height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 3px; outline: 0;
+  background: var(--surface-raised); color: var(--text); font-size: 11px;
+}
+.macro-add-step select { flex: 1 1 auto; width: 0; }
+.macro-add-step button { flex: 0 0 auto; min-height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); font-size: 11px; cursor: pointer; }
+.macro-add-step button:disabled { opacity: .55; cursor: default; }
+.macro-no-steps { margin: 0; padding: 13px 10px; border: 1px dashed var(--line); border-radius: 3px; color: var(--muted); font-size: 12px; }
+.macro-steps { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.macro-step { display: grid; gap: 6px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 3px; background: color-mix(in srgb, var(--canvas) 35%, var(--surface)); }
+.macro-step-heading { display: flex; align-items: center; gap: 5px; min-width: 0; margin-bottom: 2px; }
+.macro-step-number { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; background: var(--surface-raised); color: var(--accent); font: 11px "Cascadia Mono", Consolas, monospace; }
+.macro-step-heading select { flex: 1 1 auto; min-width: 100px; }
+.macro-step-heading button { min-width: 30px; min-height: 30px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); cursor: pointer; }
+.macro-step-heading button:disabled { opacity: .45; cursor: default; }
+.macro-step-heading .macro-remove-step { padding: 4px 7px; color: var(--error); font-size: 10px; }
+.macro-step > label { margin-top: 2px; }
+.macro-step > input { width: 100%; min-width: 0; min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: var(--terminal-background); color: var(--text); }
+.macro-step > input[type="number"] { max-width: 220px; font-variant-numeric: tabular-nums; }
+.macro-step-summary { margin: 0; overflow: hidden; color: var(--muted); font: 10px/1.45 "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.macro-delete-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--error) 55%, var(--line)); border-radius: 3px; background: color-mix(in srgb, var(--error) 8%, var(--surface)); }
+.macro-delete-confirm p { flex: 1 1 100%; margin: 0; font-size: 12px; }
+.macro-delete-confirm button { min-height: 32px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); cursor: pointer; }
+.macro-delete-confirm .macro-delete-confirm-button { border-color: var(--error); background: var(--error); color: var(--canvas); font-weight: 650; }
+.macro-actions { flex-wrap: wrap; }
 .ssh-trust-dialog.changed { border-top: 3px solid var(--error); }
 .ssh-trust-dialog.changed .dialog-eyebrow { color: var(--error); }
 .ssh-host-facts { display: grid; gap: 11px; margin: 18px 0 0; }
@@ -359,6 +401,10 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 @media (max-width: 720px) {
   .tunnel-manager-body { grid-template-columns: minmax(0, 1fr); overflow: auto; overscroll-behavior: contain; }
   .tunnel-list-column { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .macro-manager-body { overflow: auto; }
+  .macro-manager-body .tunnel-list-column { max-height: 170px; }
+  .macro-manager-body .macro-editor-column { min-height: 320px; overflow: visible; padding-right: 15px; padding-left: 15px; }
+  .macro-add-step { min-width: 200px; }
   .tunnel-list { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   .tunnel-editor-column { overflow: visible; }
   .tunnel-actions { position: static; margin: 8px 0 0; padding: 0; border: 0; }

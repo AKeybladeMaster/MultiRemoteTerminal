@@ -275,3 +275,26 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
   assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 }), true);
   assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 }), false);
 });
+
+test('macro IPC accepts only typed steps and credential-free replies', () => {
+  const macroId = '7c08b18a-57cc-4b44-a8b3-2d404850e81c';
+  const draft = { name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] };
+  const create = { command: 'macro.create', requestId: request.requestId, contractVersion: 1, payload: draft };
+  const update = { command: 'macro.update', requestId: request.requestId, contractVersion: 1, payload: { id: macroId, ...draft } };
+  const list = { command: 'macro.list', requestId: request.requestId, contractVersion: 1, payload: {} };
+  assert.equal(parseRequest(create).ok, true);
+  assert.equal(parseRequest(update).ok, true);
+  assert.equal(parseRequest(list).ok, true);
+  assert.equal(parseRequest({ ...create, payload: { ...draft, password: 'must not persist' } }).ok, false);
+  assert.equal(parseRequest({ ...create, payload: { name: 'Unsafe', steps: [{ kind: 'send', text: 'whoami\nshutdown' }] } }).ok, false);
+  assert.equal(parseRequest({ command: 'macro.delete', requestId: request.requestId, contractVersion: 1, payload: { id: 'bad' } }).ok, false);
+
+  const definition = { id: macroId, schemaVersion: 1, ...draft, createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
+  const parsedList = parseRequest(list);
+  const parsedCreate = parseRequest(create);
+  if (parsedList.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: [definition] }, parsedList.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: [{ ...definition, password: 'hidden' }] }, parsedList.result), false);
+  }
+  if (parsedCreate.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: definition }, parsedCreate.result), true);
+});

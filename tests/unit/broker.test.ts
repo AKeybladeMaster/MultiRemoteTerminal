@@ -13,6 +13,8 @@ const snapshot = () => describeWorkbench({ version: '0.0.0', platform: 'win32' }
 const noOp = async () => ({ ok: true, result: {} } as const);
 const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId: null, kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
   createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
+const emptyMacro = { id: '7c08b18a-57cc-4b44-a8b3-2d404850e81c', schemaVersion: 1 as const, name: 'Build', steps: [],
+  createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
   authorizeFtpConsent: () => false,
@@ -48,6 +50,11 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp,
     exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
     importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
+  }, macros: {
+    list: async () => ({ ok: true, result: [] }),
+    create: async () => ({ ok: true, result: emptyMacro }),
+    update: async () => ({ ok: true, result: emptyMacro }),
+    remove: noOp
   }, tunnels: {
     list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
@@ -104,6 +111,30 @@ test('SSH broker resolves selected gateway profile IDs before opening the route'
     { host: 'first.example.net', port: 2201 },
     { host: 'second.example.net', port: 2202 }
   ]]);
+});
+
+test('macro catalog commands reach only the typed catalog and count as user activity', async () => {
+  const calls: string[] = [];
+  const updateCalls: unknown[] = [];
+  let activity = 0;
+  const base = actions(snapshot, () => { activity++; });
+  const tracked: CommandActions = { ...base, macros: {
+    async list() { calls.push('list'); return { ok: true, result: [emptyMacro] }; },
+    async create() { calls.push('create'); return { ok: true, result: emptyMacro }; },
+    async update(id, draft) { calls.push('update'); updateCalls.push({ id, draft }); return { ok: true, result: emptyMacro }; },
+    async remove() { calls.push('remove'); return { ok: true, result: {} }; }
+  } };
+  const requests = [
+    { command: 'macro.list', payload: {} },
+    { command: 'macro.create', payload: { name: 'Build', steps: [] } },
+    { command: 'macro.update', payload: { id: emptyMacro.id, name: 'Build', steps: [] } },
+    { command: 'macro.delete', payload: { id: emptyMacro.id } }
+  ];
+  const replies = await Promise.all(requests.map(item => dispatchCommand(owner, { ...item, requestId: request.requestId, contractVersion: 1 }, tracked, () => {})));
+  assert.equal(replies.every(reply => reply.ok), true);
+  assert.deepEqual(calls, ['list', 'create', 'update', 'remove']);
+  assert.deepEqual(updateCalls, [{ id: emptyMacro.id, draft: { name: 'Build', steps: [] } }]);
+  assert.equal(activity, 4);
 });
 
 test('Telnet open requires a fresh plaintext-consent gesture at the main-process broker', async () => {

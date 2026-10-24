@@ -27,6 +27,8 @@ import { isSshTunnelDefinition, isTunnelId, isTunnelRunStatus, normalizeSshTunne
 import type { SshTunnelDefinition, SshTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
 import { isSshGatewayProfileIds } from '../../domain/src/ssh-route.ts';
 import type { SshTunnelSnapshot } from '../../application/src/ssh-tunnels.ts';
+import { isMacroId, isMacroDefinition, normalizeMacroDraft } from '../../domain/src/macro.ts';
+import type { MacroDefinition, MacroDraft } from '../../domain/src/macro.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -119,6 +121,10 @@ export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string
 export type DeleteSshTunnelRequest = Request<'tunnel.delete', { readonly id: string }>;
 export type StartSshTunnelRequest = Request<'tunnel.start', { readonly id: string }>;
 export type StopSshTunnelRequest = Request<'tunnel.stop', { readonly id: string }>;
+export type ListMacrosRequest = Request<'macro.list', Record<string, never>>;
+export type CreateMacroRequest = Request<'macro.create', { readonly name: string; readonly description?: string; readonly steps: MacroDraft['steps'] }>;
+export type UpdateMacroRequest = Request<'macro.update', { readonly id: string; readonly name: string; readonly description?: string; readonly steps: MacroDraft['steps'] }>;
+export type DeleteMacroRequest = Request<'macro.delete', { readonly id: string }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | DownloadSshFileRequest | CancelSshTransferRequest |
@@ -126,7 +132,8 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
-  ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest;
+  ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
+  ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -151,6 +158,8 @@ export type ImportSessionFolderReply = CommandReply<SessionFolderImportResult>;
 export type ListSshTunnelsReply = CommandReply<readonly SshTunnelSnapshot[]>;
 export type SaveSshTunnelReply = CommandReply<SshTunnelDefinition>;
 export type TunnelStatusReply = CommandReply<TunnelRunStatus>;
+export type ListMacrosReply = CommandReply<readonly MacroDefinition[]>;
+export type MacroDefinitionReply = CommandReply<MacroDefinition>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 
 export interface DesktopBridge {
@@ -206,6 +215,10 @@ export interface DesktopBridge {
   deleteTunnel(id: string): Promise<TerminalActionReply>;
   startTunnel(id: string): Promise<TunnelStatusReply>;
   stopTunnel(id: string): Promise<TunnelStatusReply>;
+  listMacros(): Promise<ListMacrosReply>;
+  createMacro(draft: MacroDraft): Promise<MacroDefinitionReply>;
+  updateMacro(id: string, draft: MacroDraft): Promise<MacroDefinitionReply>;
+  deleteMacro(id: string): Promise<TerminalActionReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
@@ -381,6 +394,13 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     if (value.command === 'tunnel.start') return { ok: true, result: value as unknown as StartSshTunnelRequest };
     return { ok: true, result: value as unknown as StopSshTunnelRequest };
   }
+  if (value.command === 'macro.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListMacrosRequest };
+  if (value.command === 'macro.create' && normalizeMacroDraft(payload)) return { ok: true, result: value as unknown as CreateMacroRequest };
+  if (value.command === 'macro.update' && (exactKeys(payload, ['id', 'name', 'steps']) || exactKeys(payload, ['id', 'name', 'description', 'steps'])) && isMacroId(payload.id) &&
+      normalizeMacroDraft({ name: payload.name, ...(Object.hasOwn(payload, 'description') ? { description: payload.description } : {}), steps: payload.steps })) {
+    return { ok: true, result: value as unknown as UpdateMacroRequest };
+  }
+  if (value.command === 'macro.delete' && exactKeys(payload, ['id']) && isMacroId(payload.id)) return { ok: true, result: value as unknown as DeleteMacroRequest };
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.download', 'ssh.files.cancel',
@@ -388,7 +408,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
-    'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop'].includes(value.command)) {
+    'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -463,6 +483,9 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'tunnel.start' || request.command === 'tunnel.stop') {
       return isTunnelRunStatus(value.result) && value.result.tunnelId === request.payload.id;
     }
+    if (request.command === 'macro.list') return Array.isArray(value.result) && value.result.every(isMacroDefinition);
+    if (request.command === 'macro.create' || request.command === 'macro.update') return isMacroDefinition(value.result);
+    if (request.command === 'macro.delete') return record(value.result) && exactKeys(value.result, []);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

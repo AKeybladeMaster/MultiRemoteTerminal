@@ -3,10 +3,12 @@ import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSess
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
+import type { ListMacrosReply, MacroDefinitionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
+import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -73,7 +75,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     try {
       return Promise.race([received, new Promise<CommandReply<T>>(resolve => {
         timer = setTimeout(() => {
-          if (request.command.startsWith('session.') || request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.')) {
+          if (request.command.startsWith('session.') || request.command.startsWith('macro.') || request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.')) {
             const reportTimeout = () => resolve({ requestId, ...failure('TIMEOUT') });
             try { void Promise.resolve(cancelCatalogRequest(requestId)).then(reportTimeout, reportTimeout); }
             catch { reportTimeout(); }
@@ -254,7 +256,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
-    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete', payload: Record<string, unknown>): CommandRequest {
+    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete' | 'macro.delete', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -384,6 +386,18 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     listSavedSessions(query: string): Promise<ListSessionsReply> {
       return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);
+    },
+    listMacros(): Promise<ListMacrosReply> {
+      return send({ command: 'macro.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    createMacro(draft: MacroDraft): Promise<MacroDefinitionReply> {
+      return send({ command: 'macro.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
+    },
+    updateMacro(id: string, draft: MacroDraft): Promise<MacroDefinitionReply> {
+      return send({ command: 'macro.update', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id, ...draft } }, 8_000);
+    },
+    deleteMacro(id: string): Promise<TerminalActionReply> {
+      return send(voidRequest('macro.delete', { id }), 8_000);
     },
     createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
       return send({ command: 'session.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);

@@ -1540,6 +1540,69 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
   }
 });
 
+test('macro library creates, edits, persists and deletes typed steps', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-library-e2e-'));
+  let app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const openMacros = page.getByRole('button', { name: 'Macros', exact: true });
+    await openMacros.click();
+    let dialog = page.getByRole('dialog', { name: 'Macros' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText('No macros saved yet.')).toBeVisible();
+    await expect(dialog.getByText(/Keep secrets out of macro fields\./)).toBeVisible();
+    await dialog.getByRole('button', { name: 'New macro', exact: true }).click();
+    const name = dialog.getByLabel('Name', { exact: true });
+    await expect(name).toBeFocused();
+    await name.fill('Deploy checklist');
+    await dialog.getByLabel('Description').fill('Review and deploy');
+    await dialog.getByLabel('Step type to add').selectOption('waitForText');
+    await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+    await dialog.getByLabel('Text to wait for').fill('Ready');
+    await dialog.getByLabel('Timeout (milliseconds)').fill('12000');
+    await dialog.getByLabel('Step type to add').selectOption('send');
+    await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+    const command = dialog.getByLabel('Command', { exact: true });
+    await command.fill('Write-Output deployed');
+    await expect(command).toHaveValue('Write-Output deployed');
+    await expect(dialog.getByRole('button', { name: 'Create macro', exact: true })).toBeEnabled();
+    await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
+    const macroRow = dialog.getByRole('button', { name: /Deploy checklist/ });
+    await expect(macroRow).toBeVisible();
+    await expect(macroRow).toContainText('2 steps');
+    await expect(dialog.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
+
+    await dialog.getByLabel('Description').fill('Review, verify, and deploy');
+    await dialog.getByLabel('Step type to add').selectOption('confirm');
+    await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+    await dialog.getByLabel('Confirmation message').fill('Proceed with deployment?');
+    await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: /Deploy checklist/ })).toContainText('3 steps');
+    await expect(dialog.getByRole('button', { name: /Deploy checklist/ })).toContainText('Review, verify, and deploy');
+    await dialog.getByRole('button', { name: 'Close macro manager', exact: true }).click();
+    await expect(openMacros).toBeFocused();
+
+    await app.close();
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Macros' });
+    await expect(dialog.getByRole('button', { name: /Deploy checklist/ })).toContainText('3 steps');
+    await dialog.getByRole('button', { name: /Deploy checklist/ }).click();
+    await expect(dialog.getByLabel('Description')).toHaveValue('Review, verify, and deploy');
+    await expect(dialog.getByLabel('Confirmation message')).toHaveValue('Proceed with deployment?');
+    await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Delete macro', exact: true }).click();
+    await expect(dialog.getByText('No macros saved yet.')).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only actions', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-tab-actions-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
@@ -1995,7 +2058,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
       'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
       'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
-      'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+      'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
       'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
