@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { connect as connectTcp, createServer } from 'node:net';
-import type { Server, Socket } from 'node:net';
+import { Socket, connect as connectTcp, createServer } from 'node:net';
+import type { Server } from 'node:net';
 import { createSshTransportProvider } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshTransportChannel as ClientChannel, SshTransportClient as Client, SshTransportConfig as ConnectConfig } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshHostKeyParser } from '../../apps/desktop/src/adapters/host-key-evidence.ts';
@@ -274,6 +274,65 @@ test('dynamic SSH forwarding handles SOCKS5 no-auth CONNECT and rejects unsuppor
   } finally {
     await provider.close(sessionId);
     await closeServer(target);
+  }
+});
+
+test('dynamic SOCKS rejection keeps its connection counted until close and releases the slots', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const sockets: Socket[] = [];
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333343', sessionId, name: 'Bounded SOCKS proxy', mode: 'dynamic' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+
+    const rejectMalformedGreeting = (): Promise<Buffer> => new Promise(resolve => {
+      const socket = new Socket({ allowHalfOpen: true });
+      sockets.push(socket);
+      let received = Buffer.alloc(0);
+      socket.connect(bindPort, '127.0.0.1');
+      socket.once('connect', () => socket.write(Buffer.from([4, 0])));
+      socket.on('data', chunk => {
+        received = Buffer.concat([received, chunk]);
+        if (received.length >= 2) resolve(received);
+      });
+      socket.once('close', () => resolve(received));
+      socket.once('error', () => resolve(received));
+    });
+
+    const initialReplies = await Promise.all(Array.from({ length: 64 }, rejectMalformedGreeting));
+    for (const reply of initialReplies) assert.deepEqual(reply, Buffer.from([5, 0xff]));
+
+    const overflowReply = await rejectMalformedGreeting();
+    assert.equal(overflowReply.length, 0, 'the 65th socket is dropped while 64 rejected client sockets remain open');
+
+    const clientCloseEvents = sockets.map(socket => socket.destroyed ? Promise.resolve() : new Promise<void>(resolve => socket.once('close', resolve)));
+    for (const socket of sockets) socket.destroy();
+    await Promise.all(clientCloseEvents);
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    const availableSlot = new Socket({ allowHalfOpen: true });
+    sockets.push(availableSlot);
+    const methodReply = new Promise<Buffer>(resolve => {
+      let received = Buffer.alloc(0);
+      availableSlot.connect(bindPort, '127.0.0.1');
+      availableSlot.once('connect', () => availableSlot.write(Buffer.from([5, 1, 0])));
+      availableSlot.on('data', chunk => {
+        received = Buffer.concat([received, chunk]);
+        if (received.length >= 2) resolve(received);
+      });
+      availableSlot.once('close', () => resolve(received));
+      availableSlot.once('error', () => resolve(received));
+    });
+    assert.deepEqual(await methodReply, Buffer.from([5, 0]), 'closed rejected sockets release their connection slots');
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await provider.close(sessionId);
+    context.mock.timers.reset();
   }
 });
 

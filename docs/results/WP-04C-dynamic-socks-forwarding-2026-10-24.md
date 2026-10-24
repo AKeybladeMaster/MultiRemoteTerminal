@@ -16,9 +16,10 @@
   the requested destination through SSH `forwardOut`, so domain names are sent
   to the SSH server for resolution.
 - Unsupported authentication methods, BIND, UDP ASSOCIATE, malformed fields and
-  unsupported address types are rejected. The existing 64-connection cap and
-  15-second setup deadline cover dynamic connections. Stop and shutdown dispose
-  the listener, local sockets and SSH channels.
+  unsupported address types are rejected. The 64-connection cap includes
+  rejected SOCKS sockets until they close; the 15-second setup deadline covers
+  dynamic connections. Stop and shutdown dispose the listener, local sockets
+  and SSH channels.
 - Saved definitions restore stopped; no tunnel starts automatically.
 
 ## Validation
@@ -26,9 +27,9 @@
 `corepack pnpm check` passed on Windows x64 with Node 24.14.1 and Electron 45:
 
 - TypeScript checks, ESLint and static import-boundary checks passed.
-- All 223 unit/adapter tests passed, including dynamic model, worker IPC,
+- All 224 unit/adapter tests passed, including dynamic model, worker IPC,
   SQLite persistence, IPv4 CONNECT relay, IPv6 destination routing, unsupported
-  request rejection and listener cleanup.
+  request rejection, listener cleanup and a 64-socket rejection-cap regression.
 - Native and renderer builds passed. Vite reports the existing advisory that
   the 643.98 kB minified renderer bundle exceeds its 500 kB warning threshold.
 - All 16 Electron E2E scenarios passed. The forwarding scenario verifies the
@@ -43,6 +44,13 @@ The first full E2E run had one saved-session menu focus assertion failure.
 That test passed in isolation and on five consecutive repeats; the complete
 check was rerun and all 16 E2E scenarios passed. No saved-session code changed
 in this slice.
+
+Independent review found that rejected SOCKS sockets left the 64-connection
+set before their close grace elapsed. A regression using half-open clients
+reproduced admission of a 65th socket; rejection now keeps each slot occupied
+until the socket close event, and the test verifies that closed sockets release
+their slots. The full check passed again with 224 unit/adapter tests and 16/16
+Windows E2E scenarios.
 
 ## Limits
 

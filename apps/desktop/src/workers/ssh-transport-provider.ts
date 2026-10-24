@@ -50,7 +50,7 @@ interface ForwardedConnection {
 
 interface SocksForwardedConnection extends ForwardedConnection {
   input: Buffer;
-  stage: 'methods' | 'request' | 'connecting' | 'connected';
+  stage: 'methods' | 'request' | 'connecting' | 'connected' | 'rejecting';
 }
 
 interface LocalForwardRuntime {
@@ -293,10 +293,10 @@ export function createSshTransportProvider(
 
   function acceptSocksConnection(session: RuntimeSession, forward: LocalForwardRuntime, socks: SocksForwardedConnection): void {
     const onData = (chunk: Buffer): void => {
-      if (socks.closed || socks.stage === 'connecting' || socks.stage === 'connected') return;
+      if (socks.closed || socks.stage === 'connecting' || socks.stage === 'connected' || socks.stage === 'rejecting') return;
       socks.input = Buffer.concat([socks.input, chunk]);
       if (socks.input.length > MAX_SOCKS_PENDING_BYTES) {
-        finishSocksConnection(forward, socks, Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]));
+        finishSocksConnection(socks, Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]));
         return;
       }
 
@@ -304,7 +304,7 @@ export function createSshTransportProvider(
         if (socks.input.length < 2) return;
         const methodCount = socks.input[1]!;
         if (socks.input[0] !== 5 || methodCount === 0) {
-          finishSocksConnection(forward, socks, Buffer.from([5, 0xff]));
+          finishSocksConnection(socks, Buffer.from([5, 0xff]));
           return;
         }
         const messageLength = 2 + methodCount;
@@ -314,7 +314,7 @@ export function createSshTransportProvider(
           if (socks.input[index] === 0) supportsNoAuthentication = true;
         }
         if (!supportsNoAuthentication) {
-          finishSocksConnection(forward, socks, Buffer.from([5, 0xff]));
+          finishSocksConnection(socks, Buffer.from([5, 0xff]));
           return;
         }
         socks.input = socks.input.subarray(messageLength);
@@ -325,11 +325,11 @@ export function createSshTransportProvider(
       const parsed = parseSocksConnectRequest(socks.input);
       if (parsed.kind === 'incomplete') return;
       if (parsed.kind === 'invalid') {
-        finishSocksConnection(forward, socks, socksReply(parsed.replyCode));
+        finishSocksConnection(socks, socksReply(parsed.replyCode));
         return;
       }
       if (parsed.command !== 1) {
-        finishSocksConnection(forward, socks, socksReply(7));
+        finishSocksConnection(socks, socksReply(7));
         return;
       }
 
@@ -343,7 +343,7 @@ export function createSshTransportProvider(
           if (socks.closed) { channel?.destroy(); return; }
           if (error || !channel || session.closing || sessions.get(session.sessionId) !== session || socks.socket.destroyed) {
             channel?.destroy();
-            finishSocksConnection(forward, socks, socksReply(mapSocksConnectionError(error)));
+            finishSocksConnection(socks, socksReply(mapSocksConnectionError(error)));
             return;
           }
           socks.channel = channel;
@@ -364,7 +364,7 @@ export function createSshTransportProvider(
           });
         });
       } catch {
-        finishSocksConnection(forward, socks, socksReply(1));
+        finishSocksConnection(socks, socksReply(1));
       }
     };
 
@@ -373,11 +373,10 @@ export function createSshTransportProvider(
     socks.socket.resume();
   }
 
-  function finishSocksConnection(forward: LocalForwardRuntime, connection: ForwardedConnection, response: Buffer): void {
-    if (connection.closed) return;
-    connection.closed = true;
+  function finishSocksConnection(connection: SocksForwardedConnection, response: Buffer): void {
+    if (connection.closed || connection.stage === 'rejecting') return;
+    connection.stage = 'rejecting';
     clearTimeout(connection.timer);
-    forward.connections.delete(connection);
     try { connection.channel?.destroy(); } catch { /* The response is still sent to the local client. */ }
     const socket = connection.socket;
     const timer = setTimeout(() => socket.destroy(), SOCKS_REJECT_CLOSE_GRACE_MS);
