@@ -288,6 +288,185 @@ test('Telnet requires plaintext consent and carries terminal input through the w
   }
 });
 
+test('FTP shows plaintext risk, browses through the utility worker, and persists a credential-free profile for reconnect', async () => {
+  test.setTimeout(75_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ftp-e2e-'));
+  const controlSockets = new Set<Socket>();
+  let connectionCount = 0;
+  let acceptedUsername = false;
+  let acceptedPassword = false;
+  const ftpCommandVerbs: string[] = [];
+  const ftpListArguments: string[] = [];
+  const control = createServer(socket => {
+    controlSockets.add(socket);
+    socket.on('error', () => {});
+    socket.once('close', () => controlSockets.delete(socket));
+    connectionCount++;
+    socket.write('220 MRT FTP fixture ready\r\n');
+    let input = '';
+    let passive: ReturnType<typeof createServer> | undefined;
+    let transferSocket: Socket | undefined;
+    let listRequested = false;
+    let requestedListingPath = '.';
+    let transferStarted = false;
+    const reply = (line: string) => { if (!socket.destroyed) socket.write(`${line}\r\n`); };
+    const beginPassive = (extended: boolean) => {
+      passive?.close();
+      passive = createServer(dataSocket => {
+        transferSocket = dataSocket;
+        dataSocket.once('error', () => {});
+        if (listRequested) sendListing();
+      });
+      passive.on('error', () => {});
+      transferSocket = undefined;
+      listRequested = false;
+      transferStarted = false;
+      passive.listen(0, '127.0.0.1', () => {
+        const address = passive?.address();
+        if (!address || typeof address === 'string') { reply('425 Could not start passive mode'); return; }
+        if (extended) reply(`229 Entering Extended Passive Mode (|||${address.port}|)`);
+        else {
+          const high = Math.floor(address.port / 256);
+          const low = address.port % 256;
+          reply(`227 Entering Passive Mode (127,0,0,1,${high},${low})`);
+        }
+      });
+    };
+    const sendListing = () => {
+      if (transferStarted || !transferSocket) return;
+      transferStarted = true;
+      const requestedName = requestedListingPath.trim().split(/\s+/u).at(-1)?.replace(/\/+$/u, '').split('/').at(-1);
+      const listing = requestedName === 'documents'
+        ? '-rw-r--r-- 1 owner group 18 Oct 24 12:00 nested.txt\r\n'
+        : '-rw-r--r-- 1 owner group 12 Oct 24 12:00 readme.txt\r\ndrwxr-xr-x 1 owner group 0 Oct 24 12:00 documents\r\n';
+      transferSocket.end(listing);
+      transferSocket.once('close', () => {
+        reply('226 Directory send complete');
+        passive?.close();
+        passive = undefined;
+      });
+    };
+    socket.on('data', chunk => {
+      input += chunk.toString('utf8');
+      for (;;) {
+        const newline = input.indexOf('\n');
+        if (newline < 0) break;
+        const command = input.slice(0, newline).replace(/\r$/u, '');
+        input = input.slice(newline + 1);
+        const [verb, ...arguments_] = command.split(' ');
+        ftpCommandVerbs.push(verb ?? '');
+        const argument = arguments_.join(' ');
+        if (verb === 'USER') { acceptedUsername ||= argument === 'mrt-e2e-user'; reply('331 Password required'); }
+        else if (verb === 'PASS') { acceptedPassword ||= argument === 'ftp-e2e-secret'; reply(argument === 'ftp-e2e-secret' ? '230 Login successful' : '530 Login incorrect'); }
+        else if (verb === 'FEAT') socket.write('211-Features\r\n EPSV\r\n PASV\r\n211 End\r\n');
+        else if (verb === 'SYST') reply('215 UNIX Type: L8');
+        else if (verb === 'TYPE' || verb === 'OPTS' || verb === 'NOOP') reply('200 Command okay');
+        else if (verb === 'PWD') reply('257 "/" is current directory');
+        else if (verb === 'CWD') reply('250 Directory changed');
+        else if (verb === 'PASV') beginPassive(false);
+        else if (verb === 'EPSV') beginPassive(true);
+        else if (verb === 'LIST' || verb === 'NLST') {
+          requestedListingPath = argument || '.';
+          ftpListArguments.push(argument);
+          listRequested = true;
+          reply('150 Opening data connection');
+          sendListing();
+        }
+        else if (verb === 'QUIT') { reply('221 Goodbye'); socket.end(); }
+        else reply('502 Command not implemented');
+      }
+    });
+    socket.once('close', () => passive?.close());
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const launch = async () => electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' }
+  });
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      control.once('error', rejectListen);
+      control.listen(0, '127.0.0.1', resolveListen);
+    });
+    const address = control.address() as AddressInfo;
+    app = await launch();
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to FTP / FTPS files', exact: true }).first().click();
+    let dialog = page.getByRole('dialog', { name: 'Connect to FTP or FTPS files' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    await dialog.getByLabel('Connection security').selectOption('ftp');
+    await expect(dialog.getByText(/sends the username, password, and file contents without encryption/i)).toBeVisible();
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+
+    const browser = page.getByTestId('remote-file-browser');
+    await expect(browser, `FTP fixture saw ${connectionCount} control connections, USER=${acceptedUsername}, PASS=${acceptedPassword}, commands=${ftpCommandVerbs.join(',')}, LIST arguments=${ftpListArguments.join('|')}`)
+      .toBeVisible({ timeout: 20_000 });
+    await expect(browser.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(browser.getByRole('button', { name: 'Open folder documents', exact: true })).toBeVisible();
+    await browser.getByRole('button', { name: 'Open folder documents', exact: true }).click();
+    await expect(browser.getByText('nested.txt', { exact: true }), `FTP LIST arguments=${ftpListArguments.join('|')}`).toBeVisible({ timeout: 10_000 });
+    await browser.getByRole('button', { name: 'Open parent folder', exact: true }).click();
+    await expect(browser.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 });
+    expect(acceptedUsername).toBe(true);
+    expect(acceptedPassword).toBe(true);
+    expect(await page.locator('body').innerText()).not.toContain('ftp-e2e-secret');
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('FTP loopback');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open FTP loopback', exact: true })).toBeVisible();
+
+    for (const socket of controlSockets) socket.destroy();
+    await browser.getByRole('button', { name: 'Refresh remote folder' }).click();
+    const reconnectButton = browser.getByRole('button', { name: 'Reconnect to file server' });
+    await expect(reconnectButton).toBeVisible({ timeout: 15_000 });
+    await reconnectButton.click();
+    dialog = page.getByRole('dialog', { name: 'Connect to FTP or FTPS files' });
+    await expect(dialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => connectionCount).toBe(2);
+
+    await page.getByRole('button', { name: 'Close active file session', exact: true }).click();
+    const closeDialog = page.getByRole('alertdialog');
+    await closeDialog.getByRole('button', { name: 'Close session', exact: true }).click();
+    await expect(page.getByRole('tab').filter({ hasText: /FTP \(plaintext\)/ })).toHaveCount(0);
+    await app.close();
+    app = undefined;
+
+    const database = new DatabaseSync(join(profile, 'multiremote-terminal.sqlite'), { readOnly: true });
+    try {
+      const saved = database.prepare('SELECT kind, host, port, username, credential_ref, options_json FROM session_definitions WHERE name = ?').get('FTP loopback') as {
+        readonly kind: string; readonly host: string; readonly port: number; readonly username: string | null;
+        readonly credential_ref: string | null; readonly options_json: string;
+      } | undefined;
+      expect(saved).toEqual({ kind: 'ftp', host: '127.0.0.1', port: address.port, username: null, credential_ref: null, options_json: '{"secure":false}' });
+    } finally { database.close(); }
+
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const savedProfile = page.getByRole('button', { name: 'Open FTP loopback', exact: true });
+    await expect(savedProfile).toBeVisible({ timeout: 15_000 });
+    await savedProfile.click();
+    dialog = page.getByRole('dialog', { name: 'Connect to FTP or FTPS files' });
+    await expect(dialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
+    await expect(dialog.getByLabel('Port')).toHaveValue(String(address.port));
+    await expect(dialog.getByLabel('Connection security')).toHaveValue('ftp');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => connectionCount).toBe(3);
+  } finally {
+    await app?.close();
+    for (const socket of controlSockets) socket.destroy();
+    if (control.listening) await new Promise<void>(resolveClose => control.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('saved sessions save, search, favorite, reopen and delete through the workbench', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-session-catalog-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
@@ -812,6 +991,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
+      'openFtpFiles', 'listFtpDirectory', 'closeFtpFiles',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',

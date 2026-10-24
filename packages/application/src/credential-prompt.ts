@@ -1,6 +1,6 @@
 import type { CancellationSignal } from './cancellation.ts';
 
-export type CredentialPromptPurpose = 'ssh-password' | 'ssh-key-passphrase' | 'master-password';
+export type CredentialPromptPurpose = 'ssh-password' | 'ssh-key-passphrase' | 'ftp-account' | 'master-password';
 
 export type CredentialPromptResult =
   | { readonly kind: 'provided'; readonly username: string; readonly secret: string }

@@ -3,6 +3,7 @@ import type { CommandReply } from '../../../../packages/contracts/src/commands.t
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
+import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -27,11 +28,13 @@ export interface CommandActions {
   readonly readClipboardText: () => Promise<string>;
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
+  readonly authorizeFtpConsent: (sessionId: string) => boolean;
   readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
 }
 
@@ -71,7 +74,8 @@ export async function dispatchCommand(
   try {
     if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
         parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close' ||
-        parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close') actions.noteUserActivity();
+        parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
+        parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.close') actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -157,6 +161,16 @@ export async function dispatchCommand(
         return { requestId, ...await actions.telnetTerminals.acknowledgeOutput(sessionId, sequence) };
       }
       case 'telnet.close': return { requestId, ...await actions.telnetTerminals.close(parsed.result.payload.sessionId) };
+      case 'ftp.open': {
+        const { sessionId, host, port, secure } = parsed.result.payload;
+        if (!secure && !actions.authorizeFtpConsent(sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.ftpFiles.open(sessionId, host, port, secure, actions.cancellation) };
+      }
+      case 'ftp.files.list': {
+        const { sessionId, path } = parsed.result.payload;
+        return { requestId, ...await actions.ftpFiles.listDirectory(sessionId, path, actions.cancellation) };
+      }
+      case 'ftp.close': return { requestId, ...await actions.ftpFiles.close(parsed.result.payload.sessionId) };
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
       case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite, actions.cancellation) };

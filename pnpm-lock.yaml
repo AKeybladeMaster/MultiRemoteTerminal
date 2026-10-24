@@ -208,6 +208,9 @@ importers:
       '@xterm/xterm':
         specifier: 6.0.0
         version: 6.0.0
+      basic-ftp:
+        specifier: 6.2.3
+        version: 6.2.3
       libsodium-wrappers-sumo:
         specifier: 0.8.4
         version: 0.8.4
@@ -690,6 +693,10 @@ packages:
   balanced-match@4.0.4:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
+
+  basic-ftp@6.2.3:
+    resolution: {integrity: sha512-T7GYtQ2eKJUN5YORG7A8u2WfB9JMN0a4/wl3MI64qq2qTRfa3FXzoNq0DDojZDkDyStcL+TkfKsz4JHEZx5kGQ==}
+    engines: {node: '>=10.0.0'}
 
   bcrypt-pbkdf@1.0.2:
     resolution: {integrity: sha512-qeFIXtP4MSoi6NLqO12WfqARWWuCKi2Rn/9hJLEmtB5yTNr9DqFWkJRCf2qShWzPeAMRnOgCrq0sg/KLv5ES9w==}
@@ -1602,6 +1609,8 @@ snapshots:
       safer-buffer: 2.1.2
 
   balanced-match@4.0.4: {}
+
+  basic-ftp@6.2.3: {}
 
   bcrypt-pbkdf@1.0.2:
     dependencies:

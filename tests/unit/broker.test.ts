@@ -15,6 +15,7 @@ const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId
   createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
+  authorizeFtpConsent: () => false,
   confirmMultilinePaste: async () => false, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
@@ -25,6 +26,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   }, telnetTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+  }, ftpFiles: {
+    async open(sessionId, host, port, secure) { return { ok: true, result: { sessionId, endpoint: { host, port, secure }, state: 'running' } }; },
+    listDirectory: async (_sessionId, path) => ({ ok: true, result: { path, entries: [], truncated: false } }), close: noOp
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptySavedSession }),
@@ -54,6 +58,49 @@ test('Telnet open requires a fresh plaintext-consent gesture at the main-process
     } } };
   assert.equal((await dispatchCommand(owner, input, authorized, () => {})).ok, true);
   assert.equal(connections, 1);
+});
+
+test('plain FTP requires a fresh consent gesture while FTPS and file operations use the typed broker', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const cancellation = new AbortController().signal;
+  let authorized = 0;
+  const calls: string[] = [];
+  const base = actions();
+  const tracked: CommandActions = { ...base, cancellation,
+    authorizeFtpConsent: id => { authorized++; return id === sessionId; },
+    ftpFiles: {
+      async open(id, host, port, secure, signal) {
+        calls.push(`open:${secure}:${id}`);
+        assert.equal(signal, cancellation);
+        return { ok: true, result: { sessionId: id, endpoint: { host, port, secure }, state: 'running' } };
+      },
+      async listDirectory(id, path, signal) {
+        calls.push(`list:${id}:${path}`);
+        assert.equal(signal, cancellation);
+        return { ok: true, result: { path, entries: [], truncated: false } };
+      },
+      async close(id) { calls.push(`close:${id}`); return { ok: true, result: {} }; }
+    }
+  };
+  const plaintext = { command: 'ftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'files.example.net', port: 21, secure: false } };
+  const denied = await dispatchCommand(owner, plaintext, base, () => {});
+  assert.equal(denied.ok, false);
+  assert.equal(authorized, 0);
+  assert.deepEqual(calls, []);
+
+  const permitted = await dispatchCommand(owner, plaintext, tracked, () => {});
+  assert.equal(permitted.ok, true);
+  const ftps = await dispatchCommand(owner, { ...plaintext, payload: { ...plaintext.payload, port: 21, secure: true } }, tracked, () => {});
+  assert.equal(ftps.ok, true);
+  assert.equal(authorized, 1, 'encrypted FTP does not consume the plaintext consent gate');
+  const listing = await dispatchCommand(owner, { command: 'ftp.files.list', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, path: '/home' } }, tracked, () => {});
+  const closed = await dispatchCommand(owner, { command: 'ftp.close', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, tracked, () => {});
+  assert.equal(listing.ok, true);
+  assert.equal(closed.ok, true);
+  assert.deepEqual(calls, [`open:false:${sessionId}`, `open:true:${sessionId}`, `list:${sessionId}:/home`, `close:${sessionId}`]);
 });
 
 test('valid sender reaches the application through its interface', async () => {

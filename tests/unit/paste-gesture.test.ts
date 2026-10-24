@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
-import { installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+import { installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -93,6 +93,46 @@ test('preload Telnet consent requires a trusted submit for the same endpoint and
   submit?.(event(true));
   now += 751;
   assert.equal(await gestures.consume(firstSession, 'console.example.com', 23), false, 'expired consent is rejected');
+  gestures.dispose();
+  assert.equal(submit, undefined);
+});
+
+test('preload plain FTP consent is trusted, endpoint-bound, one-shot, and unavailable for FTPS', async () => {
+  let now = 80;
+  let submit: ((event: Event) => void) | undefined;
+  const authorized: string[] = [];
+  const hostInput = { value: 'Files.Example.com.' };
+  const portInput = { value: '21' };
+  const securityInput = { value: 'ftp' };
+  const form = {
+    closest(selector: string) { return selector === 'form' ? this : null; },
+    querySelector(selector: string) {
+      if (selector === 'button[data-mrt-ftp-consent-trigger]') return {};
+      if (selector === 'input[name="host"]') return hostInput;
+      if (selector === 'input[name="port"]') return portInput;
+      if (selector === 'select[name="security"]') return securityInput;
+      return null;
+    }
+  };
+  const documentTarget = {
+    addEventListener(_type: 'submit', listener: (event: Event) => void) { submit = listener; },
+    removeEventListener(_type: 'submit', listener: (event: Event) => void) { if (submit === listener) submit = undefined; }
+  };
+  const gestures = installFtpConsentGestureStore(documentTarget, async sessionId => { authorized.push(sessionId); return true; }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'submit', isTrusted, target: form }) as unknown as Event;
+  submit?.(event(false));
+  assert.equal(await gestures.consume(firstSession, 'files.example.com', 21, false), false);
+  submit?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'files.example.com', 2121, false), false, 'consent cannot authorize another port');
+  submit?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'files.example.com', 21, true), false, 'plain consent cannot authorize FTPS or be reused');
+  submit?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'files.example.com', 21, false), true);
+  assert.equal(await gestures.consume(firstSession, 'files.example.com', 21, false), false, 'consent is one-shot');
+  assert.deepEqual(authorized, [firstSession]);
+  submit?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume(firstSession, 'files.example.com', 21, false), false, 'expired consent is rejected');
   gestures.dispose();
   assert.equal(submit, undefined);
 });

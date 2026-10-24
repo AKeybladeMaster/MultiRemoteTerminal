@@ -2,20 +2,26 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
 
-interface SftpPaneProps {
+interface RemoteFilesPaneProps {
   readonly sessionId: string;
   readonly active: boolean;
+  readonly transport: 'sftp' | 'ftp';
+  readonly onReconnect?: () => void;
 }
 
 const FILE_SIZE_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
-function describeError(code: string): string {
+function describeError(code: string, transport: 'sftp' | 'ftp'): string {
   if (code === 'NOT_SUPPORTED') return 'This SSH server did not open an SFTP subsystem. Check that SFTP is enabled on the server.';
-  if (code === 'TIMEOUT') return 'The remote file request timed out. Refresh to try a new SFTP channel.';
+  if (code === 'TIMEOUT') return transport === 'ftp'
+    ? 'The FTP connection timed out. Reconnect and enter your credentials again.'
+    : 'The remote file request timed out. Refresh to try a new SFTP channel.';
   if (code === 'BUSY') return 'A remote file request is still in progress. Try again shortly.';
-  if (code === 'NOT_FOUND') return 'This SSH connection is no longer active.';
+  if (code === 'NOT_FOUND') return transport === 'ftp' ? 'This FTP connection is no longer active.' : 'This SSH connection is no longer active.';
   if (code === 'OUTPUT_LIMIT') return 'The remote directory exceeds the configured listing limit.';
-  return 'The remote directory could not be read. Check the server path and permissions.';
+  return transport === 'ftp'
+    ? 'The FTP connection is no longer available. Reconnect and check the server path and permissions.'
+    : 'The remote directory could not be read. Check the server path and permissions.';
 }
 
 function formatFileSize(size: number): string {
@@ -32,9 +38,10 @@ function kindLabel(entry: RemoteFileEntry): string {
   return 'Other item';
 }
 
-export function SftpPane({ sessionId, active }: SftpPaneProps) {
+export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: RemoteFilesPaneProps) {
   const [listing, setListing] = useState<RemoteDirectoryListing>();
   const [error, setError] = useState<string>();
+  const [errorCode, setErrorCode] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [requestedPath, setRequestedPath] = useState<string>();
   const requestGeneration = useRef(0);
@@ -45,19 +52,23 @@ export function SftpPane({ sessionId, active }: SftpPaneProps) {
     const generation = ++requestGeneration.current;
     setLoading(true);
     setError(undefined);
+    setErrorCode(undefined);
     setRequestedPath(path);
-    const reply = await window.multiRemoteTerminal.listSshDirectory(sessionId, path);
+    const reply = transport === 'ftp'
+      ? await window.multiRemoteTerminal.listFtpDirectory(sessionId, path)
+      : await window.multiRemoteTerminal.listSshDirectory(sessionId, path);
     if (requestGeneration.current !== generation) return;
     setLoading(false);
     if (!reply.ok) {
-      setError(describeError(reply.error.code));
+      setError(describeError(reply.error.code, transport));
+      setErrorCode(reply.error.code);
       if (restoreFocus) requestAnimationFrame(() => pathRow.current?.focus());
       return;
     }
     setListing(reply.result);
     setRequestedPath(undefined);
     if (restoreFocus) requestAnimationFrame(() => pathRow.current?.focus());
-  }, [sessionId]);
+  }, [sessionId, transport]);
 
   useEffect(() => {
     if (active && !started.current) {
@@ -70,7 +81,7 @@ export function SftpPane({ sessionId, active }: SftpPaneProps) {
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
   return <aside className="remote-file-panel" aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser">
     <div className="remote-file-heading">
-      <h2>Remote files</h2>
+      <h2>{transport === 'ftp' ? 'FTP files' : 'Remote files'}</h2>
       <button type="button" className="remote-file-refresh" aria-label="Refresh remote folder" title="Refresh remote folder"
         disabled={loading} onClick={() => void load(requestedPath ?? listing?.path ?? '.')}>↻</button>
     </div>
@@ -81,6 +92,8 @@ export function SftpPane({ sessionId, active }: SftpPaneProps) {
     </div>
     {loading && <p className="remote-file-status" role="status">Reading remote directory…</p>}
     {error && <p className="remote-file-error" role="alert">{error}</p>}
+    {error && transport === 'ftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"
+      disabled={loading} onClick={onReconnect}>Reconnect to file server</button>}
     {!loading && !error && listing?.entries.length === 0 && <p className="remote-file-status" role="status">This folder is empty.</p>}
     {!loading && !error && listing && listing.entries.length > 0 && <p className="remote-file-status" role="status">
       {listing.entries.length} {listing.entries.length === 1 ? 'item' : 'items'} in this folder.

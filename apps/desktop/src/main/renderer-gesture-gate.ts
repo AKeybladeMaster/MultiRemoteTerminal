@@ -1,7 +1,7 @@
 const GESTURE_TTL_MS = 750;
 const MAX_PENDING_GESTURES = 64;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent';
+export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent';
 
 export class RendererGestureGate {
   private readonly expiresAtByGesture = new Map<string, number>();

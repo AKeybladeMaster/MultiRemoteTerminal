@@ -862,6 +862,23 @@
     },
     {
       "type": "library",
+      "name": "basic-ftp",
+      "version": "6.2.3",
+      "purl": "pkg:npm/basic-ftp@6.2.3",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/patrickjuchli/basic-ftp#readme"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "bcrypt-pbkdf",
       "version": "1.0.2",
       "purl": "pkg:npm/bcrypt-pbkdf@1.0.2",

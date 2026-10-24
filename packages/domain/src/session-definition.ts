@@ -1,5 +1,6 @@
 import { canonicalizeSshHostEndpoint } from './host-trust.ts';
 import { canonicalizeTelnetEndpoint } from './telnet.ts';
+import { canonicalizeRemoteEndpoint } from './remote-endpoint.ts';
 import { isLocalShell } from './local-terminal.ts';
 import type { LocalShell } from './local-terminal.ts';
 
@@ -15,12 +16,14 @@ export interface SavedSessionBase {
 export type SavedSessionDefinition =
   | (SavedSessionBase & { readonly kind: 'local'; readonly shell: LocalShell })
   | (SavedSessionBase & { readonly kind: 'ssh'; readonly host: string; readonly port: number })
-  | (SavedSessionBase & { readonly kind: 'telnet'; readonly host: string; readonly port: number });
+  | (SavedSessionBase & { readonly kind: 'telnet'; readonly host: string; readonly port: number })
+  | (SavedSessionBase & { readonly kind: 'ftp'; readonly host: string; readonly port: number; readonly secure: boolean });
 
 export type SavedSessionDraft =
   | { readonly kind: 'local'; readonly name: string; readonly shell: LocalShell }
   | { readonly kind: 'ssh'; readonly name: string; readonly host: string; readonly port: number }
-  | { readonly kind: 'telnet'; readonly name: string; readonly host: string; readonly port: number };
+  | { readonly kind: 'telnet'; readonly name: string; readonly host: string; readonly port: number }
+  | { readonly kind: 'ftp'; readonly name: string; readonly host: string; readonly port: number; readonly secure: boolean };
 
 export function normalizeSavedSessionDraft(value: unknown): SavedSessionDraft | undefined {
   if (!isPlainRecord(value) || typeof value.kind !== 'string') return undefined;
@@ -41,6 +44,12 @@ export function normalizeSavedSessionDraft(value: unknown): SavedSessionDraft | 
     const endpoint = canonicalizeTelnetEndpoint({ host: value.host, port: value.port });
     if (!endpoint) return undefined;
     return { kind: 'telnet', name, host: endpoint.host, port: endpoint.port };
+  }
+  if (value.kind === 'ftp') {
+    if (!hasExactKeys(value, ['kind', 'name', 'host', 'port', 'secure']) || typeof value.secure !== 'boolean') return undefined;
+    const endpoint = canonicalizeRemoteEndpoint({ host: value.host, port: value.port });
+    if (!endpoint) return undefined;
+    return { kind: 'ftp', name, host: endpoint.host, port: endpoint.port, secure: value.secure };
   }
   return undefined;
 }
@@ -63,6 +72,11 @@ export function isSavedSessionDefinition(value: unknown): value is SavedSessionD
   if (value.kind === 'telnet') {
     if (!hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'host', 'port', 'favorite', 'createdAt', 'updatedAt'])) return false;
     const endpoint = canonicalizeTelnetEndpoint({ host: value.host, port: value.port });
+    return endpoint !== undefined && endpoint.host === value.host && endpoint.port === value.port;
+  }
+  if (value.kind === 'ftp') {
+    if (!hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'host', 'port', 'secure', 'favorite', 'createdAt', 'updatedAt']) || typeof value.secure !== 'boolean') return false;
+    const endpoint = canonicalizeRemoteEndpoint({ host: value.host, port: value.port });
     return endpoint !== undefined && endpoint.host === value.host && endpoint.port === value.port;
   }
   return false;

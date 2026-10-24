@@ -1,4 +1,5 @@
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
+import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GESTURE_TTL_MS = 750;
@@ -50,6 +51,11 @@ export interface TelnetConsentGestureDocument {
 
 export interface TelnetConsentGestureStore {
   consume(sessionId: string, host: string, port: number): Promise<boolean>;
+  dispose(): void;
+}
+
+export interface FtpConsentGestureStore {
+  consume(sessionId: string, host: string, port: number, secure: boolean): Promise<boolean>;
   dispose(): void;
 }
 
@@ -107,6 +113,40 @@ export function installTelnetConsentGestureStore(documentTarget: TelnetConsentGe
       gesture = undefined;
       const requested = canonicalizeRemoteEndpoint({ host, port });
       if (!current || current.expiresAt < now() || !requested || requested.host !== current.host || requested.port !== current.port) return false;
+      try { return await authorize(sessionId) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('submit', observeSubmit, true);
+      gesture = undefined;
+    }
+  });
+}
+
+export function installFtpConsentGestureStore(documentTarget: TelnetConsentGestureDocument,
+  authorize: (sessionId: string) => Promise<boolean>, now: () => number = () => performance.now()): FtpConsentGestureStore {
+  let gesture: { readonly host: string; readonly port: number; readonly expiresAt: number } | undefined;
+  const observeSubmit = (event: Event): void => {
+    const submit = event as unknown as TrustedSubmitEvent;
+    if (submit.type !== 'submit' || !submit.isTrusted) return;
+    const form = submit.target?.closest('form') as TelnetConnectForm | null | undefined;
+    if (!form?.querySelector('button[data-mrt-ftp-consent-trigger]')) return;
+    const hostInput = form.querySelector('input[name="host"]');
+    const portInput = form.querySelector('input[name="port"]');
+    const securityInput = form.querySelector('select[name="security"]');
+    const port = Number(portInput?.value);
+    const secure = securityInput?.value === 'ftps';
+    const endpoint = canonicalizeFtpEndpoint({ host: hostInput?.value ?? '', port, secure });
+    if (!endpoint || endpoint.secure) { gesture = undefined; return; }
+    gesture = { host: endpoint.host, port: endpoint.port, expiresAt: now() + GESTURE_TTL_MS };
+  };
+  documentTarget.addEventListener('submit', observeSubmit, true);
+  return Object.freeze({
+    async consume(sessionId: string, host: string, port: number, secure: boolean): Promise<boolean> {
+      const current = gesture;
+      gesture = undefined;
+      const requested = canonicalizeFtpEndpoint({ host, port, secure });
+      if (!current || current.expiresAt < now() || !requested || requested.secure || requested.host !== current.host || requested.port !== current.port) return false;
       try { return await authorize(sessionId) === true; }
       catch { return false; }
     },

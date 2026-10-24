@@ -13,8 +13,8 @@ import { createSessionCatalog } from '../../../../packages/application/src/sessi
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, PASTE_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, PASTE_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -22,11 +22,16 @@ import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
 import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
+import type { CredentialPrompt } from '../../../../packages/application/src/credential-prompt.ts';
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { TelnetTerminalWorkerHost } from '../adapters/telnet-terminal-worker-host.ts';
+import { createFtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
+import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
+import { FtpFilesWorkerHost } from '../adapters/ftp-files-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
+import { createFtpWorkerEnvironment } from './ftp-worker-environment.ts';
 
 app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
@@ -96,6 +101,7 @@ function focusWindow(): void {
   focusRequested = false;
   if (current.isMinimized()) current.restore();
   if (!current.isVisible()) current.show();
+  app.focus();
   current.focus();
 }
 
@@ -200,10 +206,16 @@ function boot(): void {
       return bridge.getSystemDirectory();
     }
   };
-  const credentialPrompt = createWindowsCredentialPrompt({
-    systemDirectory,
-    helperPath: join(dist, 'host/apps/desktop/src/adapters/credential-prompt.ps1')
-  });
+  const credentialPrompt: CredentialPrompt = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ftp-credentials')
+    ? { async prompt(purpose) {
+      return purpose === 'ftp-account'
+        ? { kind: 'provided', username: 'mrt-e2e-user', secret: 'ftp-e2e-secret' }
+        : { kind: 'unavailable' };
+    } }
+    : createWindowsCredentialPrompt({
+      systemDirectory,
+      helperPath: join(dist, 'host/apps/desktop/src/adapters/credential-prompt.ps1')
+    });
   const sshProvider = new SshTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/ssh-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
@@ -213,11 +225,18 @@ function boot(): void {
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })
   ));
+  const ftpFiles: FtpFilesController = createFtpFilesController(new FtpFilesWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/ftp-worker.js'), app.getAppPath(),
+    (workerPath, args, options) => utilityProcess.fork(workerPath, args, {
+      ...options,
+      env: createFtpWorkerEnvironment(options.env.MRT_APP_ROOT, process.env)
+    })
+  ), credentialPrompt);
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll()]).then(() => undefined).catch(() => undefined)
+      shutdownPromise = Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), ftpFiles.closeAll()]).then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
     return shutdownPromise;
@@ -261,10 +280,11 @@ function boot(): void {
     const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
-    const catalogRequest = parsed.ok && parsed.result.command.startsWith('session.') && owned && mainFrame && isAppDocument(frameUrl);
+    const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command === 'ssh.files.list' ||
+      parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
-    const fileListRequest = parsed.ok && parsed.result.command === 'ssh.files.list' && owned && mainFrame && isAppDocument(frameUrl);
+    const fileListRequest = parsed.ok && (parsed.result.command === 'ssh.files.list' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
     const trackedRequestId = catalogRequest && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
     const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest;
@@ -286,6 +306,7 @@ function boot(): void {
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
         authorizeTelnetConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
+        authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
         async confirmMultilinePaste() {
           const options: Electron.MessageBoxOptions = {
             type: 'warning', title: 'Confirm multiline paste',
@@ -299,7 +320,7 @@ function boot(): void {
             : await dialog.showMessageBox(options);
           return result.response === 0;
         },
-        terminals, sshTerminals, telnetTerminals, sessionCatalog, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, ftpFiles, sessionCatalog, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
@@ -337,6 +358,16 @@ function boot(): void {
     rendererGestures.issue(event.sender.id, sessionId, 'telnet-plaintext-consent');
     return true;
   });
+  ipcMain.handle(FTP_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const sessionId = parseFtpConsentGestureRequest(input);
+    if (!sessionId) return false;
+    rendererGestures.issue(event.sender.id, sessionId, 'ftp-plaintext-consent');
+    return true;
+  });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -347,7 +378,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose()]).then(() => storageStore.shutdown())
+    void Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), ftpFiles.dispose()]).then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
   app.on('will-quit', () => {
@@ -356,6 +387,7 @@ function boot(): void {
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
     ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
+    ipcMain.removeHandler(FTP_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

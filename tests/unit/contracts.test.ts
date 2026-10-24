@@ -126,6 +126,33 @@ test('Telnet terminal IPC bounds endpoint and stream commands and validates the 
   assert.equal(parseRequest({ command: 'telnet.paste', requestId: request.requestId, contractVersion: 1, payload: { sessionId } }).ok, true);
 });
 
+test('FTP commands accept exact endpoints and safe directory replies without returning credentials', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const open = { command: 'ftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'Files.Example.com.', port: 21, secure: true } };
+  const parsed = parseRequest(open);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, secure: 'true' } }).ok, false);
+  if (!parsed.ok) return;
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    sessionId, endpoint: { host: 'files.example.com', port: 21, secure: true }, state: 'running'
+  } }, parsed.result), true);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    sessionId, endpoint: { host: 'files.example.com', port: 21, secure: true, password: 'secret' }, state: 'running'
+  } }, parsed.result), false);
+  const list = { command: 'ftp.files.list', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, path: '/home/alice' } };
+  const parsedList = parseRequest(list);
+  assert.equal(parsedList.ok, true);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '../outside' } }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '/home\r\nDELE important' } }).ok, false);
+  if (parsedList.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    path: '/home/alice', entries: [{ name: 'bad\nDELE file', path: '/home/alice/bad\nDELE file', kind: 'file', size: 1, modifiedAt: null }], truncated: false
+  } }, parsedList.result), false);
+});
+
 test('saved-session IPC accepts only supported non-secret definitions and validated catalog actions', () => {
   const create = { command: 'session.create', requestId: request.requestId, contractVersion: 1,
     payload: { kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 } };
