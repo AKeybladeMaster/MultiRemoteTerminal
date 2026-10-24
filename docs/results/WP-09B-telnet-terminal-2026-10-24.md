@@ -8,7 +8,7 @@
 
 ## Behavior
 
-The workbench can open interactive Telnet terminals by host and port. A visible plaintext warning explains that Telnet traffic, including anything typed at the remote prompt, is unencrypted and may expose secrets. The Connect button remains disabled until the user acknowledges the warning. Consent is reset on every new connection and every saved-profile reopen. Telnet sessions are visibly labeled `Telnet (plaintext)`; the app does not collect or store a Telnet username, password, terminal transcript or command history.
+The workbench can open interactive Telnet terminals by host and port. A visible plaintext warning explains that Telnet traffic, including anything typed at the remote prompt, is unencrypted and may expose secrets. Each connection requires a trusted form submission from the warning dialog. The isolated preload captures a one-use, 750 ms gesture bound to the submitted endpoint; the main-process broker consumes a separate sender-, session- and purpose-bound gate before it starts the TCP worker. Calling the exposed bridge directly cannot authorize a connection. Consent is required again on every saved-profile reopen. Telnet sessions are visibly labeled `Telnet (plaintext)`; the app does not collect or store a Telnet username, password, terminal transcript or command history.
 
 Telnet profiles persist only the canonical host, port and ordinary saved-session metadata. A saved profile opens the same warning dialog with the endpoint prefilled. The terminal supports keyboard input, explicit clipboard paste through the existing trusted gesture flow, output, resize notifications, close and normal tab lifecycle.
 
@@ -22,9 +22,9 @@ Telnet profiles persist only the canonical host, port and ordinary saved-session
 
 ## Validation
 
-- `corepack pnpm check` — passed on Windows x64: typecheck, ESLint and import-boundary checks; 139 unit tests; production build; all 13 Windows Electron E2E tests.
+- `corepack pnpm check` — passed on Windows x64: typecheck, ESLint and import-boundary checks; 142 unit tests; production build; all 13 Windows Electron E2E tests.
 - `corepack pnpm exec playwright test -g "Telnet requires plaintext consent"` — passed separately. The loopback test verifies that consent is required initially and on saved-profile reopen, that the real utility-worker path negotiates TCP Telnet options, that terminal input reaches the server, and that server output renders in the terminal.
-- Unit coverage includes fragmented Telnet framing, bounded subnegotiation, duplicate-negotiation suppression, NVT/BINARY input, canonical endpoints, worker crash settlement, exact worker/IPC shapes, and loopback provider open/write/resize/output/ack/close.
+- Unit coverage includes fragmented Telnet framing, bounded subnegotiation, duplicate DO/WILL negotiation suppression, NVT/BINARY input, canonical endpoints, direct bridge/broker consent denial, endpoint-bound trusted gesture expiry and consumption, worker crash settlement, exact worker/IPC shapes, and loopback provider open/write/resize/output/ack/close.
 - `corepack pnpm build` succeeds with the existing Vite advisory that the renderer chunk exceeds 500 kB minified; native build and packaging are otherwise successful in this check.
 
 ## Limitations

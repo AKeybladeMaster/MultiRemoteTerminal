@@ -13,6 +13,7 @@ type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
 type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
 type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
+type ConsumeTelnetConsent = (sessionId: string, host: string, port: number) => boolean | Promise<boolean>;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
@@ -26,7 +27,8 @@ interface TerminalInputBarrier {
 }
 
 export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {},
-  cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false): DesktopBridge {
+  cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false,
+  consumeTelnetConsent: ConsumeTelnetConsent = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -271,8 +273,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     openTelnetTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenTelnetTerminalReply> {
-      return send({ command: 'telnet.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
-        payload: { sessionId, host, port, columns, rows } }, TELNET_OPEN_TIMEOUT_MS);
+      const id = requestId();
+      return Promise.resolve().then(() => consumeTelnetConsent(sessionId, host, port)).then(authorized => {
+        if (!authorized) return { requestId: id, ...failure('FORBIDDEN') };
+        return send({ command: 'telnet.open', requestId: id, contractVersion: CONTRACT_VERSION,
+          payload: { sessionId, host, port, columns, rows } }, TELNET_OPEN_TIMEOUT_MS);
+      }, () => ({ requestId: id, ...failure('FORBIDDEN') }));
     },
     writeTelnetTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'telnet.write');

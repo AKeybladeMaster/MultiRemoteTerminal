@@ -13,7 +13,8 @@ import { createSessionCatalog } from '../../../../packages/application/src/sessi
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, PASTE_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest, parsePasteGestureRequest, parseRequest,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, PASTE_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -284,6 +285,7 @@ function boot(): void {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => pasteGestures.consume(event.sender.id, sessionId),
+        authorizeTelnetConsent: sessionId => pasteGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
         async confirmMultilinePaste() {
           const options: Electron.MessageBoxOptions = {
             type: 'warning', title: 'Confirm multiline paste',
@@ -325,6 +327,16 @@ function boot(): void {
     pasteGestures.issue(event.sender.id, sessionId);
     return true;
   });
+  ipcMain.handle(TELNET_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const sessionId = parseTelnetConsentGestureRequest(input);
+    if (!sessionId) return false;
+    pasteGestures.issue(event.sender.id, sessionId, 'telnet-plaintext-consent');
+    return true;
+  });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -343,6 +355,7 @@ function boot(): void {
     powerMonitor.removeListener('suspend', lockVaultForSystemEvent);
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
+    ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

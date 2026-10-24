@@ -29,6 +29,7 @@ test('Telnet codec requests only bounded terminal options and parses fragmented 
   const second = codec.receive(bytes(ECHO, ...new TextEncoder().encode('login:')));
   assert.equal(new TextDecoder().decode(second.data), 'login:');
   assert.deepEqual(combine(...second.replies), [IAC, DO, ECHO]);
+  assert.deepEqual(codec.receive(bytes(IAC, WILL, ECHO)).replies, [], 'repeated WILL for an enabled option cannot trigger negotiation chatter');
 });
 
 test('Telnet codec negotiates terminal type and window size without exposing control bytes', () => {

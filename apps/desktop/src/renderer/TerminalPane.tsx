@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
+import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 
 export type { TerminalTheme } from './terminal-theme.ts';
 
@@ -26,6 +27,37 @@ interface Props {
   readonly onError: (message: string) => void;
 }
 
+interface TerminalTransportCommands {
+  readonly write: (sessionId: string, data: string) => Promise<TerminalActionReply>;
+  readonly paste: (sessionId: string) => Promise<TerminalActionReply>;
+  readonly resize: (sessionId: string, columns: number, rows: number) => Promise<TerminalActionReply>;
+  readonly acknowledge: (sessionId: string, sequence: number) => Promise<TerminalActionReply>;
+}
+
+function createTransportCommands(bridge: DesktopBridge, transport: Props['transport']): TerminalTransportCommands {
+  const commands: Record<Props['transport'], TerminalTransportCommands> = {
+    local: {
+      write: (sessionId, data) => bridge.writeTerminal(sessionId, data),
+      paste: sessionId => bridge.pasteTerminal(sessionId),
+      resize: (sessionId, columns, rows) => bridge.resizeTerminal(sessionId, columns, rows),
+      acknowledge: (sessionId, sequence) => bridge.acknowledgeTerminalOutput(sessionId, sequence)
+    },
+    ssh: {
+      write: (sessionId, data) => bridge.writeSshTerminal(sessionId, data),
+      paste: sessionId => bridge.pasteSshTerminal(sessionId),
+      resize: (sessionId, columns, rows) => bridge.resizeSshTerminal(sessionId, columns, rows),
+      acknowledge: (sessionId, sequence) => bridge.acknowledgeSshTerminalOutput(sessionId, sequence)
+    },
+    telnet: {
+      write: (sessionId, data) => bridge.writeTelnetTerminal(sessionId, data),
+      paste: sessionId => bridge.pasteTelnetTerminal(sessionId),
+      resize: (sessionId, columns, rows) => bridge.resizeTelnetTerminal(sessionId, columns, rows),
+      acknowledge: (sessionId, sequence) => bridge.acknowledgeTelnetTerminalOutput(sessionId, sequence)
+    }
+  };
+  return commands[transport];
+}
+
 export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | undefined>(undefined);
@@ -37,6 +69,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
 
   useLayoutEffect(() => {
     if (!host.current) return;
+    const commands = createTransportCommands(window.multiRemoteTerminal, transport);
     const instance = new Terminal({
       allowProposedApi: false, convertEol: false, cursorBlink: true, cursorStyle: 'block',
       fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize, lineHeight: 1.35,
@@ -46,11 +79,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     instance.loadAddon(fitAddon);
     instance.onData(data => {
       if (!canWriteRef.current) return;
-      const sent = transport === 'ssh'
-        ? window.multiRemoteTerminal.writeSshTerminal(sessionId, data)
-        : transport === 'telnet'
-          ? window.multiRemoteTerminal.writeTelnetTerminal(sessionId, data)
-          : window.multiRemoteTerminal.writeTerminal(sessionId, data);
+      const sent = commands.write(sessionId, data);
       void sent.then(reply => {
         if (!reply.ok) onError(`Terminal input could not be sent (${reply.error.code}).`);
       });
@@ -58,11 +87,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     instance.attachCustomKeyEventHandler(event => {
       if (event.type !== 'keydown' || !event.ctrlKey || event.altKey || event.key.toLowerCase() !== 'v') return true;
       event.preventDefault();
-      const pasted = transport === 'ssh'
-        ? window.multiRemoteTerminal.pasteSshTerminal(sessionId)
-        : transport === 'telnet'
-          ? window.multiRemoteTerminal.pasteTelnetTerminal(sessionId)
-          : window.multiRemoteTerminal.pasteTerminal(sessionId);
+      const pasted = commands.paste(sessionId);
       void pasted.then(reply => {
         if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
       });
@@ -70,11 +95,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     });
     instance.onResize(({ cols, rows }) => {
       if (!canWriteRef.current) return;
-      const resized = transport === 'ssh'
-        ? window.multiRemoteTerminal.resizeSshTerminal(sessionId, cols, rows)
-        : transport === 'telnet'
-          ? window.multiRemoteTerminal.resizeTelnetTerminal(sessionId, cols, rows)
-          : window.multiRemoteTerminal.resizeTerminal(sessionId, cols, rows);
+      const resized = commands.resize(sessionId, cols, rows);
       void resized.then(reply => {
         if (!reply.ok) onError(`Terminal size could not be updated (${reply.error.code}).`);
       });
@@ -95,11 +116,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
         return true;
       },
       acknowledgeOutput: async (sequence: number) => {
-        const reply = transport === 'ssh'
-          ? await window.multiRemoteTerminal.acknowledgeSshTerminalOutput(sessionId, sequence)
-          : transport === 'telnet'
-            ? await window.multiRemoteTerminal.acknowledgeTelnetTerminalOutput(sessionId, sequence)
-            : await window.multiRemoteTerminal.acknowledgeTerminalOutput(sessionId, sequence);
+        const reply = await commands.acknowledge(sessionId, sequence);
         if (!reply.ok) onError(`Terminal output could not be acknowledged (${reply.error.code}).`);
       }
     });

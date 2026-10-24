@@ -172,7 +172,6 @@ function Workbench() {
   const [telnetConnectOpen, setTelnetConnectOpen] = useState(false);
   const [telnetHost, setTelnetHost] = useState('');
   const [telnetPort, setTelnetPort] = useState('23');
-  const [telnetPlaintextAcknowledged, setTelnetPlaintextAcknowledged] = useState(false);
   const [telnetConnectError, setTelnetConnectError] = useState<string>();
   const [telnetSavedTitle, setTelnetSavedTitle] = useState<string>();
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
@@ -211,7 +210,6 @@ function Workbench() {
   const telnetConnectDialog = useRef<HTMLElement>(null);
   const telnetHostInput = useRef<HTMLInputElement>(null);
   const telnetPortInput = useRef<HTMLInputElement>(null);
-  const telnetConsentInput = useRef<HTMLInputElement>(null);
   const telnetConnectReturnFocus = useRef<HTMLElement | null>(null);
   const saveSessionDialog = useRef<HTMLElement>(null);
   const saveSessionNameInput = useRef<HTMLInputElement>(null);
@@ -333,7 +331,6 @@ function Workbench() {
     setTelnetHost(host);
     setTelnetPort(String(port));
     setTelnetSavedTitle(savedTitle);
-    setTelnetPlaintextAcknowledged(false);
     setTelnetConnectError(undefined);
     setTelnetConnectOpen(true);
   }, []);
@@ -517,11 +514,6 @@ function Workbench() {
   }, []);
 
   const openTelnetTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
-    if (!telnetPlaintextAcknowledged) {
-      setTelnetConnectError('Review and accept the plaintext warning before connecting.');
-      telnetConsentInput.current?.focus();
-      return;
-    }
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setTelnetConnectError('Enter a host name or IP address.'); telnetHostInput.current?.focus(); return; }
@@ -556,7 +548,7 @@ function Workbench() {
       ...reply.result, transport: 'telnet', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - Telnet (plaintext) ${ordinal}`
     }]);
     setActiveId(reply.result.sessionId);
-  }, [telnetPlaintextAcknowledged]);
+  }, []);
 
   const cancelOpening = useCallback((sessionId: string) => {
     const pending = pendingOpenRequests.current.get(sessionId);
@@ -1503,15 +1495,10 @@ function Workbench() {
           <label htmlFor="telnet-port">Port</label>
           <input ref={telnetPortInput} id="telnet-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
             value={telnetPort} onChange={event => setTelnetPort(event.target.value)} />
-          <label className="telnet-plaintext-consent">
-            <input ref={telnetConsentInput} type="checkbox" checked={telnetPlaintextAcknowledged}
-              onChange={event => { setTelnetPlaintextAcknowledged(event.target.checked); setTelnetConnectError(undefined); }} />
-            I understand this Telnet connection is unencrypted.
-          </label>
           {telnetConnectError && <p className="dialog-error" role="alert">{telnetConnectError}</p>}
           <div className="ssh-connect-actions">
             <button type="button" onClick={() => setTelnetConnectOpen(false)}>Cancel</button>
-            <button type="submit" className="ssh-primary" disabled={!telnetPlaintextAcknowledged}>Connect</button>
+            <button type="submit" className="ssh-primary" data-mrt-telnet-consent-trigger>Connect</button>
           </div>
         </form>
       </section>

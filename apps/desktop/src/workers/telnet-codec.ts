@@ -148,8 +148,10 @@ export class TelnetCodec {
     } else if (this.optionVerb === WILL) {
       const state = this.remoteOptions.get(option);
       if (supportsRemote(option)) {
-        this.remoteOptions.set(option, 'enabled');
-        if (state !== 'pending') replies.push([IAC, DO, option]);
+        if (state !== 'enabled') {
+          this.remoteOptions.set(option, 'enabled');
+          if (state !== 'pending') replies.push([IAC, DO, option]);
+        }
       } else if (state !== 'refused') {
         this.remoteOptions.set(option, 'refused');
         replies.push([IAC, DONT, option]);

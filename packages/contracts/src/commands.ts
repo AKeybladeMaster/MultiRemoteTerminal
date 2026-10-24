@@ -21,6 +21,7 @@ export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
 export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
+export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
 export const APP_URL = 'mrt://app/index.html';
@@ -164,6 +165,8 @@ export function parsePasteGestureRequest(value: unknown): string | undefined {
   return record(value) && exactKeys(value, ['sessionId']) && typeof value.sessionId === 'string' && UUID.test(value.sessionId)
     ? value.sessionId : undefined;
 }
+
+export const parseTelnetConsentGestureRequest = parsePasteGestureRequest;
 
 function validSize(columns: unknown, rows: unknown): boolean {
   return Number.isInteger(columns) && (columns as number) >= 2 && (columns as number) <= MAX_TERMINAL_COLUMNS &&

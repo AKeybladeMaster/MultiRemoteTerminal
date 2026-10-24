@@ -21,6 +21,15 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   assert.deepEqual(await bridge.describe(), valid);
 });
 
+test('preload refuses direct Telnet opens without a fresh trusted plaintext-consent gesture', async () => {
+  let calls = 0;
+  const bridge = createBridge(async () => { calls++; return { requestId: id(), ok: true, result: {} }; }, id);
+  const reply = await bridge.openTelnetTerminal(id(), 'console.example.com', 23, 80, 24);
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(calls, 0);
+});
+
 test('preload lists an SSH directory using only the fixed validated command', async () => {
   const sessionId = id();
   const listing = { path: '/home/alice', entries: [], truncated: false };
@@ -40,7 +49,7 @@ test('preload routes Telnet operations through fixed endpoint-bound commands', a
     seen.push(request.command);
     if (request.command === 'telnet.open') return { requestId: id(), ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
     return { requestId: id(), ok: true, result: {} };
-  }, id);
+  }, id, undefined, undefined, undefined, undefined, async () => true);
   assert.equal((await bridge.openTelnetTerminal(sessionId, host, port, 80, 24)).ok, true);
   assert.equal((await bridge.writeTelnetTerminal(sessionId, 'whoami\r')).ok, true);
   assert.equal((await bridge.resizeTelnetTerminal(sessionId, 120, 40)).ok, true);

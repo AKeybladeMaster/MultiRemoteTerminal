@@ -26,6 +26,7 @@ export interface CommandActions {
   readonly noteUserActivity: () => void;
   readonly readClipboardText: () => Promise<string>;
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
+  readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
@@ -135,6 +136,7 @@ export async function dispatchCommand(
       }
       case 'telnet.open': {
         const { sessionId, host, port, columns, rows } = parsed.result.payload;
+        if (!actions.authorizeTelnetConsent(sessionId)) return { requestId, ...failure('FORBIDDEN') };
         return { requestId, ...await actions.telnetTerminals.open(sessionId, host, port, { columns, rows }) };
       }
       case 'telnet.write': {

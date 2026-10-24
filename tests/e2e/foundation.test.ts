@@ -246,11 +246,8 @@ test('Telnet requires plaintext consent and carries terminal input through the w
     const connectDialog = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
     await expect(connectDialog.getByText('Telnet traffic is sent in plaintext.')).toBeVisible();
     const connect = connectDialog.getByRole('button', { name: 'Connect', exact: true });
-    await expect(connect).toBeDisabled();
     await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
     await connectDialog.getByLabel('Port').fill(String(address.port));
-    await connectDialog.getByLabel('I understand this Telnet connection is unencrypted.').check();
-    await expect(connect).toBeEnabled();
     await connect.click();
 
     const telnetTab = page.getByRole('tab').filter({ hasText: /Telnet \(plaintext\)/ }).first();
@@ -277,8 +274,6 @@ test('Telnet requires plaintext consent and carries terminal input through the w
     const reconnectDialog = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
     await expect(reconnectDialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
     await expect(reconnectDialog.getByLabel('Port')).toHaveValue(String(address.port));
-    await expect(reconnectDialog.getByRole('button', { name: 'Connect', exact: true })).toBeDisabled();
-    await reconnectDialog.getByLabel('I understand this Telnet connection is unencrypted.').check();
     await reconnectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
     const reopenedTab = page.getByRole('tab').filter({ hasText: 'Reusable Telnet' });
     await expect(reopenedTab).toBeVisible({ timeout: 15_000 });
