@@ -1,13 +1,13 @@
 # SPEC-001-MultiRemoteTerminal
 
-**Status:** Approved design candidate for Codex; not implemented  
+**Status:** Approved design baseline; implementation is in progress and acceptance is tracked in `docs/FEATURE-MATRIX.md`
 **Platform:** Windows x64 desktop  
 **Product type:** Personal remote-management workstation  
 **Source specification date:** 2026-10-23
 
 ## Background
 
-The user wants an original personal counterpart to the publicly described Home and Professional feature sets of MobaXterm, without the Home Edition record/runtime limits. The new product is named **MultiRemoteTerminal** and is developed in the GitHub repository `AKeybladeMaster/MultiRemoteTerminal` with a `dev` first, then `main` merge workflow.
+The user wants an original personal counterpart to the publicly described Home and Professional feature sets of MobaXterm, without the Home Edition record/runtime limits. The new product is named **MultiRemoteTerminal** and is developed in the GitHub repository `AKeybladeMaster/MultiRemoteTerminal`. The active development branch is `dev-1`; reviewed phases are merged into the default `main` branch with history preserved.
 
 The comparison application's publicly advertised features include tabbed local terminals, SSH/Telnet/Rlogin/Mosh, RDP/VNC/XDMCP, SFTP browser, X11 forwarding/server, SSH gateways and tunnels, multi-execution, macros, local tools, text editing, master-password storage, syntax highlighting and professional customizer settings. The official edition table additionally describes no limits on stored sessions/tunnels/macros, unlimited network-daemon runtime, startup message/logo, user profile script and enabled-tool selection.
 
@@ -25,7 +25,7 @@ Priority labels: **Must** = MVP release gate; **Should** = next public-quality r
 | F-002 | Must | Tabbed local terminal with PowerShell/cmd and optional installed Git Bash | ConPTY input/resize/Unicode/paste/tab lifecycle functional for each available shell; missing Git Bash is reported clearly |
 | F-003 | Must | SSH terminal with auth and host verification | Password/key auth test against disposable OpenSSH server; changed key blocked |
 | F-004 | Must | Unlimited saved sessions and folders | Create/search/reopen/delete at least 1,000 saved definitions without fixed caps |
-| F-005 | Must | Automatic configurable SFTP side browser | SSH login opens navigable remote files; upload/download/cancel/collision tests. WP-05A implements contextual listing/navigation; WP-05B adds contextual transfer and Windows loopback evidence. Standalone SFTP, drag/drop, large-file/disconnect acceptance and configurable behavior remain open, so the full acceptance gate remains open. |
+| F-005 | Must | Automatic configurable SFTP side browser | SSH login opens navigable remote files; upload/download/cancel/collision tests. WP-05A implements contextual listing/navigation; WP-05B adds contextual transfer and Windows loopback evidence; WP-05C adds standalone files-only SSH/SFTP sessions with first-use host trust, download, saved-profile reopen and no shell request. F-005 remains PARTIAL until drag/drop, large-file/disconnect acceptance, configurable browser behavior and broader interoperability are covered. See the WP-05A/B/C evidence and ADR-0008. |
 | F-006 | Must | SSH local/remote/dynamic tunnels and status | Each tunnel mode tested; 20 records; port conflict handled; no application count cap |
 | F-007 | Must | Unlimited structured macros; keyboard shortcuts | 100 macros store/replay; cancellations; secret-exclusion behavior |
 | F-008 | Must | MultiExec across selected active terminals | Explicit confirm; 3 hosts receive target text; errors isolated per host |
@@ -125,7 +125,7 @@ Study interaction patterns and user-visible behavior rather than copying styles,
 
 Build **vertical slices** in this sequence; every slice must pass tests before expansion. See [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
-1. **Foundation:** workspace, Electron security posture, typed preload/IPC, app shell, design tokens, CI checks, Git `dev` branch.
+1. **Foundation:** workspace, Electron security posture, typed preload/IPC, app shell, design tokens and CI checks; source work proceeds on `dev-1` before reviewed promotion to `main`.
 2. **Terminal/SSH:** ConPTY/PTY lifecycle, SSH shell, known-host trust dialog, credential vault, tabs, error states.
 3. **Catalog:** SQLite schemas and migrations, folders/sessions, filters, backup, import/export redacted defaults.
 4. **SFTP and forwarding:** remote file browser, transfers, jumps, local/remote/dynamic SSH tunnels.
@@ -143,7 +143,7 @@ No step may be marked done because it has only stub UI or scaffolding.
 | M1 — Secure shell foundation | F-001/002/003/010/012 | Windows local/SSH workbench with trust/vault |
 | M2 — Remote operations MVP | F-004/005/006/011 | Session catalog, SFTP, forwarding/jump tests |
 | M3 — Power-user MVP | F-007/008/009/013 | Macros, MultiExec, professional settings, unlimited records |
-| M4 — v0.1 ready | N-001..N-007 | Installed/portable build E2E, no critical findings, dev→main |
+| M4 — v0.1 ready | N-001..N-007 | Installed/portable build E2E, no critical findings, reviewed `dev-1`→`main` promotion |
 | M5 — Remote desktop/legacy | F-014..F-019 | RDP/VNC/serial/FTP/Mosh/legacy |
 | M6 — Full parity candidate | F-020..F-024 | X server/XDMCP/daemons/tooling tested on Windows |
 

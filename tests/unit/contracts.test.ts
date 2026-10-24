@@ -84,6 +84,22 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, port: 65_536 } }).ok, false);
 });
 
+test('SFTP open and close commands share SSH endpoint validation without terminal dimensions', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const open = { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'Server.Example.com.', port: 22 } };
+  const parsed = parseRequest(open);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
+  if (parsed.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+    sessionId, endpoint: { host: 'server.example.com', port: 22 }, state: 'running'
+  } }, parsed.result), true);
+  const close = { command: 'sftp.close', requestId: request.requestId, contractVersion: 1, payload: { sessionId } };
+  assert.equal(parseRequest(close).ok, true);
+  assert.equal(parseRequest({ ...close, payload: { ...close.payload, force: true } }).ok, false);
+});
+
 test('SSH directory browsing accepts bounded paths and exact credential-free listing replies', () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const list = { command: 'ssh.files.list', requestId: request.requestId, contractVersion: 1,

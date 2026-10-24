@@ -24,6 +24,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
+    async openFiles(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, listRemoteDirectory: async () => ({ ok: true, result: { path: '/', entries: [], truncated: false } }),
     uploadRemoteFile: async () => ({ ok: true, result: { direction: 'upload', fileName: 'x', bytesTransferred: 0, state: 'completed' } }),
     downloadRemoteFile: async () => ({ ok: true, result: { direction: 'download', fileName: 'x', bytesTransferred: 0, state: 'completed' } }),
@@ -47,6 +48,27 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
     importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
   }
+});
+
+test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const calls: string[] = [];
+  const base = actions();
+  const tracked: CommandActions = { ...base, sshTerminals: { ...base.sshTerminals,
+    async openFiles(id, host, port) { calls.push(`open-files:${id}:${host}:${port}`); return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } }; },
+    async listRemoteDirectory(id, path) { calls.push(`list:${id}:${path}`); return { ok: true, result: { path, entries: [], truncated: false } }; },
+    async close(id) { calls.push(`close:${id}`); return { ok: true, result: {} }; }
+  } };
+  const open = await dispatchCommand(owner, { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22 } }, tracked, () => {});
+  const listing = await dispatchCommand(owner, { command: 'ssh.files.list', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, path: '.' } }, tracked, () => {});
+  const close = await dispatchCommand(owner, { command: 'sftp.close', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, tracked, () => {});
+  assert.equal(open.ok, true);
+  assert.equal(listing.ok, true);
+  assert.equal(close.ok, true);
+  assert.deepEqual(calls, [`open-files:${sessionId}:server.example.net:22`, `list:${sessionId}:.`, `close:${sessionId}`]);
 });
 
 test('Telnet open requires a fresh plaintext-consent gesture at the main-process broker', async () => {

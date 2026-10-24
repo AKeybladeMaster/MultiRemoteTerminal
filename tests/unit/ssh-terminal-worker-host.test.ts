@@ -118,6 +118,17 @@ test('worker host consumes the raw message payload emitted by Electron utilityPr
   assert.equal(worker.killed, true);
 });
 
+test('worker host opens a file-only SSH session without sending terminal dimensions', async () => {
+  const worker = new FakeUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+
+  await host.openFiles(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' }, async () => true);
+  assert.equal(worker.requests[0]?.command, 'open-files');
+  assert.equal(Object.hasOwn(worker.requests[0] ?? {}, 'size'), false);
+  await host.shutdown();
+});
+
 test('worker host sends cancellation to the matching bounded SFTP operation', async () => {
   const worker = new CancellationUtilityProcess();
   const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);

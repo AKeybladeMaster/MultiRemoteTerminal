@@ -42,6 +42,8 @@ export interface SshTransportClientFactory {
 export interface SshTransportProvider {
   open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, size: TerminalSize,
     verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
+  openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
@@ -59,6 +61,7 @@ export interface SshTransportProvider {
 interface RuntimeSession {
   readonly sessionId: string;
   readonly client: Client;
+  readonly mode: 'terminal' | 'files';
   channel?: ClientChannel;
   sftp: SftpChannel | undefined;
   sftpBusy: boolean;
@@ -207,12 +210,12 @@ export function createSshTransportProvider(
     }
   }
 
-  const provider: SshTransportProvider = {
-    open(sessionId, endpoint, credentials, size, verifyHost): Promise<void> {
+  function openConnection(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+    mode: RuntimeSession['mode'], size: TerminalSize | undefined, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
       if (sessions.has(sessionId)) return Promise.reject(new SshTerminalProviderError('UNAVAILABLE'));
       const client = clients.create();
       const session: RuntimeSession = {
-        sessionId, client, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
+        sessionId, client, mode, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
         sftp: undefined, sftpBusy: false, sftpOpenAttempt: undefined,
         nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
         outputBytesBySequence: new Map(), outputPaused: false, clearPassword: () => {},
@@ -270,6 +273,16 @@ export function createSshTransportProvider(
         client.once('ready', () => {
           if (session.closing) return;
           session.clearPassword();
+          if (mode === 'files') {
+            session.opening = false;
+            clearTimeout(session.openTimer);
+            const resolve = session.resolveOpen;
+            session.resolveOpen = undefined;
+            session.rejectOpen = undefined;
+            resolve?.();
+            return;
+          }
+          if (!size) { fail(session, 'UNAVAILABLE'); return; }
           client.shell({ term: 'xterm-256color', cols: size.columns, rows: size.rows }, (error, channel) => {
             if (error || !channel || session.closing) { fail(session, session.failureCode ?? 'UNAVAILABLE'); return; }
             session.channel = channel;
@@ -295,6 +308,15 @@ export function createSshTransportProvider(
         catch { fail(session, 'UNAVAILABLE'); }
       });
       return opened;
+  }
+
+  const provider: SshTransportProvider = {
+    open(sessionId, endpoint, credentials, size, verifyHost): Promise<void> {
+      return openConnection(sessionId, endpoint, credentials, 'terminal', size, verifyHost);
+    },
+
+    openFiles(sessionId, endpoint, credentials, verifyHost): Promise<void> {
+      return openConnection(sessionId, endpoint, credentials, 'files', undefined, verifyHost);
     },
 
     async write(sessionId, data): Promise<void> {
@@ -341,7 +363,7 @@ export function createSshTransportProvider(
 
     async listRemoteDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing> {
       const session = sessions.get(sessionId);
-      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (!session || session.closing || session.opening || (!session.channel && session.mode !== 'files')) throw new SshTerminalProviderError('UNAVAILABLE');
       if (!isRemotePath(path)) throw new SshTerminalProviderError('UNAVAILABLE');
       if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
@@ -358,7 +380,7 @@ export function createSshTransportProvider(
 
     async uploadRemoteFile(sessionId, operationId, localPath, remoteDirectory, fileName, conflictPolicy, cancellation, onProgress) {
       const session = sessions.get(sessionId);
-      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (!session || session.closing || session.opening || (!session.channel && session.mode !== 'files')) throw new SshTerminalProviderError('UNAVAILABLE');
       if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;
@@ -371,7 +393,7 @@ export function createSshTransportProvider(
 
     async downloadRemoteFile(sessionId, operationId, remotePath, localPath, conflictPolicy, cancellation, onProgress) {
       const session = sessions.get(sessionId);
-      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (!session || session.closing || session.opening || (!session.channel && session.mode !== 'files')) throw new SshTerminalProviderError('UNAVAILABLE');
       if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;

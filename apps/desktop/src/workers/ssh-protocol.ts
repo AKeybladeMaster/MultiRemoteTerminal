@@ -19,6 +19,7 @@ export const MAX_SSH_USERNAME_LENGTH = 512;
 
 export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open'; readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshTerminalCredentials; readonly size: TerminalSize }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open-files'; readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshTerminalCredentials }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'write'; readonly sessionId: string; readonly data: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'resize'; readonly sessionId: string; readonly size: TerminalSize }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'ack'; readonly sessionId: string; readonly sequence: number }
@@ -79,6 +80,8 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
       isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) && isCredentials(value.credentials) && isTerminalSize(value.size)) {
     return value as unknown as SshWorkerRequest;
   }
+  if (value.command === 'open-files' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials']) &&
+      isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) && isCredentials(value.credentials)) return value as unknown as SshWorkerRequest;
   if (value.command === 'write' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'data']) &&
       isUuid(value.sessionId) && typeof value.data === 'string' && value.data.length <= 16_384) return value as unknown as SshWorkerRequest;
   if (value.command === 'resize' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'size']) &&

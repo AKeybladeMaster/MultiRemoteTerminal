@@ -4,7 +4,7 @@ You are implementing MultiRemoteTerminal in
 `https://github.com/AKeybladeMaster/MultiRemoteTerminal.git`
 on a Windows developer workstation.
 
-**First task:** read the entire `AGENTS.md`, `docs/SPEC-001-MultiRemoteTerminal.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/FEATURE-MATRIX.md`, `docs/IMPLEMENTATION-PLAN.md`, `docs/GLOSSARY.md`, and `docs/adr/` decisions. Do not write source code until you identify the interfaces, owners and tests for `WP-00`. Treat the documentation as baseline design, not existing implementation.
+**At each task:** inspect the current branch, worktree, remote refs and latest result records. Read the entire `AGENTS.md`, `docs/SPEC-001-MultiRemoteTerminal.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/FEATURE-MATRIX.md`, `docs/IMPLEMENTATION-PLAN.md`, `docs/GLOSSARY.md`, and relevant `docs/adr/` decisions before changing code. Treat the documentation as the design baseline, then verify current source and test evidence; preserve completed work and continue with the next open slice.
 
 Use the installed skills in `C:\Users\Beasty\.agents\skills\` by reading each relevant `<skill>/SKILL.md`:
 - `codebase-design` for modules/interfaces;
@@ -22,6 +22,6 @@ Do **not** copy MobaXterm source, binary assets, brand appearance, internal scri
 
 **Architecture non-negotiables:** renderer cannot import privileged Node/Electron/SSH/DB/vault code; all requests through narrow validated IPC; domain/application modules have no infrastructure imports; transport adapters own protocol state and resource cleanup; every feature is covered by behavior test and error path. Stable contract and schema details are in `docs/ARCHITECTURE.md`.
 
-**Git sequence:** inspect remote state, create/checkout `dev`, build WP-00 then vertical slices WP-01..WP-07 on dev or feature branches, test and review, only then merge dev into main. Don't force-push or claim a branch was pushed without verifying it.
+**Git sequence:** the active development branch is `dev-1` and the default branch is `main`. Inspect remote state first, make scoped commits on `dev-1` (or feature branches integrated back to it), test and review each completed phase, then push and merge `dev-1` into `main` with preserved history. Return to `dev-1` for the next phase. Do not force-push or claim a branch was pushed without verifying it.
 
-**Respond first with:** exact environment/dependency verification findings, planned WP-00 module interfaces, the tests you will create, and any true blockers. Then implement WP-00. Do not generate the entire full-parity program in one unreviewed pass. Do not ask to repeat information provided by this documentation.
+**Respond first with:** branch and worktree state, the last verified phase, the next open slice and its requirement IDs, applicable skills, and any true blockers. Continue that slice through tests, review, evidence, and its authorized branch promotion. Do not generate the entire full-parity program in one unreviewed pass. Do not ask to repeat information provided by this documentation.

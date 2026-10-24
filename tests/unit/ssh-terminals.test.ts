@@ -87,6 +87,10 @@ class FakeProvider implements SshTerminalProvider {
     this.opened.push({ sessionId: session, endpoint, credentials });
     if (!await verifyHost(evidence)) throw new Error('Host verification failed');
   }
+  async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>) {
+    this.opened.push({ sessionId: session, endpoint, credentials });
+    if (!await verifyHost(evidence)) throw new Error('Host verification failed');
+  }
   async write(): Promise<void> {}
   async resize(): Promise<void> {}
   async acknowledgeOutput(): Promise<void> {}
@@ -147,6 +151,24 @@ test('SFTP directory listing is available only on a running trusted SSH session 
   });
   assert.equal(provider.listedDirectories.length, 2);
   assert.equal((await controller.close(sessionId)).ok, true);
+  await controller.dispose();
+});
+
+test('standalone SFTP reuses SSH credentials and host trust without exposing terminal operations', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+
+  assert.deepEqual(await controller.openFiles(sessionId, 'Server.Example.Net.', 22), {
+    ok: true, result: { sessionId, endpoint: { host: 'server.example.net', port: 22 }, state: 'running' }
+  });
+  assert.equal(provider.opened.length, 1);
+  assert.equal((await controller.listRemoteDirectory(sessionId, '.')).ok, true);
+  assert.deepEqual(await controller.write(sessionId, 'id'), { ok: false, error: { code: 'NOT_FOUND', target: 'terminal', retryable: false } });
+  assert.deepEqual(await controller.resize(sessionId, { columns: 80, rows: 24 }), { ok: false, error: { code: 'NOT_FOUND', target: 'terminal', retryable: false } });
+  assert.equal((await controller.close(sessionId)).ok, true);
+  assert.deepEqual(provider.closed, [sessionId]);
   await controller.dispose();
 });
 

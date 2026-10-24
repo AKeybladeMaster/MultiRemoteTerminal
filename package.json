@@ -14,7 +14,7 @@
     "build": "node scripts/build.mjs",
     "dependencies:inventory": "node scripts/dependency-inventory.mjs",
     "test:ssh-fixture": "node --test tests/integration/*.test.ts",
-    "start": "electron apps/desktop",
+    "start": "node scripts/start-electron.mjs",
     "setup:electron": "install-electron --no",
     "test:e2e": "corepack pnpm setup:electron && corepack pnpm exec playwright test",
     "check": "corepack pnpm typecheck && corepack pnpm lint && corepack pnpm test && corepack pnpm build && corepack pnpm test:e2e"

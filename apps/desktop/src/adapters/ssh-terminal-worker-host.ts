@@ -86,6 +86,23 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     }
   }
 
+  async openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
+    if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
+    const credentialsCopy = { username: credentials.username, password: credentials.password };
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open-files',
+      sessionId, endpoint, credentials: credentialsCopy } as const satisfies SshWorkerRequest;
+    this.sessions.set(sessionId, { endpoint: { host: endpoint.host, port: endpoint.port }, verifyHost });
+    try { await this.request(request, OPEN_TIMEOUT_MS); }
+    catch (error) {
+      this.sessions.delete(sessionId);
+      throw error;
+    } finally {
+      credentialsCopy.username = '';
+      credentialsCopy.password = '';
+    }
+  }
+
   async write(sessionId: string, data: string): Promise<void> {
     await this.request({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'write', sessionId, data }, 5_000);
   }

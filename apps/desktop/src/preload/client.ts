@@ -2,6 +2,7 @@ import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEven
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
+import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
@@ -235,7 +236,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   }
 
   function voidRequest(command: 'terminal.write' | 'terminal.paste' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' |
-    'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
+    'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
     'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close', payload: Record<string, unknown>): CommandRequest {
@@ -268,6 +269,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenSshTerminalReply> {
       return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port, columns, rows } }, SSH_OPEN_TIMEOUT_MS);
     },
+    openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply> {
+      return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port } }, SSH_OPEN_TIMEOUT_MS);
+    },
     writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'ssh.write');
     },
@@ -283,6 +287,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     closeSshTerminal(sessionId: string): Promise<TerminalActionReply> {
       const request = voidRequest('ssh.close', { sessionId });
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
+    },
+    closeSftpFiles(sessionId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('sftp.close', { sessionId }), 8_000);
     },
     openTelnetTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenTelnetTerminalReply> {
       const id = requestId();

@@ -5,7 +5,7 @@ import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packa
 import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesSession } from '../../../../packages/application/src/ftp-files.ts';
-import type { OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
+import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
@@ -26,15 +26,17 @@ type WorkbenchTerminal =
   | (TelnetTerminalSession & { readonly transport: 'telnet'; readonly title: string });
 
 type WorkbenchFtpSession = FtpFilesSession & { readonly transport: 'ftp'; readonly title: string };
-type WorkbenchSession = WorkbenchTerminal | WorkbenchFtpSession;
+type WorkbenchSftpSession = SshTerminalSession & { readonly transport: 'sftp'; readonly title: string };
+type WorkbenchSession = WorkbenchTerminal | WorkbenchFtpSession | WorkbenchSftpSession;
 
 type OpeningTerminal =
   | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
-  | { readonly transport: 'ssh' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean };
+  | { readonly transport: 'ssh' | 'sftp' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean };
 
 type PendingOpenRequest =
   | { cancelled: boolean; readonly transport: 'local'; readonly reply: Promise<OpenTerminalReply> }
   | { cancelled: boolean; readonly transport: 'ssh'; readonly reply: Promise<OpenSshTerminalReply> }
+  | { cancelled: boolean; readonly transport: 'sftp'; readonly reply: Promise<OpenSftpFilesReply> }
   | { cancelled: boolean; readonly transport: 'telnet'; readonly reply: Promise<OpenTelnetTerminalReply> };
 
 type SavedFolderDialogState =
@@ -49,7 +51,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-telnet' | 'connect-ftp' | 'close-active' | 'toggle-theme';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -68,7 +70,8 @@ function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell]
 
 function openingName(opening: OpeningTerminal): string {
   if (opening.transport === 'local') return `${shellName(opening.shell)} terminal`;
-  return `${opening.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
+  const protocol = opening.transport === 'telnet' ? 'Telnet (plaintext)' : opening.transport === 'sftp' ? 'SFTP' : 'SSH';
+  return `${protocol} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
 }
 
 function sshEndpointLabel(host: string, port: number): string { return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`; }
@@ -127,6 +130,7 @@ function savedBundleError(code: string): string {
 function terminalStatus(session: WorkbenchSession | undefined): string {
   if (!session) return 'No active terminal';
   if (session.transport === 'ftp') return `${session.endpoint.secure ? 'FTPS' : 'FTP (plaintext)'} files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
+  if (session.transport === 'sftp') return `SFTP files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
   if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
   return `${session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
 }
@@ -154,8 +158,9 @@ function ftpOpenError(code: string, secure: boolean): string {
   return `Could not connect to the ${secure ? 'FTPS' : 'FTP'} server (${code}).`;
 }
 
-function closeTerminalConnection(sessionId: string, transport: 'local' | 'ssh' | 'telnet' | 'ftp') {
+function closeTerminalConnection(sessionId: string, transport: 'local' | 'ssh' | 'telnet' | 'ftp' | 'sftp') {
   if (transport === 'ssh') return window.multiRemoteTerminal.closeSshTerminal(sessionId);
+  if (transport === 'sftp') return window.multiRemoteTerminal.closeSftpFiles(sessionId);
   if (transport === 'telnet') return window.multiRemoteTerminal.closeTelnetTerminal(sessionId);
   if (transport === 'ftp') return window.multiRemoteTerminal.closeFtpFiles(sessionId);
   return window.multiRemoteTerminal.closeTerminal(sessionId);
@@ -181,9 +186,11 @@ function Workbench() {
   const [query, setQuery] = useState('');
   const [selectedCommand, setSelectedCommand] = useState(0);
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
+  const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
   const [sshHost, setSshHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
   const [sshConnectError, setSshConnectError] = useState<string>();
+  const [sshSavedTitle, setSshSavedTitle] = useState<string>();
   const [telnetConnectOpen, setTelnetConnectOpen] = useState(false);
   const [telnetHost, setTelnetHost] = useState('');
   const [telnetPort, setTelnetPort] = useState('23');
@@ -216,6 +223,8 @@ function Workbench() {
   const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
+  const fileOnlySshSessionIds = useRef(new Set<string>());
+  const visibleFileOnlySshSessionIds = useRef(new Set<string>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0 });
   const nextSshOrdinal = useRef(0);
@@ -347,8 +356,12 @@ function Workbench() {
     setPaletteOpen(true);
   }, []);
 
-  const openSshConnect = useCallback(() => {
+  const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSshConnectMode(mode);
+    setSshHost(host);
+    setSshPort(String(port));
+    setSshSavedTitle(savedTitle);
     setSshConnectError(undefined);
     setSshConnectOpen(true);
   }, []);
@@ -471,12 +484,19 @@ function Workbench() {
 
   useEffect(() => window.multiRemoteTerminal.onTerminalEvent(event => {
     const handle = handles.current.get(event.sessionId);
-    if (handle) deliver(event, handle);
-    else {
-      const queued = pendingEvents.current.get(event.sessionId) ?? [];
-      queued.push(event);
-      pendingEvents.current.set(event.sessionId, queued);
+    if (handle) { deliver(event, handle); return; }
+    if (visibleFileOnlySshSessionIds.current.has(event.sessionId) && event.kind === 'exit') {
+      setSessions(current => current.map(session => session.sessionId === event.sessionId && session.transport === 'sftp' ? { ...session, state: 'exited' } : session));
+      return;
     }
+    if (visibleFileOnlySshSessionIds.current.has(event.sessionId) && event.kind === 'failure') {
+      setSessions(current => current.map(session => session.sessionId === event.sessionId && session.transport === 'sftp' ? { ...session, state: 'failed' } : session));
+      setAlert(messageForError(event.error));
+      return;
+    }
+    const queued = pendingEvents.current.get(event.sessionId) ?? [];
+    queued.push(event);
+    pendingEvents.current.set(event.sessionId, queued);
   }), [deliver]);
 
   useEffect(() => window.multiRemoteTerminal.onSshTrustEvent(event => {
@@ -547,6 +567,57 @@ function Workbench() {
     const ordinal = ++nextSshOrdinal.current;
     const endpoint = reply.result.endpoint;
     setSessions(current => [...current, { ...reply.result, transport: 'ssh', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SSH ${ordinal}` }]);
+    setActiveId(reply.result.sessionId);
+  }, []);
+
+  const openSftpFiles = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
+    const host = hostInput.trim();
+    const port = Number(portInput);
+    if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
+    if (!/^\d{1,5}$/.test(portInput) || !Number.isInteger(port) || port < 1 || port > 65_535) {
+      setSshConnectError('Port must be a whole number from 1 to 65535.');
+      sshPortInput.current?.focus();
+      return;
+    }
+    const endpoint = canonicalizeSshHostEndpoint({ host, port });
+    if (!endpoint) { setSshConnectError('Enter a valid DNS name or IP address.'); sshHostInput.current?.focus(); return; }
+    setSshConnectError(undefined);
+    sshTrustReturnFocus.current = sshConnectReturnFocus.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    setSshConnectOpen(false);
+    setPaletteOpen(false);
+    setAlert(undefined);
+    const sessionId = crypto.randomUUID();
+    fileOnlySshSessionIds.current.add(sessionId);
+    const replyPromise = window.multiRemoteTerminal.openSftpFiles(sessionId, endpoint.host, endpoint.port);
+    pendingOpenRequests.current.set(sessionId, { transport: 'sftp', cancelled: false, reply: replyPromise });
+    setOpeningSessions(current => [...current, { transport: 'sftp', sessionId, host: endpoint.host, port: endpoint.port, cancelling: false }]);
+    const reply = await replyPromise;
+    if (pendingOpenRequests.current.get(sessionId)?.cancelled) {
+      fileOnlySshSessionIds.current.delete(sessionId);
+      pendingEvents.current.delete(sessionId);
+      return;
+    }
+    pendingOpenRequests.current.delete(sessionId);
+    setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
+    if (!reply.ok) {
+      fileOnlySshSessionIds.current.delete(sessionId);
+      pendingEvents.current.delete(sessionId);
+      setSshTrustEvents(current => current.filter(event => event.sessionId !== sessionId || event.kind === 'changed'));
+      if (reply.error.code !== 'CANCELLED') setAlert(reply.error.code === 'AUTHENTICATION_FAILED'
+        ? 'The SSH server rejected these credentials.'
+        : reply.error.code === 'HOST_KEY_REJECTED' ? 'The SSH host was not trusted, so the SFTP connection was stopped.'
+          : reply.error.code === 'HOST_KEY_CHANGED' ? 'The SSH host key changed. The SFTP connection was blocked.'
+            : reply.error.code === 'TIMEOUT' ? 'The SFTP connection timed out.' : `Could not connect to SFTP (${reply.error.code}).`);
+      return;
+    }
+    const ordinal = ++nextSshOrdinal.current;
+    const queuedEvents = pendingEvents.current.get(sessionId) ?? [];
+    pendingEvents.current.delete(sessionId);
+    const state = queuedEvents.reduce<typeof reply.result.state>((current, event) => event.kind === 'exit' ? 'exited'
+      : event.kind === 'failure' ? 'failed' : current, reply.result.state);
+    if (queuedEvents.some(event => event.kind === 'failure')) setAlert('The SFTP connection failed while opening. Reconnect to continue.');
+    visibleFileOnlySshSessionIds.current.add(sessionId);
+    setSessions(current => [...current, { ...reply.result, state, transport: 'sftp', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SFTP ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, []);
 
@@ -635,6 +706,10 @@ function Workbench() {
       }
       pendingEvents.current.delete(sessionId);
       pendingOpenRequests.current.delete(sessionId);
+      if (pending.transport === 'sftp') {
+        fileOnlySshSessionIds.current.delete(sessionId);
+        visibleFileOnlySshSessionIds.current.delete(sessionId);
+      }
       if (pending.transport === 'ssh') {
         setSshTrustEvents(current => current.filter(event => event.sessionId !== sessionId || event.kind === 'changed'));
       }
@@ -693,6 +768,10 @@ function Workbench() {
     if (!reply.ok && reply.error.code !== 'NOT_FOUND') setAlert(messageForError(reply.error));
     handles.current.delete(sessionId);
     pendingEvents.current.delete(sessionId);
+    if (transport === 'sftp') {
+      fileOnlySshSessionIds.current.delete(sessionId);
+      visibleFileOnlySshSessionIds.current.delete(sessionId);
+    }
     focusTerminalOnActiveChange.current = true;
     setSessions(current => current.filter(session => session.sessionId !== sessionId));
   }, []);
@@ -703,6 +782,13 @@ function Workbench() {
       openFtpConnect(session.endpoint.host, session.endpoint.port, session.endpoint.secure, session.title);
     })();
   }, [closeTerminal, openFtpConnect]);
+
+  const reconnectSftp = useCallback((session: WorkbenchSftpSession) => {
+    void (async () => {
+      await closeTerminal(session.sessionId, 'sftp');
+      openSshConnect('sftp', session.endpoint.host, session.endpoint.port, session.title);
+    })();
+  }, [closeTerminal, openSshConnect]);
 
   const toggleTheme = useCallback(() => setTheme(current => current === 'dark' ? 'light' : 'dark'), []);
 
@@ -875,9 +961,12 @@ function Workbench() {
     }
   }, [paletteOpen]);
 
+  useLayoutEffect(() => {
+    if (sshConnectOpen) sshHostInput.current?.focus();
+  }, [sshConnectOpen]);
+
   useEffect(() => {
-    if (sshConnectOpen) requestAnimationFrame(() => sshHostInput.current?.focus());
-    else if (sshConnectReturnFocus.current) {
+    if (!sshConnectOpen && sshConnectReturnFocus.current) {
       const target = sshConnectReturnFocus.current;
       sshConnectReturnFocus.current = null;
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
@@ -955,7 +1044,8 @@ function Workbench() {
     { id: 'new-powershell', label: 'New PowerShell terminal', run: () => { void openTerminal('powershell'); } },
     { id: 'new-cmd', label: 'New cmd terminal', run: () => { void openTerminal('cmd'); } },
     { id: 'new-bash', label: 'New Bash terminal', run: () => { void openTerminal('bash'); } },
-    { id: 'connect-ssh', label: 'Connect to SSH server', run: openSshConnect },
+    { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
+    { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
     { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
@@ -1006,7 +1096,8 @@ function Workbench() {
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : session.kind}`} aria-hidden="true">
-          {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : session.kind === 'telnet' ? 'TELNET' : session.secure ? 'FTPS' : 'FTP'}
+          {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : session.kind === 'sftp' ? 'SFTP'
+            : session.kind === 'telnet' ? 'TELNET' : session.secure ? 'FTPS' : 'FTP'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
         <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell
@@ -1077,6 +1168,7 @@ function Workbench() {
   function openSavedSession(session: SavedSessionDefinition) {
     if (session.kind === 'local') void openTerminal(session.shell, session.name);
     else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name);
+    else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
     else openFtpConnect(session.host, session.port, session.secure, session.name);
   }
@@ -1102,6 +1194,8 @@ function Workbench() {
       ? { kind: 'local', name: saveSessionName, shell: active.shell }
       : active.transport === 'ssh'
         ? { kind: 'ssh', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port }
+        : active.transport === 'sftp'
+          ? { kind: 'sftp', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port }
         : active.transport === 'telnet'
           ? { kind: 'telnet', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port }
           : { kind: 'ftp', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port, secure: active.endpoint.secure };
@@ -1322,9 +1416,10 @@ function Workbench() {
       <aside className="session-rail" aria-label="Sessions">
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
-        <button className="connect-ssh-button" type="button" onClick={openSshConnect}><span aria-hidden="true">↗</span> Connect to SSH</button>
+        <button className="connect-ssh-button" type="button" onClick={() => openSshConnect()}><span aria-hidden="true">↗</span> Connect to SSH</button>
         <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
         <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
+        <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Open sessions</h3>
@@ -1334,7 +1429,8 @@ function Workbench() {
                 aria-current={session.sessionId === activeId ? 'page' : undefined} onClick={() => setActiveId(session.sessionId)}>
                 <span className={`shell-glyph ${session.transport === 'local' ? session.shell : session.transport}`} aria-hidden="true">
                   {session.transport === 'local' ? shellMark(session.shell) : session.transport === 'ssh' ? 'SSH'
-                    : session.transport === 'telnet' ? 'TELNET' : session.endpoint.secure ? 'FTPS' : 'FTP'}
+                    : session.transport === 'sftp' ? 'SFTP' : session.transport === 'telnet' ? 'TELNET'
+                      : session.endpoint.secure ? 'FTPS' : 'FTP'}
                 </span>
                 <span className="session-name" translate="no">{session.title}</span>
                 <span className={`state-dot ${session.state}`} aria-label={session.state} />
@@ -1375,9 +1471,10 @@ function Workbench() {
             {sessions.map((session, index) => <button className={`tab-item ${session.sessionId === activeId ? 'selected' : ''}`} key={session.sessionId}
               type="button" role="tab" id={`tab-${session.sessionId}`} aria-controls={`panel-${session.sessionId}`}
               aria-selected={session.sessionId === activeId} tabIndex={session.sessionId === activeId ? 0 : -1}
-              aria-haspopup={session.transport === 'ftp' ? undefined : 'menu'} aria-expanded={session.transport !== 'ftp' && tabContextMenu?.sessionId === session.sessionId}
+              aria-haspopup={session.transport === 'ftp' || session.transport === 'sftp' ? undefined : 'menu'}
+              aria-expanded={session.transport !== 'ftp' && session.transport !== 'sftp' && tabContextMenu?.sessionId === session.sessionId}
               onAuxClick={event => { if (event.button === 1) { event.preventDefault(); requestCloseTerminal(session.sessionId); } }}
-              onContextMenu={event => { if (session.transport !== 'ftp') openTerminalTabContextMenu(event, session.sessionId); }}
+              onContextMenu={event => { if (session.transport !== 'ftp' && session.transport !== 'sftp') openTerminalTabContextMenu(event, session.sessionId); }}
               onClick={() => { focusTerminalOnActiveChange.current = true; setActiveId(session.sessionId); }}
               onKeyDown={event => {
                 let nextIndex = index;
@@ -1395,7 +1492,8 @@ function Workbench() {
               }}>
               <span className={`shell-glyph ${session.transport === 'local' ? session.shell : session.transport}`} aria-hidden="true">
                 {session.transport === 'local' ? shellMark(session.shell) : session.transport === 'ssh' ? 'SSH'
-                  : session.transport === 'telnet' ? 'TELNET' : session.endpoint.secure ? 'FTPS' : 'FTP'}
+                  : session.transport === 'sftp' ? 'SFTP' : session.transport === 'telnet' ? 'TELNET'
+                    : session.endpoint.secure ? 'FTPS' : 'FTP'}
               </span>
               <span translate="no">{session.title}</span>
               <span className={`state-dot ${session.state}`} aria-hidden="true" />
@@ -1403,7 +1501,7 @@ function Workbench() {
             )}
           </div>
           <div className="tab-actions">
-            {active && <button className="tab-close" type="button" aria-label={active.transport === 'ftp' ? 'Close active file session' : 'Close active terminal'}
+            {active && <button className="tab-close" type="button" aria-label={active.transport === 'ftp' || active.transport === 'sftp' ? 'Close active file session' : 'Close active terminal'}
               onClick={() => requestCloseTerminal(active.sessionId)}>×</button>}
             <button className="add-tab" type="button" aria-label="New local terminal" title="New local terminal" onClick={openPalette}>＋</button>
           </div>
@@ -1419,8 +1517,9 @@ function Workbench() {
         <div className="terminal-stack">
           {sessions.map(session => <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
             aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
-            {session.transport === 'ftp'
-              ? <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport="ftp" onReconnect={() => reconnectFtp(session)} />
+            {session.transport === 'ftp' || session.transport === 'sftp'
+              ? <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport={session.transport}
+                onReconnect={() => session.transport === 'ftp' ? reconnectFtp(session) : reconnectSftp(session)} />
               : <div className={`terminal-panel-layout ${session.transport === 'ssh' && session.state === 'running' ? 'with-remote-files' : ''}`}>
                 <div className="terminal-pane-stage">
                   <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
@@ -1437,7 +1536,8 @@ function Workbench() {
             <h2>No terminal is open</h2>
             <p>Open a local terminal, connect to a terminal server, or browse files over FTP or FTPS.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
-            <button type="button" className="connect-ssh-button" onClick={openSshConnect}>Connect to SSH</button>
+            <button type="button" className="connect-ssh-button" onClick={() => openSshConnect()}>Connect to SSH</button>
+            <button type="button" className="connect-ssh-button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
             <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>
             <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>
           </div>}
@@ -1512,7 +1612,7 @@ function Workbench() {
         <h2 id="save-session-heading">{uncertainSaveDraft ? 'Check save status' : 'Save active session'}</h2>
         <p id="save-session-description">{uncertainSaveDraft
           ? 'The previous save may have completed. Check the saved-session list before retrying.'
-          : 'Save the shell or SSH endpoint so you can open it again later. Credentials and terminal history are never saved.'}</p>
+          : 'Save the session so you can open it again later. Credentials and terminal history are never saved.'}</p>
         <form onSubmit={event => { event.preventDefault(); void saveActiveSession(); }}>
           <label htmlFor="saved-session-name">Session name</label>
           <input ref={saveSessionNameInput} id="saved-session-name" name="name" type="text" autoComplete="off" maxLength={256}
@@ -1569,9 +1669,14 @@ function Workbench() {
     {sshConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSshConnectOpen(false); }}>
       <section ref={sshConnectDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
         aria-labelledby="ssh-connect-heading" aria-describedby="ssh-connect-description">
-        <h2 id="ssh-connect-heading">Connect to an SSH server</h2>
-        <p id="ssh-connect-description">Enter the server address. The Windows credential prompt will collect your username and password after you connect.</p>
-        <form onSubmit={event => { event.preventDefault(); void openSshTerminal(sshHost, sshPort); }}>
+        <h2 id="ssh-connect-heading">{sshConnectMode === 'sftp' ? 'Connect to SFTP files' : 'Connect to an SSH server'}</h2>
+        <p id="ssh-connect-description">{sshConnectMode === 'sftp'
+          ? 'Connect with SSH credentials and verified host identity. This opens the SFTP file browser without starting a remote shell.'
+          : 'Enter the server address. The Windows credential prompt will collect your username and password after you connect.'}</p>
+        <form onSubmit={event => { event.preventDefault();
+          if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle);
+          else void openSshTerminal(sshHost, sshPort, sshSavedTitle);
+        }}>
           <label htmlFor="ssh-host">Host name or IP address</label>
           <input ref={sshHostInput} id="ssh-host" name="host" type="text" autoComplete="off" spellCheck={false}
             placeholder="server.example.com…" value={sshHost} onChange={event => setSshHost(event.target.value)} />
@@ -1686,10 +1791,11 @@ function Workbench() {
       <section ref={closeDialog} className="close-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="close-heading" aria-describedby="close-description">
         <h2 id="close-heading">Close {pendingClose.title}?</h2>
         <p id="close-description">{pendingClose.transport === 'ftp' ? 'Closing this file session disconnects from the FTP server.'
-          : 'Closing this terminal stops its shell process and any command running in it.'}</p>
+          : pendingClose.transport === 'sftp' ? 'Closing this file session disconnects from the SSH server.'
+            : 'Closing this terminal stops its shell process and any command running in it.'}</p>
         <div className="close-actions">
-          <button ref={keepTerminalButton} type="button" onClick={() => setPendingCloseId(undefined)}>{pendingClose.transport === 'ftp' ? 'Keep session' : 'Keep terminal'}</button>
-          <button type="button" className="confirm-close" onClick={confirmCloseTerminal}>{pendingClose.transport === 'ftp' ? 'Close session' : 'Close terminal'}</button>
+          <button ref={keepTerminalButton} type="button" onClick={() => setPendingCloseId(undefined)}>{pendingClose.transport === 'ftp' || pendingClose.transport === 'sftp' ? 'Keep session' : 'Keep terminal'}</button>
+          <button type="button" className="confirm-close" onClick={confirmCloseTerminal}>{pendingClose.transport === 'ftp' || pendingClose.transport === 'sftp' ? 'Close session' : 'Close terminal'}</button>
         </div>
       </section>
     </div>}

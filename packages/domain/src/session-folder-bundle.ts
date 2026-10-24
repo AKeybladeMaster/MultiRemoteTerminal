@@ -4,8 +4,9 @@ import { isSavedSessionFolder } from './session-folder.ts';
 import type { SavedSessionFolder } from './session-folder.ts';
 
 export const SESSION_FOLDER_BUNDLE_FORMAT = 'multiremote-terminal/session-folder';
-export const SESSION_FOLDER_BUNDLE_VERSION = 2;
+export const SESSION_FOLDER_BUNDLE_VERSION = 3;
 const LEGACY_SESSION_FOLDER_BUNDLE_VERSION = 1;
+const SESSION_FOLDER_BUNDLE_VERSION_WITH_FTP = 2;
 export const MAX_SESSION_FOLDER_BUNDLE_RECORDS = 100_000;
 export const MAX_SESSION_FOLDER_BUNDLE_BYTES = 16 * 1024 * 1024;
 
@@ -39,11 +40,14 @@ export function createSessionFolderBundle(input: {
 
 export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundle | undefined {
   if (!isPlainRecord(value) || !hasExactKeys(value, ['format', 'version', 'rootFolderId', 'exportedAt', 'folders', 'sessions']) ||
-      value.format !== SESSION_FOLDER_BUNDLE_FORMAT || (value.version !== LEGACY_SESSION_FOLDER_BUNDLE_VERSION && value.version !== SESSION_FOLDER_BUNDLE_VERSION) || !isSessionFolderId(value.rootFolderId) ||
+      value.format !== SESSION_FOLDER_BUNDLE_FORMAT || (value.version !== LEGACY_SESSION_FOLDER_BUNDLE_VERSION &&
+        value.version !== SESSION_FOLDER_BUNDLE_VERSION_WITH_FTP && value.version !== SESSION_FOLDER_BUNDLE_VERSION) || !isSessionFolderId(value.rootFolderId) ||
       !isIsoTimestamp(value.exportedAt) || !Array.isArray(value.folders) || !Array.isArray(value.sessions) ||
       value.folders.length < 1 || value.folders.length + value.sessions.length > MAX_SESSION_FOLDER_BUNDLE_RECORDS ||
       !value.folders.every(isSavedSessionFolder) ||
-      !value.sessions.every(value.version === LEGACY_SESSION_FOLDER_BUNDLE_VERSION ? isLegacySavedSessionDefinition : isSavedSessionDefinition)) return undefined;
+      !value.sessions.every(value.version === LEGACY_SESSION_FOLDER_BUNDLE_VERSION
+        ? isLegacySavedSessionDefinition
+        : value.version === SESSION_FOLDER_BUNDLE_VERSION_WITH_FTP ? isPreSftpSavedSessionDefinition : isSavedSessionDefinition)) return undefined;
 
   const folders = value.folders as SavedSessionFolder[];
   const sessions = value.sessions as SavedSessionDefinition[];
@@ -94,7 +98,11 @@ export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundl
 }
 
 function isLegacySavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
-  return isSavedSessionDefinition(value) && value.kind !== 'ftp';
+  return isSavedSessionDefinition(value) && value.kind !== 'ftp' && value.kind !== 'sftp';
+}
+
+function isPreSftpSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
+  return isSavedSessionDefinition(value) && value.kind !== 'sftp';
 }
 
 export function isSessionFolderBundle(value: unknown): value is SessionFolderBundle {
