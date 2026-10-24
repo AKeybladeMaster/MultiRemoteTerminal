@@ -7,6 +7,8 @@ import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../pa
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 import { isSshTunnelDefinition, isTunnelId, normalizeSshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { SshTunnelDefinition, SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isMacroDefinition, isMacroId, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
+import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
@@ -32,6 +34,10 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.export'; readonly folderId: string; readonly path: string; readonly temporaryPath: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.import'; readonly path: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.list' }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.create'; readonly draft: MacroDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.update'; readonly id: string; readonly draft: MacroDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.remove'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
@@ -54,6 +60,9 @@ export type StorageWorkerResult =
   | { readonly kind: 'tunnels'; readonly value: readonly SshTunnelDefinition[] }
   | { readonly kind: 'tunnelLookup'; readonly value: SshTunnelDefinition | null }
   | { readonly kind: 'tunnel'; readonly value: SshTunnelDefinition }
+  | { readonly kind: 'macroDefinitions'; readonly value: readonly MacroDefinition[] }
+  | { readonly kind: 'macroDefinition'; readonly value: MacroDefinition }
+  | { readonly kind: 'macroLookup'; readonly value: MacroDefinition | null }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -142,6 +151,15 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   }
   if (value.command === 'session.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'folderId']) &&
       isSessionDefinitionId(value.id) && (value.folderId === null || isSessionFolderId(value.folderId))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'macro.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'macro.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeMacroDraft(value.draft)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'macro.update' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'draft']) &&
+      isMacroId(value.id) && normalizeMacroDraft(value.draft)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'macro.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isMacroId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
       isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
@@ -185,6 +203,9 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'tunnels' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSshTunnelDefinition)) return true;
   if (value.kind === 'tunnelLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isSshTunnelDefinition(value.value))) return true;
   if (value.kind === 'tunnel' && exactKeys(value, ['kind', 'value']) && isSshTunnelDefinition(value.value)) return true;
+  if (value.kind === 'macroDefinitions' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isMacroDefinition)) return true;
+  if (value.kind === 'macroDefinition' && exactKeys(value, ['kind', 'value']) && isMacroDefinition(value.value)) return true;
+  if (value.kind === 'macroLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isMacroDefinition(value.value))) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 

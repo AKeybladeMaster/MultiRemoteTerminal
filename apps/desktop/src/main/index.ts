@@ -10,6 +10,7 @@ import type { LocalTerminalController } from '../../../../packages/application/s
 import { createHostTrustManager } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustRuntime } from '../../../../packages/application/src/host-trust.ts';
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
+import { createMacroCatalog } from '../../../../packages/application/src/macros.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
@@ -231,6 +232,7 @@ function boot(): void {
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
   const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
   const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels);
+  const macros = createMacroCatalog(storageStore);
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })
@@ -295,7 +297,8 @@ function boot(): void {
     const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
-    const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command.startsWith('tunnel.') || parsed.result.command === 'ssh.files.list' ||
+    const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command.startsWith('macro.') ||
+      parsed.result.command.startsWith('tunnel.') || parsed.result.command === 'ssh.files.list' ||
       parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.download') &&
       owned && mainFrame && isAppDocument(frameUrl);
@@ -429,7 +432,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, ftpFiles, sessionCatalog, tunnels, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, ftpFiles, sessionCatalog, macros, tunnels, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;

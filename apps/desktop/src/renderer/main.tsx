@@ -6,6 +6,7 @@ import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/app
 import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesSession } from '../../../../packages/application/src/ftp-files.ts';
 import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -20,6 +21,7 @@ import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
+import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -232,6 +234,11 @@ function Workbench() {
   const [tunnelsLoading, setTunnelsLoading] = useState(false);
   const [tunnelBusyId, setTunnelBusyId] = useState<string>();
   const [tunnelError, setTunnelError] = useState<string>();
+  const [macroManagerOpen, setMacroManagerOpen] = useState(false);
+  const [macros, setMacros] = useState<readonly MacroDefinition[]>([]);
+  const [macrosLoading, setMacrosLoading] = useState(false);
+  const [macroBusy, setMacroBusy] = useState(false);
+  const [macroError, setMacroError] = useState<string>();
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -258,6 +265,7 @@ function Workbench() {
   const savedFoldersRequest = useRef(0);
   const tunnelManagerRequest = useRef(0);
   const tunnelOperationRequest = useRef(0);
+  const macroManagerRequest = useRef(0);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
@@ -283,6 +291,8 @@ function Workbench() {
   const folderDialogReturnFocus = useRef<HTMLElement | null>(null);
   const tunnelManagerDialog = useRef<HTMLElement>(null);
   const tunnelManagerReturnFocus = useRef<HTMLElement | null>(null);
+  const macroManagerDialog = useRef<HTMLElement>(null);
+  const macroManagerReturnFocus = useRef<HTMLElement | null>(null);
   const sshTrustDialog = useRef<HTMLElement>(null);
   const rejectSshHostButton = useRef<HTMLButtonElement>(null);
   const changedSshHostButton = useRef<HTMLButtonElement>(null);
@@ -399,6 +409,77 @@ function Workbench() {
   }, [loadTunnelManager]);
 
   const closeTunnelManager = useCallback(() => setTunnelManagerOpen(false), []);
+
+  const loadMacroManager = useCallback(async (): Promise<void> => {
+    const request = ++macroManagerRequest.current;
+    setMacrosLoading(true);
+    try {
+      const reply = await window.multiRemoteTerminal.listMacros();
+      if (request !== macroManagerRequest.current) return;
+      if (!reply.ok) {
+        setMacroError(`Saved macros could not be loaded (${reply.error.code}).`);
+        return;
+      }
+      setMacros(reply.result);
+    } catch {
+      if (request === macroManagerRequest.current) setMacroError('Saved macros could not be loaded.');
+    } finally {
+      if (request === macroManagerRequest.current) setMacrosLoading(false);
+    }
+  }, []);
+
+  const openMacroManager = useCallback(() => {
+    macroManagerReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMacroError(undefined);
+    setMacroManagerOpen(true);
+    void loadMacroManager();
+  }, [loadMacroManager]);
+
+  const closeMacroManager = useCallback(() => {
+    macroManagerRequest.current++;
+    setMacrosLoading(false);
+    setMacroManagerOpen(false);
+  }, []);
+
+  const saveMacro = useCallback(async (id: string | undefined, draft: MacroDraft): Promise<string | undefined> => {
+    setMacroBusy(true);
+    setMacroError(undefined);
+    try {
+      const reply = id
+        ? await window.multiRemoteTerminal.updateMacro(id, draft)
+        : await window.multiRemoteTerminal.createMacro(draft);
+      if (!reply.ok) {
+        setMacroError(`The macro could not be saved (${reply.error.code}).`);
+        return undefined;
+      }
+      await loadMacroManager();
+      return reply.result.id;
+    } catch {
+      setMacroError('The macro could not be saved.');
+      return undefined;
+    } finally {
+      setMacroBusy(false);
+    }
+  }, [loadMacroManager]);
+
+  const deleteMacro = useCallback(async (id: string): Promise<boolean> => {
+    setMacroBusy(true);
+    setMacroError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.deleteMacro(id);
+      if (!reply.ok) {
+        setMacroError(`The macro could not be deleted (${reply.error.code}).`);
+        return false;
+      }
+      await loadMacroManager();
+      return true;
+    } catch {
+      setMacroError('The macro could not be deleted.');
+      return false;
+    } finally {
+      setMacroBusy(false);
+    }
+  }, [loadMacroManager]);
 
   const saveSshTunnel = useCallback(async (draft: SshTunnelDraft): Promise<string | undefined> => {
     const operation = ++tunnelOperationRequest.current;
@@ -977,6 +1058,18 @@ function Workbench() {
         }
         return;
       }
+      if (macroManagerOpen) {
+        if (event.key === 'Escape' && !macroBusy) { event.preventDefault(); closeMacroManager(); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(macroManagerDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (tunnelManagerOpen) {
         return;
       }
@@ -1095,7 +1188,7 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, catalogBusy, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+  }, [activeId, catalogBusy, closeMacroManager, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -1118,6 +1211,18 @@ function Workbench() {
   useLayoutEffect(() => {
     if (tunnelManagerOpen) requestAnimationFrame(() => tunnelManagerDialog.current?.querySelector<HTMLElement>('select, input, button')?.focus());
   }, [tunnelManagerOpen]);
+
+  useLayoutEffect(() => {
+    if (macroManagerOpen) requestAnimationFrame(() => macroManagerDialog.current?.querySelector<HTMLElement>('#macro-name')?.focus());
+  }, [macroManagerOpen]);
+
+  useEffect(() => {
+    if (!macroManagerOpen && macroManagerReturnFocus.current) {
+      const target = macroManagerReturnFocus.current;
+      macroManagerReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [macroManagerOpen]);
 
   useEffect(() => {
     if (!tunnelManagerOpen && tunnelManagerReturnFocus.current) {
@@ -1620,6 +1725,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
+        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Open sessions</h3>
@@ -1969,6 +2075,8 @@ function Workbench() {
     {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
+    {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} loading={macrosLoading} busy={macroBusy} error={macroError}
+      onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} />}
     {currentSshTrust && <div className="ssh-backdrop ssh-trust-backdrop" onMouseDown={event => {
       if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
     }}>

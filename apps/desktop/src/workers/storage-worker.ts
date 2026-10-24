@@ -5,6 +5,7 @@ import { HostTrustStoreError } from '../../../../packages/application/src/host-t
 import { SqliteHostTrustRepository, toHostTrustStoreError } from '../adapters/sqlite-host-trust-repository.ts';
 import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catalog-repository.ts';
 import { SqliteTunnelRepository } from '../adapters/sqlite-tunnel-repository.ts';
+import { SqliteMacroCatalogRepository } from '../adapters/sqlite-macro-catalog-repository.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -16,6 +17,7 @@ if (!databasePath || !isAbsolute(databasePath)) throw new Error('Storage worker 
 let repository: SqliteHostTrustRepository;
 let sessionCatalogRepository: SqliteSessionCatalogRepository;
 let tunnelRepository: SqliteTunnelRepository;
+let macroCatalogRepository: SqliteMacroCatalogRepository;
 try {
   await mkdir(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath, {
@@ -29,6 +31,7 @@ try {
   repository.migrate();
   sessionCatalogRepository = new SqliteSessionCatalogRepository(database);
   tunnelRepository = new SqliteTunnelRepository(database);
+  macroCatalogRepository = new SqliteMacroCatalogRepository(database);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
   const errorCode = storageWorkerErrorCode(normalizedError);
@@ -98,6 +101,18 @@ parent.on('message', async event => {
     } else if (request.command === 'session.move') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: await sessionCatalogRepository.moveSession(request.id, request.folderId) } });
+    } else if (request.command === 'macro.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'macroDefinitions', value: macroCatalogRepository.listMacros() } });
+    } else if (request.command === 'macro.create') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'macroDefinition', value: macroCatalogRepository.createMacro(request.draft) } });
+    } else if (request.command === 'macro.update') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'macroLookup', value: macroCatalogRepository.updateMacro(request.id, request.draft) ?? null } });
+    } else if (request.command === 'macro.remove') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: macroCatalogRepository.removeMacro(request.id) } });
     } else if (request.command === 'tunnel.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'tunnels', value: await tunnelRepository.listSshTunnels() } });

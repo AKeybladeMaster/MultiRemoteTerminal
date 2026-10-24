@@ -117,6 +117,12 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 **Tests:** >4 and 100 saved macros, 3 independent hosts, secret-input suppression, mid-run disconnect/cancel.  
 **Gate:** no automatic replay or shell script interpretation.
 
+**WP-06A — persistent macro library (partial):** Add a versioned, exact macro schema, SQLite worker storage, typed IPC and an accessible editor for saved definitions. Definitions have bounded step count/size but no catalog count cap. No target or credential fields are stored. The editor warns that user-authored text is local database content and should not include secrets; manually entered secret patterns are not detected. The Windows E2E covers create, edit, restart persistence and deletion; the SQLite adapter test stores 100 definitions. See [WP-06A results](results/WP-06A-macro-library-2026-10-25.md) and [ADR-0013](adr/ADR-0013-wp06-macro-safety-and-storage.md). Recording, playback, secret-input suppression and MultiExec remain open.
+
+**WP-06B — explicit recording and single-terminal playback (planned):** Record complete input lines only for one selected connected terminal; keep app credential dialogs and recognized secret prompts out of recordings. Add literal wait-for-text, bounded delay, explicit confirmation, progress and cancellation. Playback stops on disconnect and never reconnects or resumes automatically.
+
+**WP-06C — confirmed MultiExec (planned):** Let users select active terminal targets, review the exact text and destinations, confirm once, then report each target independently. No automatic retries or target substitution.
+
 ### WP-07 — Security and Windows release (MVP)
 
 **Requires:** WP-01..06.  

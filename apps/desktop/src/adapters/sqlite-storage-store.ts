@@ -5,11 +5,14 @@ import type { UtilityProcess } from 'electron';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
 import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
+import type { MacroCatalogStore } from '../../../../packages/application/src/macros.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 import type { SshTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
+import { normalizeMacroDraft, isMacroId } from '../../../../packages/domain/src/macro.ts';
+import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
@@ -76,7 +79,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
     : never
   : never;
 
-export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, SshTunnelCatalog, SavedSessionReader {
+export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, SshTunnelCatalog, SavedSessionReader {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -145,6 +148,39 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'session.remove', id }, cancellation);
     if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async listMacros(cancellation?: CancellationSignal): Promise<readonly MacroDefinition[]> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.list' }, cancellation);
+    if (result.kind !== 'macroDefinitions') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async createMacro(input: MacroDraft, cancellation?: CancellationSignal): Promise<MacroDefinition> {
+    const draft = normalizeMacroDraft(input);
+    if (!draft) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.create', draft }, cancellation);
+    if (result.kind !== 'macroDefinition') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async updateMacro(id: string, input: MacroDraft, cancellation?: CancellationSignal): Promise<MacroDefinition | undefined> {
+    const draft = normalizeMacroDraft(input);
+    if (!isMacroId(id) || !draft) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.update', id, draft }, cancellation);
+    if (result.kind !== 'macroLookup') throw new StorageOperationError('corrupt');
+    return result.value ?? undefined;
+  }
+
+  async removeMacro(id: string, cancellation?: CancellationSignal): Promise<boolean> {
+    if (!isMacroId(id)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.remove', id }, cancellation);
+    if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
     return result.value;
   }
 
