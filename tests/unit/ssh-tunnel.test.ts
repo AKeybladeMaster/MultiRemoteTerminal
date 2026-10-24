@@ -23,7 +23,16 @@ test('remote SSH tunnel definitions allow server-selected ports while keeping th
   assert.deepEqual(draft, { sessionId, name: 'Reverse API', mode: 'remote', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: '127.0.0.1', targetPort: 3000 });
   assert.equal(normalizeSshTunnelDraft({ ...draft, bindHost: '0.0.0.0' }), undefined);
-  assert.equal(normalizeSshTunnelDraft({ ...draft, mode: 'dynamic' }), undefined);
+});
+
+test('dynamic SOCKS tunnel definitions are loopback-only and contain no fixed destination', () => {
+  const draft = normalizeSshTunnelDraft({ sessionId, name: '  Browser proxy  ', mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 1080 });
+  assert.deepEqual(draft, { sessionId, name: 'Browser proxy', mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 1080 });
+  assert.equal(normalizeSshTunnelDraft({ ...draft!, targetHost: 'public.example', targetPort: 443 }), undefined);
+  assert.equal(normalizeSshTunnelDraft({ ...draft!, bindHost: '0.0.0.0' }), undefined);
+  assert.equal(isSshTunnelDefinition({ id: tunnelId, ...draft!, createdAt: '2026-10-24T00:00:00.000Z' }), true);
+  assert.equal(isSshTunnelDefinition({ id: tunnelId, ...draft!, targetHost: 'public.example', targetPort: 443,
+    createdAt: '2026-10-24T00:00:00.000Z' }), false);
 });
 
 test('local tunnel persisted rows and runtime status accept only exact bounded shapes', () => {

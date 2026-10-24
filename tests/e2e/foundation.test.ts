@@ -556,6 +556,44 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
     socket.once('connect', () => socket.write(Buffer.from(payload)));
   });
+  const forwardSocksTraffic = (proxyPort: number, targetHost: string, targetPort: number, payload: string): Promise<string> =>
+    new Promise((resolvePayload, rejectPayload) => {
+      const socket = connectTcp(proxyPort, '127.0.0.1');
+      let phase: 'method' | 'connect' | 'data' = 'method';
+      let received = Buffer.alloc(0);
+      let response = '';
+      const timer = setTimeout(() => {
+        socket.destroy();
+        rejectPayload(new Error(`Timed out during dynamic SOCKS forwarding. Events: ${fixtureEvents.join(', ')}; target bytes: ${bytesReceivedByTarget}`));
+      }, 10_000);
+      const finish = (error?: Error): void => {
+        clearTimeout(timer);
+        if (error) rejectPayload(error);
+      };
+      socket.once('connect', () => socket.write(Buffer.from([5, 1, 0])));
+      socket.on('data', chunk => {
+        received = Buffer.concat([received, chunk]);
+        if (phase === 'method' && received.length >= 2) {
+          if (received[0] !== 5 || received[1] !== 0) { finish(new Error('SOCKS proxy did not select no-authentication')); socket.destroy(); return; }
+          received = received.subarray(2);
+          phase = 'connect';
+          const host = Buffer.from(targetHost, 'ascii');
+          socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, host.length]), host, Buffer.from([targetPort >> 8, targetPort & 0xff])]));
+        }
+        if (phase === 'connect' && received.length >= 10) {
+          if (received[0] !== 5 || received[1] !== 0) { finish(new Error(`SOCKS CONNECT failed with reply ${received[1]}`)); socket.destroy(); return; }
+          received = received.subarray(10);
+          phase = 'data';
+          socket.write(Buffer.from(payload));
+        }
+        if (phase === 'data') {
+          response += received.toString('utf8');
+          received = Buffer.alloc(0);
+          if (response.includes(`MRT-FORWARDED:${payload}`)) { clearTimeout(timer); resolvePayload(response); socket.destroy(); }
+        }
+      });
+      socket.once('error', error => finish(error));
+    });
   const sshServer = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
     const client = rawClient as Ssh2FixtureClient;
     clients.add(client);
@@ -625,12 +663,13 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
       client.on('tcpip', (acceptChannel: () => Duplex, rejectChannel: () => void, rawInfo: unknown) => {
         const info = rawInfo as { readonly destIP: string; readonly destPort: number };
         const targetAddress = targetServer.address();
-        if (!targetAddress || typeof targetAddress === 'string' || info.destIP !== '127.0.0.1' || info.destPort !== targetAddress.port) {
+        if (!targetAddress || typeof targetAddress === 'string' || (info.destIP !== '127.0.0.1' && info.destIP !== 'localhost') || info.destPort !== targetAddress.port) {
           rejectChannel();
           return;
         }
-        fixtureEvents.push('direct-tcpip');
-        const socket = connectTcp(info.destPort, info.destIP);
+        const isDomainDestination = info.destIP === 'localhost';
+        fixtureEvents.push(isDomainDestination ? 'dynamic-direct-tcpip-domain' : 'direct-tcpip');
+        const socket = connectTcp(info.destPort, isDomainDestination ? '127.0.0.1' : info.destIP);
         targetSockets.add(socket);
         socket.once('close', () => targetSockets.delete(socket));
         socket.once('error', error => {
@@ -814,6 +853,38 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     expect(restartedPortMatch).not.toBeNull();
     const restartedRemotePort = Number(restartedPortMatch?.[1]);
 
+    const dynamicTunnelName = 'SOCKS browser proxy';
+    await manager.getByRole('button', { name: '+ New tunnel' }).click();
+    await manager.getByLabel('Tunnel name').fill(dynamicTunnelName);
+    await manager.getByLabel('Forward direction').selectOption('dynamic');
+    await expect(manager.getByLabel('Local SOCKS5 port')).toBeVisible();
+    await expect(manager.getByLabel('Remote destination host')).toHaveCount(0);
+    await manager.getByLabel('Local SOCKS5 port').fill('0');
+    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+    const dynamicItem = manager.getByRole('button', { name: new RegExp(dynamicTunnelName, 'u') });
+    await expect(dynamicItem).toContainText('SOCKS5 proxy');
+    await dynamicItem.click();
+    const dynamicEditor = manager.getByRole('region', { name: 'Tunnel settings' });
+    await page.screenshot({ path: 'test-results/ssh-dynamic-socks-manager.png', fullPage: true });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(700, 720));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(720);
+    await page.screenshot({ path: 'test-results/ssh-dynamic-socks-manager-narrow.png', fullPage: true });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1200, 800));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(720);
+    await dynamicEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    const dynamicStatus = dynamicEditor.getByRole('status');
+    await expect(dynamicStatus).toContainText('Active', { timeout: 20_000 });
+    const dynamicEndpoint = await dynamicStatus.locator('code').innerText();
+    const dynamicPortMatch = /SOCKS5 proxy 127\.0\.0\.1:(\d+)/u.exec(dynamicEndpoint);
+    expect(dynamicPortMatch).not.toBeNull();
+    const socksPort = Number(dynamicPortMatch?.[1]);
+    expect(socksPort).toBeGreaterThan(0);
+    expect(await forwardSocksTraffic(socksPort, 'localhost', targetAddress.port, 'dynamic-socks-roundtrip'))
+      .toContain('MRT-FORWARDED:dynamic-socks-roundtrip');
+    expect(fixtureEvents).toContain('dynamic-direct-tcpip-domain');
+    expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
+    localPorts.push(socksPort);
+
     await app.close();
     app = undefined;
     expect([...remoteBindings.values()].some(ports => ports.has(restartedRemotePort))).toBe(false);
@@ -841,6 +912,10 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     const restoredRemote = restoredManager.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
     await expect(restoredRemote).toBeVisible();
     await restoredRemote.click();
+    await expect(restoredManager.getByRole('region', { name: 'Tunnel settings' }).getByRole('status')).toContainText('Stopped');
+    const restoredDynamic = restoredManager.getByRole('button', { name: new RegExp(dynamicTunnelName, 'u') });
+    await expect(restoredDynamic).toBeVisible();
+    await restoredDynamic.click();
     await expect(restoredManager.getByRole('region', { name: 'Tunnel settings' }).getByRole('status')).toContainText('Stopped');
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
   } finally {

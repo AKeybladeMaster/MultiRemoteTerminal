@@ -81,4 +81,8 @@ test('SSH worker accepts only loopback tunnel definitions and bounded assigned-p
   const remoteStart = { ...start, definition: { ...definition, mode: 'remote', targetHost: '127.0.0.1', targetPort: 3000 } };
   assert.equal(parseSshWorkerInput(remoteStart)?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...remoteStart, definition: { ...remoteStart.definition, bindHost: '0.0.0.0' } }), undefined);
+  const dynamicStart = { ...start, definition: { id: definition.id, sessionId, name: 'Proxy', mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 1080,
+    createdAt: '2026-10-24T00:00:00.000Z' } };
+  assert.equal(parseSshWorkerInput(dynamicStart)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...dynamicStart, definition: { ...dynamicStart.definition, targetHost: 'public.example', targetPort: 443 } }), undefined);
 });

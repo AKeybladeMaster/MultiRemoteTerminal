@@ -43,9 +43,9 @@ WP-04A adds named loopback SSH local forwards, explicit start/stop, OS-selected 
 | P-20 | Embedded local servers | Controlled daemon module | Parity | Service starts/listens/stops, no artificial stop timer |
 | P-21 | Embedded tools | Discoverable optional tools via registry | Next | Tool launch works and user's enabled/hidden state persists |
 | P-22 | SSH gateway/jump host | SSH route chain provider | MVP | 1+ gateway, each independent host-key/auth check |
-| P-23 | SSH local tunnels (PARTIAL) | Forwarding controller | MVP | Windows UI roundtrip through SSH, loopback-only bind, half-close and cleanup; dynamic forwarding and jump hosts remain planned |
+| P-23 | SSH local tunnels (PARTIAL) | Forwarding controller | MVP | Windows UI roundtrip through SSH, loopback-only bind, half-close and cleanup; dynamic SOCKS forwarding is now covered by WP-04C, while jump hosts and broader server interoperability remain open |
 | P-24 | SSH remote tunnels (PARTIAL) | Forwarding controller | MVP | Windows UI roundtrip through a requested remote `127.0.0.1` listener, assigned-port reporting, pre-start warning about server-policy exposure, stop and shutdown cleanup; non-loopback consent and broad server interoperability remain open |
-| P-25 | SSH dynamic SOCKS tunnels | Forwarding controller | MVP | D forward with SOCKS5 handshake and remote target |
+| P-25 | SSH dynamic SOCKS tunnels (PARTIAL) | Forwarding controller | MVP | Windows UI-to-worker SOCKS5 no-auth TCP CONNECT roundtrip to an SSH-side domain target; IPv4/domain/IPv6 requests, loopback binding, 64-connection cap and cleanup are covered. UDP ASSOCIATE, BIND, authenticated methods and broader interoperability remain open |
 | P-26 | Unix package manager extensibility | WSL package mgr / approved external toolpacks | Parity | Install/list/remove approved tools; no MobApt copy |
 | P-27 | Remote file text editor | Remote edit/temp file conflict manager | Next | Fetch/edit/save with conflict detection |
 | P-28 | Macro record and replay | Structured recording with secret filtering | MVP | 100 macros, redaction, delay/expect, cancel |

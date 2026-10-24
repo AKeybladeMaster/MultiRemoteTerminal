@@ -112,7 +112,8 @@ export type ImportSessionFolderRequest = Request<'session.folder.import', Record
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
 export type ListSshTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
 export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
-  readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number }>;
+  readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number } |
+  { readonly id?: string; readonly sessionId: string; readonly name: string; readonly mode: 'dynamic'; readonly bindHost: '127.0.0.1'; readonly bindPort: number }>;
 export type DeleteSshTunnelRequest = Request<'tunnel.delete', { readonly id: string }>;
 export type StartSshTunnelRequest = Request<'tunnel.start', { readonly id: string }>;
 export type StopSshTunnelRequest = Request<'tunnel.stop', { readonly id: string }>;

@@ -243,6 +243,8 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
   const parsedSave = parseRequest(save);
   assert.equal(parsedSave.ok, true);
   assert.equal(parseRequest({ ...save, payload: { ...definition, mode: 'remote', targetHost: '127.0.0.1', targetPort: 3000 } }).ok, true);
+  assert.equal(parseRequest({ ...save, payload: { id: definition.id, sessionId: definition.sessionId, name: 'Proxy', mode: 'dynamic',
+    bindHost: '127.0.0.1', bindPort: 1080 } }).ok, true);
   assert.equal(parseRequest({ ...save, payload: { ...definition, bindHost: '0.0.0.0' } }).ok, false);
   assert.equal(parseRequest({ ...save, payload: { ...definition, password: 'hidden' } }).ok, false);
   if (parsedSave.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,

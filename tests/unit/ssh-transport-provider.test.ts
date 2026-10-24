@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { connect as connectTcp, createServer } from 'node:net';
-import type { Server, Socket } from 'node:net';
+import { Socket, connect as connectTcp, createServer } from 'node:net';
+import type { Server } from 'node:net';
 import { createSshTransportProvider } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshTransportChannel as ClientChannel, SshTransportClient as Client, SshTransportConfig as ConnectConfig } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshHostKeyParser } from '../../apps/desktop/src/adapters/host-key-evidence.ts';
@@ -58,6 +58,16 @@ class ForwardingFakeClient extends FakeClient {
     const upstream = connectTcp(destinationPort, destinationAddress);
     upstream.once('connect', () => callback(undefined, upstream as unknown as ClientChannel));
     upstream.once('error', error => callback(error, undefined as unknown as ClientChannel));
+    return this;
+  }
+}
+
+class ForwardingTargetCaptureClient extends FakeClient {
+  readonly destinations: Array<{ readonly host: string; readonly port: number }> = [];
+  forwardOut(_sourceAddress: string, _sourcePort: number, destinationAddress: string, destinationPort: number,
+    callback: (error: Error | undefined, channel: ClientChannel) => void): this {
+    this.destinations.push({ host: destinationAddress, port: destinationPort });
+    callback(undefined, new PassThrough() as unknown as ClientChannel);
     return this;
   }
 }
@@ -233,6 +243,116 @@ test('local SSH forwarding binds only on loopback, relays TCP bytes, and release
   assert.equal(await canConnect(bindPort), false, 'stopping closes the bound loopback port');
   await provider.close(sessionId);
   await closeServer(target);
+});
+
+test('dynamic SSH forwarding handles SOCKS5 no-auth CONNECT and rejects unsupported commands', async () => {
+  const target: Server = createServer(socket => socket.pipe(socket));
+  const targetPort = await listen(target);
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333341', sessionId, name: 'Browser proxy', mode: 'dynamic' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+
+    const result = await socksRequest(bindPort, targetPort, 1, [0], 'through-socks');
+    assert.deepEqual(result.methodReply, Buffer.from([5, 0]));
+    assert.deepEqual(result.connectReply.subarray(0, 2), Buffer.from([5, 0]));
+    assert.equal(result.echoed, 'through-socks');
+
+    const unsupported = await socksRequest(bindPort, targetPort, 3, [0]);
+    assert.deepEqual(unsupported.methodReply, Buffer.from([5, 0]));
+    assert.deepEqual(unsupported.connectReply.subarray(0, 2), Buffer.from([5, 7]), 'UDP ASSOCIATE is rejected as unsupported');
+
+    const noAuthentication = await socksRequest(bindPort, targetPort, 1, [2]);
+    assert.deepEqual(noAuthentication.methodReply, Buffer.from([5, 0xff]), 'credentials are never requested or accepted');
+    await provider.stopForward(sessionId, definition.id);
+    assert.equal(await canConnect(bindPort), false, 'stopping the dynamic forward releases its listener');
+  } finally {
+    await provider.close(sessionId);
+    await closeServer(target);
+  }
+});
+
+test('dynamic SOCKS rejection keeps its connection counted until close and releases the slots', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const sockets: Socket[] = [];
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333343', sessionId, name: 'Bounded SOCKS proxy', mode: 'dynamic' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+
+    const rejectMalformedGreeting = (): Promise<Buffer> => new Promise(resolve => {
+      const socket = new Socket({ allowHalfOpen: true });
+      sockets.push(socket);
+      let received = Buffer.alloc(0);
+      socket.connect(bindPort, '127.0.0.1');
+      socket.once('connect', () => socket.write(Buffer.from([4, 0])));
+      socket.on('data', chunk => {
+        received = Buffer.concat([received, chunk]);
+        if (received.length >= 2) resolve(received);
+      });
+      socket.once('close', () => resolve(received));
+      socket.once('error', () => resolve(received));
+    });
+
+    const initialReplies = await Promise.all(Array.from({ length: 64 }, rejectMalformedGreeting));
+    for (const reply of initialReplies) assert.deepEqual(reply, Buffer.from([5, 0xff]));
+
+    const overflowReply = await rejectMalformedGreeting();
+    assert.equal(overflowReply.length, 0, 'the 65th socket is dropped while 64 rejected client sockets remain open');
+
+    const clientCloseEvents = sockets.map(socket => socket.destroyed ? Promise.resolve() : new Promise<void>(resolve => socket.once('close', resolve)));
+    for (const socket of sockets) socket.destroy();
+    await Promise.all(clientCloseEvents);
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    const availableSlot = new Socket({ allowHalfOpen: true });
+    sockets.push(availableSlot);
+    const methodReply = new Promise<Buffer>(resolve => {
+      let received = Buffer.alloc(0);
+      availableSlot.connect(bindPort, '127.0.0.1');
+      availableSlot.once('connect', () => availableSlot.write(Buffer.from([5, 1, 0])));
+      availableSlot.on('data', chunk => {
+        received = Buffer.concat([received, chunk]);
+        if (received.length >= 2) resolve(received);
+      });
+      availableSlot.once('close', () => resolve(received));
+      availableSlot.once('error', () => resolve(received));
+    });
+    assert.deepEqual(await methodReply, Buffer.from([5, 0]), 'closed rejected sockets release their connection slots');
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await provider.close(sessionId);
+    context.mock.timers.reset();
+  }
+});
+
+test('dynamic SOCKS forwarding passes IPv6 CONNECT destinations through SSH unchanged', async () => {
+  const client = new ForwardingTargetCaptureClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333342', sessionId, name: 'IPv6 proxy', mode: 'dynamic' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+    const targetPort = 443;
+    const result = await socksRequest(bindPort, targetPort, 1, [0], undefined, 4,
+      Buffer.from('20010db8000000000000000000000001', 'hex'));
+    assert.deepEqual(result.connectReply.subarray(0, 2), Buffer.from([5, 0]));
+    assert.deepEqual(client.destinations, [{ host: '2001:db8:0:0:0:0:0:1', port: targetPort }]);
+    await provider.stopForward(sessionId, definition.id);
+  } finally { await provider.close(sessionId); }
 });
 
 test('remote SSH forwarding requests only a loopback bind, relays to a local destination, and unbinds on stop', async () => {
@@ -439,6 +559,62 @@ async function listen(server: Server): Promise<number> {
       if (!address || typeof address === 'string') { reject(new Error('Expected an IP listener')); return; }
       resolve(address.port);
     });
+  });
+}
+
+function socksRequest(bindPort: number, targetPort: number, command: number, methods: readonly number[], payload?: string,
+  addressType: 1 | 3 | 4 = 1, addressBytes: Buffer = Buffer.from([127, 0, 0, 1])): Promise<{
+  readonly methodReply: Buffer;
+  readonly connectReply: Buffer;
+  readonly echoed?: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(bindPort, '127.0.0.1');
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('SOCKS5 request timed out')); }, 3_000);
+    let state: 'methods' | 'reply' | 'echo' = 'methods';
+    let received = Buffer.alloc(0);
+    let methodReply: Buffer | undefined;
+    let connectReply: Buffer | undefined;
+    const finish = (error?: Error, result?: { readonly methodReply: Buffer; readonly connectReply: Buffer; readonly echoed?: string }): void => {
+      clearTimeout(timer);
+      if (error) reject(error);
+      else if (result) resolve(result);
+    };
+    socket.once('connect', () => socket.write(Buffer.from([5, methods.length, ...methods])));
+    socket.on('data', chunk => {
+      try {
+        received = Buffer.concat([received, chunk]);
+        if (state === 'methods' && received.length >= 2) {
+          methodReply = received.subarray(0, 2);
+          received = received.subarray(2);
+          if (methodReply[1] === 0xff) {
+            finish(undefined, { methodReply, connectReply: Buffer.alloc(0) });
+            socket.destroy();
+            return;
+          }
+          state = 'reply';
+          const addressField = addressType === 3 ? Buffer.concat([Buffer.from([addressBytes.length]), addressBytes]) : addressBytes;
+          socket.write(Buffer.concat([Buffer.from([5, command, 0, addressType]), addressField,
+            Buffer.from([targetPort >> 8, targetPort & 0xff])]));
+        }
+        if (state === 'reply' && received.length >= 10) {
+          connectReply = received.subarray(0, 10);
+          received = received.subarray(10);
+          if (connectReply[1] !== 0 || !payload) {
+            finish(undefined, { methodReply: methodReply!, connectReply });
+            socket.destroy();
+            return;
+          }
+          state = 'echo';
+          socket.write(Buffer.from(payload));
+        }
+        if (state === 'echo' && received.length >= Buffer.byteLength(payload!)) {
+          finish(undefined, { methodReply: methodReply!, connectReply: connectReply!, echoed: received.toString('utf8') });
+          socket.destroy();
+        }
+      } catch (error) { finish(error instanceof Error ? error : new Error('Invalid SOCKS5 test response')); socket.destroy(); }
+    });
+    socket.once('error', error => finish(error));
   });
 }
 
