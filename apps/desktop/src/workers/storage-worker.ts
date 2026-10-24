@@ -85,7 +85,7 @@ parent.on('message', async event => {
         result: { kind: 'changed', value: await sessionCatalogRepository.removeFolder(request.id) } });
     } else if (request.command === 'session.folder.export') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
-        result: { kind: 'folderExport', value: await sessionCatalogRepository.exportFolderToFile(request.folderId, request.path) } });
+        result: { kind: 'folderExport', value: await sessionCatalogRepository.exportFolderToFileUsingTemporaryPath(request.folderId, request.path, request.temporaryPath) } });
     } else if (request.command === 'session.folder.import') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'folderImport', value: await sessionCatalogRepository.importFolderFromFile(request.path) } });

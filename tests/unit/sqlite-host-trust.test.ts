@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { channel } from 'node:diagnostics_channel';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { backup, DatabaseSync } from 'node:sqlite';
 import type { UtilityProcess } from 'electron';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
@@ -14,7 +15,7 @@ import { sameHostKey } from '../../packages/domain/src/host-trust.ts';
 import type { TrustedHostKey } from '../../packages/domain/src/host-trust.ts';
 import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { HostTrustJsonStore } from '../../apps/desktop/src/adapters/host-trust-json-store.ts';
-import { SqliteHostTrustStore, STORAGE_DIAGNOSTICS_CHANNEL_NAME } from '../../apps/desktop/src/adapters/sqlite-host-trust-store.ts';
+import { SqliteStorageStore, STORAGE_DIAGNOSTICS_CHANNEL_NAME } from '../../apps/desktop/src/adapters/sqlite-storage-store.ts';
 import { STORAGE_WORKER_PROTOCOL_VERSION } from '../../apps/desktop/src/workers/storage-protocol.ts';
 import type { StorageWorkerRequest } from '../../apps/desktop/src/workers/storage-protocol.ts';
 
@@ -25,6 +26,7 @@ class FakeStorageWorker extends EventEmitter {
   private readonly notifyStalled: (() => void) | undefined;
   private readonly notifyReadyStalled: (() => void) | undefined;
   killed = false;
+  temporaryPath: string | undefined;
 
   constructor(databasePath = ':memory:', crashAfterImport = false, stallCommand?: StorageWorkerRequest['command'], notifyStalled?: () => void,
     stallReady = false, notifyReadyStalled?: () => void) {
@@ -41,7 +43,14 @@ class FakeStorageWorker extends EventEmitter {
 
   postMessage(value: unknown): void {
     const request = value as StorageWorkerRequest;
-    if (request.command === this.stallCommand) { this.notifyStalled?.(); return; }
+    if (request.command === this.stallCommand) {
+      if (request.command === 'session.folder.export') {
+        this.temporaryPath = request.temporaryPath;
+        writeFileSync(request.temporaryPath, 'partial bundle');
+      }
+      this.notifyStalled?.();
+      return;
+    }
     queueMicrotask(() => {
       try {
         if (request.command === 'hostTrust.find') {
@@ -118,7 +127,7 @@ test('legacy host identities are verified in SQLite before their source file is 
   const legacy = new HostTrustJsonStore(legacyPath);
   const identity = hostKey('legacy.example', 2222, 3);
   let sourceWorker: FakeStorageWorker | undefined;
-  const store = new SqliteHostTrustStore(join(directory, 'mrt.sqlite'), legacyPath, 'storage-worker.js', directory,
+  const store = new SqliteStorageStore(join(directory, 'mrt.sqlite'), legacyPath, 'storage-worker.js', directory,
     () => {
       sourceWorker = new FakeStorageWorker();
       return sourceWorker as unknown as UtilityProcess;
@@ -212,7 +221,7 @@ test('migration retries idempotently when the storage worker exits after commit 
   const legacy = new HostTrustJsonStore(legacyPath);
   const identity = hostKey('retry.example', 2222, 13);
   let launches = 0;
-  const store = new SqliteHostTrustStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
     const crashAfterImport = launches === 0;
     launches += 1;
     return new FakeStorageWorker(databasePath, crashAfterImport) as unknown as UtilityProcess;
@@ -244,7 +253,7 @@ test('shared initial migration cancels only after its last caller leaves and kee
   let stalledWorker: FakeStorageWorker | undefined;
   let resolveStalled!: () => void;
   const stalled = new Promise<void>(resolve => { resolveStalled = resolve; });
-  const store = new SqliteHostTrustStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
     launches += 1;
     const worker = new FakeStorageWorker(databasePath, false, launches === 1 ? 'hostTrust.importLegacy' : undefined,
       launches === 1 ? resolveStalled : undefined);
@@ -289,7 +298,7 @@ test('cancelling the last request during worker startup terminates the starting 
   let startingWorker: FakeStorageWorker | undefined;
   let resolveStarting!: () => void;
   const starting = new Promise<void>(resolve => { resolveStarting = resolve; });
-  const store = new SqliteHostTrustStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
     launches += 1;
     const worker = new FakeStorageWorker(databasePath, false, undefined, undefined, launches === 1,
       launches === 1 ? resolveStarting : undefined);
@@ -329,7 +338,7 @@ test('caller cancellation aborts a pending worker request and the store restarts
   const diagnosticEvents: unknown[] = [];
   const onDiagnostic = (event: unknown) => diagnosticEvents.push(event);
   diagnostics.subscribe(onDiagnostic);
-  const store = new SqliteHostTrustStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
     launches += 1;
     const worker = new FakeStorageWorker(databasePath, false, launches === 1 ? 'hostTrust.find' : undefined,
       launches === 1 ? resolveStalled : undefined);
@@ -357,6 +366,36 @@ test('caller cancellation aborts a pending worker request and the store restarts
     assert.equal(launches, 2);
   } finally {
     diagnostics.unsubscribe(onDiagnostic);
+    await store.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('cancelled folder export removes a partial temp file after the storage worker exits', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-storage-export-cancel-'));
+  const databasePath = join(directory, 'storage.sqlite');
+  const legacyPath = join(directory, 'ssh-host-keys.json');
+  const destinationPath = join(directory, 'sessions.json');
+  let resolveStalled!: () => void;
+  const stalled = new Promise<void>(resolve => { resolveStalled = resolve; });
+  let worker: FakeStorageWorker | undefined;
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+    worker = new FakeStorageWorker(databasePath, false, 'session.folder.export', resolveStalled);
+    return worker as unknown as UtilityProcess;
+  });
+  const cancellation = cancellationSource();
+  try {
+    const pending = store.exportFolderToFile('11111111-1111-4111-8111-111111111111', destinationPath, cancellation.token);
+    await stalled;
+    const temporaryPath = worker?.temporaryPath;
+    assert.ok(temporaryPath);
+    assert.equal((await stat(temporaryPath)).isFile(), true);
+
+    cancellation.abort();
+    await assert.rejects(pending, (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'cancelled');
+    await assert.rejects(stat(temporaryPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
+    await assert.rejects(stat(destinationPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
+  } finally {
     await store.shutdown();
     await rm(directory, { recursive: true, force: true });
   }

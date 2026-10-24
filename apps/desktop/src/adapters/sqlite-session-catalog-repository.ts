@@ -227,8 +227,14 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   }
 
   async exportFolderToFile(folderId: string, path: string): Promise<SessionFolderExportResult> {
+    const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+    return this.exportFolderToFileUsingTemporaryPath(folderId, path, temporaryPath);
+  }
+
+  async exportFolderToFileUsingTemporaryPath(folderId: string, path: string, temporaryPath: string): Promise<SessionFolderExportResult> {
     try {
       if (!isSessionFolderId(folderId) || !isFilePath(path)) throw new StorageOperationError('invalid');
+      if (!isExportTemporaryPath(path, temporaryPath)) throw new StorageOperationError('invalid');
       const rows = this.listSubtreeFolders.all(folderId, MAX_SESSION_FOLDER_BUNDLE_RECORDS + 1) as unknown as SessionFolderRow[];
       if (rows.length === 0) throw new StorageOperationError('not-found');
       if (rows.length > MAX_SESSION_FOLDER_BUNDLE_RECORDS) throw new StorageOperationError('invalid');
@@ -240,7 +246,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       if (!bundle) throw new StorageOperationError('corrupt');
       const contents = Buffer.from(JSON.stringify(bundle, null, 2), 'utf8');
       if (contents.byteLength > MAX_SESSION_FOLDER_BUNDLE_BYTES) throw new StorageOperationError('invalid');
-      await writeSessionFolderBundle(path, contents);
+      await writeSessionFolderBundle(path, temporaryPath, contents);
       return { folderCount: folders.length, sessionCount: sessions.length };
     } catch (error) { throw mapStorageError(error); }
   }
@@ -346,11 +352,12 @@ function sameSessionDefinition(left: SavedSessionDefinition, right: SavedSession
     left.kind === 'ssh' && right.kind === 'ssh' && left.host === right.host && left.port === right.port;
 }
 
-async function writeSessionFolderBundle(path: string, contents: Buffer): Promise<void> {
-  const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+async function writeSessionFolderBundle(path: string, temporaryPath: string, contents: Buffer): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let created = false;
   try {
     handle = await open(temporaryPath, 'wx', 0o600);
+    created = true;
     await handle.writeFile(contents);
     await handle.sync();
     await handle.close();
@@ -358,9 +365,18 @@ async function writeSessionFolderBundle(path: string, contents: Buffer): Promise
     await rename(temporaryPath, path);
   } catch (error) {
     if (handle) await handle.close().catch(() => undefined);
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (created) await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+function isExportTemporaryPath(destination: string, temporaryPath: string): boolean {
+  if (!isFilePath(temporaryPath) || dirname(temporaryPath) !== dirname(destination)) return false;
+  const prefix = `.${basename(destination)}.`;
+  const filename = basename(temporaryPath);
+  if (!filename.startsWith(prefix) || !filename.endsWith('.tmp')) return false;
+  const id = filename.slice(prefix.length, -'.tmp'.length);
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 }
 
 async function readSessionFolderBundle(path: string): Promise<SessionFolderBundle> {

@@ -18,7 +18,7 @@ import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
-import { SqliteStorageStore } from '../adapters/sqlite-host-trust-store.ts';
+import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';

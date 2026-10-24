@@ -149,21 +149,24 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const destination = new SqliteSessionCatalogRepository(destinationDatabase);
     const root = await source.createFolder({ name: 'Project', parentId: null });
     const child = await source.createFolder({ name: 'Lab', parentId: root.id });
+    const unicodeUpper = await source.createFolder({ name: 'Device Ä', parentId: root.id });
+    const unicodeLower = await source.createFolder({ name: 'Device ä', parentId: root.id });
     const session = await source.createSession({ kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 });
     await source.moveSession(session.id, child.id);
     await source.setFavorite(session.id, true);
     const path = join(directory, 'project.mrt-session-folder.json');
 
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 2, sessionCount: 1 });
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 2, sessionCount: 1 },
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 1 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 1 },
       'exporting again to the selected file replaces it atomically');
     const text = await readFile(path, 'utf8');
     assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
     assert.doesNotMatch(text, /password|credential|privateKey/i);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 2, sessionCount: 1, createdFolderCount: 2, createdSessionCount: 1
+      folderCount: 4, sessionCount: 1, createdFolderCount: 4, createdSessionCount: 1
     });
-    assert.deepEqual(await destination.listFolders(), [root, child]);
+    assert.deepEqual(new Set((await destination.listFolders()).map(folder => folder.name)),
+      new Set([root.name, child.name, unicodeUpper.name, unicodeLower.name]));
     const importedSessions = await destination.listSessions('');
     assert.equal(importedSessions.length, 1);
     const importedSession = importedSessions[0];
@@ -174,7 +177,7 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
       id: session.id, folderId: child.id, kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222, favorite: true
     });
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 2, sessionCount: 1, createdFolderCount: 0, createdSessionCount: 0
+      folderCount: 4, sessionCount: 1, createdFolderCount: 0, createdSessionCount: 0
     });
   } finally {
     sourceDatabase.close();
@@ -223,9 +226,14 @@ test('storage worker bundle requests require exact absolute bounded paths', () =
   const base = { version: 1, type: 'request', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6' } as const;
   assert.deepEqual(parseStorageWorkerRequest({ ...base, command: 'session.folder.import', path: 'C:\\tmp\\sessions.json' })?.command,
     'session.folder.import');
+  assert.deepEqual(parseStorageWorkerRequest({ ...base, command: 'session.folder.export', folderId: '11111111-1111-4111-8111-111111111111',
+    path: 'C:\\tmp\\sessions.json', temporaryPath: 'C:\\tmp\\.sessions.json.5726a2ee-03cd-4f5a-a28c-bd72784f80a6.tmp' })?.command,
+  'session.folder.export');
   assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.import', path: 'relative.json' }), undefined);
   assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.export', folderId: 'bad', path: 'C:\\tmp\\sessions.json' }), undefined);
   assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.import', path: 'C:\\tmp\\sessions.json', secret: 'hidden' }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...base, command: 'session.folder.export', folderId: '11111111-1111-4111-8111-111111111111',
+    path: 'C:\\tmp\\sessions.json', temporaryPath: 'C:\\other\\.sessions.json.5726a2ee-03cd-4f5a-a28c-bd72784f80a6.tmp' }), undefined);
 });
 
 const unusedBundleDialog = {

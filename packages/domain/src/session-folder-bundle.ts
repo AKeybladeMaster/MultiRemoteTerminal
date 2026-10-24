@@ -55,7 +55,7 @@ export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundl
       rootCount += 1;
       if (folder.id !== value.rootFolderId) return undefined;
     } else if (!isSessionFolderId(folder.parentId)) return undefined;
-    const siblingKey = `${folder.parentId ?? ''}\u0000${folder.name.toLowerCase()}`;
+    const siblingKey = `${folder.parentId ?? ''}\u0000${sqliteNoCase(folder.name)}`;
     if (siblingNames.has(siblingKey)) return undefined;
     siblingNames.add(siblingKey);
   }
@@ -93,6 +93,12 @@ export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundl
 
 export function isSessionFolderBundle(value: unknown): value is SessionFolderBundle {
   return normalizeSessionFolderBundle(value) !== undefined;
+}
+
+// SQLite's built-in NOCASE collation folds ASCII letters only. Keep bundle validation
+// aligned with the catalog so accepted Unicode sibling names still round-trip.
+function sqliteNoCase(value: string): string {
+  return value.replace(/[A-Z]/g, character => String.fromCharCode(character.charCodeAt(0) + 32));
 }
 
 function isIsoTimestamp(value: unknown): value is string {

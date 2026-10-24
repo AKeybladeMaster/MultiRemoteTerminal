@@ -5,7 +5,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
-import { isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -26,7 +26,7 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.rename'; readonly id: string; readonly name: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.move'; readonly id: string; readonly parentId: string | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.remove'; readonly id: string }
-  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.export'; readonly folderId: string; readonly path: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.export'; readonly folderId: string; readonly path: string; readonly temporaryPath: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.import'; readonly path: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
@@ -121,8 +121,8 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.folder.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionFolderId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
-  if (value.command === 'session.folder.export' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'folderId', 'path']) &&
-      isSessionFolderId(value.folderId) && isFilePath(value.path)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.export' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'folderId', 'path', 'temporaryPath']) &&
+      isSessionFolderId(value.folderId) && isFilePath(value.path) && isExportTemporaryPath(value.path, value.temporaryPath)) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.folder.import' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path']) && isFilePath(value.path)) {
     return value as unknown as StorageWorkerRequest;
   }
@@ -170,6 +170,15 @@ function isRecordCounts(value: unknown, keys: readonly string[]): value is Recor
 
 function isFilePath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 32_767 && !value.includes('\0') && isAbsolute(value);
+}
+
+function isExportTemporaryPath(destination: string, value: unknown): value is string {
+  if (!isFilePath(value) || dirname(value) !== dirname(destination)) return false;
+  const prefix = `.${basename(destination)}.`;
+  const filename = basename(value);
+  if (!filename.startsWith(prefix) || !filename.endsWith('.tmp')) return false;
+  const requestId = filename.slice(prefix.length, -'.tmp'.length);
+  return REQUEST_ID.test(requestId);
 }
 
 function isErrorCode(value: unknown): value is StorageWorkerErrorCode {

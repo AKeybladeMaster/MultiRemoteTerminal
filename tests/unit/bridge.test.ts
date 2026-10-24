@@ -36,6 +36,20 @@ test('preload exposes saved-folder import and export through fixed commands', as
   ]);
 });
 
+test('saved-folder native picker requests wait for user dismissal without an IPC deadline', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish!: (value: unknown) => void;
+  const bridge = createBridge(() => new Promise(resolve => { finish = resolve; }), id);
+  let settled = false;
+  const pending = bridge.importSavedSessionFolder().then(reply => { settled = true; return reply; });
+  await Promise.resolve();
+  context.mock.timers.tick(120_000);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  finish({ requestId: id(), ok: true, result: { folderCount: 1, sessionCount: 0, createdFolderCount: 1, createdSessionCount: 0 } });
+  assert.equal((await pending).ok, true);
+});
+
 test('preload routes saved-session commands through fixed validated requests', async () => {
   const bridge = createBridge(async request => {
     assert.deepEqual(request, { command: 'session.create', requestId: id(), contractVersion: 1,

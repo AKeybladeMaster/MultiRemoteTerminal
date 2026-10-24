@@ -43,3 +43,16 @@ test('session-folder bundles reject duplicate IDs/names, missing parents, cycles
   assert.equal(normalizeSessionFolderBundle({ ...bundle, folders: [{ ...bundle.folders[0], parentId: childId }, bundle.folders[1]] }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, folders: [bundle.folders[0], { ...bundle.folders[1], parentId: '44444444-4444-4444-8444-444444444444' }] }), undefined);
 });
+
+test('bundle sibling-name validation matches SQLite NOCASE for non-ASCII letters', () => {
+  const bundle = validBundle();
+  const unicodeSiblings = [
+    { id: '44444444-4444-4444-8444-444444444444', parentId: rootId, name: 'Device Ä' },
+    { id: '55555555-5555-4555-8555-555555555555', parentId: rootId, name: 'Device ä' }
+  ];
+  assert.ok(normalizeSessionFolderBundle({ ...bundle, folders: [...bundle.folders, ...unicodeSiblings] }));
+  assert.equal(normalizeSessionFolderBundle({ ...bundle, folders: [...bundle.folders,
+    { id: '44444444-4444-4444-8444-444444444444', parentId: rootId, name: 'Device' },
+    { id: '55555555-5555-4555-8555-555555555555', parentId: rootId, name: 'device' }
+  ] }), undefined);
+});

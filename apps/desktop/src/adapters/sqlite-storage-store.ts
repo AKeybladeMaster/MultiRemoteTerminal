@@ -1,5 +1,6 @@
 import { channel } from 'node:diagnostics_channel';
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import type { UtilityProcess } from 'electron';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
@@ -16,7 +17,7 @@ import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
 import type { StorageWorkerErrorCode } from '../workers/storage-protocol.ts';
 import type { StorageWorkerRequest, StorageWorkerResult } from '../workers/storage-protocol.ts';
-import { isAbsolute } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const START_TIMEOUT_MS = 5_000;
@@ -49,6 +50,7 @@ interface PendingRequest {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly cancellation?: CredentialPromptCancellation;
+  readonly temporaryPath?: string;
   abortListener?: () => void;
 }
 
@@ -186,7 +188,8 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
   async exportFolderToFile(folderId: string, path: string, cancellation?: CancellationSignal): Promise<SessionFolderExportResult> {
     if (!isSessionFolderId(folderId) || !isFilePath(path)) throw new HostTrustStoreError('invalid');
     await this.ensureMigrated(cancellation);
-    const result = await this.worker.request({ command: 'session.folder.export', folderId, path }, cancellation);
+    const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+    const result = await this.worker.request({ command: 'session.folder.export', folderId, path, temporaryPath }, cancellation);
     if (result.kind !== 'folderExport') throw new HostTrustStoreError('corrupt');
     return result.value;
   }
@@ -250,6 +253,7 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
 
 class StorageWorkerClient {
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly exportTemporaryPaths = new Set<string>();
   private readonly databasePath: string;
   private readonly workerPath: string;
   private readonly appRoot: string;
@@ -291,7 +295,11 @@ class StorageWorkerClient {
           reject(new HostTrustStoreError('busy'));
           void this.terminate(worker);
         }, timeoutMs);
-        const pending: PendingRequest = { resolve, reject, timer, ...(cancellation ? { cancellation } : {}) };
+        const pending: PendingRequest = {
+          resolve, reject, timer,
+          ...(cancellation ? { cancellation } : {}),
+          ...(command.command === 'session.folder.export' ? { temporaryPath: command.temporaryPath } : {})
+        };
         this.pending.set(requestId, pending);
         if (cancellation) {
           const abortListener = () => {
@@ -305,8 +313,10 @@ class StorageWorkerClient {
           cancellation.addEventListener('abort', abortListener, { once: true });
           if (cancellation.aborted) { abortListener(); return; }
         }
+        if (pending.temporaryPath) this.exportTemporaryPaths.add(pending.temporaryPath);
         try { worker.postMessage(request); }
         catch {
+          if (pending.temporaryPath) this.exportTemporaryPaths.delete(pending.temporaryPath);
           this.clearPending(requestId, pending);
           reject(new HostTrustStoreError('unavailable'));
           void this.terminate(worker);
@@ -316,6 +326,7 @@ class StorageWorkerClient {
       if (error instanceof HostTrustStoreError && error.kind === 'cancelled' && this.requesters === 1 && this.pending.size === 0) {
         const worker = this.worker;
         if (worker) await this.terminate(worker);
+        else if (this.workerExit) await this.workerExit;
       }
       throw error;
     } finally {
@@ -387,6 +398,7 @@ class StorageWorkerClient {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
     this.clearPending(message.requestId, pending);
+    if (pending.temporaryPath) this.exportTemporaryPaths.delete(pending.temporaryPath);
     if (message.ok) pending.resolve(message.result);
     else pending.reject(storeError(message.errorCode));
   }
@@ -395,15 +407,25 @@ class StorageWorkerClient {
     if (this.worker !== worker) return;
     if (!this.workerExit) publishStorageDiagnostic('worker-exit', 'UNAVAILABLE');
     this.worker = undefined;
-    this.resolveWorkerExit?.();
-    this.resolveWorkerExit = undefined;
-    this.workerExit = undefined;
+    if (!this.workerExit) {
+      this.workerExit = new Promise<void>(resolveExit => { this.resolveWorkerExit = resolveExit; });
+    }
     const error = new HostTrustStoreError('unavailable');
     this.readyReject?.(error);
-    for (const [requestId, pending] of this.pending) {
-      this.clearPending(requestId, pending);
-      pending.reject(error);
-    }
+    const temporaryPaths = [...this.exportTemporaryPaths];
+    this.exportTemporaryPaths.clear();
+    void Promise.all(temporaryPaths.map(async path => {
+      await rm(path, { force: true }).catch(() => undefined);
+    })).then(() => {
+      for (const [requestId, pending] of this.pending) {
+        this.clearPending(requestId, pending);
+        pending.reject(error);
+      }
+      const resolveExit = this.resolveWorkerExit;
+      this.resolveWorkerExit = undefined;
+      this.workerExit = undefined;
+      resolveExit?.();
+    });
   }
 
   private clearPending(requestId: string, pending: PendingRequest): void {
@@ -424,8 +446,6 @@ class StorageWorkerClient {
     return exitPromise;
   }
 }
-
-export { SqliteStorageStore as SqliteHostTrustStore };
 
 function storeError(code: StorageWorkerErrorCode): HostTrustStoreError {
   if (code === 'CONFLICT') return new HostTrustStoreError('conflict');

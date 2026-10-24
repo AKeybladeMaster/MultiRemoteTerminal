@@ -24,6 +24,12 @@ export interface SessionCatalogStore {
 }
 
 export interface SessionFolderBundleFileDialog {
+  /**
+   * Opens a user-controlled native picker. It settles when the user selects a path or
+   * dismisses the picker; platform file dialogs have no app-controlled deadline or
+   * abort signal. If the caller is cancelled while it is open, implementations must
+   * discard any selected path before starting storage work.
+   */
   selectExportPath(folderName: string): Promise<string | undefined>;
   selectImportPath(): Promise<string | undefined>;
 }
