@@ -25,7 +25,7 @@ import { createWindowsCredentialPrompt } from '../adapters/windows-credential-pr
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { TelnetTerminalWorkerHost } from '../adapters/telnet-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
-import { PasteGestureGate } from './paste-gesture.ts';
+import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
 
 app.setName('MultiRemoteTerminal');
@@ -41,7 +41,7 @@ let window: BrowserWindow | undefined;
 let windowReady = false;
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
-const pasteGestures = new PasteGestureGate();
+const rendererGestures = new RendererGestureGate();
 const ownsSingleInstance = app.requestSingleInstanceLock();
 interface PendingCatalogCommand {
   readonly cancellation: AbortController;
@@ -66,7 +66,7 @@ function createWindow(): void {
   window = current;
   windowReady = false;
   const webContentsId = current.webContents.id;
-  current.webContents.once('destroyed', () => pasteGestures.clear(webContentsId));
+  current.webContents.once('destroyed', () => rendererGestures.clear(webContentsId));
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
   current.webContents.on('will-frame-navigate', event => event.preventDefault());
@@ -284,8 +284,8 @@ function boot(): void {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
-        authorizeClipboardPaste: sessionId => pasteGestures.consume(event.sender.id, sessionId),
-        authorizeTelnetConsent: sessionId => pasteGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
+        authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
+        authorizeTelnetConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
         async confirmMultilinePaste() {
           const options: Electron.MessageBoxOptions = {
             type: 'warning', title: 'Confirm multiline paste',
@@ -324,7 +324,7 @@ function boot(): void {
     if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
     const sessionId = parsePasteGestureRequest(input);
     if (!sessionId) return false;
-    pasteGestures.issue(event.sender.id, sessionId);
+    rendererGestures.issue(event.sender.id, sessionId);
     return true;
   });
   ipcMain.handle(TELNET_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
@@ -334,7 +334,7 @@ function boot(): void {
     if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
     const sessionId = parseTelnetConsentGestureRequest(input);
     if (!sessionId) return false;
-    pasteGestures.issue(event.sender.id, sessionId, 'telnet-plaintext-consent');
+    rendererGestures.issue(event.sender.id, sessionId, 'telnet-plaintext-consent');
     return true;
   });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);

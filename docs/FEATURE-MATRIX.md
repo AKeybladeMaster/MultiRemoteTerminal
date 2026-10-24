@@ -21,7 +21,7 @@ WP-09A adds credential-free Telnet saved-session metadata and endpoint validatio
 | P-01 | Tabbed terminal (VERIFIED) | React+xterm.js + runtime tabs | MVP | 10 tabs, independent input/resize/close, accessibility |
 | P-02 | Local Unix-like commands (PARTIAL) | Local ConPTY, installed Git for Windows Bash; WSL integration later | Next | Windows E2E runs Bash commands and reopens a saved Bash definition; broader WSL/tool coverage remains pending |
 | P-03 | SSH sessions | SSH provider with host trust | MVP | Public-key/password, disconnect, host change test |
-| P-04 | Telnet sessions (VERIFIED) | Opt-in legacy Telnet provider | Parity | Windows loopback E2E verifies real TCP negotiation, trusted warning submission, terminal input/output and per-reopen consent-gating |
+| P-04 | Telnet sessions (VERIFIED) | Opt-in legacy Telnet provider | Parity | Windows loopback E2E verifies TCP negotiation, trusted warning submission, terminal I/O and per-reopen consent. Provider-wide disable/enable settings remain tracked by P-31. |
 | P-05 | Rlogin / RSH sessions | Separate opt-in legacy adapter | Parity | Real login/shell integration, never passed off as SSH |
 | P-06 | Mosh sessions | Mosh/WSL provider | Parity | Working UDP transport, intermittent connectivity test |
 | P-07 | RDP desktop | External `mstsc.exe` initially | Next | Valid launch and configuration; inline embedding tracked separately |

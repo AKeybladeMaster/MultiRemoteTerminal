@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { PasteGestureGate } from '../../apps/desktop/src/main/paste-gesture.ts';
+import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
 import { installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
 
-test('main paste gesture gate is one-shot, short-lived, sender-scoped and session-scoped', () => {
+test('main renderer gesture gate is one-shot, short-lived, sender-scoped, purpose-scoped and session-scoped', () => {
   let now = 100;
-  const gate = new PasteGestureGate(() => now);
+  const gate = new RendererGestureGate(() => now);
   gate.issue(11, firstSession);
   assert.equal(gate.consume(12, firstSession), false);
   assert.equal(gate.consume(11, secondSession), false);

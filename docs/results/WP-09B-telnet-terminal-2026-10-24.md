@@ -29,4 +29,4 @@ Telnet profiles persist only the canonical host, port and ordinary saved-session
 
 ## Limitations
 
-The TCP E2E uses an in-process loopback server and exercises the implemented negotiation; it does not certify interoperability with every historic Telnet daemon or vendor-specific option. Terminal type is currently fixed to `XTERM-256COLOR`. Telnet has no encryption, so the warning cannot make it suitable for credentials or sensitive traffic. FTP, Rlogin/RSH, Mosh and serial support remain separate WP-09 work.
+The TCP E2E uses an in-process loopback server and exercises the implemented negotiation; it does not certify interoperability with every historic Telnet daemon or vendor-specific option. Terminal type is currently fixed to `XTERM-256COLOR`. Telnet has no encryption, so the warning cannot make it suitable for credentials or sensitive traffic. Provider-wide enable/disable settings remain part of P-31 and the WP-09 acceptance gate; users currently opt in through an explicit connection action and fresh plaintext acknowledgement. FTP, Rlogin/RSH, Mosh and serial support remain separate WP-09 work.
