@@ -1,6 +1,7 @@
 # ADR-0013: WP-06 macro safety and storage
 
-**Status:** Accepted for implementation  
+**Status:** Accepted for implementation
+
 **Date:** 2026-10-25
 
 ## Context

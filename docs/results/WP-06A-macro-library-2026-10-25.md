@@ -1,7 +1,9 @@
 # WP-06A Windows evidence: persistent macro library
 
-**Date:** 2026-10-25  
-**Branch:** `dev-1`  
+**Date:** 2026-10-25
+
+**Branch:** `dev-1`
+
 **Requirements:** F-007 (partial), P-40 (partial); P-28 recording/replay and P-19 MultiExec remain open.
 
 ## Delivered
