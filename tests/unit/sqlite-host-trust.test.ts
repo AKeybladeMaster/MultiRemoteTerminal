@@ -401,6 +401,38 @@ test('cancelled folder export removes a partial temp file after the storage work
   }
 });
 
+test('timed-out folder export waits for partial temp-file cleanup before rejecting', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-storage-export-timeout-'));
+  const databasePath = join(directory, 'storage.sqlite');
+  const legacyPath = join(directory, 'ssh-host-keys.json');
+  const destinationPath = join(directory, 'sessions.json');
+  let resolveStalled!: () => void;
+  const stalled = new Promise<void>(resolve => { resolveStalled = resolve; });
+  let worker: FakeStorageWorker | undefined;
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+    worker = new FakeStorageWorker(databasePath, false, 'session.folder.export', resolveStalled);
+    return worker as unknown as UtilityProcess;
+  });
+  try {
+    const pending = store.exportFolderToFile('11111111-1111-4111-8111-111111111111', destinationPath);
+    await stalled;
+    const temporaryPath = worker?.temporaryPath;
+    assert.ok(temporaryPath);
+    assert.equal((await stat(temporaryPath)).isFile(), true);
+
+    context.mock.timers.tick(60_000);
+    await assert.rejects(pending, (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'busy');
+    await assert.rejects(stat(temporaryPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
+    await assert.rejects(stat(destinationPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
+    assert.equal(worker?.killed, true);
+  } finally {
+    context.mock.timers.reset();
+    await store.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function hostKey(host: string, port: number, byte: number): TrustedHostKey {
   const algorithm = 'ssh-ed25519';
   const algorithmBytes = Buffer.from(algorithm, 'ascii');

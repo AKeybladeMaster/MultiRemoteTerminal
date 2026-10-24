@@ -10,12 +10,12 @@ Review follow-up: bundle sibling-name validation now matches SQLite's ASCII-only
 
 ## Validation
 
-- `corepack pnpm check` — passed on Windows x64: TypeScript checks, ESLint and import-boundary checks, 95 unit/adapter tests, native and renderer build, and all 11 Electron E2E tests.
+- `corepack pnpm check` — passed on Windows x64: TypeScript checks, ESLint and import-boundary checks, 96 unit/adapter tests, native and renderer build, and all 11 Electron E2E tests.
 - SQLite adapter tests — verified subtree round-trip, credential-free JSON, idempotent re-import, malformed bundle rejection and transaction rollback after a late ID conflict.
 - Windows Electron E2E — exported a saved folder using the app command wired to the native save-dialog adapter, imported it into a fresh profile using the open-dialog adapter, verified the folder/session and count, then restarted the target profile and verified they remained persisted. The test substitutes native dialog results with test-owned paths; the file write, read, SQLite workers and renderer/preload/main flow are real.
 - `git diff --check` — passed before commit.
 
-Review follow-up tests cover Unicode sibling-name round-trip, exact temporary-path validation, removal of a partial export after worker cancellation, native Cancel and caller cancellation while a picker is open, and a native picker request pending beyond the former 75-second IPC deadline.
+Review follow-up tests cover Unicode sibling-name round-trip, exact temporary-path validation, removal of a partial export after worker cancellation or timeout, native Cancel and caller cancellation while a picker is open, and a native picker request pending beyond the former 75-second IPC deadline.
 
 ## Security and remaining work
 

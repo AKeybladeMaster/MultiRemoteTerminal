@@ -285,6 +285,9 @@ class StorageWorkerClient {
       const requestId = randomUUID();
       const request = { version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'request', requestId, ...command } as StorageWorkerRequest;
       return await new Promise<StorageWorkerResult>((resolve, reject) => {
+        const rejectAfterCleanup = (error: HostTrustStoreError): void => {
+          void this.terminate(worker).then(() => reject(error), () => reject(error));
+        };
         const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 :
           request.command === 'session.folder.import' || request.command === 'session.folder.export' ? 60_000 : REQUEST_TIMEOUT_MS;
         const timer = setTimeout(() => {
@@ -292,8 +295,7 @@ class StorageWorkerClient {
           if (!pending) return;
           this.clearPending(requestId, pending);
           publishStorageDiagnostic('request-timeout', 'BUSY');
-          const error = new HostTrustStoreError('busy');
-          void this.terminate(worker).then(() => reject(error), () => reject(error));
+          rejectAfterCleanup(new HostTrustStoreError('busy'));
         }, timeoutMs);
         const pending: PendingRequest = {
           resolve, reject, timer,
@@ -306,8 +308,7 @@ class StorageWorkerClient {
             if (this.pending.get(requestId) !== pending) return;
             this.clearPending(requestId, pending);
             publishStorageDiagnostic('request-cancelled', 'CANCELLED');
-            const error = new HostTrustStoreError('cancelled');
-            void this.terminate(worker).then(() => reject(error), () => reject(error));
+            rejectAfterCleanup(new HostTrustStoreError('cancelled'));
           };
           pending.abortListener = abortListener;
           cancellation.addEventListener('abort', abortListener, { once: true });
