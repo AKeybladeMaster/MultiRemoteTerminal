@@ -24,7 +24,12 @@ test('rejects malformed, extra, oversized, and incompatible request fields', () 
   const open = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId: request.requestId, shell: 'powershell', columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, shell: 'bash' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, sessionId: 'bad' } }).ok, false);
+  const paste = { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1, payload: { sessionId: request.requestId } };
+  assert.equal(parseRequest(paste).ok, true);
+  assert.equal(parseRequest({ ...paste, payload: { ...paste.payload, data: 'clipboard content' } }).ok, false);
+  assert.equal(parseRequest({ ...paste, command: 'ssh.paste', payload: { sessionId: 'bad' } }).ok, false);
 });
 
 test('unknown commands never become privileged capabilities', () => {

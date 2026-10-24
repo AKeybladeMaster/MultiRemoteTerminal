@@ -1,4 +1,5 @@
 import type * as NodePty from 'node-pty';
+import { existsSync } from 'node:fs';
 import { win32 } from 'node:path';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalShell, TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
@@ -10,7 +11,25 @@ const OUTPUT_RESUME_BYTES = 32_768;
 const OUTPUT_CHUNK_CHARS = 16_384;
 const CLOSE_TIMEOUT_MS = 2_000;
 
-export function resolveShellExecutable(shell: LocalShell, systemRoot = process.env.SystemRoot): string {
+export function resolveShellExecutable(shell: LocalShell, environment: NodeJS.ProcessEnv = process.env,
+  fileExists: (path: string) => boolean = existsSync): string {
+  if (shell === 'bash') {
+    // Windows' System32 bash.exe is a WSL launcher, so discover Git Bash only in known install roots.
+    const roots = [environment.ProgramW6432, environment.ProgramFiles, environment['ProgramFiles(x86)'],
+      environment.LOCALAPPDATA ? win32.join(environment.LOCALAPPDATA, 'Programs') : undefined];
+    const checked = new Set<string>();
+    for (const root of roots) {
+      if (!root || !win32.isAbsolute(root)) continue;
+      const candidate = win32.join(root, 'Git', 'bin', 'bash.exe');
+      const key = candidate.toLocaleLowerCase('en-US');
+      if (checked.has(key)) continue;
+      checked.add(key);
+      if (fileExists(candidate)) return candidate;
+    }
+    throw new Error('Git for Windows Bash is not installed');
+  }
+
+  const systemRoot = environment.SystemRoot;
   if (!systemRoot || !win32.isAbsolute(systemRoot)) throw new Error('Windows system directory is unavailable');
   return shell === 'powershell'
     ? win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -58,7 +77,8 @@ export class LocalPtyProvider implements LocalTerminalProvider {
     if (process.platform !== 'win32') throw new Error('ConPTY is only available on Windows');
     if (this.sessions.has(sessionId)) throw new Error('Terminal session already exists');
     const executable = resolveShellExecutable(shell);
-    const args = shell === 'powershell' ? ['-NoLogo', '-NoProfile'] : ['/Q', '/D', '/K', 'chcp 65001'];
+    const args = shell === 'powershell' ? ['-NoLogo', '-NoProfile'] :
+      shell === 'cmd' ? ['/Q', '/D', '/K', 'chcp 65001'] : ['--login', '-i'];
     const home = process.env.USERPROFILE || process.env.HOME;
     const terminal = this.ptySpawn(executable, args, {
       name: 'xterm-256color', cols: size.columns, rows: size.rows,

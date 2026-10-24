@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { dispatchCommand } from '../../apps/desktop/src/main/broker.ts';
 import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/broker.ts';
+import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
@@ -12,7 +14,7 @@ const noOp = async () => ({ ok: true, result: {} } as const);
 const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId: null, kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
   createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
-  describe, noteUserActivity, terminals: {
+  describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, confirmMultilinePaste: async () => false, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
@@ -129,6 +131,99 @@ test('only validated local or SSH terminal open, write and close commands count 
     payload: { sessionId, data: 'x', extra: true } };
   await dispatchCommand(owner, malformedWrite, withActivity, () => {});
   assert.equal(activityCount, 6);
+});
+
+test('clipboard paste reads only in the broker, bounds text, and writes to the requested terminal', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operations: { readonly sessionId: string; readonly data: string }[] = [];
+  let clipboardReads = 0;
+  const base = actions();
+  const withClipboard: CommandActions = { ...base,
+    authorizeClipboardPaste: () => true,
+    readClipboardText: async () => { clipboardReads++; return 'clipboard-secret Ж雪'; },
+    terminals: { ...base.terminals, async write(id, data) { operations.push({ sessionId: id, data }); return { ok: true, result: {} }; } }
+  };
+  const requestId = request.requestId;
+  const pasted = await dispatchCommand(owner, { command: 'terminal.paste', requestId, contractVersion: 1, payload: { sessionId } }, withClipboard, () => {});
+  assert.deepEqual(pasted, { requestId, ok: true, result: {} });
+  assert.deepEqual(operations, [{ sessionId, data: 'clipboard-secret Ж雪' }]);
+  assert.equal(clipboardReads, 1);
+
+  const oversized: CommandActions = { ...withClipboard, readClipboardText: async () => 'x'.repeat(16_385) };
+  const rejected = await dispatchCommand(owner, { command: 'ssh.paste', requestId, contractVersion: 1, payload: { sessionId } }, oversized, () => {});
+  assert.deepEqual(rejected, { requestId, ok: false, error: { code: 'OUTPUT_LIMIT', target: 'terminal', retryable: false } });
+  const nulText: CommandActions = { ...withClipboard, readClipboardText: async () => 'clipboard\0text' };
+  const invalid = await dispatchCommand(owner, { command: 'terminal.paste', requestId, contractVersion: 1, payload: { sessionId } }, nulText, () => {});
+  assert.deepEqual(invalid, { requestId, ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
+  assert.equal(operations.length, 1);
+});
+
+test('clipboard paste through the renderer command broker is denied without a fresh gesture', async () => {
+  let clipboardReads = 0;
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, readClipboardText: async () => { clipboardReads++; return 'sensitive'; } };
+  const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: false,
+    error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
+  assert.equal(clipboardReads, 0);
+});
+
+test('multiline clipboard paste is not written until the user confirms it', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let writes = 0;
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, readClipboardText: async () => 'echo first\r\necho second',
+    authorizeClipboardPaste: () => true,
+    terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
+  await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.equal(writes, 0, 'a multiline clipboard payload must wait for an explicit confirmation');
+});
+
+test('confirmed multiline clipboard paste is sent only after the native confirmation decision', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let prompts = 0;
+  const writes: string[] = [];
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, authorizeClipboardPaste: () => true,
+    readClipboardText: async () => 'echo first\r\necho second',
+    confirmMultilinePaste: async () => { prompts++; return true; },
+    terminals: { ...base.terminals, async write(_id, data) { writes.push(data); return { ok: true, result: {} }; } } };
+  const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.equal(reply.ok, true);
+  assert.equal(prompts, 1);
+  assert.deepEqual(writes, ['echo first\r\necho second']);
+});
+
+test('renderer teardown cancels pending multiline paste before any terminal write', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let writes = 0;
+  let confirmPaste!: (approved: boolean) => void;
+  let confirmationRequested!: () => void;
+  const requested = new Promise<void>(resolve => { confirmationRequested = resolve; });
+  const confirmation = new Promise<boolean>(resolve => { confirmPaste = resolve; });
+  const cancellation = new AbortController();
+  const sender = new EventEmitter() as EventEmitter & { isDestroyed(): boolean };
+  sender.isDestroyed = () => false;
+  const unbind = bindRendererRequestCancellation(sender as unknown as Parameters<typeof bindRendererRequestCancellation>[0], cancellation);
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, cancellation: cancellation.signal, authorizeClipboardPaste: () => true,
+    readClipboardText: async () => 'echo first\necho second',
+    confirmMultilinePaste: async () => { confirmationRequested(); return confirmation; },
+    terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
+  const pending = dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  await requested;
+  sender.emit('destroyed');
+  confirmPaste(true);
+  const reply = await pending;
+  unbind();
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'CANCELLED');
+  assert.equal(writes, 0);
 });
 
 test('rejects foreign windows, subframes, origins and documents before dispatch', async () => {

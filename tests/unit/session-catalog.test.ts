@@ -19,7 +19,11 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     const catalog = new SqliteSessionCatalogRepository(database);
     const ssh = await catalog.createSession({ kind: 'ssh', name: 'Production gateway', host: 'SSH.Example.com.', port: 2222 });
     const local = await catalog.createSession({ kind: 'local', name: 'Local PowerShell', shell: 'powershell' });
+    const bash = await catalog.createSession({ kind: 'local', name: 'Local Bash', shell: 'bash' });
     assert.equal(ssh.kind, 'ssh');
+    assert.equal(bash.kind, 'local');
+    if (bash.kind !== 'local') throw new Error('Expected Bash definition');
+    assert.equal(bash.shell, 'bash');
     if (ssh.kind !== 'ssh') throw new Error('Expected SSH definition');
     assert.deepEqual({ host: ssh.host, port: ssh.port }, { host: 'ssh.example.com', port: 2222 });
     assert.ok((await catalog.listSessions('GATEWAY')).some(item => item.id === ssh.id));
@@ -29,7 +33,8 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
       await catalog.createSession({ kind: 'local', name: `Connection ${String(index).padStart(4, '0')}`, shell: index % 2 === 0 ? 'powershell' : 'cmd' });
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
-    assert.equal((await catalog.listSessions('')).length, 1_002);
+    assert.equal((await catalog.listSessions('')).length, 1_003);
+    assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
     assert.equal((await catalog.listSessions(''))[0]?.id, ssh.id);
     assert.equal(await catalog.removeSession(local.id), true);

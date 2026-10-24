@@ -22,7 +22,7 @@ Priority labels: **Must** = MVP release gate; **Should** = next public-quality r
 | ID | Priority | Requirement | Testable exit criterion |
 |---|---|---|---|
 | F-001 | Must | Windows installer and portable app | Win10/11 x64 smoke; installer uninstall; portable stores data in opt-in portable folder |
-| F-002 | Must | Tabbed local terminal with PowerShell/cmd | ConPTY input/resize/Unicode/paste/tab lifecycle functional |
+| F-002 | Must | Tabbed local terminal with PowerShell/cmd and optional installed Git Bash | ConPTY input/resize/Unicode/paste/tab lifecycle functional for each available shell; missing Git Bash is reported clearly |
 | F-003 | Must | SSH terminal with auth and host verification | Password/key auth test against disposable OpenSSH server; changed key blocked |
 | F-004 | Must | Unlimited saved sessions and folders | Create/search/reopen/delete at least 1,000 saved definitions without fixed caps |
 | F-005 | Must | Automatic configurable SFTP side browser | SSH login opens navigable remote files; upload/download/cancel/collision tests |

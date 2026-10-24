@@ -39,14 +39,22 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'connect-ssh' | 'close-active' | 'toggle-theme';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
   readonly run: () => void;
 }
 
-function shellName(shell: LocalShell): string { return shell === 'powershell' ? 'PowerShell' : 'cmd'; }
+const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly badge: string; readonly mark: string }> = {
+  powershell: { name: 'PowerShell', badge: 'PS', mark: '›_' },
+  cmd: { name: 'cmd', badge: 'CMD', mark: 'C:\\' },
+  bash: { name: 'Bash', badge: 'BASH', mark: '$' }
+};
+
+function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell].name; }
+function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell].badge; }
+function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
 function openingName(opening: OpeningTerminal): string {
   return opening.transport === 'local' ? `${shellName(opening.shell)} terminal` : `SSH connection to ${sshEndpointLabel(opening.host, opening.port)}`;
@@ -193,7 +201,7 @@ function Workbench() {
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
-  const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0 });
+  const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0 });
   const nextSshOrdinal = useRef(0);
   const savedSessionsRequest = useRef(0);
   const savedFoldersRequest = useRef(0);
@@ -428,7 +436,9 @@ function Workbench() {
     pendingOpenRequests.current.delete(sessionId);
     setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     if (!reply.ok) {
-      if (reply.error.code !== 'CANCELLED') setAlert(`Could not start ${shellName(shell)} (${reply.error.code}).`);
+      if (reply.error.code !== 'CANCELLED') setAlert(shell === 'bash'
+        ? 'Could not start Bash. Check that Git for Windows is installed.'
+        : `Could not start ${shellName(shell)} (${reply.error.code}).`);
       return;
     }
     const ordinal = ++nextOrdinal.current[shell];
@@ -766,6 +776,7 @@ function Workbench() {
   const commands: PaletteCommand[] = [
     { id: 'new-powershell', label: 'New PowerShell terminal', run: () => { void openTerminal('powershell'); } },
     { id: 'new-cmd', label: 'New cmd terminal', run: () => { void openTerminal('cmd'); } },
+    { id: 'new-bash', label: 'New Bash terminal', run: () => { void openTerminal('bash'); } },
     { id: 'connect-ssh', label: 'Connect to SSH server', run: openSshConnect },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme }
@@ -813,7 +824,7 @@ function Workbench() {
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-          {session.kind === 'ssh' ? 'SSH' : session.shell === 'powershell' ? 'PS' : 'CMD'}
+          {session.kind === 'ssh' ? 'SSH' : shellBadge(session.shell)}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
         <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : sshEndpointLabel(session.host, session.port)}</span>
@@ -1124,7 +1135,7 @@ function Workbench() {
               <button className={`session-item ${session.sessionId === activeId ? 'selected' : ''}`} type="button"
                 aria-current={session.sessionId === activeId ? 'page' : undefined} onClick={() => setActiveId(session.sessionId)}>
                 <span className={`shell-glyph ${session.transport === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-                  {session.transport === 'ssh' ? 'SSH' : session.shell === 'powershell' ? '›_' : 'C:\\'}
+                  {session.transport === 'ssh' ? 'SSH' : shellMark(session.shell)}
                 </span>
                 <span className="session-name" translate="no">{session.title}</span>
                 <span className={`state-dot ${session.state}`} aria-label={session.state} />
@@ -1184,7 +1195,7 @@ function Workbench() {
                 requestAnimationFrame(() => document.getElementById(`tab-${next.sessionId}`)?.focus());
               }}>
               <span className={`shell-glyph ${session.transport === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-                {session.transport === 'ssh' ? 'SSH' : session.shell === 'powershell' ? '›_' : 'C:\\'}
+                {session.transport === 'ssh' ? 'SSH' : shellMark(session.shell)}
               </span>
               <span translate="no">{session.title}</span>
               <span className={`state-dot ${session.state}`} aria-hidden="true" />

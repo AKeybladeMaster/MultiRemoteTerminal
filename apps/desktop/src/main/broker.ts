@@ -6,6 +6,8 @@ import type { SessionCatalog } from '../../../../packages/application/src/sessio
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
+import type { Outcome } from '../../../../packages/domain/src/errors.ts';
+import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 
 export interface CommandSender {
   readonly owned: boolean;
@@ -21,10 +23,29 @@ export interface AuditEvent {
 export interface CommandActions {
   readonly describe: () => WorkbenchSnapshot;
   readonly noteUserActivity: () => void;
+  readonly readClipboardText: () => Promise<string>;
+  readonly authorizeClipboardPaste: (sessionId: string) => boolean;
+  readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
+}
+
+async function pasteFromClipboard(
+  requestId: string,
+  sessionId: string,
+  actions: Pick<CommandActions, 'readClipboardText' | 'confirmMultilinePaste' | 'cancellation'>,
+  write: (sessionId: string, data: string) => Promise<Outcome<Record<string, never>>>,
+): Promise<CommandReply<Record<string, never>>> {
+  if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
+  const data = await actions.readClipboardText();
+  if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
+  if (data.length > MAX_TERMINAL_INPUT_CHARS) return { requestId, ...failure('OUTPUT_LIMIT', 'terminal') };
+  if (data.includes('\0')) return { requestId, ...failure('INVALID_REQUEST') };
+  if (/[\r\n]/u.test(data) && !await actions.confirmMultilinePaste()) return { requestId, ...failure('CANCELLED', 'terminal') };
+  if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
+  return { requestId, ...await write(sessionId, data) };
 }
 
 export async function dispatchCommand(
@@ -45,8 +66,8 @@ export async function dispatchCommand(
 
   const { requestId } = parsed.result;
   try {
-    if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' ||
-        parsed.result.command === 'terminal.close' || parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close') actions.noteUserActivity();
+    if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
+        parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close') actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -56,6 +77,11 @@ export async function dispatchCommand(
       case 'terminal.write': {
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.terminals.write(sessionId, data) };
+      }
+      case 'terminal.paste': {
+        if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.terminals.write);
       }
       case 'terminal.resize': {
         const { sessionId, columns, rows } = parsed.result.payload;
@@ -75,6 +101,11 @@ export async function dispatchCommand(
       case 'ssh.write': {
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.sshTerminals.write(sessionId, data) };
+      }
+      case 'ssh.paste': {
+        if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.sshTerminals.write);
       }
       case 'ssh.resize': {
         const { sessionId, columns, rows } = parsed.result.payload;
