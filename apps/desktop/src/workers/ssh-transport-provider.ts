@@ -1,6 +1,6 @@
 import type { Client, ClientChannel, ConnectConfig, VerifyCallback } from 'ssh2';
 import type { FileEntryWithStats, SFTPWrapper } from 'ssh2';
-import { connect as connectTcp, createServer } from 'node:net';
+import { connect as connectTcp, createServer, isIP } from 'node:net';
 import type { Server, Socket } from 'node:net';
 import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -12,6 +12,7 @@ import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
 import { createSftpFileTransfers } from './sftp-file-transfers.ts';
@@ -30,6 +31,8 @@ const FORWARDED_CONNECTION_OPEN_TIMEOUT_MS = 15_000;
 const LOCAL_FORWARD_CLOSE_GRACE_MS = 1_000;
 const REMOTE_FORWARD_BIND_TIMEOUT_MS = 10_000;
 const REMOTE_FORWARD_CLOSE_GRACE_MS = 1_500;
+const SOCKS_REJECT_CLOSE_GRACE_MS = 250;
+const MAX_SOCKS_PENDING_BYTES = 65_536;
 const MAX_FORWARD_CONNECTIONS = 64;
 
 type SftpChannel = SFTPWrapper & { end(): void };
@@ -45,8 +48,13 @@ interface ForwardedConnection {
   closed: boolean;
 }
 
+interface SocksForwardedConnection extends ForwardedConnection {
+  input: Buffer;
+  stage: 'methods' | 'request' | 'connecting' | 'connected';
+}
+
 interface LocalForwardRuntime {
-  readonly definition: SshTunnelDefinition;
+  readonly definition: Extract<SshTunnelDefinition, { readonly mode: 'local' | 'dynamic' }>;
   readonly server: Server;
   readonly connections: Set<ForwardedConnection>;
 }
@@ -59,7 +67,7 @@ interface RemoteForwardedConnection {
 }
 
 interface RemoteForwardRuntime {
-  readonly definition: SshTunnelDefinition;
+  readonly definition: Extract<SshTunnelDefinition, { readonly mode: 'remote' }>;
   readonly connections: Set<RemoteForwardedConnection>;
   bindPort?: number;
   cancelStart?: (error: Error) => void;
@@ -257,6 +265,13 @@ export function createSshTransportProvider(
     forward.connections.add(connection);
     socket.once('error', () => closeForwardConnection(forward, connection));
     socket.once('close', () => closeForwardConnection(forward, connection));
+    if (forward.definition.mode === 'dynamic') {
+      const socks = connection as SocksForwardedConnection;
+      socks.input = Buffer.alloc(0);
+      socks.stage = 'methods';
+      acceptSocksConnection(session, forward, socks);
+      return;
+    }
     const sourceAddress = (socket.remoteAddress ?? '127.0.0.1').replace(/^::ffff:/, '');
     try {
       session.client.forwardOut(sourceAddress, socket.remotePort ?? 0, forward.definition.targetHost, forward.definition.targetPort,
@@ -274,6 +289,100 @@ export function createSshTransportProvider(
           channel.pipe(socket);
         });
     } catch { closeForwardConnection(forward, connection); }
+  }
+
+  function acceptSocksConnection(session: RuntimeSession, forward: LocalForwardRuntime, socks: SocksForwardedConnection): void {
+    const onData = (chunk: Buffer): void => {
+      if (socks.closed || socks.stage === 'connecting' || socks.stage === 'connected') return;
+      socks.input = Buffer.concat([socks.input, chunk]);
+      if (socks.input.length > MAX_SOCKS_PENDING_BYTES) {
+        finishSocksConnection(forward, socks, Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]));
+        return;
+      }
+
+      if (socks.stage === 'methods') {
+        if (socks.input.length < 2) return;
+        const methodCount = socks.input[1]!;
+        if (socks.input[0] !== 5 || methodCount === 0) {
+          finishSocksConnection(forward, socks, Buffer.from([5, 0xff]));
+          return;
+        }
+        const messageLength = 2 + methodCount;
+        if (socks.input.length < messageLength) return;
+        let supportsNoAuthentication = false;
+        for (let index = 2; index < messageLength; index += 1) {
+          if (socks.input[index] === 0) supportsNoAuthentication = true;
+        }
+        if (!supportsNoAuthentication) {
+          finishSocksConnection(forward, socks, Buffer.from([5, 0xff]));
+          return;
+        }
+        socks.input = socks.input.subarray(messageLength);
+        socks.stage = 'request';
+        writeSocket(socks.socket, Buffer.from([5, 0]));
+      }
+
+      const parsed = parseSocksConnectRequest(socks.input);
+      if (parsed.kind === 'incomplete') return;
+      if (parsed.kind === 'invalid') {
+        finishSocksConnection(forward, socks, socksReply(parsed.replyCode));
+        return;
+      }
+      if (parsed.command !== 1) {
+        finishSocksConnection(forward, socks, socksReply(7));
+        return;
+      }
+
+      socks.input = socks.input.subarray(parsed.consumedBytes);
+      socks.stage = 'connecting';
+      socks.socket.pause();
+      socks.socket.removeListener('data', onData);
+      const sourceAddress = (socks.socket.remoteAddress ?? '127.0.0.1').replace(/^::ffff:/, '');
+      try {
+        session.client.forwardOut(sourceAddress, socks.socket.remotePort ?? 0, parsed.host, parsed.port, (error, channel) => {
+          if (socks.closed) { channel?.destroy(); return; }
+          if (error || !channel || session.closing || sessions.get(session.sessionId) !== session || socks.socket.destroyed) {
+            channel?.destroy();
+            finishSocksConnection(forward, socks, socksReply(mapSocksConnectionError(error)));
+            return;
+          }
+          socks.channel = channel;
+          channel.once('error', () => closeForwardConnection(forward, socks));
+          channel.once('close', () => closeForwardConnection(forward, socks));
+          socks.stage = 'connected';
+          const pendingData = socks.input;
+          socks.input = Buffer.alloc(0);
+          writeSocket(socks.socket, socksReply(0), () => {
+            if (socks.closed) return;
+            clearTimeout(socks.timer);
+            try {
+              if (pendingData.length > 0) channel.write(pendingData);
+              socks.socket.pipe(channel);
+              channel.pipe(socks.socket);
+              socks.socket.resume();
+            } catch { closeForwardConnection(forward, socks); }
+          });
+        });
+      } catch {
+        finishSocksConnection(forward, socks, socksReply(1));
+      }
+    };
+
+    socks.socket.pause();
+    socks.socket.on('data', onData);
+    socks.socket.resume();
+  }
+
+  function finishSocksConnection(forward: LocalForwardRuntime, connection: ForwardedConnection, response: Buffer): void {
+    if (connection.closed) return;
+    connection.closed = true;
+    clearTimeout(connection.timer);
+    forward.connections.delete(connection);
+    try { connection.channel?.destroy(); } catch { /* The response is still sent to the local client. */ }
+    const socket = connection.socket;
+    const timer = setTimeout(() => socket.destroy(), SOCKS_REJECT_CLOSE_GRACE_MS);
+    socket.once('close', () => clearTimeout(timer));
+    try { socket.end(response); } catch { socket.destroy(); }
   }
 
   function terminate(session: RuntimeSession): void {
@@ -482,7 +591,7 @@ export function createSshTransportProvider(
       return opened;
   }
 
-  async function startRemoteForward(session: RuntimeSession, definition: SshTunnelDefinition): Promise<number> {
+  async function startRemoteForward(session: RuntimeSession, definition: Extract<SshTunnelDefinition, { readonly mode: 'remote' }>): Promise<number> {
     const forward: RemoteForwardRuntime = { definition, connections: new Set() };
     session.remoteForwards.set(definition.id, forward);
     try {
@@ -871,4 +980,59 @@ export function createSshTransportProvider(
   }
 
   return Object.freeze(provider);
+}
+
+type SocksRequestParse =
+  | { readonly kind: 'incomplete' }
+  | { readonly kind: 'invalid'; readonly replyCode: number }
+  | { readonly kind: 'request'; readonly command: number; readonly host: string; readonly port: number; readonly consumedBytes: number };
+
+function parseSocksConnectRequest(input: Buffer): SocksRequestParse {
+  if (input.length < 4) return { kind: 'incomplete' };
+  if (input[0] !== 5 || input[2] !== 0) return { kind: 'invalid', replyCode: 1 };
+  const command = input[1]!;
+  const addressType = input[3]!;
+  let host: string;
+  let addressEnd: number;
+  if (addressType === 1) {
+    addressEnd = 8;
+    if (input.length < addressEnd + 2) return { kind: 'incomplete' };
+    host = `${input[4]}.${input[5]}.${input[6]}.${input[7]}`;
+  } else if (addressType === 3) {
+    if (input.length < 5) return { kind: 'incomplete' };
+    const nameLength = input[4]!;
+    if (nameLength === 0) return { kind: 'invalid', replyCode: 1 };
+    addressEnd = 5 + nameLength;
+    if (input.length < addressEnd + 2) return { kind: 'incomplete' };
+    const nameBytes = input.subarray(5, addressEnd);
+    if ([...nameBytes].some(byte => byte < 0x21 || byte > 0x7e)) return { kind: 'invalid', replyCode: 1 };
+    host = nameBytes.toString('ascii');
+  } else if (addressType === 4) {
+    addressEnd = 20;
+    if (input.length < addressEnd + 2) return { kind: 'incomplete' };
+    host = Array.from({ length: 8 }, (_, index) => input.readUInt16BE(4 + index * 2).toString(16)).join(':');
+  } else return { kind: 'invalid', replyCode: 8 };
+
+  const port = input.readUInt16BE(addressEnd);
+  const endpoint = canonicalizeRemoteEndpoint({ host, port });
+  if (!endpoint || (addressType !== 3 && isIP(endpoint.host) === 0)) return { kind: 'invalid', replyCode: 1 };
+  return { kind: 'request', command, host: endpoint.host, port: endpoint.port, consumedBytes: addressEnd + 2 };
+}
+
+function socksReply(replyCode: number): Buffer {
+  return Buffer.from([5, replyCode, 0, 1, 0, 0, 0, 0, 0, 0]);
+}
+
+function mapSocksConnectionError(error: unknown): number {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: unknown }).code : undefined;
+  if (code === 'EACCES' || code === 'EPERM') return 2;
+  if (code === 'ENETUNREACH') return 3;
+  if (code === 'EHOSTUNREACH' || code === 'ENOTFOUND') return 4;
+  if (code === 'ECONNREFUSED') return 5;
+  return 1;
+}
+
+function writeSocket(socket: Socket, data: Buffer, onFlushed?: () => void): void {
+  try { if (!socket.destroyed) socket.write(data, () => onFlushed?.()); }
+  catch { socket.destroy(); }
 }

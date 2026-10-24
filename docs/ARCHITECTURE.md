@@ -215,7 +215,7 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 | Local terminal | `node-pty` + Windows ConPTY | PowerShell/cmd plus explicitly selected installed Git Bash; broader WSL integration remains future work |
 | SSH interactive | `ssh2` interactive shell | Optional separate Windows OpenSSH provider for advanced SSH config, hardware keys |
 | SFTP | `ssh2` SFTP subsystem | Reuse trusted SSH lifecycle; shared host identity |
-| SSH L/R/D tunnels | `ssh2` forwarding | Validate actual reverse and SOCKS5 support in contract tests |
+| SSH L/R/D tunnels | `ssh2` forwarding | Local and requested-loopback remote forwards plus a no-auth SOCKS5 TCP CONNECT listener use a files-only SSH runtime; dynamic forwarding supports IPv4/domain/IPv6 destinations and leaves DNS resolution to the SSH server. UDP/BIND and jump-host chaining remain open |
 | RDP | OS `mstsc.exe` launcher | External viewer in first milestone; later integrated native RDP provider only after research |
 | VNC | User-installed audited viewer | Provider path and license must be accepted; embedded version later |
 | X11/XDMCP | User-installed licensed X server with capabilities probes | XDMCP insecure by nature; off by default and explicitly warned |

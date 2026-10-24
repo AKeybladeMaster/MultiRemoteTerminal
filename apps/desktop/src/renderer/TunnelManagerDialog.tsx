@@ -36,6 +36,18 @@ function isRunning(status: TunnelRunStatus | undefined): boolean {
   return status?.state === 'active' || status?.state === 'starting' || status?.state === 'stopping';
 }
 
+function tunnelModeLabel(mode: SshTunnelMode): string {
+  if (mode === 'dynamic') return 'SOCKS5 proxy';
+  return mode === 'local' ? 'Local forward' : 'Remote forward';
+}
+
+function tunnelRouteLabel(definition: SshTunnelSnapshot['definition']): string {
+  if (definition.mode === 'dynamic') return `SOCKS5 127.0.0.1:${definition.bindPort || 'Auto'}`;
+  return definition.mode === 'local'
+    ? `Local ${definition.bindHost}:${definition.bindPort || 'Auto'} → Remote ${definition.targetHost}:${definition.targetPort}`
+    : `SSH server ${definition.bindHost}:${definition.bindPort || 'Auto'} → Local ${definition.targetHost}:${definition.targetPort}`;
+}
+
 export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, busyId, error, onClose, onSave, onDelete, onStart, onStop }: TunnelManagerDialogProps): ReactElement {
   const eligibleProfiles = profiles.filter(profile => profile.kind === 'ssh' || profile.kind === 'sftp');
   const [selectedId, setSelectedId] = useState<string>();
@@ -62,8 +74,8 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
     setName(selected.definition.name);
     setMode(selected.definition.mode);
     setBindPort(String(selected.definition.bindPort));
-    setTargetHost(selected.definition.targetHost);
-    setTargetPort(String(selected.definition.targetPort));
+    setTargetHost(selected.definition.mode === 'dynamic' ? '' : selected.definition.targetHost);
+    setTargetPort(selected.definition.mode === 'dynamic' ? '' : String(selected.definition.targetPort));
   }, [loadedSelectionId, selected]);
 
   useEffect(() => {
@@ -85,8 +97,10 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (locked || busy) return;
-    const id = await onSave({ ...(selectedId ? { id: selectedId } : {}), sessionId, name, mode, bindHost: '127.0.0.1',
-      bindPort: Number(bindPort), targetHost, targetPort: Number(targetPort) });
+    const common = { ...(selectedId ? { id: selectedId } : {}), sessionId, name, bindHost: '127.0.0.1' as const, bindPort: Number(bindPort) };
+    const draft: SshTunnelDraft = mode === 'dynamic' ? { ...common, mode }
+      : { ...common, mode, targetHost, targetPort: Number(targetPort) };
+    const id = await onSave(draft);
     if (id) { setCreating(false); setSelectedId(id); }
   }
 
@@ -107,7 +121,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
         <button className="tunnel-close" type="button" aria-label="Close port forwarding" onClick={onClose}>×</button>
       </header>
       <p className="tunnel-manager-description" id="tunnel-manager-description">
-        Local forwards bind a port on this computer and reach a service through SSH. Remote forwards request 127.0.0.1 on the SSH server, but its forwarding policy may expose the listener on other interfaces; review the warning before starting.
+        Local forwards send one saved destination through SSH. Remote forwards request a loopback listener on the SSH server. A dynamic SOCKS5 proxy lets each client choose its destination and listens on this computer only.
       </p>
       <div className="tunnel-manager-body">
         <section className="tunnel-list-column" aria-label="Saved tunnels">
@@ -119,9 +133,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               <button type="button" className={`tunnel-list-item ${selectedId === item.definition.id ? 'selected' : ''}`}
                 aria-pressed={selectedId === item.definition.id} onClick={() => { setCreating(false); setSelectedId(item.definition.id); }}>
                 <span className={`tunnel-state-dot ${item.status.state}`} aria-hidden="true" />
-              <span className="tunnel-list-copy"><strong>{item.definition.name}</strong><small>{item.definition.mode === 'local' ? 'Local forward' : 'Remote forward'}</small><small>{item.definition.mode === 'local'
-                ? `Local ${item.definition.bindHost}:${item.definition.bindPort || 'Auto'} → Remote ${item.definition.targetHost}:${item.definition.targetPort}`
-                : `SSH server ${item.definition.bindHost}:${item.definition.bindPort || 'Auto'} → Local ${item.definition.targetHost}:${item.definition.targetPort}`}</small></span>
+              <span className="tunnel-list-copy"><strong>{item.definition.name}</strong><small>{tunnelModeLabel(item.definition.mode)}</small><small>{tunnelRouteLabel(item.definition)}</small></span>
                 <span className="tunnel-list-state">{statusLabel(item.status)}</span>
               </button>
             </li>)}
@@ -129,7 +141,8 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
         </section>
         <section className="tunnel-editor-column" aria-label="Tunnel settings">
           <div className="tunnel-editor-heading"><span className="tunnel-editor-icon" aria-hidden="true">↗</span>
-            <div><p className="dialog-eyebrow">{mode === 'local' ? 'LOCAL FORWARD' : 'REMOTE FORWARD'}</p><h3>{selected ? 'Forward settings' : `New ${mode} forward`}</h3></div></div>
+            <div><p className="dialog-eyebrow">{mode === 'dynamic' ? 'DYNAMIC SOCKS5' : mode === 'local' ? 'LOCAL FORWARD' : 'REMOTE FORWARD'}</p>
+              <h3>{selected ? 'Forward settings' : `New ${tunnelModeLabel(mode)}`}</h3></div></div>
           <form className="tunnel-form" onSubmit={event => { void submit(event); }}>
             <label htmlFor="tunnel-name">Tunnel name</label>
             <input id="tunnel-name" name="tunnelName" type="text" required maxLength={128} autoComplete="off" disabled={locked || busy}
@@ -140,6 +153,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               onChange={event => setMode(event.target.value as SshTunnelMode)}>
               <option value="local">Local to remote service</option>
               <option value="remote">SSH server to local service</option>
+              <option value="dynamic">Dynamic SOCKS5 proxy</option>
             </select>
             {mode === 'remote' && <div className="tunnel-exposure-warning" role="note" aria-label="Remote forwarding exposure warning">
               <strong>The SSH server may expose this listener beyond loopback.</strong>
@@ -155,25 +169,31 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
             {eligibleProfiles.length === 0 && <p className="tunnel-hint">Save an SSH or SFTP profile first to create a forward.</p>}
 
             <div className="tunnel-endpoint-grid">
-              <div><label htmlFor="tunnel-bind-port">{mode === 'local' ? 'Local port' : 'Remote port'}</label>
+              <div><label htmlFor="tunnel-bind-port">{mode === 'remote' ? 'Remote port' : mode === 'dynamic' ? 'Local SOCKS5 port' : 'Local port'}</label>
                 <input id="tunnel-bind-port" name="bindPort" type="number" required min="0" max="65535" step="1" disabled={locked || busy}
                   value={bindPort} onChange={event => setBindPort(event.target.value)} />
               </div>
-              <div className="tunnel-bind-host"><span className="tunnel-field-label">{mode === 'local' ? 'Local address' : 'SSH server address'}</span><code>127.0.0.1</code></div>
+              <div className="tunnel-bind-host"><span className="tunnel-field-label">{mode === 'remote' ? 'SSH server address' : 'Local address'}</span><code>127.0.0.1</code></div>
             </div>
-            <p className="tunnel-hint">{mode === 'local' ? 'Use port 0 to let this computer choose an available port.' : 'Use port 0 to let the SSH server choose an available port. The app requests a loopback bind.'}</p>
+            <p className="tunnel-hint">{mode === 'remote' ? 'Use port 0 to let the SSH server choose an available port. The app requests a loopback bind.'
+              : mode === 'dynamic' ? 'No authentication is required. This proxy listens on this computer only; use port 0 for an available port.'
+                : 'Use port 0 to let this computer choose an available port.'}</p>
 
-            <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
-            <input id="tunnel-target-host" name="targetHost" type="text" required maxLength={255} autoComplete="off" spellCheck={false} disabled={locked || busy}
-              placeholder={mode === 'local' ? 'database.internal…' : '127.0.0.1'} value={targetHost} onChange={event => setTargetHost(event.target.value)} />
-            <label htmlFor="tunnel-target-port">{mode === 'local' ? 'Remote destination port' : 'Local destination port'}</label>
-            <input id="tunnel-target-port" name="targetPort" type="number" required min="1" max="65535" step="1" disabled={locked || busy}
-              value={targetPort} onChange={event => setTargetPort(event.target.value)} />
+            {mode !== 'dynamic' && <>
+              <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
+              <input id="tunnel-target-host" name="targetHost" type="text" required maxLength={255} autoComplete="off" spellCheck={false} disabled={locked || busy}
+                placeholder={mode === 'local' ? 'database.internal…' : '127.0.0.1'} value={targetHost} onChange={event => setTargetHost(event.target.value)} />
+              <label htmlFor="tunnel-target-port">{mode === 'local' ? 'Remote destination port' : 'Local destination port'}</label>
+              <input id="tunnel-target-port" name="targetPort" type="number" required min="1" max="65535" step="1" disabled={locked || busy}
+                value={targetPort} onChange={event => setTargetPort(event.target.value)} />
+            </>}
 
             {selected && <div className={`tunnel-status-card ${selected.status.state}`} role="status" aria-live="polite">
               <span className={`tunnel-state-dot ${selected.status.state}`} aria-hidden="true" />
-              <div><strong>{statusLabel(selected.status)}</strong><small>{selected.definition.mode === 'local' ? 'Local forward' : 'Remote forward'}</small>
-                {selected.status.state === 'active' ? <code>{selected.definition.mode === 'local' ? 'Local' : 'SSH server'} {selected.status.bindHost}:{selected.status.bindPort} → {selected.definition.mode === 'local' ? 'Remote' : 'Local'} {selected.definition.targetHost}:{selected.definition.targetPort}</code>
+              <div><strong>{statusLabel(selected.status)}</strong><small>{tunnelModeLabel(selected.definition.mode)}</small>
+                {selected.status.state === 'active' ? <code>{selected.definition.mode === 'dynamic' ? 'SOCKS5 proxy' : `${selected.definition.mode === 'local' ? 'Local' : 'SSH server'} ${selected.status.bindHost}:${selected.status.bindPort}`}
+                  {selected.definition.mode === 'dynamic' ? ` 127.0.0.1:${selected.status.bindPort}`
+                    : ` → ${selected.definition.mode === 'local' ? 'Remote' : 'Local'} ${selected.definition.targetHost}:${selected.definition.targetPort}`}</code>
                   : selected.status.state === 'failed' ? <small>The saved definition remains available to retry.</small>
                     : <small>Saved tunnels remain stopped until you start them.</small>}</div>
             </div>}
