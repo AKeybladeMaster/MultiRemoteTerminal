@@ -24,6 +24,8 @@ export interface CommandActions {
   readonly describe: () => WorkbenchSnapshot;
   readonly noteUserActivity: () => void;
   readonly readClipboardText: () => Promise<string>;
+  readonly authorizeClipboardPaste: (sessionId: string) => boolean;
+  readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
@@ -33,12 +35,13 @@ export interface CommandActions {
 async function pasteFromClipboard(
   requestId: string,
   sessionId: string,
-  actions: Pick<CommandActions, 'readClipboardText'>,
+  actions: Pick<CommandActions, 'readClipboardText' | 'confirmMultilinePaste'>,
   write: (sessionId: string, data: string) => Promise<Outcome<Record<string, never>>>,
 ): Promise<CommandReply<Record<string, never>>> {
   const data = await actions.readClipboardText();
   if (data.length > MAX_TERMINAL_INPUT_CHARS) return { requestId, ...failure('OUTPUT_LIMIT', 'terminal') };
   if (data.includes('\0')) return { requestId, ...failure('INVALID_REQUEST') };
+  if (/[\r\n]/u.test(data) && !await actions.confirmMultilinePaste()) return { requestId, ...failure('CANCELLED', 'terminal') };
   return { requestId, ...await write(sessionId, data) };
 }
 
@@ -60,9 +63,8 @@ export async function dispatchCommand(
 
   const { requestId } = parsed.result;
   try {
-    if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.paste' ||
-        parsed.result.command === 'terminal.close' || parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' ||
-        parsed.result.command === 'ssh.paste' || parsed.result.command === 'ssh.close') actions.noteUserActivity();
+    if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
+        parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close') actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -73,7 +75,11 @@ export async function dispatchCommand(
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.terminals.write(sessionId, data) };
       }
-      case 'terminal.paste': return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.terminals.write);
+      case 'terminal.paste': {
+        if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.terminals.write);
+      }
       case 'terminal.resize': {
         const { sessionId, columns, rows } = parsed.result.payload;
         return { requestId, ...await actions.terminals.resize(sessionId, { columns, rows }) };
@@ -93,7 +99,11 @@ export async function dispatchCommand(
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.sshTerminals.write(sessionId, data) };
       }
-      case 'ssh.paste': return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.sshTerminals.write);
+      case 'ssh.paste': {
+        if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.sshTerminals.write);
+      }
       case 'ssh.resize': {
         const { sessionId, columns, rows } = parsed.result.payload;
         return { requestId, ...await actions.sshTerminals.resize(sessionId, { columns, rows }) };

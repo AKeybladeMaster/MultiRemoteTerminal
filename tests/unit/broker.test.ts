@@ -12,7 +12,7 @@ const noOp = async () => ({ ok: true, result: {} } as const);
 const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId: null, kind: 'local', name: 'Saved', shell: 'cmd', favorite: false,
   createdAt: '2026-10-23T00:00:00.000Z', updatedAt: '2026-10-23T00:00:00.000Z' } as const;
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
-  describe, noteUserActivity, readClipboardText: async () => '', terminals: {
+  describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, confirmMultilinePaste: async () => false, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
@@ -105,24 +105,22 @@ test('only validated local or SSH terminal open, write and close commands count 
   const commands = [
     { command: 'terminal.open', payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 } },
     { command: 'terminal.write', payload: { sessionId, data: 'echo ready' } },
-    { command: 'terminal.paste', payload: { sessionId } },
     { command: 'terminal.close', payload: { sessionId } }
   ];
   for (const command of commands) {
     await dispatchCommand(owner, { ...command, requestId: request.requestId, contractVersion: 1 }, withActivity, () => {});
   }
-  assert.equal(activityCount, 4);
+  assert.equal(activityCount, 3);
 
   const sshCommands = [
     { command: 'ssh.open', payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24 } },
     { command: 'ssh.write', payload: { sessionId, data: 'echo remote' } },
-    { command: 'ssh.paste', payload: { sessionId } },
     { command: 'ssh.close', payload: { sessionId } }
   ];
   for (const command of sshCommands) {
     await dispatchCommand(owner, { ...command, requestId: request.requestId, contractVersion: 1 }, withActivity, () => {});
   }
-  assert.equal(activityCount, 8);
+  assert.equal(activityCount, 6);
 
   const resize = { command: 'terminal.resize', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, columns: 100, rows: 30 } };
@@ -130,7 +128,7 @@ test('only validated local or SSH terminal open, write and close commands count 
   const malformedWrite = { command: 'terminal.write', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, data: 'x', extra: true } };
   await dispatchCommand(owner, malformedWrite, withActivity, () => {});
-  assert.equal(activityCount, 8);
+  assert.equal(activityCount, 6);
 });
 
 test('clipboard paste reads only in the broker, bounds text, and writes to the requested terminal', async () => {
@@ -139,6 +137,7 @@ test('clipboard paste reads only in the broker, bounds text, and writes to the r
   let clipboardReads = 0;
   const base = actions();
   const withClipboard: CommandActions = { ...base,
+    authorizeClipboardPaste: () => true,
     readClipboardText: async () => { clipboardReads++; return 'clipboard-secret Ж雪'; },
     terminals: { ...base.terminals, async write(id, data) { operations.push({ sessionId: id, data }); return { ok: true, result: {} }; } }
   };
@@ -155,6 +154,46 @@ test('clipboard paste reads only in the broker, bounds text, and writes to the r
   const invalid = await dispatchCommand(owner, { command: 'terminal.paste', requestId, contractVersion: 1, payload: { sessionId } }, nulText, () => {});
   assert.deepEqual(invalid, { requestId, ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
   assert.equal(operations.length, 1);
+});
+
+test('clipboard paste through the renderer command broker is denied without a fresh gesture', async () => {
+  let clipboardReads = 0;
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, readClipboardText: async () => { clipboardReads++; return 'sensitive'; } };
+  const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: false,
+    error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
+  assert.equal(clipboardReads, 0);
+});
+
+test('multiline clipboard paste is not written until the user confirms it', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let writes = 0;
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, readClipboardText: async () => 'echo first\r\necho second',
+    authorizeClipboardPaste: () => true,
+    terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
+  await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.equal(writes, 0, 'a multiline clipboard payload must wait for an explicit confirmation');
+});
+
+test('confirmed multiline clipboard paste is sent only after the native confirmation decision', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let prompts = 0;
+  const writes: string[] = [];
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, authorizeClipboardPaste: () => true,
+    readClipboardText: async () => 'echo first\r\necho second',
+    confirmMultilinePaste: async () => { prompts++; return true; },
+    terminals: { ...base.terminals, async write(_id, data) { writes.push(data); return { ok: true, result: {} }; } } };
+  const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.equal(reply.ok, true);
+  assert.equal(prompts, 1);
+  assert.deepEqual(writes, ['echo first\r\necho second']);
 });
 
 test('rejects foreign windows, subframes, origins and documents before dispatch', async () => {

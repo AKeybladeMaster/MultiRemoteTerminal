@@ -12,7 +12,7 @@ import type { HostTrustRuntime } from '../../../../packages/application/src/host
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, isAppDocument, parseCatalogCancellationRequest, parseRequest,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, PASTE_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest, parsePasteGestureRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -22,6 +22,7 @@ import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
+import { PasteGestureGate } from './paste-gesture.ts';
 
 app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
@@ -36,6 +37,7 @@ let window: BrowserWindow | undefined;
 let windowReady = false;
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
+const pasteGestures = new PasteGestureGate();
 const ownsSingleInstance = app.requestSingleInstanceLock();
 interface PendingCatalogCommand {
   readonly cancellation: AbortController;
@@ -59,6 +61,8 @@ function createWindow(): void {
   });
   window = current;
   windowReady = false;
+  const webContentsId = current.webContents.id;
+  current.webContents.once('destroyed', () => pasteGestures.clear(webContentsId));
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
   current.webContents.on('will-frame-navigate', event => event.preventDefault());
@@ -263,6 +267,20 @@ function boot(): void {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
+        authorizeClipboardPaste: sessionId => pasteGestures.consume(event.sender.id, sessionId),
+        async confirmMultilinePaste() {
+          const options: Electron.MessageBoxOptions = {
+            type: 'warning', title: 'Confirm multiline paste',
+            message: 'This clipboard contains multiple lines.',
+            detail: 'Pasting multiple lines into a terminal can run several commands. Continue?',
+            buttons: ['Paste', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
+          };
+          const currentWindow = window;
+          const result = currentWindow && !currentWindow.isDestroyed()
+            ? await dialog.showMessageBox(currentWindow, options)
+            : await dialog.showMessageBox(options);
+          return result.response === 0;
+        },
         terminals, sshTerminals, sessionCatalog, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
@@ -282,6 +300,16 @@ function boot(): void {
       }
     }
   });
+  ipcMain.handle(PASTE_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const sessionId = parsePasteGestureRequest(input);
+    if (!sessionId) return false;
+    pasteGestures.issue(event.sender.id, sessionId);
+    return true;
+  });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -299,6 +327,7 @@ function boot(): void {
     powerMonitor.removeListener('lock-screen', lockVaultForSystemEvent);
     powerMonitor.removeListener('suspend', lockVaultForSystemEvent);
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
+    ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

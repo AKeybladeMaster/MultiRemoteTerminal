@@ -115,5 +115,5 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     if (active) requestAnimationFrame(() => fitAddon.fit());
   }, [active, fontSize, theme]);
 
-  return <div className="terminal-host" ref={host} aria-label={`${title} terminal output`} />;
+  return <div className="terminal-host" ref={host} data-mrt-terminal-session-id={sessionId} aria-label={`${title} terminal output`} />;
 }

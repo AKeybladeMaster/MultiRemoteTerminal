@@ -36,6 +36,7 @@ async function selectTerminal(page: Page, title: string) {
 async function sendLine(page: Page, title: string, line: string, marker: string | RegExp) {
   const panel = await selectTerminal(page, title);
   await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+  await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
   await page.keyboard.type(line);
   await page.keyboard.press('Enter');
   const rows = panel.locator('.xterm-rows');
@@ -733,6 +734,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     const firstPanel = await selectTerminal(page, 'PowerShell session 1');
     await firstPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await page.keyboard.press('Control+V');
+    await expect(firstPanel.locator('.xterm-rows')).toContainText('MRT-UNICODE:');
     await page.keyboard.press('Enter');
     await expect(firstPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:4:${unicodeSample}`, { timeout: 15_000 });
 
@@ -868,6 +870,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await bashPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(bashPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.press('Control+V');
+    await expect(bashPanel.locator('.xterm-rows')).toContainText('MRT-UNICODE:');
     await page.keyboard.press('Enter');
     await expect(bashPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:${bashUnicodeSample}`, { timeout: 15_000 });
 

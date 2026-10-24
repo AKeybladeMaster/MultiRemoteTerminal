@@ -22,13 +22,23 @@ test('preload sends a fixed command and returns a validated reply', async () => 
 test('preload invokes explicit clipboard paste with only the selected session id', async () => {
   const sessionId = id();
   const seen: unknown[] = [];
-  const bridge = createBridge(async request => { seen.push(request); return { requestId: id(), ok: true, result: {} }; }, id);
+  const bridge = createBridge(async request => { seen.push(request); return { requestId: id(), ok: true, result: {} }; }, id,
+    undefined, undefined, undefined, () => true);
   assert.equal((await bridge.pasteTerminal(sessionId)).ok, true);
   assert.equal((await bridge.pasteSshTerminal(sessionId)).ok, true);
   assert.deepEqual(seen, [
     { command: 'terminal.paste', requestId: id(), contractVersion: 1, payload: { sessionId } },
     { command: 'ssh.paste', requestId: id(), contractVersion: 1, payload: { sessionId } }
   ]);
+});
+
+test('preload does not invoke clipboard paste without a trusted terminal gesture', async () => {
+  let calls = 0;
+  const bridge = createBridge(async () => { calls++; return { requestId: id(), ok: true, result: {} }; }, id);
+  const reply = await bridge.pasteSshTerminal(id());
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(calls, 0);
 });
 
 test('preload exposes saved-folder import and export through fixed commands', async () => {

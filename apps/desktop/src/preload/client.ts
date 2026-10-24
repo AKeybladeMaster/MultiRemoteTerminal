@@ -12,11 +12,12 @@ import type { SshTrustEvent } from '../../../../packages/application/src/ssh-ter
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
 type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
+type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 
 export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {},
-  cancelCatalogRequest: CancelCatalogRequest = () => {}): DesktopBridge {
+  cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false): DesktopBridge {
   let inFlight = 0;
   const pendingWriteChars = new Map<string, number>();
 
@@ -79,7 +80,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       };
       return send(voidRequest('terminal.write', { sessionId, data }), 5_000, settle);
     },
-    pasteTerminal(sessionId: string): Promise<TerminalActionReply> {
+    async pasteTerminal(sessionId: string): Promise<TerminalActionReply> {
+      if (!await consumePasteGesture(sessionId)) return { requestId: requestId(), ...failure('FORBIDDEN') };
       return send(voidRequest('terminal.paste', { sessionId }), 5_000);
     },
     resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
@@ -108,7 +110,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       };
       return send(voidRequest('ssh.write', { sessionId, data }), 5_000, settle);
     },
-    pasteSshTerminal(sessionId: string): Promise<TerminalActionReply> {
+    async pasteSshTerminal(sessionId: string): Promise<TerminalActionReply> {
+      if (!await consumePasteGesture(sessionId)) return { requestId: requestId(), ...failure('FORBIDDEN') };
       return send(voidRequest('ssh.paste', { sessionId }), 5_000);
     },
     resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
