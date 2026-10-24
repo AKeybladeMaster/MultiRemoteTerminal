@@ -21,7 +21,7 @@ The `pnpm start` launcher also removes an inherited `ELECTRON_RUN_AS_NODE` flag 
 - ESLint and static/dynamic/import-boundary checks passed.
 - 194 unit tests passed, including files-only lifecycle, IPC validation, SQLite and bundle compatibility, and the launcher environment regression.
 - The native Windows x64 module and Vite renderer built successfully.
-- All 15 Electron Windows E2E scenarios passed. The SSH/SFTP loopback scenario verifies host trust, file listing, existing contextual transfers, standalone SFTP, saved-profile reopen and no shell request.
+- All 15 Electron Windows E2E scenarios passed. The SSH/SFTP loopback scenario begins with standalone SFTP, verifies its first-use host-trust prompt and credentialed listing/download bytes, saves and reopens its profile without a shell request, then verifies contextual upload/download through SSH.
 
 The standalone SSH/SFTP E2E scenario also passed five consecutive isolated runs. An earlier full run had one transient `ssh2` fixture-key parse error before application startup; it did not reproduce in those five repeats or the final full E2E run. The bridge-surface expectation that also failed in that early run was updated to include `openSftpFiles` and `closeSftpFiles`.
 

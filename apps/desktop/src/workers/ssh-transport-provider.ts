@@ -393,7 +393,7 @@ export function createSshTransportProvider(
 
     async downloadRemoteFile(sessionId, operationId, remotePath, localPath, conflictPolicy, cancellation, onProgress) {
       const session = sessions.get(sessionId);
-      if (!session || session.closing || session.opening || !session.channel) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (!session || session.closing || session.opening || (!session.channel && session.mode !== 'files')) throw new SshTerminalProviderError('UNAVAILABLE');
       if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;

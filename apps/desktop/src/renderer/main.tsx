@@ -961,9 +961,12 @@ function Workbench() {
     }
   }, [paletteOpen]);
 
+  useLayoutEffect(() => {
+    if (sshConnectOpen) sshHostInput.current?.focus();
+  }, [sshConnectOpen]);
+
   useEffect(() => {
-    if (sshConnectOpen) requestAnimationFrame(() => sshHostInput.current?.focus());
-    else if (sshConnectReturnFocus.current) {
+    if (!sshConnectOpen && sshConnectReturnFocus.current) {
       const target = sshConnectReturnFocus.current;
       sshConnectReturnFocus.current = null;
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });

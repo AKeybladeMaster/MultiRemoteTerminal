@@ -382,7 +382,7 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
-test('trusted SSH sessions upload and download files through their SFTP subsystem', async () => {
+test('standalone and contextual SFTP sessions verify trust, transfer files, and avoid an unrequested shell', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
   const remoteRoot = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-remote-'));
@@ -440,46 +440,27 @@ test('trusted SSH sessions upload and download files through their SFTP subsyste
     if (!address || typeof address === 'string') throw new Error('The loopback SSH fixture did not bind a TCP address');
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
-    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
-    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
-    await dialog.getByLabel('Port').fill(String(address.port));
-    expect({ host: await dialog.getByLabel('Host name or IP address').inputValue(), port: await dialog.getByLabel('Port').inputValue(), expectedPort: String(address.port) })
-      .toEqual({ host: '127.0.0.1', port: String(address.port), expectedPort: String(address.port) });
-    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
-    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
-    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}. Page: ${await page.locator('body').innerText()}`).toBeVisible({ timeout: 15_000 });
-    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
-
-    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
-    await expect(sshTab).toBeVisible({ timeout: 20_000 });
-    const panelId = await sshTab.getAttribute('aria-controls');
-    if (!panelId) throw new Error('Missing SSH terminal panel');
-    const panel = page.locator(`#${panelId}`);
-    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SFTP-READY', { timeout: 10_000 });
-    const files = panel.locator('[data-testid="remote-file-browser"]');
-    await expect(files.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
-
-    await files.getByRole('button', { name: 'Upload file', exact: true }).click();
-    await expect(files.getByText(/Uploaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
-    expect(await readFile(join(remoteRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
-
-    await files.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
-    await expect(files.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
-    expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
-
     const shellRequestsBeforeSftp = fixtureEvents.filter(event => event === 'shell').length;
     await page.getByRole('button', { name: 'Connect to SFTP files', exact: true }).first().click();
     const sftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
     await sftpDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
-    await sftpDialog.getByLabel('Port').fill(String(address.port));
+    const sftpPort = sftpDialog.getByLabel('Port');
+    await sftpPort.fill(String(address.port));
+    await expect(sftpPort).toHaveValue(String(address.port));
     await sftpDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}. Page: ${await page.locator('body').innerText()}`).toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+
     const sftpTab = page.getByRole('tab').filter({ hasText: /SFTP/ }).first();
     await expect(sftpTab).toBeVisible({ timeout: 20_000 });
     const sftpPanelId = await sftpTab.getAttribute('aria-controls');
     if (!sftpPanelId) throw new Error('Missing standalone SFTP file panel');
     const sftpPanel = page.locator(`#${sftpPanelId}`);
     await expect(sftpPanel.getByTestId('remote-file-browser').getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await sftpPanel.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
+    await expect(sftpPanel.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();
@@ -499,6 +480,33 @@ test('trusted SSH sessions upload and download files through their SFTP subsyste
     await expect(page.locator(`#${reopenedSftpPanelId} [data-testid="remote-file-browser"]`).getByText('remote.txt', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
+
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const sshDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    const sshHost = sshDialog.getByLabel('Host name or IP address');
+    const sshPort = sshDialog.getByLabel('Port');
+    await expect(sshHost).toBeFocused();
+    await sshHost.fill('127.0.0.1');
+    await sshPort.fill(String(address.port));
+    await expect(sshHost).toHaveValue('127.0.0.1');
+    await expect(sshPort).toHaveValue(String(address.port));
+    await sshDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const sshPanelId = await sshTab.getAttribute('aria-controls');
+    if (!sshPanelId) throw new Error('Missing SSH terminal panel');
+    const sshPanel = page.locator(`#${sshPanelId}`);
+    await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-SFTP-READY', { timeout: 10_000 });
+    const contextualFiles = sshPanel.locator('[data-testid="remote-file-browser"]');
+    await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+
+    await contextualFiles.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect(contextualFiles.getByText(/Uploaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await readFile(join(remoteRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
+
+    await contextualFiles.getByRole('button', { name: 'Download upload.txt', exact: true }).click();
+    await expect(contextualFiles.getByText(/Downloaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await readFile(join(downloadRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
   } finally {
     for (const client of clients) client.end();
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
