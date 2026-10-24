@@ -11,6 +11,8 @@ import type { SessionCatalog } from '../../../../packages/application/src/sessio
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
+import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { Outcome } from '../../../../packages/domain/src/errors.ts';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
@@ -55,7 +57,7 @@ export interface CommandActions {
     'downloadRemoteFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
-  readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
+  readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
 }
 
@@ -128,8 +130,17 @@ export async function dispatchCommand(
         return { requestId, ...await actions.terminals.close(parsed.result.payload.sessionId) };
       }
       case 'ssh.open': {
-        const { sessionId, host, port, columns, rows } = parsed.result.payload;
-        return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }) };
+        const { sessionId, host, port, columns, rows, gatewayProfileIds = [] } = parsed.result.payload;
+        const endpoints: SshHostEndpoint[] = [];
+        for (const gatewayProfileId of gatewayProfileIds) {
+          const result = await actions.sessionCatalog.get(gatewayProfileId, actions.cancellation);
+          if (!result.ok) return { requestId, ...result };
+          if (result.result.kind !== 'ssh') return { requestId, ...failure('INVALID_REQUEST') };
+          endpoints.push({ host: result.result.host, port: result.result.port });
+        }
+        const route = normalizeSshGatewayRoute(endpoints, { host, port });
+        if (!route) return { requestId, ...failure('INVALID_REQUEST') };
+        return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route) };
       }
       case 'sftp.open': {
         const { sessionId, host, port } = parsed.result.payload;

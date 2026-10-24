@@ -6,7 +6,7 @@ import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
-import type { SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -28,6 +28,7 @@ const SFTP_CLOSE_GRACE_MS = 1_000;
 const SFTP_STATUS_EOF = 1;
 const LOCAL_FORWARD_BIND_TIMEOUT_MS = 10_000;
 const FORWARDED_CONNECTION_OPEN_TIMEOUT_MS = 15_000;
+const SSH_ROUTE_CHANNEL_OPEN_TIMEOUT_MS = 15_000;
 const LOCAL_FORWARD_CLOSE_GRACE_MS = 1_000;
 const REMOTE_FORWARD_BIND_TIMEOUT_MS = 10_000;
 const REMOTE_FORWARD_CLOSE_GRACE_MS = 1_500;
@@ -85,9 +86,10 @@ export interface SshTransportClientFactory {
 
 export interface SshTransportProvider {
   open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, size: TerminalSize,
-    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops?: readonly SshConnectionGatewayCredentials[]): Promise<void>;
   openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
-    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
@@ -106,7 +108,9 @@ export interface SshTransportProvider {
 
 interface RuntimeSession {
   readonly sessionId: string;
-  readonly client: Client;
+  client: Client;
+  readonly clients: Client[];
+  readonly routeChannels: ClientChannel[];
   readonly mode: 'terminal' | 'files';
   channel?: ClientChannel;
   sftp: SftpChannel | undefined;
@@ -125,7 +129,7 @@ interface RuntimeSession {
   readonly outputBytesBySequence: Map<number, number>;
   outputPaused: boolean;
   failureCode?: 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED' | 'TIMEOUT' | 'UNAVAILABLE';
-  clearPassword: () => void;
+  clearPasswords: () => void;
   openTimer: ReturnType<typeof setTimeout> | undefined;
   resolveOpen: (() => void) | undefined;
   rejectOpen: ((error: Error) => void) | undefined;
@@ -391,7 +395,7 @@ export function createSshTransportProvider(
     session.sftpOpenAttempt?.cancel(new SshTerminalProviderError('CANCELLED'));
     session.sftpOpenAttempt = undefined;
     session.sftpBusy = false;
-    session.clearPassword();
+    session.clearPasswords();
     clearTimeout(session.openTimer);
     session.pendingText = '';
     session.outputBytesBySequence.clear();
@@ -401,7 +405,12 @@ export function createSshTransportProvider(
     try { session.channel?.end(); } catch { /* Session teardown continues if the channel has already closed. */ }
     try { session.channel?.destroy(); } catch { /* Session teardown continues if the channel has already closed. */ }
     void closeSftpChannel(session);
-    try { session.client.end(); } catch { /* Session teardown continues if the connection has already closed. */ }
+    for (const routeChannel of session.routeChannels) {
+      try { routeChannel.destroy(); } catch { /* Remaining hops still receive teardown. */ }
+    }
+    for (const client of [...session.clients].reverse()) {
+      try { client.end(); } catch { /* Remaining hops still receive teardown. */ }
+    }
     if (session.opening) {
       session.opening = false;
       session.rejectOpen?.(new SshTerminalProviderError(session.failureCode ?? 'UNAVAILABLE'));
@@ -489,23 +498,51 @@ export function createSshTransportProvider(
   }
 
   function openConnection(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
-    mode: RuntimeSession['mode'], size: TerminalSize | undefined, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
-      if (sessions.has(sessionId)) return Promise.reject(new SshTerminalProviderError('UNAVAILABLE'));
-      const client = clients.create();
-      const session: RuntimeSession = {
-        sessionId, client, mode, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
-        sftp: undefined, localForwards: new Map(), remoteForwards: new Map(), sftpBusy: false, sftpOpenAttempt: undefined,
-        nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
-        outputBytesBySequence: new Map(), outputPaused: false, clearPassword: () => {},
-        openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
-      };
-      sessions.set(sessionId, session);
+    mode: RuntimeSession['mode'], size: TerminalSize | undefined,
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
+    if (sessions.has(sessionId)) return Promise.reject(new SshTerminalProviderError('UNAVAILABLE'));
+    const firstClient = clients.create();
+    const session: RuntimeSession = {
+      sessionId, client: firstClient, clients: [firstClient], routeChannels: [], mode, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
+      sftp: undefined, localForwards: new Map(), remoteForwards: new Map(), sftpBusy: false, sftpOpenAttempt: undefined,
+      nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
+      outputBytesBySequence: new Map(), outputPaused: false, clearPasswords: () => {},
+      openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
+    };
+    sessions.set(sessionId, session);
 
+    const clientConfigs = new Map<Client, ConnectConfig>();
+    session.clearPasswords = () => {
+      for (const [client, config] of clientConfigs) {
+        delete config.password;
+        const internal = (client as unknown as { config?: { password?: string } }).config;
+        if (internal) delete internal.password;
+      }
+    };
+
+    function addClient(client: Client, isDestination: boolean): void {
+      client.on('error', error => fail(session, classifyClientError(error)));
+      client.on('timeout', () => fail(session, 'TIMEOUT'));
+      client.on('close', () => {
+        if (session.closing) return;
+        if (session.opening) fail(session, session.failureCode ?? 'UNAVAILABLE');
+        else {
+          emitExit(session);
+          terminate(session);
+        }
+      });
+      if (isDestination) client.on('tcp connection', (details, accept, rejectConnection) =>
+        acceptRemoteForwardConnection(session, details, accept, rejectConnection));
+    }
+
+    function connectHop(client: Client, hopEndpoint: SshHostEndpoint, hopCredentials: SshTerminalCredentials,
+      socket: ClientChannel | undefined, isDestination: boolean): Promise<void> {
       const config: ConnectConfig = {
-        host: endpoint.host,
-        port: endpoint.port,
-        username: credentials.username,
-        password: credentials.password,
+        host: hopEndpoint.host,
+        port: hopEndpoint.port,
+        username: hopCredentials.username,
+        password: hopCredentials.password,
         authHandler: ['password'],
         readyTimeout: CONNECT_TIMEOUT_MS,
         keepaliveInterval: 10_000,
@@ -517,7 +554,7 @@ export function createSshTransportProvider(
             callback(false);
             return;
           }
-          void verifyHost(evidence).then((accepted: boolean) => {
+          void verifyHost(hopEndpoint, evidence).then((accepted: boolean) => {
             const stillAccepted = accepted && !session.closing;
             if (!stillAccepted) session.failureCode ??= 'HOST_KEY_REJECTED';
             callback(stillAccepted);
@@ -527,67 +564,115 @@ export function createSshTransportProvider(
           });
         }
       };
-      session.clearPassword = () => {
-        delete config.password;
-        const internal = (client as unknown as { config?: { password?: string } }).config;
-        if (internal) delete internal.password;
-      };
+      if (socket) config.sock = socket;
+      clientConfigs.set(client, config);
+      addClient(client, isDestination);
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error): void => {
+          if (settled) return;
+          settled = true;
+          client.removeListener('ready', onReady);
+          client.removeListener('error', onError);
+          client.removeListener('close', onClose);
+          if (error) reject(error);
+          else resolve();
+        };
+        const onReady = (): void => {
+          session.clearPasswords();
+          finish(session.closing ? new SshTerminalProviderError('CANCELLED') : undefined);
+        };
+        const onError = (error: Error): void => finish(new SshTerminalProviderError(classifyClientError(error)));
+        const onClose = (): void => finish(new SshTerminalProviderError(session.failureCode ?? 'UNAVAILABLE'));
+        client.once('ready', onReady);
+        client.once('error', onError);
+        client.once('close', onClose);
+        try { client.connect(config); }
+        catch { finish(new SshTerminalProviderError('UNAVAILABLE')); }
+      });
+    }
 
-      const opened = new Promise<void>((resolve, reject) => {
-        session.resolveOpen = resolve;
-        session.rejectOpen = reject;
-        session.openTimer = setTimeout(() => fail(session, 'TIMEOUT'), CONNECT_TIMEOUT_MS);
-
-        client.on('error', error => fail(session, classifyClientError(error)));
-        client.on('tcp connection', (details, accept, rejectConnection) =>
-          acceptRemoteForwardConnection(session, details, accept, rejectConnection));
-        client.on('timeout', () => fail(session, 'TIMEOUT'));
-        client.on('close', () => {
-          if (session.closing) return;
-          if (session.opening) fail(session, session.failureCode ?? 'UNAVAILABLE');
-          else {
-            emitExit(session);
-            terminate(session);
-          }
-        });
-        client.once('ready', () => {
-          if (session.closing) return;
-          session.clearPassword();
-          if (mode === 'files') {
-            session.opening = false;
-            clearTimeout(session.openTimer);
-            const resolve = session.resolveOpen;
-            session.resolveOpen = undefined;
-            session.rejectOpen = undefined;
-            resolve?.();
+    function openRouteChannel(client: Client, nextEndpoint: SshHostEndpoint): Promise<ClientChannel> {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error, channel?: ClientChannel): void => {
+          if (settled) { channel?.destroy(); return; }
+          settled = true;
+          clearTimeout(timer);
+          if (error || !channel || session.closing) {
+            channel?.destroy();
+            reject(error ?? new SshTerminalProviderError('CANCELLED'));
             return;
           }
-          if (!size) { fail(session, 'UNAVAILABLE'); return; }
-          client.shell({ term: 'xterm-256color', cols: size.columns, rows: size.rows }, (error, channel) => {
-            if (error || !channel || session.closing) { fail(session, session.failureCode ?? 'UNAVAILABLE'); return; }
-            session.channel = channel;
-            channel.setEncoding('utf8');
-            channel.on('data', (data: Buffer | string) => splitText(session, typeof data === 'string' ? data : data.toString('utf8')));
-            channel.on('exit', code => { if (Number.isSafeInteger(code)) session.exitCode = code as number; });
-            channel.on('error', () => fail(session, 'UNAVAILABLE'));
-            channel.on('close', () => {
-              if (session.closing) return;
-              emitExit(session);
-              terminate(session);
-            });
-            session.opening = false;
-            clearTimeout(session.openTimer);
-            const resolve = session.resolveOpen;
-            session.resolveOpen = undefined;
-            session.rejectOpen = undefined;
-            resolve?.();
+          channel.once('error', () => fail(session, 'UNAVAILABLE'));
+          channel.once('close', () => { if (!session.closing) fail(session, 'UNAVAILABLE'); });
+          session.routeChannels.push(channel);
+          resolve(channel);
+        };
+        const timer = setTimeout(() => finish(new SshTerminalProviderError('TIMEOUT')), SSH_ROUTE_CHANNEL_OPEN_TIMEOUT_MS);
+        try {
+          client.forwardOut('127.0.0.1', 0, nextEndpoint.host, nextEndpoint.port, (error, channel) => {
+            finish(error ? new SshTerminalProviderError('UNAVAILABLE') : undefined, channel ?? undefined);
           });
-        });
-
-        try { client.connect(config); }
-        catch { fail(session, 'UNAVAILABLE'); }
+        } catch { finish(new SshTerminalProviderError('UNAVAILABLE')); }
       });
-      return opened;
+    }
+
+    function finishOpen(): void {
+      if (session.closing) return;
+      if (mode === 'files') {
+        session.opening = false;
+        clearTimeout(session.openTimer);
+        const resolve = session.resolveOpen;
+        session.resolveOpen = undefined;
+        session.rejectOpen = undefined;
+        resolve?.();
+        return;
+      }
+      if (!size) { fail(session, 'UNAVAILABLE'); return; }
+      session.client.shell({ term: 'xterm-256color', cols: size.columns, rows: size.rows }, (error, channel) => {
+        if (error || !channel || session.closing) { fail(session, session.failureCode ?? 'UNAVAILABLE'); return; }
+        session.channel = channel;
+        channel.setEncoding('utf8');
+        channel.on('data', (data: Buffer | string) => splitText(session, typeof data === 'string' ? data : data.toString('utf8')));
+        channel.on('exit', code => { if (Number.isSafeInteger(code)) session.exitCode = code as number; });
+        channel.on('error', () => fail(session, 'UNAVAILABLE'));
+        channel.on('close', () => {
+          if (session.closing) return;
+          emitExit(session);
+          terminate(session);
+        });
+        session.opening = false;
+        clearTimeout(session.openTimer);
+        const resolve = session.resolveOpen;
+        session.resolveOpen = undefined;
+        session.rejectOpen = undefined;
+        resolve?.();
+      });
+    }
+
+    const opened = new Promise<void>((resolve, reject) => {
+      session.resolveOpen = resolve;
+      session.rejectOpen = reject;
+      session.openTimer = setTimeout(() => fail(session, 'TIMEOUT'), CONNECT_TIMEOUT_MS);
+    });
+    void (async () => {
+      const route = [...gatewayHops, { endpoint, credentials }];
+      let socket: ClientChannel | undefined;
+      for (const [index, hop] of route.entries()) {
+        const client = index === 0 ? firstClient : clients.create();
+        if (index > 0) session.clients.push(client);
+        session.client = client;
+        const isDestination = index === route.length - 1;
+        await connectHop(client, hop.endpoint, hop.credentials, socket, isDestination);
+        if (!isDestination) socket = await openRouteChannel(client, route[index + 1]!.endpoint);
+      }
+      finishOpen();
+    })().catch(error => {
+      const code = session.failureCode ?? (error instanceof SshTerminalProviderError && error.code === 'TIMEOUT' ? 'TIMEOUT' : 'UNAVAILABLE');
+      fail(session, code);
+    });
+    return opened;
   }
 
   async function startRemoteForward(session: RuntimeSession, definition: Extract<SshTunnelDefinition, { readonly mode: 'remote' }>): Promise<number> {
@@ -643,8 +728,8 @@ export function createSshTransportProvider(
   }
 
   const provider: SshTransportProvider = {
-    open(sessionId, endpoint, credentials, size, verifyHost): Promise<void> {
-      return openConnection(sessionId, endpoint, credentials, 'terminal', size, verifyHost);
+    open(sessionId, endpoint, credentials, size, verifyHost, gatewayHops = []): Promise<void> {
+      return openConnection(sessionId, endpoint, credentials, 'terminal', size, verifyHost, gatewayHops);
     },
 
     openFiles(sessionId, endpoint, credentials, verifyHost): Promise<void> {

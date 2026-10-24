@@ -25,6 +25,7 @@ import { isFileTransferProgress, isFileTransferResult } from '../../domain/src/f
 import type { FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
 import { isSshTunnelDefinition, isTunnelId, isTunnelRunStatus, normalizeSshTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
 import type { SshTunnelDefinition, SshTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
+import { isSshGatewayProfileIds } from '../../domain/src/ssh-route.ts';
 import type { SshTunnelSnapshot } from '../../application/src/ssh-tunnels.ts';
 
 export const CONTRACT_VERSION = 1;
@@ -72,7 +73,8 @@ export type PasteTerminalRequest = Request<'terminal.paste', { readonly sessionI
 export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
-export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number }>;
+export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
+  readonly gatewayProfileIds?: readonly string[] }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number }>;
 export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
 export type WriteSshTerminalRequest = Request<'ssh.write', { readonly sessionId: string; readonly data: string }>;
@@ -159,7 +161,8 @@ export interface DesktopBridge {
   resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
-  openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenSshTerminalReply>;
+  openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
+    gatewayProfileIds?: readonly string[]): Promise<OpenSshTerminalReply>;
   openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   pasteSshTerminal(sessionId: string): Promise<TerminalActionReply>;
@@ -261,7 +264,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'terminal.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseTerminalRequest };
   }
-  if (value.command === 'ssh.open' && exactKeys(payload, ['sessionId', 'host', 'port', 'columns', 'rows']) &&
+  if (value.command === 'ssh.open' && (exactKeys(payload, ['sessionId', 'host', 'port', 'columns', 'rows']) ||
+      (exactKeys(payload, ['sessionId', 'host', 'port', 'columns', 'rows', 'gatewayProfileIds']) && isSshGatewayProfileIds(payload.gatewayProfileIds))) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };

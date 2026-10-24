@@ -118,9 +118,9 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value;
   }
 
-  async getSessionDefinition(id: string): Promise<SavedSessionDefinition | undefined> {
-    await this.ensureMigrated();
-    const result = await this.worker.request({ command: 'session.get', id });
+  async getSessionDefinition(id: string, cancellation?: CancellationSignal): Promise<SavedSessionDefinition | undefined> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.get', id }, cancellation);
     if (result.kind !== 'sessionLookup') throw new StorageOperationError('corrupt');
     return result.value ?? undefined;
   }

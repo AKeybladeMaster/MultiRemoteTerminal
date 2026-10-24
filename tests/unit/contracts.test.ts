@@ -68,6 +68,12 @@ test('validates SSH connection requests and keeps host approval as a typed event
   const open = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload,
+    gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'] } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload,
+    gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111'] } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload,
+    gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
 

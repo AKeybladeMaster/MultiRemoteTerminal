@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { UtilityProcess } from 'electron';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
-import type { SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshConnectionGatewayCredentials, SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -28,8 +28,8 @@ interface PendingRequest {
 }
 
 interface OwnedSshSession {
-  readonly endpoint: SshHostEndpoint;
-  readonly verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>;
+  readonly endpoints: readonly SshHostEndpoint[];
+  readonly verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>;
 }
 
 const MAX_PENDING_REQUESTS = 128;
@@ -73,12 +73,14 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
   }
 
   async open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, size: TerminalSize,
-    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
     const credentialsCopy = { username: credentials.username, password: credentials.password };
+    const gatewayCopies = gatewayHops.map(hop => ({ endpoint: { ...hop.endpoint }, credentials: { ...hop.credentials } }));
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open',
-      sessionId, endpoint, credentials: credentialsCopy, size } as const satisfies SshWorkerRequest;
-    this.sessions.set(sessionId, { endpoint: { host: endpoint.host, port: endpoint.port }, verifyHost });
+      sessionId, endpoint, credentials: credentialsCopy, size, gatewayHops: gatewayCopies } as const satisfies SshWorkerRequest;
+    this.sessions.set(sessionId, { endpoints: [...gatewayCopies.map(hop => hop.endpoint), { ...endpoint }], verifyHost });
     try { await this.request(request, OPEN_TIMEOUT_MS); }
     catch (error) {
       this.sessions.delete(sessionId);
@@ -86,16 +88,17 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     } finally {
       credentialsCopy.username = '';
       credentialsCopy.password = '';
+      for (const hop of gatewayCopies) { hop.credentials.username = ''; hop.credentials.password = ''; }
     }
   }
 
   async openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
-    verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
     const credentialsCopy = { username: credentials.username, password: credentials.password };
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open-files',
       sessionId, endpoint, credentials: credentialsCopy } as const satisfies SshWorkerRequest;
-    this.sessions.set(sessionId, { endpoint: { host: endpoint.host, port: endpoint.port }, verifyHost });
+    this.sessions.set(sessionId, { endpoints: [{ host: endpoint.host, port: endpoint.port }], verifyHost });
     try { await this.request(request, OPEN_TIMEOUT_MS); }
     catch (error) {
       this.sessions.delete(sessionId);
@@ -309,12 +312,12 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
 
   private verifyHostKey(worker: UtilityProcess, sessionId: string, checkId: string, endpoint: SshHostEndpoint, evidence: HostKeyEvidence): void {
     const owner = this.sessions.get(sessionId);
-    const expectedEndpoint = owner?.endpoint;
-    const matchesEndpoint = expectedEndpoint !== undefined && expectedEndpoint.host === endpoint.host && expectedEndpoint.port === endpoint.port;
+    const expectedEndpoints = owner?.endpoints;
+    const matchesEndpoint = expectedEndpoints?.some(candidate => candidate.host === endpoint.host && candidate.port === endpoint.port) ?? false;
     const verifier = matchesEndpoint ? owner?.verifyHost : undefined;
-    const check = verifier ? Promise.resolve().then(() => verifier(evidence)).catch(() => false) : Promise.resolve(false);
+    const check = verifier ? Promise.resolve().then(() => verifier(endpoint, evidence)).catch(() => false) : Promise.resolve(false);
     void check.then(accepted => {
-      const stillCurrent = this.worker === worker && this.sessions.get(sessionId) === owner && owner?.endpoint === expectedEndpoint;
+      const stillCurrent = this.worker === worker && this.sessions.get(sessionId) === owner && owner?.endpoints === expectedEndpoints;
       if (!stillCurrent) accepted = false;
       const response = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'host-key-result', sessionId, checkId, accepted } as const satisfies SshWorkerRequest;
       try { worker.postMessage(response); } catch { void this.killWorker(worker); }

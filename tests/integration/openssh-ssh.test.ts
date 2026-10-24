@@ -39,7 +39,7 @@ test('password SSH and SFTP reuse a verified disposable OpenSSH connection and r
   const accepted = createSshTransportProvider(clients, event => acceptedEvents.push(event));
   const sessionId = randomUUID();
   try {
-    await accepted.open(sessionId, endpoint, credentials, size, async evidence => evidence.fingerprint === rawFixture.fingerprint);
+    await accepted.open(sessionId, endpoint, credentials, size, async (_endpoint, evidence) => evidence.fingerprint === rawFixture.fingerprint);
     await accepted.write(sessionId, 'echo MRT-OPENSSH-ACCEPT\r');
     await waitForTerminalOutput(acceptedEvents, sessionId, 'MRT-OPENSSH-ACCEPT');
     const remoteDirectory = await accepted.listRemoteDirectory(sessionId, '.');
@@ -63,7 +63,8 @@ test('password SSH and SFTP reuse a verified disposable OpenSSH connection and r
   const failedSessionId = randomUUID();
   try {
     await assert.rejects(wrongPassword.open(failedSessionId, endpoint,
-      { username: credentials.username, password: `${credentials.password}__invalid` }, size, async evidence => evidence.fingerprint === rawFixture.fingerprint),
+      { username: credentials.username, password: `${credentials.password}__invalid` }, size,
+      async (_endpoint, evidence) => evidence.fingerprint === rawFixture.fingerprint),
     error => (error as { code?: string }).code === 'AUTHENTICATION_FAILED');
     await assert.rejects(wrongPassword.write(failedSessionId, 'echo CLOSED\r'),
       error => (error as { code?: string }).code === 'UNAVAILABLE');

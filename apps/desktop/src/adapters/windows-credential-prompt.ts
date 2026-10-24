@@ -87,7 +87,7 @@ export function createWindowsCredentialPrompt(options: WindowsCredentialPromptOp
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return Object.freeze({
-    prompt(purpose: CredentialPromptPurpose, signal?: CredentialPromptCancellation): Promise<CredentialPromptResult> {
+    prompt(purpose: CredentialPromptPurpose, signal?: CredentialPromptCancellation, context?: string): Promise<CredentialPromptResult> {
       if (!isPurpose(purpose) || !Number.isFinite(timeoutMs) || timeoutMs < 1) return Promise.resolve(UNAVAILABLE);
       if (signal?.aborted) return Promise.resolve(CANCELLED);
       let executable: string | undefined;
@@ -97,7 +97,9 @@ export function createWindowsCredentialPrompt(options: WindowsCredentialPromptOp
       try { if (!pathExists(options.helperPath)) return Promise.resolve(UNAVAILABLE); }
       catch { return Promise.resolve(UNAVAILABLE); }
 
-      const args = ['-NoLogo', '-NoProfile', '-WindowStyle', 'Hidden', '-File', options.helperPath, '-Message', PURPOSE_MESSAGE[purpose]];
+      const promptContext = typeof context === 'string' ? context.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 256).trim() : '';
+      const message = promptContext ? `${PURPOSE_MESSAGE[purpose]}\n\n${promptContext}` : PURPOSE_MESSAGE[purpose];
+      const args = ['-NoLogo', '-NoProfile', '-WindowStyle', 'Hidden', '-File', options.helperPath, '-Message', message];
       return new Promise(resolve => {
         let child: PromptProcess;
         try {

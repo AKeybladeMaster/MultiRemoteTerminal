@@ -14,6 +14,7 @@ import type { SshTrustEvent } from '../../../../packages/application/src/ssh-ter
 import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
@@ -26,6 +27,10 @@ type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
+const SSH_CREDENTIAL_PROMPT_TIMEOUT_MS = 120_000;
+const SSH_WORKER_OPEN_TIMEOUT_MS = 140_000;
+// Covers two bounded catalog reads, worker startup, and IPC scheduling after three sequential prompts.
+const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
@@ -84,6 +89,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   }
 
   function requestId(): string { return makeId(); }
+  function sshOpenTimeout(gatewayCount = 0): number {
+    if (gatewayCount === 0) return SSH_OPEN_TIMEOUT_MS;
+    const prompts = Math.min(gatewayCount, MAX_SSH_GATEWAY_HOPS) + 1;
+    return prompts * SSH_CREDENTIAL_PROMPT_TIMEOUT_MS + SSH_WORKER_OPEN_TIMEOUT_MS + SSH_ROUTE_OPEN_MARGIN_MS;
+  }
+
   function reserveInputChars(sessionId: string, chars: number): boolean {
     const pending = pendingInputChars.get(sessionId) ?? 0;
     if (pending + chars > MAX_QUEUED_TERMINAL_INPUT_CHARS) return false;
@@ -270,8 +281,11 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       const request = voidRequest('terminal.close', { sessionId });
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
-    openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number): Promise<OpenSshTerminalReply> {
-      return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port, columns, rows } }, SSH_OPEN_TIMEOUT_MS);
+    openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
+      gatewayProfileIds?: readonly string[]): Promise<OpenSshTerminalReply> {
+      return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }) } },
+      sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
     openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply> {
       return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port } }, SSH_OPEN_TIMEOUT_MS);

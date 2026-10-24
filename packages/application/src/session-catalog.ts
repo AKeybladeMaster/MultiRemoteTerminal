@@ -10,6 +10,7 @@ import { StorageOperationError } from './storage-errors.ts';
 
 export interface SessionCatalogStore {
   listSessions(query: string, cancellation?: CancellationSignal): Promise<readonly SavedSessionDefinition[]>;
+  getSessionDefinition(id: string, cancellation?: CancellationSignal): Promise<SavedSessionDefinition | undefined>;
   createSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
   setFavorite(id: string, favorite: boolean, cancellation?: CancellationSignal): Promise<boolean>;
   removeSession(id: string, cancellation?: CancellationSignal): Promise<boolean>;
@@ -36,6 +37,7 @@ export interface SessionFolderBundleFileDialog {
 
 export interface SessionCatalog {
   list(query: unknown, cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionDefinition[]>>;
+  get(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
   create(draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
   setFavorite(id: unknown, favorite: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   remove(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
@@ -68,6 +70,14 @@ export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: S
         return { ok: true, result };
       }
       catch (error) { return failure(errorCode(error)); }
+    },
+    async get(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>> {
+      if (!isSessionDefinitionId(id)) return failure('INVALID_REQUEST');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try {
+        const session = await store.getSessionDefinition(id, cancellation);
+        return session ? { ok: true, result: session } : failure('NOT_FOUND');
+      } catch (error) { return failure(errorCode(error)); }
     },
     async create(input: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>> {
       const draft = normalizeSavedSessionDraft(input);

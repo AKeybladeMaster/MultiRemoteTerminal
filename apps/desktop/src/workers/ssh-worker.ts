@@ -128,16 +128,17 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     if (request.command === 'open') {
       try {
         await provider.open(request.sessionId, request.endpoint, request.credentials, request.size,
-          evidence => requestHostVerification(request.sessionId, request.endpoint, evidence));
+          (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? []);
       } finally {
         const credentials = request.credentials as { username: string; password: string };
         credentials.password = '';
         credentials.username = '';
+        for (const hop of request.gatewayHops ?? []) { hop.credentials.password = ''; hop.credentials.username = ''; }
       }
     } else if (request.command === 'open-files') {
       try {
         await provider.openFiles(request.sessionId, request.endpoint, request.credentials,
-          evidence => requestHostVerification(request.sessionId, request.endpoint, evidence));
+          (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence));
       } finally {
         const credentials = request.credentials as { username: string; password: string };
         credentials.password = '';
