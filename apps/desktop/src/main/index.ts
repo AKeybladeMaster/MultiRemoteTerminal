@@ -12,10 +12,12 @@ import type { HostTrustRuntime } from '../../../../packages/application/src/host
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
   parseFtpConsentGestureRequest, parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
-  SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
+  SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
@@ -228,6 +230,7 @@ function boot(): void {
     })
   );
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
+  const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })
@@ -243,7 +246,8 @@ function boot(): void {
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), ftpFiles.closeAll()]).then(() => undefined).catch(() => undefined)
+      shutdownPromise = tunnels.closeAll().then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), ftpFiles.closeAll()]))
+        .then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
     return shutdownPromise;
@@ -281,13 +285,17 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRUST_EVENT_CHANNEL, event);
   });
+  tunnels.subscribe(status => {
+    const current = window;
+    if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TUNNEL_STATUS_EVENT_CHANNEL, status);
+  });
   ipcMain.handle(COMMAND_CHANNEL, async (event, input: unknown) => {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
     const cancellation = new AbortController();
     const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
-    const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command === 'ssh.files.list' ||
+    const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command.startsWith('tunnel.') || parsed.result.command === 'ssh.files.list' ||
       parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.download') &&
       owned && mainFrame && isAppDocument(frameUrl);
@@ -421,7 +429,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, ftpFiles, sessionCatalog, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, ftpFiles, sessionCatalog, tunnels, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
@@ -479,7 +487,8 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), ftpFiles.dispose()]).then(() => storageStore.shutdown())
+    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), ftpFiles.dispose()]))
+      .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
   app.on('will-quit', () => {

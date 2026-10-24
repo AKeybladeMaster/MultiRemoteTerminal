@@ -143,6 +143,14 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
         credentials.password = '';
         credentials.username = '';
       }
+    } else if (request.command === 'local-forward.start') {
+      const bindPort = await provider.startLocalForward(request.sessionId, request.definition);
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: { bindPort } });
+      return;
+    } else if (request.command === 'local-forward.stop') {
+      await provider.stopLocalForward(request.sessionId, request.tunnelId);
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: {} });
+      return;
     } else if (request.command === 'write') await provider.write(request.sessionId, request.data);
     else if (request.command === 'resize') await provider.resize(request.sessionId, request.size);
     else if (request.command === 'ack') await provider.acknowledgeOutput(request.sessionId, request.sequence);

@@ -87,6 +87,8 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 **Tests:** 1 and 2 SSH hops; L/R/D roundtrip; port conflict; public bind confirmation; force-close cleanup; >2 tunnel definitions.  
 **Gate:** host trust for *every* SSH hop and all bound ports released.
 
+**WP-04A — loopback local SSH forwarding (first partial slice):** Persist named local-forward definitions against saved SSH profiles; start only on explicit user action through a separate files-only SSH connection; default to `127.0.0.1`, allow port `0` for OS assignment, and report active only after bind succeeds. Cover host trust, UI-to-worker TCP roundtrip including TCP half-close, persistence/reopen, port conflict cleanup and listener release on stop and app shutdown. Remote/dynamic forwarding, non-loopback consent and jump-host routing stay planned for later WP-04 slices. See [ADR-0009](adr/ADR-0009-wp04a-local-ssh-forwarding.md).
+
 ### WP-05 — SFTP file browser and transfer
 
 **Requires:** WP-02/03.  

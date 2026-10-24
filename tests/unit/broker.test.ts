@@ -47,6 +47,10 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp,
     exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
     importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
+  }, tunnels: {
+    list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
+    remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
+    async stop(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; }
   }
 });
 

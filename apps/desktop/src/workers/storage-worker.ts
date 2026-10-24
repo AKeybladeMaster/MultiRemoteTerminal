@@ -4,6 +4,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import { SqliteHostTrustRepository, toHostTrustStoreError } from '../adapters/sqlite-host-trust-repository.ts';
 import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catalog-repository.ts';
+import { SqliteTunnelRepository } from '../adapters/sqlite-tunnel-repository.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -14,6 +15,7 @@ if (!databasePath || !isAbsolute(databasePath)) throw new Error('Storage worker 
 
 let repository: SqliteHostTrustRepository;
 let sessionCatalogRepository: SqliteSessionCatalogRepository;
+let tunnelRepository: SqliteTunnelRepository;
 try {
   await mkdir(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath, {
@@ -26,6 +28,7 @@ try {
   repository = new SqliteHostTrustRepository(database);
   repository.migrate();
   sessionCatalogRepository = new SqliteSessionCatalogRepository(database);
+  tunnelRepository = new SqliteTunnelRepository(database);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
   const errorCode = storageWorkerErrorCode(normalizedError);
@@ -59,6 +62,9 @@ parent.on('message', async event => {
     } else if (request.command === 'session.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'sessions', value: await sessionCatalogRepository.listSessions(request.query) } });
+    } else if (request.command === 'session.get') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'sessionLookup', value: await sessionCatalogRepository.getSessionDefinition(request.id) ?? null } });
     } else if (request.command === 'session.create') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'session', value: await sessionCatalogRepository.createSession(request.draft) } });
@@ -92,6 +98,18 @@ parent.on('message', async event => {
     } else if (request.command === 'session.move') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: await sessionCatalogRepository.moveSession(request.id, request.folderId) } });
+    } else if (request.command === 'tunnel.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'tunnels', value: await tunnelRepository.listLocalTunnels() } });
+    } else if (request.command === 'tunnel.get') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'tunnelLookup', value: await tunnelRepository.getLocalTunnel(request.id) ?? null } });
+    } else if (request.command === 'tunnel.save') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'tunnel', value: await tunnelRepository.saveLocalTunnel(request.draft) } });
+    } else if (request.command === 'tunnel.remove') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'removed', value: await tunnelRepository.removeLocalTunnel(request.id) } });
     } else {
       closed = true;
       repository.close();

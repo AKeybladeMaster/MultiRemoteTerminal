@@ -18,8 +18,42 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-    'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress', 'onSshTransferProgress']);
+    'listLocalTunnels', 'saveLocalTunnel', 'deleteLocalTunnel', 'startLocalTunnel', 'stopLocalTunnel',
+    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload routes tunnel manager requests and validates runtime status events', async () => {
+  const tunnelId = '33333333-3333-4333-8333-333333333333';
+  const savedSessionId = '44444444-4444-4444-8444-444444444444';
+  const definition = { id: tunnelId, sessionId: savedSessionId, name: 'Database', mode: 'local' as const, bindHost: '127.0.0.1' as const,
+    bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
+  const seen: string[] = [];
+  let deliverStatus: ((value: unknown) => void) | undefined;
+  const bridge = createBridge(async request => {
+    seen.push(request.command);
+    const result = request.command === 'tunnel.list' ? [{ definition, status: { tunnelId, state: 'stopped' } }]
+      : request.command === 'tunnel.save' ? definition
+      : request.command === 'tunnel.start' ? { tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 }
+      : request.command === 'tunnel.stop' ? { tunnelId, state: 'stopped' } : {};
+    return { requestId: request.requestId, ok: true, result };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, listener => {
+    deliverStatus = listener;
+    return () => { deliverStatus = undefined; };
+  });
+  assert.equal((await bridge.listLocalTunnels()).ok, true);
+  assert.equal((await bridge.saveLocalTunnel({ sessionId: savedSessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
+    targetHost: 'db.internal', targetPort: 5432 })).ok, true);
+  assert.equal((await bridge.startLocalTunnel(tunnelId)).ok, true);
+  assert.equal((await bridge.stopLocalTunnel(tunnelId)).ok, true);
+  assert.equal((await bridge.deleteLocalTunnel(tunnelId)).ok, true);
+  let statuses = 0;
+  const unsubscribe = bridge.onTunnelStatus(() => { statuses++; });
+  deliverStatus?.({ tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 });
+  deliverStatus?.({ tunnelId, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 });
+  unsubscribe();
+  assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
+  assert.equal(statuses, 1);
 });
 
 test('preload sends standalone SFTP commands with only the endpoint and session id', async () => {

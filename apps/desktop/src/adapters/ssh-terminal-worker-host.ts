@@ -3,6 +3,9 @@ import type { UtilityProcess } from 'electron';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { LocalTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
+import { isLocalTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { LocalTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import { isRemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
@@ -53,7 +56,7 @@ function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCo
   return code;
 }
 
-export class SshTerminalWorkerHost implements SshTerminalProvider {
+export class SshTerminalWorkerHost implements SshTerminalProvider, LocalTunnelForwardProvider {
   private readonly workerPath: string;
   private readonly appRoot: string;
   private readonly launchWorker: SshWorkerLauncher;
@@ -144,6 +147,25 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
     const result = await this.request(request, FILE_TRANSFER_TIMEOUT_MS, cancellation, onProgress);
     if (!isFileTransferResult(result) || result.direction !== 'download') throw new SshTerminalProviderError('UNAVAILABLE');
     return result;
+  }
+
+  async startLocalForward(sessionId: string, tunnelId: string, definition: LocalTunnelDefinition): Promise<number> {
+    if (!this.sessions.has(sessionId) || !isTunnelId(tunnelId) || !isLocalTunnelDefinition(definition) || definition.id !== tunnelId) {
+      throw new SshTerminalProviderError('INVALID_REQUEST');
+    }
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'local-forward.start',
+      sessionId, definition } as const satisfies SshWorkerRequest;
+    const result = await this.request(request, 20_000);
+    if (!isBindPortResult(result)) throw new SshTerminalProviderError('UNAVAILABLE');
+    return result.bindPort;
+  }
+
+  async stopLocalForward(sessionId: string, tunnelId: string): Promise<void> {
+    if (!isTunnelId(tunnelId)) throw new SshTerminalProviderError('INVALID_REQUEST');
+    if (!this.sessions.has(sessionId)) return;
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'local-forward.stop',
+      sessionId, tunnelId } as const satisfies SshWorkerRequest;
+    await this.request(request, 5_000);
   }
 
   async close(sessionId: string): Promise<void> {
@@ -342,4 +364,11 @@ export class SshTerminalWorkerHost implements SshTerminalProvider {
       worker.once('exit', () => { clearTimeout(timer); resolve(); });
     });
   }
+}
+
+function isBindPortResult(value: unknown): value is { readonly bindPort: number } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 1 && Object.hasOwn(record, 'bindPort') && Number.isSafeInteger(record.bindPort) &&
+    (record.bindPort as number) >= 1 && (record.bindPort as number) <= 65_535;
 }

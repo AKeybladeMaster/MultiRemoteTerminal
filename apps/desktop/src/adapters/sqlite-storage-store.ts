@@ -5,6 +5,8 @@ import type { UtilityProcess } from 'electron';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
 import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
+import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
+import type { LocalTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
@@ -12,6 +14,8 @@ import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, n
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
+import { isTunnelId, normalizeLocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { LocalTunnelDefinition, LocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
@@ -72,7 +76,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
     : never
   : never;
 
-export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
+export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, LocalTunnelCatalog, SavedSessionReader {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -112,6 +116,13 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
     const result = await this.worker.request({ command: 'session.list', query: normalized }, cancellation);
     if (result.kind !== 'sessions') throw new HostTrustStoreError('corrupt');
     return result.value;
+  }
+
+  async getSessionDefinition(id: string): Promise<SavedSessionDefinition | undefined> {
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'session.get', id });
+    if (result.kind !== 'sessionLookup') throw new StorageOperationError('corrupt');
+    return result.value ?? undefined;
   }
 
   async createSession(input: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition> {
@@ -183,6 +194,38 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'session.move', id, folderId }, cancellation);
     if (result.kind !== 'changed') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async listLocalTunnels(): Promise<readonly LocalTunnelDefinition[]> {
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'tunnel.list' });
+    if (result.kind !== 'tunnels') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async getLocalTunnel(id: string): Promise<LocalTunnelDefinition | undefined> {
+    if (!isTunnelId(id)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'tunnel.get', id });
+    if (result.kind !== 'tunnelLookup') throw new StorageOperationError('corrupt');
+    return result.value ?? undefined;
+  }
+
+  async saveLocalTunnel(input: LocalTunnelDraft): Promise<LocalTunnelDefinition> {
+    const draft = normalizeLocalTunnelDraft(input);
+    if (!draft) throw new StorageOperationError('invalid');
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'tunnel.save', draft });
+    if (result.kind !== 'tunnel') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async removeLocalTunnel(id: string): Promise<boolean> {
+    if (!isTunnelId(id)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated();
+    const result = await this.worker.request({ command: 'tunnel.remove', id });
+    if (result.kind !== 'removed') throw new StorageOperationError('corrupt');
     return result.value;
   }
 
