@@ -36,7 +36,7 @@ Priority labels: **Must** = MVP release gate; **Should** = next public-quality r
 | F-013 | Must | No arbitrary limits or daemon-runtime timers | Schema/config show no caps; smoke confirms persisted records; no injected 360 s timer |
 | F-014 | Should | Local/remote text editor and syntax color profiles | SFTP edit, conflict detection, autosave optional, keyword highlight toggle |
 | F-015 | Should | Remote desktop sessions: RDP and VNC | Supported external viewer launch, credential warnings, reconnect/error UX |
-| F-016 | Should | Serial and FTP/FTPS | COM port enumeration/baud selection; FTP/FTPS browse and transfer; plaintext FTP warning. WP-09C adds credential-free saved FTP profiles and browsing only; transfers and serial remain open. |
+| F-016 | Should | Serial and FTP/FTPS | COM port enumeration/baud selection; FTP/FTPS browse and transfer; plaintext FTP warning. WP-09C adds credential-free FTP profiles and browsing; WP-09D adds FTP transfer with progress, cancellation and conflict handling. Serial support and FTPS interoperability acceptance remain open. |
 | F-017 | Should | Plugins/provider discovery | User can enable/disable signed/approved provider without arbitrary JS execution |
 | F-018 | Should | Secure import/export + settings profile templates | Roundtrip non-secret config; encrypted user-opt-in secret export |
 | F-019 | Could | Mosh and Telnet/Rlogin | True protocol negotiation, end-to-end fixture per protocol |

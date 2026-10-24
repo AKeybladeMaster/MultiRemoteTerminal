@@ -131,6 +131,8 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 
 **WP-09C — FTP/FTPS saved profiles and read-only browser (partial):** The app opens explicit FTPS by default or plaintext FTP after a visible one-use warning, prompts separately for account credentials, and browses bounded directory listings in a supervised utility worker. Saved profiles persist host, port and TLS mode without credentials; Windows loopback E2E verifies listing, app restart, profile persistence and reconnect. FTP uploads/downloads and broader server interoperability remain open. See [WP-09C evidence](results/WP-09C-ftp-directory-browser-2026-10-24.md) and [dependency review](dependencies/WP-09C-basic-ftp.md).
 
+**WP-09D — FTP/FTPS transfers (partial):** Add native-dialog upload/download paths, typed progress and cancellation, explicit overwrite/rename/skip choices, random remote staging names and local sibling-temp commits. Windows loopback E2E verifies upload and download through the renderer, main broker, worker and local filesystem. Cancellation cleans partial files when the server and filesystem permit. FTPS certificate interoperability and broader server acceptance remain open. See [WP-09D evidence](results/WP-09D-ftp-transfers-2026-10-24.md).
+
 ### WP-10 — X11, XDMCP and daemons
 
 **Requires:** WP-02/provider registry; separate security review before release.  

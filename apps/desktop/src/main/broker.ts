@@ -4,6 +4,7 @@ import type { LocalTerminalController } from '../../../../packages/application/s
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
+import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -22,6 +23,11 @@ export interface AuditEvent {
   readonly code: string;
 }
 
+export interface FtpUploadSelection {
+  readonly localPath: string;
+  readonly fileName: string;
+}
+
 export interface CommandActions {
   readonly describe: () => WorkbenchSnapshot;
   readonly noteUserActivity: () => void;
@@ -30,11 +36,15 @@ export interface CommandActions {
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
   readonly confirmMultilinePaste: () => Promise<boolean>;
+  readonly selectFtpUploadFile: () => Promise<FtpUploadSelection | undefined>;
+  readonly selectFtpDownloadPath: (fileName: string) => Promise<string | undefined>;
+  readonly resolveFtpTransferConflict: (direction: FtpTransferDirection, fileName: string) => Promise<FtpTransferConflictPolicy | undefined>;
+  readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
-  readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'close'>;
+  readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
 }
 
@@ -75,7 +85,8 @@ export async function dispatchCommand(
     if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
         parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
-        parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.close') actions.noteUserActivity();
+        parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
+        parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close') actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -169,6 +180,29 @@ export async function dispatchCommand(
       case 'ftp.files.list': {
         const { sessionId, path } = parsed.result.payload;
         return { requestId, ...await actions.ftpFiles.listDirectory(sessionId, path, actions.cancellation) };
+      }
+      case 'ftp.files.upload': {
+        const { sessionId, operationId, remoteDirectory } = parsed.result.payload;
+        const selection = await actions.selectFtpUploadFile();
+        if (!selection || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        const conflictPolicy = await actions.resolveFtpTransferConflict('upload', selection.fileName);
+        if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        return { requestId, ...await actions.ftpFiles.uploadFile(sessionId, operationId, selection.localPath, remoteDirectory,
+          selection.fileName, conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };
+      }
+      case 'ftp.files.download': {
+        const { sessionId, operationId, remotePath } = parsed.result.payload;
+        const fileName = remotePath.slice(remotePath.lastIndexOf('/') + 1);
+        const localPath = await actions.selectFtpDownloadPath(fileName);
+        if (!localPath || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        const conflictPolicy = await actions.resolveFtpTransferConflict('download', fileName);
+        if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        return { requestId, ...await actions.ftpFiles.downloadFile(sessionId, operationId, remotePath, localPath,
+          conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };
+      }
+      case 'ftp.files.cancel': {
+        const { sessionId, operationId } = parsed.result.payload;
+        return { requestId, ...await actions.ftpFiles.cancelTransfer(sessionId, operationId) };
       }
       case 'ftp.close': return { requestId, ...await actions.ftpFiles.close(parsed.result.payload.sessionId) };
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };

@@ -151,6 +151,17 @@ test('FTP commands accept exact endpoints and safe directory replies without ret
   if (parsedList.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
     path: '/home/alice', entries: [{ name: 'bad\nDELE file', path: '/home/alice/bad\nDELE file', kind: 'file', size: 1, modifiedAt: null }], truncated: false
   } }, parsedList.result), false);
+  const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  const upload = { command: 'ftp.files.upload', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/incoming' } };
+  const parsedUpload = parseRequest(upload);
+  assert.equal(parsedUpload.ok, true);
+  assert.equal(parseRequest({ ...upload, payload: { ...upload.payload, localPath: 'C:\\secret\\file.txt' } }).ok, false,
+    'the renderer cannot choose a local source path');
+  const transferResult = { direction: 'upload', fileName: 'archive.bin', bytesTransferred: 12, state: 'completed' };
+  if (parsedUpload.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: transferResult }, parsedUpload.result), true);
+  assert.equal(parseRequest({ command: 'ftp.files.cancel', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, reason: 'anything' } }).ok, false);
 });
 
 test('saved-session IPC accepts only supported non-secret definitions and validated catalog actions', () => {

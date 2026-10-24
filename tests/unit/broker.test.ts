@@ -16,7 +16,9 @@ const emptySavedSession = { id: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', folderId
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
   authorizeFtpConsent: () => false,
-  confirmMultilinePaste: async () => false, terminals: {
+  confirmMultilinePaste: async () => false,
+  selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
+  reportFtpTransferProgress: () => {}, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
@@ -28,7 +30,10 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, ftpFiles: {
     async open(sessionId, host, port, secure) { return { ok: true, result: { sessionId, endpoint: { host, port, secure }, state: 'running' } }; },
-    listDirectory: async (_sessionId, path) => ({ ok: true, result: { path, entries: [], truncated: false } }), close: noOp
+    listDirectory: async (_sessionId, path) => ({ ok: true, result: { path, entries: [], truncated: false } }),
+    async uploadFile() { return { ok: true, result: { direction: 'upload', fileName: 'x', bytesTransferred: 0, state: 'completed' } }; },
+    async downloadFile() { return { ok: true, result: { direction: 'download', fileName: 'x', bytesTransferred: 0, state: 'completed' } }; },
+    cancelTransfer: noOp, close: noOp
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptySavedSession }),
@@ -69,6 +74,7 @@ test('plain FTP requires a fresh consent gesture while FTPS and file operations 
   const tracked: CommandActions = { ...base, cancellation,
     authorizeFtpConsent: id => { authorized++; return id === sessionId; },
     ftpFiles: {
+      ...base.ftpFiles,
       async open(id, host, port, secure, signal) {
         calls.push(`open:${secure}:${id}`);
         assert.equal(signal, cancellation);
@@ -101,6 +107,53 @@ test('plain FTP requires a fresh consent gesture while FTPS and file operations 
   assert.equal(listing.ok, true);
   assert.equal(closed.ok, true);
   assert.deepEqual(calls, [`open:false:${sessionId}`, `open:true:${sessionId}`, `list:${sessionId}:/home`, `close:${sessionId}`]);
+});
+
+test('FTP transfers keep local paths in main, forward explicit conflict choices, progress, and cancellation', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  const cancellation = new AbortController().signal;
+  const progressEvents: unknown[] = [];
+  const observed: unknown[] = [];
+  const progress = { sessionId, operationId, direction: 'upload' as const, fileName: 'archive.bin', bytesTransferred: 5, totalBytes: 10 };
+  const base = actions();
+  const withTransfers: CommandActions = { ...base, cancellation,
+    selectFtpUploadFile: async () => ({ localPath: 'C:\\private\\archive.bin', fileName: 'archive.bin' }),
+    selectFtpDownloadPath: async name => { observed.push(`select-download:${name}`); return 'C:\\private\\download.bin'; },
+    resolveFtpTransferConflict: async (direction, name) => { observed.push(`policy:${direction}:${name}`); return direction === 'upload' ? 'rename' : 'overwrite'; },
+    reportFtpTransferProgress: event => progressEvents.push(event),
+    ftpFiles: { ...base.ftpFiles,
+      async uploadFile(id, op, localPath, directory, fileName, policy, signal, onProgress) {
+        observed.push({ kind: 'upload', id, op, localPath, directory, fileName, policy, signal });
+        onProgress?.(progress);
+        return { ok: true, result: { direction: 'upload', fileName: 'archive (1).bin', bytesTransferred: 10, state: 'completed' } };
+      },
+      async downloadFile(id, op, remotePath, localPath, policy, signal) {
+        observed.push({ kind: 'download', id, op, remotePath, localPath, policy, signal });
+        return { ok: true, result: { direction: 'download', fileName: 'download.bin', bytesTransferred: 7, state: 'completed' } };
+      },
+      async cancelTransfer(id, op) { observed.push(`cancel:${id}:${op}`); return { ok: true, result: {} }; }
+    }
+  };
+  const upload = await dispatchCommand(owner, { command: 'ftp.files.upload', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/incoming' } }, withTransfers, () => {});
+  assert.deepEqual(upload, { requestId: request.requestId, ok: true,
+    result: { direction: 'upload', fileName: 'archive (1).bin', bytesTransferred: 10, state: 'completed' } });
+  assert.deepEqual(progressEvents, [progress]);
+  assert.deepEqual(observed.slice(0, 2), ['policy:upload:archive.bin',
+    { kind: 'upload', id: sessionId, op: operationId, localPath: 'C:\\private\\archive.bin', directory: '/incoming',
+      fileName: 'archive.bin', policy: 'rename', signal: cancellation }]);
+
+  const download = await dispatchCommand(owner, { command: 'ftp.files.download', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath: '/incoming/download.bin' } }, withTransfers, () => {});
+  assert.equal(download.ok, true);
+  assert.deepEqual(observed.slice(2, 5), ['select-download:download.bin', 'policy:download:download.bin',
+    { kind: 'download', id: sessionId, op: operationId, remotePath: '/incoming/download.bin', localPath: 'C:\\private\\download.bin',
+      policy: 'overwrite', signal: cancellation }]);
+  const cancelled = await dispatchCommand(owner, { command: 'ftp.files.cancel', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId } }, withTransfers, () => {});
+  assert.deepEqual(cancelled, { requestId: request.requestId, ok: true, result: {} });
+  assert.equal(observed.at(-1), `cancel:${sessionId}:${operationId}`);
 });
 
 test('valid sender reaches the application through its interface', async () => {

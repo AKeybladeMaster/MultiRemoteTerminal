@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { failure } from '../../../../packages/domain/src/errors.ts';
@@ -13,7 +13,7 @@ import { createSessionCatalog } from '../../../../packages/application/src/sessi
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, PASTE_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
   parseFtpConsentGestureRequest, parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
@@ -32,6 +32,7 @@ import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-l
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
 import { createFtpWorkerEnvironment } from './ftp-worker-environment.ts';
+import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 
 app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
@@ -282,12 +283,14 @@ function boot(): void {
     const parsed = parseRequest(input);
     const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command === 'ssh.files.list' ||
       parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
+    const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.download') &&
+      owned && mainFrame && isAppDocument(frameUrl);
     const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const fileListRequest = parsed.ok && (parsed.result.command === 'ssh.files.list' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
-    const trackedRequestId = catalogRequest && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
-    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest;
+    const trackedRequestId = (catalogRequest || transferRequest) && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
+    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,
@@ -319,6 +322,50 @@ function boot(): void {
             ? await dialog.showMessageBox(currentWindow, options)
             : await dialog.showMessageBox(options);
           return result.response === 0;
+        },
+        async selectFtpUploadFile() {
+          const e2ePath = e2eFtpTransferPath('--mrt-e2e-ftp-upload-file=');
+          if (e2ePath) return { localPath: e2ePath, fileName: basename(e2ePath) };
+          const options: Electron.OpenDialogOptions = {
+            title: 'Choose a file to upload', buttonLabel: 'Upload', properties: ['openFile']
+          };
+          const currentWindow = window;
+          const result = currentWindow && !currentWindow.isDestroyed()
+            ? await dialog.showOpenDialog(currentWindow, options)
+            : await dialog.showOpenDialog(options);
+          if (result.canceled || !result.filePaths[0]) return undefined;
+          const localPath = result.filePaths[0];
+          return { localPath, fileName: basename(localPath) };
+        },
+        async selectFtpDownloadPath(fileName: string) {
+          const e2eRoot = e2eFtpTransferPath('--mrt-e2e-ftp-download-root=');
+          if (e2eRoot) return join(e2eRoot, safeFtpDownloadName(fileName));
+          const options: Electron.SaveDialogOptions = {
+            title: 'Save downloaded file', defaultPath: safeFtpDownloadName(fileName), buttonLabel: 'Download'
+          };
+          const currentWindow = window;
+          const result = currentWindow && !currentWindow.isDestroyed()
+            ? await dialog.showSaveDialog(currentWindow, options)
+            : await dialog.showSaveDialog(options);
+          return result.canceled ? undefined : result.filePath;
+        },
+        async resolveFtpTransferConflict(direction: FtpTransferDirection, fileName: string): Promise<FtpTransferConflictPolicy | undefined> {
+          if (e2eFtpTransferPath('--mrt-e2e-ftp-upload-file=') || e2eFtpTransferPath('--mrt-e2e-ftp-download-root=')) return 'rename';
+          const options: Electron.MessageBoxOptions = {
+            type: 'question', title: 'FTP transfer options',
+            message: `${direction === 'upload' ? 'Upload' : 'Download'} ${fileName}`,
+            detail: 'Choose what to do if a file with this name already exists. Rename keeps the existing file and adds a numbered copy.',
+            buttons: ['Overwrite', 'Rename copy', 'Skip existing file', 'Cancel'], defaultId: 1, cancelId: 3, noLink: true
+          };
+          const currentWindow = window;
+          const result = currentWindow && !currentWindow.isDestroyed()
+            ? await dialog.showMessageBox(currentWindow, options)
+            : await dialog.showMessageBox(options);
+          return result.response === 0 ? 'overwrite' : result.response === 1 ? 'rename' : result.response === 2 ? 'skip' : undefined;
+        },
+        reportFtpTransferProgress(progress: FtpTransferProgress) {
+          const current = window;
+          if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(FTP_TRANSFER_EVENT_CHANNEL, progress);
         },
         terminals, sshTerminals, telnetTerminals, ftpFiles, sessionCatalog, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
@@ -401,6 +448,18 @@ function scheduleTimeout(callback: () => void, delayMs: number): () => void {
 function safeFileStem(value: string): string {
   const safe = value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 96).trim();
   return safe.length > 0 ? safe : 'saved-sessions';
+}
+
+function safeFtpDownloadName(value: string): string {
+  const cleaned = [...value.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, '_').replace(/[ .]+$/u, '')].slice(0, 180).join('');
+  const name = cleaned || 'download';
+  return /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(name) ? `_${name}` : name;
+}
+
+function e2eFtpTransferPath(prefix: string): string | undefined {
+  if (app.isPackaged || process.env.MRT_E2E !== '1' || !process.argv.includes('--mrt-e2e-ftp-transfers')) return undefined;
+  const value = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length);
+  return value && resolve(value) === value ? value : undefined;
 }
 
 // Do not await readiness at ESM top level: Electron 45 delays ready until module evaluation completes.

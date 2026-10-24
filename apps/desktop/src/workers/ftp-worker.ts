@@ -5,6 +5,7 @@ import { FtpFilesProviderError } from '../../../../packages/application/src/ftp-
 import { createFtpTransportProvider } from './ftp-transport-provider.ts';
 import { parseFtpWorkerInput, FTP_WORKER_PROTOCOL_VERSION } from './ftp-worker-protocol.ts';
 import type { FtpWorkerRequest, FtpWorkerErrorCode } from './ftp-worker-protocol.ts';
+import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 
 const parent = process.parentPort;
 if (!parent) throw new Error('FTP worker requires an Electron utility process');
@@ -18,12 +19,12 @@ const provider = createFtpTransportProvider(
   { directory: basicFtp.FileType.Directory, file: basicFtp.FileType.File, symbolicLink: basicFtp.FileType.SymbolicLink }
 );
 
-interface PendingListing {
+interface PendingFtpOperation {
   readonly sessionId: string;
   readonly cancellation: AbortController;
 }
 
-const pendingListings = new Map<string, PendingListing>();
+const pendingOperations = new Map<string, PendingFtpOperation>();
 let shuttingDown = false;
 
 function send(value: unknown): void {
@@ -41,7 +42,7 @@ function replyError(requestId: string, error: unknown): void {
 
 async function handle(request: Extract<FtpWorkerRequest, { readonly type: 'request' }>): Promise<void> {
   if (request.command === 'files.cancel') {
-    const pending = pendingListings.get(request.operationId);
+    const pending = pendingOperations.get(request.operationId);
     if (pending?.sessionId === request.sessionId) pending.cancellation.abort();
     send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: {} });
     return;
@@ -52,12 +53,30 @@ async function handle(request: Extract<FtpWorkerRequest, { readonly type: 'reque
   }
   if (request.command === 'files.list') {
     const cancellation = new AbortController();
-    pendingListings.set(request.requestId, { sessionId: request.sessionId, cancellation });
+    pendingOperations.set(request.requestId, { sessionId: request.sessionId, cancellation });
     try {
       const result = await provider.listDirectory(request.sessionId, request.path, cancellation.signal);
       send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
     } catch (error) { replyError(request.requestId, error); }
-    finally { pendingListings.delete(request.requestId); }
+    finally { pendingOperations.delete(request.requestId); }
+    return;
+  }
+  if (request.command === 'files.upload' || request.command === 'files.download') {
+    const cancellation = new AbortController();
+    pendingOperations.set(request.operationId, { sessionId: request.sessionId, cancellation });
+    const onProgress = (progress: FtpTransferProgress) => {
+      if (cancellation.signal.aborted) return;
+      send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'progress', requestId: request.requestId, progress });
+    };
+    try {
+      const result = request.command === 'files.upload'
+        ? await provider.uploadFile(request.sessionId, request.operationId, request.localPath, request.remoteDirectory, request.fileName,
+          request.conflictPolicy, cancellation.signal, onProgress)
+        : await provider.downloadFile(request.sessionId, request.operationId, request.remotePath, request.localPath,
+          request.conflictPolicy, cancellation.signal, onProgress);
+      send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
+    } catch (error) { replyError(request.requestId, error); }
+    finally { pendingOperations.delete(request.operationId); }
     return;
   }
   if (request.command === 'open') {
@@ -69,11 +88,11 @@ async function handle(request: Extract<FtpWorkerRequest, { readonly type: 'reque
       credentials.password = '';
     }
   } else if (request.command === 'close') {
-    for (const pending of pendingListings.values()) if (pending.sessionId === request.sessionId) pending.cancellation.abort();
+    for (const pending of pendingOperations.values()) if (pending.sessionId === request.sessionId) pending.cancellation.abort();
     await provider.close(request.sessionId);
   } else {
     shuttingDown = true;
-    for (const pending of pendingListings.values()) pending.cancellation.abort();
+    for (const pending of pendingOperations.values()) pending.cancellation.abort();
     await provider.shutdown();
   }
   send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: {} });
