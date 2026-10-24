@@ -285,6 +285,7 @@ export function createSshTerminalController(
       if (error instanceof SshTerminalProviderError && error.code === 'NOT_SUPPORTED') return failure('NOT_SUPPORTED', 'terminal');
       if (error instanceof SshTerminalProviderError && error.code === 'TIMEOUT') return failure('TIMEOUT', 'terminal');
       if (error instanceof SshTerminalProviderError && error.code === 'BUSY') return failure('BUSY', 'terminal');
+      if (error instanceof SshTerminalProviderError && error.code === 'OUTPUT_LIMIT') return failure('OUTPUT_LIMIT', 'terminal');
       return failure('UNAVAILABLE', 'terminal');
     }
   }

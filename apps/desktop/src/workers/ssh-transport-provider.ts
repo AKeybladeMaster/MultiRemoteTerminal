@@ -358,8 +358,12 @@ export function createSshTransportProvider(
         if (settled) { if (channel) void closeSftpChannel(session, channel); return; }
         settled = true;
         clearTimeout(timer);
+        cancellation?.removeEventListener('abort', cancel);
         if (error) reject(error);
-        else if (!channel || session.closing) reject(new SshTerminalProviderError('UNAVAILABLE'));
+        else if (!channel || session.closing) {
+          if (channel) void closeSftpChannel(session, channel);
+          reject(new SshTerminalProviderError('UNAVAILABLE'));
+        }
         else if (cancellation?.aborted) {
           void closeSftpChannel(session, channel).finally(() => reject(new SshTerminalProviderError('CANCELLED')));
         } else {
@@ -376,6 +380,9 @@ export function createSshTransportProvider(
         terminate(session);
         finish(timeout);
       }, SFTP_OPEN_TIMEOUT_MS);
+      const cancel = () => finish(new SshTerminalProviderError('CANCELLED'));
+      cancellation?.addEventListener('abort', cancel, { once: true });
+      if (cancellation?.aborted) { cancel(); return; }
       try {
         session.client.sftp((error, channel) => finish(error ? new SshTerminalProviderError('NOT_SUPPORTED') : undefined,
           channel as SftpChannel | undefined));

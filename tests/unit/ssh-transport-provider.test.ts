@@ -50,6 +50,14 @@ class FakeClient extends EventEmitter {
   end(): this { this.ended = true; return this; }
 }
 
+class DelayedSftpClient extends FakeClient {
+  sftpCallback: ((error: Error | undefined, channel?: unknown) => void) | undefined;
+  override sftp(callback: (error: Error | undefined, channel?: unknown) => void): this {
+    this.sftpCallback = callback;
+    return this;
+  }
+}
+
 class FakeSftp extends EventEmitter {
   ended = false;
   private readCount = 0;
@@ -208,6 +216,35 @@ test('cancelling a remote listing closes only the SFTP channel and leaves the SS
   await provider.write(sessionId, 'echo still connected\r');
   assert.equal(client.ended, false);
   await provider.close(sessionId);
+});
+
+test('cancelling while the SFTP subsystem is opening settles immediately and closes a late channel', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const sftp = new FakeSftp([]);
+  const client = new DelayedSftpClient(sftp);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  const cancellation = new AbortController();
+  const listing = provider.listRemoteDirectory(sessionId, '.', cancellation.signal);
+  assert.equal(typeof client.sftpCallback, 'function');
+  cancellation.abort();
+  const result = await Promise.race([
+    listing.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
+    new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
+  ]);
+  const shellSurvivedCancellation = !client.ended;
+  client.sftpCallback?.(undefined, sftp);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const lateChannelClosed = sftp.ended;
+  await provider.close(sessionId);
+  context.mock.timers.reset();
+
+  assert.equal(result, 'CANCELLED');
+  assert.equal(shellSurvivedCancellation, true);
+  assert.equal(lateChannelClosed, true);
 });
 
 test('an unavailable SFTP subsystem produces a clear capability error without closing SSH', async () => {

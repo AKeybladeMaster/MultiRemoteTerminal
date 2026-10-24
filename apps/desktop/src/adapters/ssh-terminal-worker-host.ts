@@ -25,7 +25,8 @@ interface OwnedSshSession {
 
 const MAX_PENDING_REQUESTS = 128;
 const OPEN_TIMEOUT_MS = 140_000;
-const FILE_LIST_TIMEOUT_MS = 20_000;
+// 15s setup + 10s listing + 1s channel-close grace leaves 4s for worker IPC within this deadline.
+const FILE_LIST_TIMEOUT_MS = 30_000;
 export type SshWorkerLaunchOptions = { readonly cwd: string; readonly env: { readonly MRT_APP_ROOT: string }; readonly serviceName: string; readonly stdio: 'ignore' };
 export type SshWorkerLauncher = (workerPath: string, args: string[], options: SshWorkerLaunchOptions) => UtilityProcess;
 

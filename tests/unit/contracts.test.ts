@@ -91,6 +91,8 @@ test('SSH directory browsing accepts bounded paths and exact credential-free lis
   const parsed = parseRequest(list);
   assert.equal(parsed.ok, true);
   assert.equal(parseRequest({ ...list, payload: { sessionId, path: 'x'.repeat(4_097) } }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '../outside' } }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { sessionId, path: '/home/alice/../outside' } }).ok, false);
   assert.equal(parseRequest({ ...list, payload: { sessionId, path: '/home/alice', credential: 'secret' } }).ok, false);
   if (!parsed.ok) return;
   const reply = { requestId: request.requestId, ok: true, result: { path: '/home/alice', entries: [

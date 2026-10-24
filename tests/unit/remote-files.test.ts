@@ -6,6 +6,9 @@ import {
 
 test('remote paths are bounded data and remote child names cannot escape a directory', () => {
   assert.equal(isRemotePath('/home/alice'), true);
+  assert.equal(isRemotePath('../outside'), false);
+  assert.equal(isRemotePath('/home/alice/../outside'), false);
+  assert.equal(isRemotePath(`/home/${'x'.repeat(1_025)}`), false);
   assert.equal(isRemotePath(''), false);
   assert.equal(isRemotePath('x\0y'), false);
   assert.equal(isRemotePath('x'.repeat(4_097)), false);

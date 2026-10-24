@@ -20,7 +20,15 @@ export interface RemoteDirectoryListing {
 }
 
 export function isRemotePath(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= MAX_REMOTE_PATH_CHARS && !value.includes('\0');
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_REMOTE_PATH_CHARS || value.includes('\0')) return false;
+  if (value === '.') return true;
+  const path = value.startsWith('/') ? value.slice(1) : value;
+  if (path === '') return value === '/';
+  const components = path.split('/');
+  return components.every((component, index) => {
+    if (component === '' && index === components.length - 1 && value.endsWith('/')) return true;
+    return component.length > 0 && component.length <= MAX_REMOTE_FILE_NAME_CHARS && component !== '.' && component !== '..';
+  });
 }
 
 export function isRemoteFileKind(value: unknown): value is RemoteFileKind {

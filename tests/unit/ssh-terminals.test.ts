@@ -76,6 +76,7 @@ class FakeProvider implements SshTerminalProvider {
   readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   readonly listedDirectories: Array<{ readonly sessionId: string; readonly path: string; readonly cancellation?: CancellationSignal }> = [];
   waitForDirectoryCancellation = false;
+  directoryError: Error | undefined;
   directoryListStarted: (() => void) | undefined;
 
   async open(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, _size: { columns: number; rows: number }, verifyHost: (evidence: HostKeyEvidence) => Promise<boolean>) {
@@ -87,6 +88,7 @@ class FakeProvider implements SshTerminalProvider {
   async acknowledgeOutput(): Promise<void> {}
   async listRemoteDirectory(session: string, path: string, cancellation?: CancellationSignal) {
     this.listedDirectories.push({ sessionId: session, path, ...(cancellation ? { cancellation } : {}) });
+    if (this.directoryError) throw this.directoryError;
     if (this.waitForDirectoryCancellation && cancellation) {
       await new Promise<never>((_resolve, reject) => {
         const cancel = () => { cancellation.removeEventListener('abort', cancel); reject(new SshTerminalProviderError('CANCELLED')); };
@@ -115,10 +117,14 @@ test('SFTP directory listing is available only on a running trusted SSH session 
   assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
   const listing = await controller.listRemoteDirectory(sessionId, '.');
   assert.deepEqual(listing, { ok: true, result: { path: '/home/alice', entries: [], truncated: false } });
+  provider.directoryError = new SshTerminalProviderError('OUTPUT_LIMIT');
+  const oversized = await controller.listRemoteDirectory(sessionId, '.');
+  assert.deepEqual(oversized, { ok: false, error: { code: 'OUTPUT_LIMIT', target: 'terminal', retryable: false } });
+  provider.directoryError = undefined;
   assert.deepEqual(await controller.listRemoteDirectory(sessionId, 'bad\0path'), {
     ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false }
   });
-  assert.equal(provider.listedDirectories.length, 1);
+  assert.equal(provider.listedDirectories.length, 2);
   assert.equal((await controller.close(sessionId)).ok, true);
   await controller.dispose();
 });
