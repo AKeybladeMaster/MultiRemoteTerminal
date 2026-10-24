@@ -18,12 +18,16 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   authorizeFtpConsent: () => false,
   confirmMultilinePaste: async () => false,
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
-  reportFtpTransferProgress: () => {}, terminals: {
+  reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
+  resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
-    write: noOp, resize: noOp, acknowledgeOutput: noOp, listRemoteDirectory: async () => ({ ok: true, result: { path: '/', entries: [], truncated: false } }), close: noOp, approveHostKey: noOp,
+    write: noOp, resize: noOp, acknowledgeOutput: noOp, listRemoteDirectory: async () => ({ ok: true, result: { path: '/', entries: [], truncated: false } }),
+    uploadRemoteFile: async () => ({ ok: true, result: { direction: 'upload', fileName: 'x', bytesTransferred: 0, state: 'completed' } }),
+    downloadRemoteFile: async () => ({ ok: true, result: { direction: 'download', fileName: 'x', bytesTransferred: 0, state: 'completed' } }),
+    cancelTransfer: noOp, close: noOp, approveHostKey: noOp,
     rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
   }, telnetTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
@@ -197,6 +201,54 @@ test('SSH remote-directory browsing forwards the validated path and cancellation
     payload: { sessionId, path: '/home/alice' } }, withSftp, () => {});
   assert.deepEqual(reply, { requestId: request.requestId, ok: true, result: { path: '/home/alice', entries: [], truncated: false } });
   assert.deepEqual(observed, { sessionId, path: '/home/alice', signal: cancellation });
+});
+
+test('SFTP transfer broker keeps local selections in main and forwards explicit policy, progress and cancellation', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  const cancellation = new AbortController().signal;
+  const seen: unknown[] = [];
+  const progressEvents: unknown[] = [];
+  const base = actions();
+  const withSftpTransfers: CommandActions = { ...base, cancellation,
+    selectSshUploadFile: async () => ({ localPath: 'C:\\private\\report.txt', fileName: 'report.txt' }),
+    selectSshDownloadPath: async fileName => { seen.push(`select:${fileName}`); return 'C:\\private\\saved.txt'; },
+    resolveSshTransferConflict: async (direction, fileName) => { seen.push(`policy:${direction}:${fileName}`); return 'rename'; },
+    reportSshTransferProgress: progress => progressEvents.push(progress),
+    sshTerminals: { ...base.sshTerminals,
+      async uploadRemoteFile(id, op, localPath, directory, fileName, policy, signal, onProgress) {
+        seen.push({ kind: 'upload', id, op, localPath, directory, fileName, policy, signal });
+        const progress = { sessionId: id, operationId: op, direction: 'upload' as const, phase: 'transferring' as const,
+          fileName, bytesTransferred: 4, totalBytes: 8 };
+        onProgress?.(progress);
+        return { ok: true, result: { direction: 'upload', fileName, bytesTransferred: 8, state: 'completed' } };
+      },
+      async downloadRemoteFile(id, op, remotePath, localPath, policy, signal) {
+        seen.push({ kind: 'download', id, op, remotePath, localPath, policy, signal });
+        return { ok: true, result: { direction: 'download', fileName: 'saved.txt', bytesTransferred: 7, state: 'completed' } };
+      },
+      async cancelTransfer(id, op) { seen.push(`cancel:${id}:${op}`); return { ok: true, result: {} }; }
+    }
+  };
+  const upload = await dispatchCommand(owner, { command: 'ssh.files.upload', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/home/alice' } }, withSftpTransfers, () => {});
+  assert.deepEqual(upload, { requestId: request.requestId, ok: true,
+    result: { direction: 'upload', fileName: 'report.txt', bytesTransferred: 8, state: 'completed' } });
+  assert.deepEqual(seen.slice(0, 2), ['policy:upload:report.txt',
+    { kind: 'upload', id: sessionId, op: operationId, localPath: 'C:\\private\\report.txt', directory: '/home/alice',
+      fileName: 'report.txt', policy: 'rename', signal: cancellation }]);
+  assert.equal(progressEvents.length, 1);
+
+  const download = await dispatchCommand(owner, { command: 'ssh.files.download', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath: '/home/alice/remote.txt' } }, withSftpTransfers, () => {});
+  assert.equal(download.ok, true);
+  assert.deepEqual(seen.slice(2, 5), ['select:remote.txt', 'policy:download:remote.txt',
+    { kind: 'download', id: sessionId, op: operationId, remotePath: '/home/alice/remote.txt', localPath: 'C:\\private\\saved.txt',
+      policy: 'rename', signal: cancellation }]);
+  const cancelled = await dispatchCommand(owner, { command: 'ssh.files.cancel', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId } }, withSftpTransfers, () => {});
+  assert.deepEqual(cancelled, { requestId: request.requestId, ok: true, result: {} });
+  assert.equal(seen.at(-1), `cancel:${sessionId}:${operationId}`);
 });
 
 test('saved-session IPC dispatches only validated catalog operations', async () => {

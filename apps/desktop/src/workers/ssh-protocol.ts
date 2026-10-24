@@ -8,6 +8,10 @@ import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts'
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import { isRemoteDirectoryListing, isRemotePath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
+import { isRemoteFileName } from '../../../../packages/domain/src/remote-files.ts';
+import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
+import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
+import { isAbsoluteNormalizedLocalPath } from './local-transfer-target.ts';
 
 export const SSH_WORKER_PROTOCOL_VERSION = 1;
 export const MAX_SSH_PASSWORD_LENGTH = 65_536;
@@ -19,21 +23,29 @@ export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'resize'; readonly sessionId: string; readonly size: TerminalSize }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'ack'; readonly sessionId: string; readonly sequence: number }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.list'; readonly sessionId: string; readonly path: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.upload'; readonly sessionId: string;
+      readonly operationId: string; readonly localPath: string; readonly remoteDirectory: string; readonly fileName: string;
+      readonly conflictPolicy: FileTransferConflictPolicy }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.download'; readonly sessionId: string;
+      readonly operationId: string; readonly remotePath: string; readonly localPath: string; readonly conflictPolicy: FileTransferConflictPolicy }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.cancel'; readonly sessionId: string; readonly operationId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'close'; readonly sessionId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' }
   | { readonly version: 1; readonly type: 'host-key-result'; readonly sessionId: string; readonly checkId: string; readonly accepted: boolean };
 
-export type SshWorkerErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'NOT_SUPPORTED' | 'CANCELLED' | 'BUSY' | 'TIMEOUT' | 'OUTPUT_LIMIT' | 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED';
+export type SshWorkerErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'NOT_SUPPORTED' | 'CANCELLED' | 'BUSY' | 'TIMEOUT' | 'OUTPUT_LIMIT' |
+  'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED' | 'CONFLICT' | 'NOT_FOUND' | 'FORBIDDEN';
 
 export type SshWorkerMessage =
-  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing }
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing | FileTransferResult }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: SshWorkerErrorCode }
+  | { readonly version: 1; readonly type: 'progress'; readonly requestId: string; readonly progress: FileTransferProgress }
   | { readonly version: 1; readonly type: 'event'; readonly event: LocalTerminalEvent }
   | { readonly version: 1; readonly type: 'host-key'; readonly sessionId: string; readonly checkId: string; readonly endpoint: SshHostEndpoint; readonly evidence: { readonly algorithm: string; readonly fingerprint: string; readonly publicKey: Uint8Array } };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ERROR_CODES: readonly SshWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'NOT_SUPPORTED', 'CANCELLED', 'BUSY', 'TIMEOUT', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
+const ERROR_CODES: readonly SshWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'NOT_SUPPORTED', 'CANCELLED', 'BUSY', 'TIMEOUT', 'OUTPUT_LIMIT',
+  'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED', 'CONFLICT', 'NOT_FOUND', 'FORBIDDEN'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -75,6 +87,16 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
       isUuid(value.sessionId) && Number.isSafeInteger(value.sequence) && (value.sequence as number) > 0) return value as unknown as SshWorkerRequest;
   if (value.command === 'files.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'path']) &&
       isUuid(value.sessionId) && isRemotePath(value.path)) return value as unknown as SshWorkerRequest;
+  if (value.command === 'files.upload' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId', 'localPath',
+    'remoteDirectory', 'fileName', 'conflictPolicy']) && isUuid(value.sessionId) && isUuid(value.operationId) &&
+      isAbsoluteNormalizedLocalPath(value.localPath) &&
+      isRemotePath(value.remoteDirectory) && isRemoteFileName(value.fileName) && isFileTransferConflictPolicy(value.conflictPolicy)) {
+    return value as unknown as SshWorkerRequest;
+  }
+  if (value.command === 'files.download' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId', 'remotePath',
+    'localPath', 'conflictPolicy']) && isUuid(value.sessionId) && isUuid(value.operationId) && isRemotePath(value.remotePath) &&
+      isAbsoluteNormalizedLocalPath(value.localPath) &&
+      isFileTransferConflictPolicy(value.conflictPolicy)) return value as unknown as SshWorkerRequest;
   if (value.command === 'files.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId']) &&
       isUuid(value.sessionId) && isUuid(value.operationId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'close' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId']) && isUuid(value.sessionId)) return value as unknown as SshWorkerRequest;
@@ -84,9 +106,11 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
 
 export function parseSshWorkerMessage(value: unknown): SshWorkerMessage | undefined {
   if (!record(value) || value.version !== SSH_WORKER_PROTOCOL_VERSION || typeof value.type !== 'string') return undefined;
+  if (value.type === 'progress' && exactKeys(value, ['version', 'type', 'requestId', 'progress']) && isUuid(value.requestId) &&
+      isFileTransferProgress(value.progress)) return value as unknown as SshWorkerMessage;
   if (value.type === 'reply' && isUuid(value.requestId) && typeof value.ok === 'boolean') {
     if (value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) && record(value.result) &&
-        (exactKeys(value.result, []) || isRemoteDirectoryListing(value.result))) {
+        (exactKeys(value.result, []) || isRemoteDirectoryListing(value.result) || isFileTransferResult(value.result))) {
       return value as unknown as SshWorkerMessage;
     }
     if (!value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode']) && ERROR_CODES.includes(value.errorCode as SshWorkerErrorCode)) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APP_URL, isCommandReply, isDescribeReply, isSshTrustEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
+import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -100,6 +100,33 @@ test('SSH directory browsing accepts bounded paths and exact credential-free lis
   ], truncated: false } };
   assert.equal(isCommandReply(reply, parsed.result), true);
   assert.equal(isCommandReply({ ...reply, result: { ...reply.result, secret: 'must not pass' } }, parsed.result), false);
+});
+
+test('SFTP transfer requests keep local paths private and validate direction-bound results and progress', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  const upload = { command: 'ssh.files.upload', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/home/alice' } };
+  const parsedUpload = parseRequest(upload);
+  assert.equal(parsedUpload.ok, true);
+  assert.equal(parseRequest({ ...upload, payload: { ...upload.payload, localPath: 'C:\\private\\secret.txt' } }).ok, false);
+  const download = { command: 'ssh.files.download', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath: '/home/alice/report.txt' } };
+  const parsedDownload = parseRequest(download);
+  assert.equal(parsedDownload.ok, true);
+  assert.equal(parseRequest({ ...download, payload: { ...download.payload, localPath: 'C:\\private\\secret.txt' } }).ok, false);
+  assert.equal(parseRequest({ command: 'ssh.files.cancel', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, extra: true } }).ok, false);
+  const uploadResult = { requestId: request.requestId, ok: true, result: { direction: 'upload', fileName: 'report.txt', bytesTransferred: 16, state: 'completed' } };
+  const downloadResult = { requestId: request.requestId, ok: true, result: { direction: 'download', fileName: 'report.txt', bytesTransferred: 16, state: 'completed' } };
+  if (parsedUpload.ok) {
+    assert.equal(isCommandReply(uploadResult, parsedUpload.result), true);
+    assert.equal(isCommandReply(downloadResult, parsedUpload.result), false);
+  }
+  if (parsedDownload.ok) assert.equal(isCommandReply(downloadResult, parsedDownload.result), true);
+  const progress = { sessionId, operationId, direction: 'download', phase: 'transferring', fileName: 'report.txt', bytesTransferred: 8, totalBytes: 16 };
+  assert.equal(isSshTransferEvent(progress), true);
+  assert.equal(isSshTransferEvent({ ...progress, localPath: 'C:\\private\\secret.txt' }), false);
 });
 
 test('Telnet terminal IPC bounds endpoint and stream commands and validates the open reply', () => {

@@ -1,14 +1,187 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import type { EventEmitter } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat as lstatFile, mkdir, mkdtemp, open as openFile, readFile, readdir as readDirectory, rename as renameFile, rm, stat as statFile, unlink as unlinkFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
+
+interface Ssh2FixtureClient extends EventEmitter { end(): void; }
+type Ssh2FixtureSession = EventEmitter;
+interface Ssh2FixtureStream extends EventEmitter { write(data: string | Buffer): boolean; }
+interface Ssh2AuthenticationContext {
+  readonly username: string;
+  readonly password: string;
+  readonly method: string;
+  accept(): void;
+  reject(): void;
+}
+interface SftpFixtureAttributes { readonly mode: number; readonly uid: number; readonly gid: number; readonly size: number; readonly atime: number; readonly mtime: number; }
+interface Ssh2FixtureSftp extends EventEmitter {
+  handle(requestId: number, handle: Buffer): void;
+  status(requestId: number, code: number, message?: string, language?: string): void;
+  attrs(requestId: number, attributes: SftpFixtureAttributes): void;
+  name(requestId: number, entries: readonly { readonly filename: string; readonly longname: string; readonly attrs: SftpFixtureAttributes }[]): void;
+  data(requestId: number, value: Buffer): void;
+}
+interface Ssh2FixtureServer extends EventEmitter {
+  listen(port: number, host: string, callback: () => void): void;
+  address(): AddressInfo | string | null;
+  close(callback: () => void): void;
+}
+interface Ssh2FixturePackage {
+  readonly Server: new (configuration: { readonly hostKeys: readonly string[] }, onConnect: (client: EventEmitter) => void) => Ssh2FixtureServer;
+  readonly utils: {
+    generateKeyPairSync(type: 'ed25519'): { readonly private: string };
+    readonly sftp: {
+      readonly OPEN_MODE: { readonly READ: number; readonly WRITE: number; readonly APPEND: number; readonly CREAT: number; readonly TRUNC: number; readonly EXCL: number };
+      readonly STATUS_CODE: { readonly OK: number; readonly EOF: number; readonly NO_SUCH_FILE: number; readonly PERMISSION_DENIED: number; readonly FAILURE: number };
+    };
+  };
+}
+
+function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2FixturePackage['utils']['sftp']): void {
+  interface DirectoryHandle { readonly names: string[]; read: boolean; }
+  const fileHandles = new Map<number, Awaited<ReturnType<typeof openFile>>>();
+  const directoryHandles = new Map<number, DirectoryHandle>();
+  let nextHandleId = 1;
+  const handleBytes = (id: number) => { const value = Buffer.alloc(4); value.writeUInt32BE(id); return value; };
+  const handleId = (value: Buffer) => value.length === 4 ? value.readUInt32BE(0) : -1;
+  const remoteLocation = (input: string): { readonly remote: string; readonly local: string } => {
+    const remote = input === '.' ? '/home/mrt' : input.startsWith('/') ? posix.normalize(input) : posix.resolve('/home/mrt', input);
+    if (remote !== '/home/mrt' && !remote.startsWith('/home/mrt/')) throw Object.assign(new Error('Outside SFTP fixture root'), { code: 'EACCES' });
+    const parts = remote.slice('/home/mrt'.length).split('/').filter(Boolean);
+    if (parts.some(part => part === '.' || part === '..' || part.includes('\\'))) throw Object.assign(new Error('Invalid SFTP fixture path'), { code: 'EACCES' });
+    return { remote, local: join(remoteRoot, ...parts) };
+  };
+  const attributes = (value: { readonly mode: number; readonly uid: number; readonly gid: number; readonly size: number;
+    readonly atimeMs: number; readonly mtimeMs: number }): SftpFixtureAttributes => ({
+    mode: value.mode, uid: value.uid, gid: value.gid, size: value.size,
+    atime: Math.floor(value.atimeMs / 1_000), mtime: Math.floor(value.mtimeMs / 1_000)
+  });
+  const statusForError = (error: unknown): number => {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    return code === 'ENOENT' ? api.STATUS_CODE.NO_SUCH_FILE
+      : code === 'EACCES' || code === 'EPERM' ? api.STATUS_CODE.PERMISSION_DENIED : api.STATUS_CODE.FAILURE;
+  };
+  const respondWithAttrs = async (requestId: number, path: string) => {
+    try { sftp.attrs(requestId, attributes(await lstatFile(remoteLocation(path).local))); }
+    catch (error) { sftp.status(requestId, statusForError(error)); }
+  };
+  sftp.on('REALPATH', (requestId: number, path: string) => {
+    try {
+      const resolved = remoteLocation(path);
+      void statFile(resolved.local).then(stats => sftp.name(requestId, [{ filename: resolved.remote, longname: resolved.remote, attrs: attributes(stats) }]),
+        error => sftp.status(requestId, statusForError(error)));
+    } catch (error) { sftp.status(requestId, statusForError(error)); }
+  });
+  sftp.on('STAT', (requestId: number, path: string) => { void respondWithAttrs(requestId, path); });
+  sftp.on('LSTAT', (requestId: number, path: string) => { void respondWithAttrs(requestId, path); });
+  sftp.on('OPENDIR', (requestId: number, path: string) => {
+    void (async () => {
+      const location = remoteLocation(path);
+      const stats = await statFile(location.local);
+      if (!stats.isDirectory()) throw Object.assign(new Error('Not a directory'), { code: 'ENOTDIR' });
+      const id = nextHandleId++;
+      directoryHandles.set(id, { names: await readDirectory(location.local), read: false });
+      sftp.handle(requestId, handleBytes(id));
+    })().catch(error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('READDIR', (requestId: number, handle: Buffer) => {
+    const directory = directoryHandles.get(handleId(handle));
+    if (!directory || directory.read) { sftp.status(requestId, api.STATUS_CODE.EOF); return; }
+    directory.read = true;
+    void (async () => {
+      const entries = await Promise.all(directory.names.map(async filename => {
+        const path = remoteLocation(posix.join('/home/mrt', filename)).local;
+        const item = await lstatFile(path);
+        const prefix = item.isDirectory() ? 'drwx------' : item.isSymbolicLink() ? 'lrwxrwxrwx' : '-rw-------';
+        return { filename, longname: `${prefix} 1 mrt mrt ${item.size} Jan 01 00:00 ${filename}`, attrs: attributes(item) };
+      }));
+      if (entries.length === 0) sftp.status(requestId, api.STATUS_CODE.EOF);
+      else sftp.name(requestId, entries);
+    })().catch(error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('OPEN', (requestId: number, path: string, flags: number, requestAttributes: { readonly mode?: number }) => {
+    void (async () => {
+      const location = remoteLocation(path);
+      const mode = api.OPEN_MODE;
+      const writing = (flags & mode.WRITE) !== 0;
+      const reading = (flags & mode.READ) !== 0;
+      const append = (flags & mode.APPEND) !== 0;
+      const create = (flags & mode.CREAT) !== 0;
+      const truncate = (flags & mode.TRUNC) !== 0;
+      const exclusive = (flags & mode.EXCL) !== 0;
+      const fileFlags = writing
+        ? append ? exclusive ? 'ax' : 'a' : create && (truncate || exclusive) ? exclusive ? 'wx' : 'w' : reading ? 'r+' : 'r+'
+        : 'r';
+      const file = await openFile(location.local, fileFlags, requestAttributes.mode ? requestAttributes.mode & 0o777 : 0o600);
+      const id = nextHandleId++;
+      fileHandles.set(id, file);
+      sftp.handle(requestId, handleBytes(id));
+    })().catch(error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('READ', (requestId: number, handle: Buffer, offset: number, length: number) => {
+    const file = fileHandles.get(handleId(handle));
+    if (!file || !Number.isSafeInteger(length) || length < 0 || length > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
+    void (async () => {
+      const buffer = Buffer.alloc(length);
+      const result = await file.read(buffer, 0, length, offset);
+      if (result.bytesRead === 0) sftp.status(requestId, api.STATUS_CODE.EOF);
+      else sftp.data(requestId, buffer.subarray(0, result.bytesRead));
+    })().catch(error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('WRITE', (requestId: number, handle: Buffer, offset: number, data: Buffer) => {
+    const file = fileHandles.get(handleId(handle));
+    if (!file || data.byteLength > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
+    void file.write(data, 0, data.length, offset).then(() => sftp.status(requestId, api.STATUS_CODE.OK),
+      error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('FSTAT', (requestId: number, handle: Buffer) => {
+    const file = fileHandles.get(handleId(handle));
+    if (!file) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
+    void file.stat().then(value => sftp.attrs(requestId, attributes(value)), error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('CLOSE', (requestId: number, handle: Buffer) => {
+    const id = handleId(handle);
+    const file = fileHandles.get(id);
+    if (file) {
+      fileHandles.delete(id);
+      void file.close().then(() => sftp.status(requestId, api.STATUS_CODE.OK), error => sftp.status(requestId, statusForError(error)));
+      return;
+    }
+    if (directoryHandles.delete(id)) sftp.status(requestId, api.STATUS_CODE.OK);
+    else sftp.status(requestId, api.STATUS_CODE.FAILURE);
+  });
+  sftp.on('RENAME', (requestId: number, source: string, destination: string) => {
+    void (async () => {
+      const from = remoteLocation(source).local;
+      const to = remoteLocation(destination).local;
+      try { await lstatFile(to); sftp.status(requestId, api.STATUS_CODE.FAILURE); }
+      catch (error) {
+        const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+        if (code !== 'ENOENT') throw error;
+        await renameFile(from, to);
+        sftp.status(requestId, api.STATUS_CODE.OK);
+      }
+    })().catch(error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.on('REMOVE', (requestId: number, path: string) => {
+    void unlinkFile(remoteLocation(path).local).then(() => sftp.status(requestId, api.STATUS_CODE.OK),
+      error => sftp.status(requestId, statusForError(error)));
+  });
+  sftp.once('close', () => {
+    for (const file of fileHandles.values()) void file.close().catch(() => undefined);
+    fileHandles.clear();
+    directoryHandles.clear();
+  });
+}
 
 const unicodeSample = String.fromCodePoint(0x416, 0x96ea, 0x1f642);
 const bashUnicodeSample = String.fromCodePoint(0x416, 0x96ea);
@@ -206,6 +379,97 @@ test('SSH quick connect validates the address before any credential prompt and r
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('trusted SSH sessions upload and download files through their SFTP subsystem', async () => {
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
+  const remoteRoot = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-remote-'));
+  const uploadSource = join(profile, 'upload.txt');
+  const downloadRoot = join(profile, 'downloads');
+  await mkdir(downloadRoot);
+  await writeFile(uploadSource, 'private local upload payload');
+  await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureEvents: string[] = [];
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    fixtureEvents.push('connection');
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureEvents.push(`client-error:${error.message}`));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      fixtureEvents.push(`auth:${context.method}:${context.username}`);
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => {
+      fixtureEvents.push('authenticated');
+      client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        fixtureEvents.push('shell');
+        const stream = acceptShell();
+        stream.write('MRT-SFTP-READY\r\n');
+      });
+      session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => { fixtureEvents.push('sftp'); startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp); });
+    });
+    });
+  });
+  server.on('connection', () => fixtureEvents.push('tcp-connection'));
+  server.on('error', error => fixtureEvents.push(`server-error:${error.message}`));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
+      '--mrt-e2e-sftp-transfers', `--mrt-e2e-sftp-upload-file=${uploadSource}`, `--mrt-e2e-sftp-download-root=${downloadRoot}`],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The loopback SSH fixture did not bind a TCP address');
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    expect({ host: await dialog.getByLabel('Host name or IP address').inputValue(), port: await dialog.getByLabel('Port').inputValue(), expectedPort: String(address.port) })
+      .toEqual({ host: '127.0.0.1', port: String(address.port), expectedPort: String(address.port) });
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}. Page: ${await page.locator('body').innerText()}`).toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing SSH terminal panel');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SFTP-READY', { timeout: 10_000 });
+    const files = panel.locator('[data-testid="remote-file-browser"]');
+    await expect(files.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+
+    await files.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect(files.getByText(/Uploaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await readFile(join(remoteRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
+
+    await files.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
+    await expect(files.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
+  } finally {
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(remoteRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
 
@@ -1115,11 +1379,12 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
+      'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
       'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-      'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress']);
+      'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress', 'onSshTransferProgress']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);

@@ -4,13 +4,19 @@ import { link, lstat, open, rename, rm, unlink } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { finished } from 'node:stream/promises';
 import type { WriteStream } from 'node:fs';
-import type { FtpTransferConflictPolicy } from '../../../../packages/domain/src/ftp.ts';
+import type { FileTransferConflictPolicy } from '../../../../packages/domain/src/file-transfer.ts';
 
 const MAX_TRANSFER_PATH_CHARS = 32_768;
 const MAX_COPY_NAME_CHARS = 240;
 const MAX_COPY_NAME_ATTEMPTS = 9_999;
 
 export type LocalTransferTargetErrorCode = 'INVALID_REQUEST' | 'CONFLICT' | 'CANCELLED' | 'UNAVAILABLE' | 'NOT_FOUND' | 'FORBIDDEN';
+
+export function isAbsoluteNormalizedLocalPath(path: unknown): path is string {
+  if (typeof path !== 'string' || path.length === 0 || path.length > MAX_TRANSFER_PATH_CHARS || path.includes('\0') || !isAbsolute(path)) return false;
+  try { return resolve(path) === path; }
+  catch { return false; }
+}
 
 export class LocalTransferTargetError extends Error {
   readonly code: LocalTransferTargetErrorCode;
@@ -81,7 +87,7 @@ async function nextAvailablePath(selectedPath: string, initialName: string): Pro
 }
 
 /** Creates a sibling temp file and commits it without replacing an unapproved local file. */
-export async function prepareLocalTransferTarget(selectedPath: string, policy: FtpTransferConflictPolicy): Promise<LocalTransferTarget> {
+export async function prepareLocalTransferTarget(selectedPath: string, policy: FileTransferConflictPolicy): Promise<LocalTransferTarget> {
   if (typeof selectedPath !== 'string' || selectedPath.length === 0 || selectedPath.length > MAX_TRANSFER_PATH_CHARS ||
       selectedPath.includes('\0') || !isAbsolute(selectedPath) || resolve(selectedPath) !== selectedPath ||
       !['overwrite', 'rename', 'skip'].includes(policy)) throw new LocalTransferTargetError('INVALID_REQUEST');

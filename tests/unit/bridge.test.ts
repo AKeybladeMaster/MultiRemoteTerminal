@@ -14,11 +14,11 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
-    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
+    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-    'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onFtpTransferProgress', 'onSshTransferProgress']);
   assert.deepEqual(await bridge.describe(), valid);
 });
 
@@ -39,6 +39,28 @@ test('preload lists an SSH directory using only the fixed validated command', as
     return { requestId: request.requestId, ok: true, result: listing };
   }, id);
   assert.deepEqual(await bridge.listSshDirectory(sessionId, '.'), { requestId: id(), ok: true, result: listing });
+});
+
+test('preload routes SFTP transfers through fixed commands without accepting renderer paths', async () => {
+  const sessionId = id();
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return { requestId: request.requestId, ok: true, result: request.command === 'ssh.files.upload'
+      ? { direction: 'upload', fileName: 'report.txt', bytesTransferred: 4, state: 'completed' }
+      : request.command === 'ssh.files.download'
+        ? { direction: 'download', fileName: 'report.txt', bytesTransferred: 4, state: 'completed' }
+        : {} };
+  }, id);
+  assert.equal((await bridge.uploadSshFile(sessionId, operationId, '/home/alice')).ok, true);
+  assert.equal((await bridge.downloadSshFile(sessionId, operationId, '/home/alice/report.txt')).ok, true);
+  assert.equal((await bridge.cancelSshTransfer(sessionId, operationId)).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'ssh.files.upload', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remoteDirectory: '/home/alice' } },
+    { command: 'ssh.files.download', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remotePath: '/home/alice/report.txt' } },
+    { command: 'ssh.files.cancel', requestId: id(), contractVersion: 1, payload: { sessionId, operationId } }
+  ]);
 });
 
 test('preload routes Telnet operations through fixed endpoint-bound commands', async () => {
