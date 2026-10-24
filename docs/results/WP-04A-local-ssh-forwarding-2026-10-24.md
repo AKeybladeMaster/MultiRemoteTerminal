@@ -37,12 +37,13 @@
 - All 16 Electron E2E scenarios passed.
 
 The forwarding E2E accepts a new SSH host key through the trust dialog, saves a
-profile, creates and starts a forward through the UI, verifies its assigned
-loopback port, exchanges bytes through an SSH `direct-tcpip` channel after the
-client half-closes, and confirms the forwarding connection requested no shell.
-It closes the app while the tunnel is active, confirms that the listener is
-released, then reopens the same profile and verifies both the saved SSH profile
-and stopped tunnel definition persist.
+profile, creates three forwards through the UI and starts all three. It verifies
+distinct assigned loopback ports, exchanges bytes through each SSH
+`direct-tcpip` channel after the client half-closes, and re-probes all three
+ports after the final start to prove they remain active together. It confirms
+the forwarding connections requested no shell, closes the app, verifies all
+listeners are released, then reopens the profile and verifies all three saved
+definitions persist in the stopped state.
 
 The tunnel manager was rendered and inspected at 1200×800 and 700×720 Electron
 window sizes. The desktop layout keeps the status and primary actions visible;
@@ -54,6 +55,6 @@ focus.
 
 P-23/F-006 remain partial. This slice does not implement remote or dynamic
 forwarding, SSH jump-host chains, public listeners, multi-hop trust or broad
-interoperability. P-39 remains planned until Windows E2E verifies 20 saved and
-concurrently active definitions; the new 20-tunnel check is an application unit
-test. No packaged release or signing decision is claimed.
+interoperability. P-39 is VERIFIED: Windows E2E checks three saved forwards
+active together, and the application regression starts twenty concurrently.
+No packaged release or signing decision is claimed.

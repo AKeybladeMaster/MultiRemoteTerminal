@@ -89,6 +89,8 @@ WP-03D saved-folder bundles (2026-10-24): a selected folder and its descendants 
 
 **WP-04A — loopback local SSH forwarding (first partial slice):** Persist named local-forward definitions against saved SSH profiles; start only on explicit user action through a separate files-only SSH connection; default to `127.0.0.1`, allow port `0` for OS assignment, and report active only after bind succeeds. Cover host trust, UI-to-worker TCP roundtrip including TCP half-close, persistence/reopen, port conflict cleanup and listener release on stop and app shutdown. Remote/dynamic forwarding, non-loopback consent and jump-host routing stay planned for later WP-04 slices. See [ADR-0009](adr/ADR-0009-wp04a-local-ssh-forwarding.md).
 
+WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight starts are canceled during shutdown, active profile deletion is guarded, and legacy tunnel names are backfilled during the v1-to-v2 SQLite migration. Forwarded connections remain open after channel setup; a 15-second deadline applies only to channel opening. Windows E2E starts three forwards together, probes each after the final start, then verifies shutdown release and stopped restoration. The application test starts twenty at once, confirming no application count cap. P-39 is VERIFIED; P-23/F-006 remain partial while remote/dynamic forwarding, jump hosts and broad interoperability remain planned. See [WP-04A results](results/WP-04A-local-ssh-forwarding-2026-10-24.md).
+
 ### WP-05 — SFTP file browser and transfer
 
 **Requires:** WP-02/03.  
