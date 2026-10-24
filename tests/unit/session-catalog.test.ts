@@ -169,6 +169,24 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
   assert.deepEqual(result, { ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false } });
 });
 
+test('session removal respects the tunnel guard and always releases its deletion reservation', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const calls = { removed: 0, began: 0, ended: 0 };
+  let allowed = false;
+  const store = { async removeSession() { calls.removed += 1; return true; } } as unknown as SessionCatalogStore;
+  const guard = {
+    beginSessionRemoval() { calls.began += 1; return allowed; },
+    endSessionRemoval() { calls.ended += 1; }
+  };
+  const catalog = createSessionCatalog(store, unusedBundleDialog, guard);
+
+  assert.deepEqual(await catalog.remove(id), { ok: false, error: { code: 'BUSY', target: 'application', retryable: true } });
+  assert.equal(calls.removed, 0);
+  allowed = true;
+  assert.deepEqual(await catalog.remove(id), { ok: true, result: {} });
+  assert.deepEqual(calls, { removed: 1, began: 2, ended: 1 });
+});
+
 test('folder bundle pickers return CANCELLED on dismissal and discard paths selected after caller cancellation', async () => {
   const folderId = '11111111-1111-4111-8111-111111111111';
   let exportCalls = 0;

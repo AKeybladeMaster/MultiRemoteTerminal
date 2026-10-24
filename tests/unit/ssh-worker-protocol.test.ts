@@ -64,3 +64,18 @@ test('SSH worker validates bounded remote-directory requests and listing replies
   assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result })?.type, 'reply');
   assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { ...result, secret: 'private' } }), undefined);
 });
+
+test('SSH worker accepts only loopback tunnel definitions and bounded assigned-port replies', () => {
+  const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1',
+    bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
+  const start = { version: 1, type: 'request', requestId, command: 'local-forward.start', sessionId, definition };
+  assert.equal(parseSshWorkerInput(start)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, bindHost: '0.0.0.0' } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, targetPort: 0 } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...start, unexpected: true }), undefined);
+  assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { bindPort: 49152 } })?.type, 'reply');
+  assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { bindPort: 0 } }), undefined);
+  const stop = { version: 1, type: 'request', requestId, command: 'local-forward.stop', sessionId, tunnelId: definition.id };
+  assert.equal(parseSshWorkerInput(stop)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...stop, tunnelId: 'invalid' }), undefined);
+});

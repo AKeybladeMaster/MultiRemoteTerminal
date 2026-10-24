@@ -117,6 +117,14 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     } catch (error) { throw mapStorageError(error); }
   }
 
+  async getSessionDefinition(id: string): Promise<SavedSessionDefinition | undefined> {
+    try {
+      if (!isSessionDefinitionId(id)) throw new StorageOperationError('invalid');
+      const row = this.findSession.get(id) as unknown as SavedSessionRow | undefined;
+      return row ? decodeSessionRow(row) : undefined;
+    } catch (error) { throw mapStorageError(error); }
+  }
+
   async createSession(input: SavedSessionDraft): Promise<SavedSessionDefinition> {
     try {
       const draft = normalizeSavedSessionDraft(input);

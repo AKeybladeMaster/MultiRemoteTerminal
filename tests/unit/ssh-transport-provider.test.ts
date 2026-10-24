@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { connect as connectTcp, createServer } from 'node:net';
+import type { Server } from 'node:net';
 import { createSshTransportProvider } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshTransportChannel as ClientChannel, SshTransportClient as Client, SshTransportConfig as ConnectConfig } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshHostKeyParser } from '../../apps/desktop/src/adapters/host-key-evidence.ts';
@@ -48,6 +50,16 @@ class FakeClient extends EventEmitter {
     return this;
   }
   end(): this { this.ended = true; return this; }
+}
+
+class ForwardingFakeClient extends FakeClient {
+  forwardOut(_sourceAddress: string, _sourcePort: number, destinationAddress: string, destinationPort: number,
+    callback: (error: Error | undefined, channel: ClientChannel) => void): this {
+    const upstream = connectTcp(destinationPort, destinationAddress);
+    upstream.once('connect', () => callback(undefined, upstream as unknown as ClientChannel));
+    upstream.once('error', error => callback(error, undefined as unknown as ClientChannel));
+    return this;
+  }
 }
 
 class DelayedSftpClient extends FakeClient {
@@ -158,6 +170,134 @@ test('standalone SFTP authenticates without requesting a shell and lists files o
   assert.equal(sftp.ended, true);
   assert.equal(client.ended, true);
 });
+
+test('local SSH forwarding binds only on loopback, relays TCP bytes, and releases the listener on stop', async () => {
+  const target: Server = createServer(socket => socket.pipe(socket));
+  const targetPort = await listen(target);
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+  client.emit('ready');
+  await opened;
+  const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId, name: 'Echo', mode: 'local' as const,
+    bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort, createdAt: '2026-10-24T00:00:00.000Z' };
+  const bindPort = await provider.startLocalForward(sessionId, definition);
+  assert.ok(bindPort > 0);
+  assert.equal(client.shellSize, undefined, 'local forwarding uses a files-only SSH connection without requesting a shell');
+  assert.equal(await exchange(bindPort, 'through-forward'), 'through-forward');
+  assert.equal(await exchangeAfterHalfClose(bindPort, 'half-close-through-forward'), 'half-close-through-forward');
+  await provider.stopLocalForward(sessionId, definition.id);
+  assert.equal(await canConnect(bindPort), false, 'stopping closes the bound loopback port');
+  await provider.close(sessionId);
+  await closeServer(target);
+});
+
+test('established SSH forwarded connections stay open beyond the channel-open timeout', async () => {
+  const target: Server = createServer(socket => socket.pipe(socket));
+  const targetPort = await listen(target);
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+  client.emit('ready');
+  await opened;
+  const definition = { id: '33333333-3333-4333-8333-333333333334', sessionId, name: 'Long-lived echo', mode: 'local' as const,
+    bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort, createdAt: '2026-10-24T00:00:00.000Z' };
+  const bindPort = await provider.startLocalForward(sessionId, definition);
+  const socket = connectTcp(bindPort, '127.0.0.1');
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
+    await new Promise(resolve => setTimeout(resolve, 16_000));
+    assert.equal(socket.destroyed, false, 'an established channel must not keep the open timeout armed');
+    const echoed = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Long-lived forwarded echo timed out')), 2_000);
+      socket.once('data', chunk => { clearTimeout(timer); resolve(chunk.toString('utf8')); });
+      socket.once('error', error => { clearTimeout(timer); reject(error); });
+    });
+    socket.write('still-forwarded');
+    assert.equal(await echoed, 'still-forwarded');
+  } finally {
+    socket.destroy();
+    await provider.stopLocalForward(sessionId, definition.id);
+    await provider.close(sessionId);
+    await closeServer(target);
+  }
+});
+
+test('an actual occupied loopback port returns CONFLICT and leaves no listener behind', async () => {
+  const occupied: Server = createServer();
+  const bindPort = await listen(occupied);
+  const client = new ForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+  client.emit('ready');
+  await opened;
+  const definition = { id: '33333333-3333-4333-8333-333333333335', sessionId, name: 'Occupied', mode: 'local' as const,
+    bindHost: '127.0.0.1' as const, bindPort, targetHost: '127.0.0.1', targetPort: 1, createdAt: '2026-10-24T00:00:00.000Z' };
+
+  try {
+    await assert.rejects(provider.startLocalForward(sessionId, definition), error => (error as { code?: string }).code === 'CONFLICT');
+    await closeServer(occupied);
+    assert.equal(await canConnect(bindPort), false, 'the failed bind must not leave a loopback listener behind');
+    const retryPort = await provider.startLocalForward(sessionId, { ...definition, id: '33333333-3333-4333-8333-333333333336' });
+    assert.equal(retryPort, bindPort, 'the formerly occupied port can be reused after its owner closes');
+    await provider.stopLocalForward(sessionId, '33333333-3333-4333-8333-333333333336');
+    assert.equal(await canConnect(bindPort), false, 'stopping the retry releases its port');
+  } finally {
+    await closeServer(occupied);
+    await provider.close(sessionId);
+  }
+});
+
+async function listen(server: Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      const address = server.address();
+      if (!address || typeof address === 'string') { reject(new Error('Expected an IP listener')); return; }
+      resolve(address.port);
+    });
+  });
+}
+
+function exchange(port: number, data: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(port, '127.0.0.1');
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('Forwarded echo timed out')); }, 2_000);
+    socket.once('connect', () => socket.write(data));
+    socket.once('data', chunk => { clearTimeout(timer); socket.end(); resolve(chunk.toString('utf8')); });
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function exchangeAfterHalfClose(port: number, data: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(port, '127.0.0.1');
+    let received = '';
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('Half-closed forwarded echo timed out')); }, 2_000);
+    socket.on('data', chunk => { received += chunk.toString('utf8'); });
+    socket.once('connect', () => socket.end(data));
+    socket.once('end', () => { clearTimeout(timer); resolve(received); });
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function canConnect(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = connectTcp(port, '127.0.0.1');
+    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 1_000);
+    socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); });
+    socket.once('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>(resolve => server.close(() => resolve()));
+}
 
 test('SSH host-key rejection keeps its security category when ssh2 reports the handshake failure', async () => {
   const client = new FakeClient();

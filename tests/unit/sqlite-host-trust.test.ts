@@ -14,6 +14,7 @@ import type { CredentialPromptCancellation } from '../../packages/application/sr
 import { sameHostKey } from '../../packages/domain/src/host-trust.ts';
 import type { TrustedHostKey } from '../../packages/domain/src/host-trust.ts';
 import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
+import { SqliteTunnelRepository } from '../../apps/desktop/src/adapters/sqlite-tunnel-repository.ts';
 import { HostTrustJsonStore } from '../../apps/desktop/src/adapters/host-trust-json-store.ts';
 import { SqliteStorageStore, STORAGE_DIAGNOSTICS_CHANNEL_NAME } from '../../apps/desktop/src/adapters/sqlite-storage-store.ts';
 import { STORAGE_WORKER_PROTOCOL_VERSION } from '../../apps/desktop/src/workers/storage-protocol.ts';
@@ -97,7 +98,8 @@ test('SQLite host trust schema migrates once and preserves strict insert, match,
   try {
     repository.migrate();
     repository.migrate();
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 1);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+    assert.equal((database.prepare('PRAGMA table_info(tunnel_definitions)').all() as Array<{ name: string }>).some(column => column.name === 'name'), true);
     const insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, options_version, created_at, updated_at)
       VALUES (?, ?, ?, 1, ?, ?)
@@ -116,6 +118,41 @@ test('SQLite host trust schema migrates once and preserves strict insert, match,
       hostKey('would-be-rolled-back.example', 22, 6), hostKey('collision.example', 22, 7)
     ]), (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'corrupt');
     assert.equal(repository.find({ host: 'would-be-rolled-back.example', port: 22 }), undefined);
+  } finally {
+    database.close();
+  }
+});
+
+test('SQLite schema v1 upgrades existing saved profiles, tunnel definitions, and host trust', async () => {
+  const database = new DatabaseSync(':memory:');
+  const initial = new SqliteHostTrustRepository(database);
+  try {
+    initial.migrate();
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    const tunnelId = '22222222-2222-4222-8222-222222222222';
+    const timestamp = '2026-10-23T00:00:00.000Z';
+    database.prepare(`INSERT INTO session_definitions
+      (id, kind, name, host, port, options_json, options_version, created_at, updated_at)
+      VALUES (?, 'ssh', 'Existing gateway', 'gateway.example', 22, '{}', 1, ?, ?)`)
+      .run(sessionId, timestamp, timestamp);
+    database.prepare(`INSERT INTO tunnel_definitions
+      (id, session_id, mode, bind_host, bind_port, target_host, target_port, created_at)
+      VALUES (?, ?, 'local', '127.0.0.1', 15432, 'db.internal', 5432, ?)`)
+      .run(tunnelId, sessionId, timestamp);
+    const trusted = hostKey('gateway.example', 22, 7);
+    initial.trustIfAbsent(trusted);
+
+    database.exec('ALTER TABLE tunnel_definitions DROP COLUMN name; PRAGMA user_version = 1;');
+    const upgraded = new SqliteHostTrustRepository(database);
+    upgraded.migrate();
+
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+    assert.equal((database.prepare('SELECT name FROM tunnel_definitions WHERE id = ?').get(tunnelId) as { name: string }).name, 'Local forward');
+    assert.equal((database.prepare('SELECT name FROM session_definitions WHERE id = ?').get(sessionId) as { name: string }).name, 'Existing gateway');
+    const tunnels = new SqliteTunnelRepository(database);
+    assert.equal((await tunnels.getLocalTunnel(tunnelId))?.name, 'Local forward', 'upgraded rows must pass the current runtime decoder');
+    const restoredTrust = upgraded.find({ host: 'gateway.example', port: 22 });
+    assert.ok(restoredTrust && sameHostKey(restoredTrust, trusted));
   } finally {
     database.close();
   }
@@ -157,9 +194,9 @@ test('unsupported SQLite versions fail closed without changing the database', ()
   const database = new DatabaseSync(':memory:');
   const repository = new SqliteHostTrustRepository(database);
   try {
-    database.exec('PRAGMA user_version = 2');
+    database.exec('PRAGMA user_version = 3');
     assert.throws(() => repository.migrate(), (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'corrupt');
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
   } finally {
     database.close();
   }

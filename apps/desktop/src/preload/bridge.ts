@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL,
-  SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
+  SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { createBridge } from './client.ts';
 import { installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from './paste-gesture.ts';
 
@@ -29,5 +29,9 @@ const bridge = createBridge(request => ipcRenderer.invoke(COMMAND_CHANNEL, reque
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);
     ipcRenderer.on(SSH_TRANSFER_EVENT_CHANNEL, receive);
     return () => ipcRenderer.removeListener(SSH_TRANSFER_EVENT_CHANNEL, receive);
+  }, listener => {
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);
+    ipcRenderer.on(TUNNEL_STATUS_EVENT_CHANNEL, receive);
+    return () => ipcRenderer.removeListener(TUNNEL_STATUS_EVENT_CHANNEL, receive);
   });
 contextBridge.exposeInMainWorld('multiRemoteTerminal', bridge);

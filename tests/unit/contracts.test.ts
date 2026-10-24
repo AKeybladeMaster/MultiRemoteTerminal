@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
+import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -234,4 +234,35 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1, payload: {} }).ok, true);
   assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1,
     payload: { path: 'C:\\private.json' } }).ok, false, 'the renderer cannot provide a filesystem path');
+});
+
+test('tunnel IPC accepts named loopback forwards and matches replies to the requested definition', () => {
+  const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId: '44444444-4444-4444-8444-444444444444',
+    name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0, targetHost: 'db.internal', targetPort: 5432 };
+  const save = { command: 'tunnel.save', requestId: request.requestId, contractVersion: 1, payload: definition };
+  const parsedSave = parseRequest(save);
+  assert.equal(parsedSave.ok, true);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, bindHost: '0.0.0.0' } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, password: 'hidden' } }).ok, false);
+  if (parsedSave.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+    result: { ...definition, createdAt: '2026-10-24T00:00:00.000Z' } }, parsedSave.result), true);
+
+  const list = { command: 'tunnel.list', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsedList = parseRequest(list);
+  assert.equal(parsedList.ok, true);
+  if (parsedList.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: [{
+    definition: { ...definition, createdAt: '2026-10-24T00:00:00.000Z' }, status: { tunnelId: definition.id, state: 'stopped' }
+  }] }, parsedList.result), true);
+
+  const start = { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1, payload: { id: definition.id } };
+  const parsedStart = parseRequest(start);
+  assert.equal(parsedStart.ok, true);
+  if (parsedStart.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { tunnelId: definition.id, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 } }, parsedStart.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { tunnelId: request.requestId, state: 'stopped' } }, parsedStart.result), false);
+  }
+  assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 }), true);
+  assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 }), false);
 });

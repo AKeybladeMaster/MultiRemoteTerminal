@@ -5,7 +5,7 @@ import type { HostTrustInsertResult } from '../../../../packages/application/src
 import { canonicalizeSshHostEndpoint, isHostKeyEvidence, sameHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 const SCHEMA_V1 = `
 CREATE TABLE folders (
   id TEXT PRIMARY KEY,
@@ -131,6 +131,7 @@ CREATE TABLE audit_events (
 );
 CREATE INDEX audit_events_at ON audit_events(at);
 `;
+const SCHEMA_V2 = `ALTER TABLE tunnel_definitions ADD COLUMN name TEXT NOT NULL DEFAULT 'Local forward';`;
 
 export interface HostTrustMigrationResult {
   readonly sourceCount: number;
@@ -165,12 +166,22 @@ export class SqliteHostTrustRepository {
       if (!Number.isSafeInteger(version) || (version as number) < 0 || (version as number) > CURRENT_SCHEMA_VERSION) {
         throw new HostTrustStoreError('corrupt');
       }
-      if (version === CURRENT_SCHEMA_VERSION) { this.prepareStatements(); return; }
-      if (version !== 0) throw new HostTrustStoreError('corrupt');
-      this.transaction(() => {
-        this.database.exec(SCHEMA_V1);
-        this.database.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
-      });
+      let currentVersion = version as number;
+      if (currentVersion === 0) {
+        this.transaction(() => {
+          this.database.exec(SCHEMA_V1);
+          this.database.exec('PRAGMA user_version = 1');
+        });
+        currentVersion = 1;
+      }
+      if (currentVersion === 1) {
+        this.transaction(() => {
+          this.database.exec(SCHEMA_V2);
+          this.database.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
+        });
+        currentVersion = CURRENT_SCHEMA_VERSION;
+      }
+      if (currentVersion !== CURRENT_SCHEMA_VERSION) throw new HostTrustStoreError('corrupt');
       this.prepareStatements();
     } catch (error) {
       throw mapStoreError(error);

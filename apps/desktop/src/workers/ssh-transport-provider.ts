@@ -1,5 +1,7 @@
 import type { Client, ClientChannel, ConnectConfig, VerifyCallback } from 'ssh2';
 import type { FileEntryWithStats, SFTPWrapper } from 'ssh2';
+import { createServer } from 'node:net';
+import type { Server, Socket } from 'node:net';
 import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -9,6 +11,7 @@ import type { TerminalSize } from '../../../../packages/domain/src/local-termina
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
+import type { LocalTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
 import { createSftpFileTransfers } from './sftp-file-transfers.ts';
@@ -22,11 +25,28 @@ const SFTP_OPEN_TIMEOUT_MS = 15_000;
 const SFTP_OPERATION_TIMEOUT_MS = 10_000;
 const SFTP_CLOSE_GRACE_MS = 1_000;
 const SFTP_STATUS_EOF = 1;
+const LOCAL_FORWARD_BIND_TIMEOUT_MS = 10_000;
+const LOCAL_FORWARD_OPEN_TIMEOUT_MS = 15_000;
+const LOCAL_FORWARD_CLOSE_GRACE_MS = 1_000;
+const MAX_LOCAL_FORWARD_CONNECTIONS = 64;
 
 type SftpChannel = SFTPWrapper & { end(): void };
 
 interface PendingSftpOpen {
   cancel(error: Error): void;
+}
+
+interface ForwardedConnection {
+  readonly socket: Socket;
+  readonly timer: ReturnType<typeof setTimeout>;
+  channel?: ClientChannel;
+  closed: boolean;
+}
+
+interface LocalForwardRuntime {
+  readonly definition: LocalTunnelDefinition;
+  readonly server: Server;
+  readonly connections: Set<ForwardedConnection>;
 }
 
 export type SshTransportClient = Client;
@@ -54,6 +74,8 @@ export interface SshTransportProvider {
   downloadRemoteFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
     onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
+  startLocalForward(sessionId: string, definition: LocalTunnelDefinition): Promise<number>;
+  stopLocalForward(sessionId: string, tunnelId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -64,6 +86,7 @@ interface RuntimeSession {
   readonly mode: 'terminal' | 'files';
   channel?: ClientChannel;
   sftp: SftpChannel | undefined;
+  readonly localForwards: Map<string, LocalForwardRuntime>;
   sftpBusy: boolean;
   sftpOpenAttempt: PendingSftpOpen | undefined;
   opening: boolean;
@@ -108,6 +131,64 @@ export function createSshTransportProvider(
     });
   }
 
+  function closeForwardConnection(forward: LocalForwardRuntime, connection: ForwardedConnection): void {
+    if (connection.closed) return;
+    connection.closed = true;
+    clearTimeout(connection.timer);
+    forward.connections.delete(connection);
+    try { connection.socket.destroy(); } catch { /* The paired channel still receives cleanup. */ }
+    try { connection.channel?.destroy(); } catch { /* The paired socket is already closed. */ }
+  }
+
+  function closeLocalForward(forward: LocalForwardRuntime): Promise<void> {
+    for (const connection of [...forward.connections]) closeForwardConnection(forward, connection);
+    if (!forward.server.listening) return Promise.resolve();
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (): void => { if (settled) return; settled = true; clearTimeout(timer); resolve(); };
+      const timer = setTimeout(finish, LOCAL_FORWARD_CLOSE_GRACE_MS);
+      try { forward.server.close(finish); } catch { finish(); }
+    });
+  }
+
+  function closeLocalForwards(session: RuntimeSession): Promise<void> {
+    const forwards = [...session.localForwards.values()];
+    session.localForwards.clear();
+    return Promise.all(forwards.map(closeLocalForward)).then(() => undefined);
+  }
+
+  function acceptForwardConnection(session: RuntimeSession, forward: LocalForwardRuntime, socket: Socket): void {
+    if (session.closing || sessions.get(session.sessionId) !== session || forward.connections.size >= MAX_LOCAL_FORWARD_CONNECTIONS) {
+      socket.destroy();
+      return;
+    }
+    const connection: ForwardedConnection = {
+      socket,
+      timer: setTimeout(() => closeForwardConnection(forward, connection), LOCAL_FORWARD_OPEN_TIMEOUT_MS),
+      closed: false
+    };
+    forward.connections.add(connection);
+    socket.once('error', () => closeForwardConnection(forward, connection));
+    socket.once('close', () => closeForwardConnection(forward, connection));
+    const sourceAddress = (socket.remoteAddress ?? '127.0.0.1').replace(/^::ffff:/, '');
+    try {
+      session.client.forwardOut(sourceAddress, socket.remotePort ?? 0, forward.definition.targetHost, forward.definition.targetPort,
+        (error, channel) => {
+          if (connection.closed) { channel?.destroy(); return; }
+          if (error || !channel || session.closing || socket.destroyed) {
+            closeForwardConnection(forward, connection);
+            return;
+          }
+          clearTimeout(connection.timer);
+          connection.channel = channel;
+          channel.once('error', () => closeForwardConnection(forward, connection));
+          channel.once('close', () => closeForwardConnection(forward, connection));
+          socket.pipe(channel);
+          channel.pipe(socket);
+        });
+    } catch { closeForwardConnection(forward, connection); }
+  }
+
   function terminate(session: RuntimeSession): void {
     if (session.closing) return;
     session.closing = true;
@@ -120,6 +201,7 @@ export function createSshTransportProvider(
     session.pendingText = '';
     session.outputBytesBySequence.clear();
     session.pendingOutputBytes = 0;
+    void closeLocalForwards(session);
     try { session.channel?.end(); } catch { /* Session teardown continues if the channel has already closed. */ }
     try { session.channel?.destroy(); } catch { /* Session teardown continues if the channel has already closed. */ }
     void closeSftpChannel(session);
@@ -216,7 +298,7 @@ export function createSshTransportProvider(
       const client = clients.create();
       const session: RuntimeSession = {
         sessionId, client, mode, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
-        sftp: undefined, sftpBusy: false, sftpOpenAttempt: undefined,
+        sftp: undefined, localForwards: new Map(), sftpBusy: false, sftpOpenAttempt: undefined,
         nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
         outputBytesBySequence: new Map(), outputPaused: false, clearPassword: () => {},
         openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
@@ -404,13 +486,79 @@ export function createSshTransportProvider(
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
     },
 
+    async startLocalForward(sessionId, definition): Promise<number> {
+      const session = sessions.get(sessionId);
+      if (!session || session.closing || session.opening || session.mode !== 'files') throw new SshTerminalProviderError('UNAVAILABLE');
+      if (session.localForwards.has(definition.id)) throw new SshTerminalProviderError('BUSY');
+      const forward: LocalForwardRuntime = { definition, server: createServer({ allowHalfOpen: true }), connections: new Set() };
+      session.localForwards.set(definition.id, forward);
+      try {
+        const assignedPort = await new Promise<number>((resolve, reject) => {
+          let settled = false;
+          const finish = (error?: Error): void => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            forward.server.removeListener('listening', onListening);
+            if (error) reject(error);
+            else {
+              const address = forward.server.address();
+              if (!address || typeof address === 'string' || !Number.isSafeInteger(address.port) || address.port < 1) {
+                reject(new SshTerminalProviderError('UNAVAILABLE'));
+              } else resolve(address.port);
+            }
+          };
+          const onListening = (): void => {
+            if (settled) { void closeLocalForward(forward); return; }
+            finish();
+          };
+          const onError = (error: NodeJS.ErrnoException): void => {
+            if (settled) {
+              if (forward.server.listening) fail(session, 'UNAVAILABLE');
+              return;
+            }
+            if (error.code === 'EADDRINUSE') finish(new SshTerminalProviderError('CONFLICT'));
+            else if (error.code === 'EACCES' || error.code === 'EPERM') finish(new SshTerminalProviderError('FORBIDDEN'));
+            else finish(new SshTerminalProviderError('UNAVAILABLE'));
+          };
+          const timer = setTimeout(() => finish(new SshTerminalProviderError('TIMEOUT')), LOCAL_FORWARD_BIND_TIMEOUT_MS);
+          forward.server.once('listening', onListening);
+          forward.server.on('error', onError);
+          forward.server.on('connection', socket => acceptForwardConnection(session, forward, socket));
+          try { forward.server.listen({ host: '127.0.0.1', port: definition.bindPort, exclusive: true }); }
+          catch { finish(new SshTerminalProviderError('UNAVAILABLE')); }
+        });
+        if (session.closing || sessions.get(sessionId) !== session) throw new SshTerminalProviderError('CANCELLED');
+        return assignedPort;
+      } catch (error) {
+        session.localForwards.delete(definition.id);
+        await closeLocalForward(forward);
+        throw error;
+      }
+    },
+
+    async stopLocalForward(sessionId, tunnelId): Promise<void> {
+      const session = sessions.get(sessionId);
+      if (!session) return;
+      const forward = session.localForwards.get(tunnelId);
+      if (!forward) return;
+      session.localForwards.delete(tunnelId);
+      await closeLocalForward(forward);
+    },
+
     async close(sessionId): Promise<void> {
       const session = sessions.get(sessionId);
-      if (session) terminate(session);
+      if (session) {
+        await closeLocalForwards(session);
+        terminate(session);
+      }
     },
 
     async shutdown(): Promise<void> {
-      for (const session of [...sessions.values()]) terminate(session);
+      for (const session of [...sessions.values()]) {
+        await closeLocalForwards(session);
+        terminate(session);
+      }
     }
   };
 

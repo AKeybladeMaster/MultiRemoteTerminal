@@ -1,6 +1,7 @@
-import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
+import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
-  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListLocalTunnelsReply, SaveLocalTunnelReply, TunnelStatusReply,
+  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
@@ -12,6 +13,7 @@ import type { LocalTerminalEvent } from '../../../../packages/application/src/lo
 import type { SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import type { LocalTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
@@ -21,6 +23,7 @@ type ConsumeTelnetConsent = (sessionId: string, host: string, port: number) => b
 type ConsumeFtpConsent = (sessionId: string, host: string, port: number, secure: boolean) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
+type ListenTunnelStatus = Listen;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
@@ -41,7 +44,8 @@ interface TerminalInputBarrier {
 export function createBridge(invoke: Invoke, makeId: () => string, listen: Listen = () => () => {}, listenSshTrust: Listen = () => () => {},
   cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false,
   consumeTelnetConsent: ConsumeTelnetConsent = () => false, consumeFtpConsent: ConsumeFtpConsent = () => false,
-  listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {}): DesktopBridge {
+  listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {},
+  listenTunnelStatus: ListenTunnelStatus = () => () => {}): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -239,7 +243,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
-    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close', payload: Record<string, unknown>): CommandRequest {
+    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -400,6 +404,21 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply> {
       return send(voidRequest('session.move', { id, folderId }), 8_000);
     },
+    listLocalTunnels(): Promise<ListLocalTunnelsReply> {
+      return send({ command: 'tunnel.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    saveLocalTunnel(draft: LocalTunnelDraft): Promise<SaveLocalTunnelReply> {
+      return send({ command: 'tunnel.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
+    },
+    deleteLocalTunnel(id: string): Promise<TerminalActionReply> {
+      return send(voidRequest('tunnel.delete', { id }), 8_000);
+    },
+    startLocalTunnel(id: string): Promise<TunnelStatusReply> {
+      return send({ command: 'tunnel.start', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, SSH_OPEN_TIMEOUT_MS);
+    },
+    stopLocalTunnel(id: string): Promise<TunnelStatusReply> {
+      return send({ command: 'tunnel.stop', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, 10_000);
+    },
     onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void {
       if (typeof listener !== 'function') return () => {};
       try {
@@ -416,6 +435,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         return listenSshTrust(value => {
           if (isSshTrustEvent(value)) {
             try { listener(value); } catch { /* A trust decision listener cannot interrupt transport ownership. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenTunnelStatus(value => {
+          if (isTunnelStatusEvent(value)) {
+            try { listener(value); } catch { /* Runtime observers cannot affect forwarding cleanup. */ }
           }
         });
       } catch { return () => {}; }

@@ -49,9 +49,15 @@ export interface SessionCatalog {
   importFolder(cancellation?: CancellationSignal): Promise<Outcome<SessionFolderImportResult>>;
 }
 
+export interface SessionRemovalGuard {
+  beginSessionRemoval(sessionId: string): boolean;
+  endSessionRemoval(sessionId: string): void;
+}
+
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
 
-export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: SessionFolderBundleFileDialog): SessionCatalog {
+export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: SessionFolderBundleFileDialog,
+  removalGuard?: SessionRemovalGuard): SessionCatalog {
   return {
     async list(query: unknown, cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionDefinition[]>> {
       const normalized = normalizeSessionSearch(query);
@@ -85,11 +91,13 @@ export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: S
     async remove(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>> {
       if (!isSessionDefinitionId(id)) return failure('INVALID_REQUEST');
       if (cancellation?.aborted) return failure('CANCELLED');
+      if (removalGuard && !removalGuard.beginSessionRemoval(id)) return failure('BUSY');
       try {
         const removed = await store.removeSession(id, cancellation);
         return removed ? { ok: true, result: EMPTY_RESULT } : failure('NOT_FOUND');
       }
       catch (error) { return failure(errorCode(error)); }
+      finally { removalGuard?.endSessionRemoval(id); }
     },
     async listFolders(cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionFolder[]>> {
       if (cancellation?.aborted) return failure('CANCELLED');

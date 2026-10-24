@@ -5,6 +5,7 @@ import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packa
 import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesSession } from '../../../../packages/application/src/ftp-files.ts';
+import type { LocalTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -14,9 +15,11 @@ import type { LocalShell } from '../../../../packages/domain/src/local-terminal.
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
+import type { LocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
+import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -158,6 +161,17 @@ function ftpOpenError(code: string, secure: boolean): string {
   return `Could not connect to the ${secure ? 'FTPS' : 'FTP'} server (${code}).`;
 }
 
+function tunnelOpenError(code: string): string {
+  if (code === 'CONFLICT') return 'That local port is already in use. Choose another port or use 0 to let Windows assign one.';
+  if (code === 'AUTHENTICATION_FAILED') return 'The SSH server rejected these credentials.';
+  if (code === 'HOST_KEY_REJECTED') return 'The SSH host was not trusted, so the tunnel was stopped.';
+  if (code === 'HOST_KEY_CHANGED') return 'The SSH host key changed. The tunnel was blocked.';
+  if (code === 'CANCELLED') return 'Tunnel startup was cancelled.';
+  if (code === 'TIMEOUT') return 'Tunnel startup timed out.';
+  if (code === 'BUSY') return 'Too many tunnels are active or this tunnel is already changing state.';
+  return `The tunnel operation failed (${code}).`;
+}
+
 function closeTerminalConnection(sessionId: string, transport: 'local' | 'ssh' | 'telnet' | 'ftp' | 'sftp') {
   if (transport === 'ssh') return window.multiRemoteTerminal.closeSshTerminal(sessionId);
   if (transport === 'sftp') return window.multiRemoteTerminal.closeSftpFiles(sessionId);
@@ -208,6 +222,12 @@ function Workbench() {
   const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
   const [savedSessionCount, setSavedSessionCount] = useState(0);
   const [savedFolders, setSavedFolders] = useState<readonly SavedSessionFolder[]>([]);
+  const [tunnelManagerOpen, setTunnelManagerOpen] = useState(false);
+  const [tunnelProfiles, setTunnelProfiles] = useState<readonly SavedSessionDefinition[]>([]);
+  const [localTunnels, setLocalTunnels] = useState<readonly LocalTunnelSnapshot[]>([]);
+  const [tunnelsLoading, setTunnelsLoading] = useState(false);
+  const [tunnelBusyId, setTunnelBusyId] = useState<string>();
+  const [tunnelError, setTunnelError] = useState<string>();
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -232,6 +252,8 @@ function Workbench() {
   const nextFtpOrdinal = useRef(0);
   const savedSessionsRequest = useRef(0);
   const savedFoldersRequest = useRef(0);
+  const tunnelManagerRequest = useRef(0);
+  const tunnelOperationRequest = useRef(0);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
@@ -255,6 +277,8 @@ function Workbench() {
   const folderNameInput = useRef<HTMLInputElement>(null);
   const folderParentInput = useRef<HTMLSelectElement>(null);
   const folderDialogReturnFocus = useRef<HTMLElement | null>(null);
+  const tunnelManagerDialog = useRef<HTMLElement>(null);
+  const tunnelManagerReturnFocus = useRef<HTMLElement | null>(null);
   const sshTrustDialog = useRef<HTMLElement>(null);
   const rejectSshHostButton = useRef<HTMLButtonElement>(null);
   const changedSshHostButton = useRef<HTMLButtonElement>(null);
@@ -267,7 +291,7 @@ function Workbench() {
   const tabContextReturnFocus = useRef<HTMLElement | null>(null);
   const focusTerminalOnActiveChange = useRef(true);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!openSavedActionsMenuId) return;
     const closeOutsideMenu = (event: PointerEvent) => {
       if (event.target instanceof Node && document.querySelector('details.saved-actions-menu[open]')?.contains(event.target)) return;
@@ -334,6 +358,109 @@ function Workbench() {
     } catch {
       if (request === savedFoldersRequest.current) setAlert('Saved folders could not be loaded.');
       return undefined;
+    }
+  }, []);
+
+  const loadTunnelManager = useCallback(async (): Promise<void> => {
+    const request = ++tunnelManagerRequest.current;
+    setTunnelsLoading(true);
+    try {
+      const [tunnelReply, profileReply] = await Promise.all([
+        window.multiRemoteTerminal.listLocalTunnels(),
+        window.multiRemoteTerminal.listSavedSessions('')
+      ]);
+      if (request !== tunnelManagerRequest.current) return;
+      if (!tunnelReply.ok) {
+        setTunnelError(`Saved tunnels could not be loaded (${tunnelReply.error.code}).`);
+        return;
+      }
+      if (!profileReply.ok) {
+        setTunnelError(`Saved SSH profiles could not be loaded (${profileReply.error.code}).`);
+        return;
+      }
+      setLocalTunnels(tunnelReply.result);
+      setTunnelProfiles(profileReply.result.filter(profile => profile.kind === 'ssh' || profile.kind === 'sftp'));
+    } catch {
+      if (request === tunnelManagerRequest.current) setTunnelError('Saved tunnels could not be loaded.');
+    } finally {
+      if (request === tunnelManagerRequest.current) setTunnelsLoading(false);
+    }
+  }, []);
+
+  const openTunnelManager = useCallback(() => {
+    tunnelManagerReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setTunnelError(undefined);
+    setTunnelManagerOpen(true);
+    void loadTunnelManager();
+  }, [loadTunnelManager]);
+
+  const closeTunnelManager = useCallback(() => setTunnelManagerOpen(false), []);
+
+  const saveLocalTunnel = useCallback(async (draft: LocalTunnelDraft): Promise<string | undefined> => {
+    const operation = ++tunnelOperationRequest.current;
+    setTunnelBusyId('save');
+    setTunnelError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.saveLocalTunnel(draft);
+      if (!reply.ok) { setTunnelError(tunnelOpenError(reply.error.code)); return undefined; }
+      await loadTunnelManager();
+      return reply.result.id;
+    } catch {
+      setTunnelError('The tunnel could not be saved.');
+      return undefined;
+    } finally {
+      if (operation === tunnelOperationRequest.current) setTunnelBusyId(undefined);
+    }
+  }, [loadTunnelManager]);
+
+  const startLocalTunnel = useCallback(async (id: string): Promise<void> => {
+    const operation = ++tunnelOperationRequest.current;
+    setTunnelBusyId(id);
+    setTunnelError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.startLocalTunnel(id);
+      if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
+      else setLocalTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
+      await loadTunnelManager();
+    } catch {
+      setTunnelError('Tunnel startup could not be confirmed. Refresh its status before retrying.');
+      await loadTunnelManager();
+    } finally {
+      if (operation === tunnelOperationRequest.current) setTunnelBusyId(undefined);
+    }
+  }, [loadTunnelManager]);
+
+  const stopLocalTunnel = useCallback(async (id: string): Promise<void> => {
+    const operation = ++tunnelOperationRequest.current;
+    setTunnelBusyId(id);
+    setTunnelError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.stopLocalTunnel(id);
+      if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
+      else setLocalTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
+      await loadTunnelManager();
+    } catch {
+      setTunnelError('Tunnel shutdown could not be confirmed. Refresh its status before retrying.');
+      await loadTunnelManager();
+    } finally {
+      if (operation === tunnelOperationRequest.current) setTunnelBusyId(undefined);
+    }
+  }, [loadTunnelManager]);
+
+  const deleteLocalTunnel = useCallback(async (id: string): Promise<void> => {
+    const operation = ++tunnelOperationRequest.current;
+    setTunnelBusyId(id);
+    setTunnelError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.deleteLocalTunnel(id);
+      if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
+      else {
+        setLocalTunnels(current => current.filter(item => item.definition.id !== id));
+        setTunnelError(undefined);
+      }
+    } catch { setTunnelError('The saved tunnel could not be deleted.'); }
+    finally {
+      if (operation === tunnelOperationRequest.current) setTunnelBusyId(undefined);
     }
   }, []);
 
@@ -509,6 +636,11 @@ function Workbench() {
       }
       return current;
     });
+  }), []);
+
+  useEffect(() => window.multiRemoteTerminal.onTunnelStatus(status => {
+    setLocalTunnels(current => current.map(item => item.definition.id === status.tunnelId ? { ...item, status } : item));
+    if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
   }), []);
 
   const openTerminal = useCallback(async (shell: LocalShell, savedTitle?: string) => {
@@ -833,6 +965,9 @@ function Workbench() {
         }
         return;
       }
+      if (tunnelManagerOpen) {
+        return;
+      }
       if (saveSessionOpen) {
         if (event.key === 'Escape' && !catalogBusy) { event.preventDefault(); setSaveSessionOpen(false); }
         else if (event.key === 'Tab') {
@@ -948,7 +1083,7 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, catalogBusy, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen]);
+  }, [activeId, catalogBusy, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -964,6 +1099,18 @@ function Workbench() {
   useLayoutEffect(() => {
     if (sshConnectOpen) sshHostInput.current?.focus();
   }, [sshConnectOpen]);
+
+  useLayoutEffect(() => {
+    if (tunnelManagerOpen) requestAnimationFrame(() => tunnelManagerDialog.current?.querySelector<HTMLElement>('select, input, button')?.focus());
+  }, [tunnelManagerOpen]);
+
+  useEffect(() => {
+    if (!tunnelManagerOpen && tunnelManagerReturnFocus.current) {
+      const target = tunnelManagerReturnFocus.current;
+      tunnelManagerReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [tunnelManagerOpen]);
 
   useEffect(() => {
     if (!sshConnectOpen && sshConnectReturnFocus.current) {
@@ -1420,6 +1567,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
         <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
+        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Open sessions</h3>
@@ -1748,7 +1896,10 @@ function Workbench() {
         </form>
       </section>
     </div>}
-    {currentSshTrust && <div className="ssh-backdrop" onMouseDown={event => {
+    {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={localTunnels}
+      loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveLocalTunnel}
+      onDelete={id => { void deleteLocalTunnel(id); }} onStart={id => { void startLocalTunnel(id); }} onStop={id => { void stopLocalTunnel(id); }} />}
+    {currentSshTrust && <div className="ssh-backdrop ssh-trust-backdrop" onMouseDown={event => {
       if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
     }}>
       <section ref={sshTrustDialog} className={`ssh-trust-dialog ${currentSshTrust.kind === 'changed' ? 'changed' : ''}`}

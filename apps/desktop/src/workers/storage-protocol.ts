@@ -5,6 +5,8 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
+import { isLocalTunnelDefinition, isTunnelId, normalizeLocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { LocalTunnelDefinition, LocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
@@ -18,6 +20,7 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.remove'; readonly endpoint: SshHostEndpoint }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.importLegacy'; readonly identities: readonly TrustedHostKey[] }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.list'; readonly query: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.favorite'; readonly id: string; readonly favorite: boolean }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remove'; readonly id: string }
@@ -29,6 +32,10 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.export'; readonly folderId: string; readonly path: string; readonly temporaryPath: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.import'; readonly path: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: LocalTunnelDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.remove'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
 
 export type StorageWorkerResult =
@@ -40,9 +47,13 @@ export type StorageWorkerResult =
   | { readonly kind: 'folders'; readonly value: readonly SavedSessionFolder[] }
   | { readonly kind: 'folder'; readonly value: SavedSessionFolder }
   | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
+  | { readonly kind: 'sessionLookup'; readonly value: SavedSessionDefinition | null }
   | { readonly kind: 'changed'; readonly value: boolean }
   | { readonly kind: 'folderExport'; readonly value: { readonly folderCount: number; readonly sessionCount: number } }
   | { readonly kind: 'folderImport'; readonly value: { readonly folderCount: number; readonly sessionCount: number; readonly createdFolderCount: number; readonly createdSessionCount: number } }
+  | { readonly kind: 'tunnels'; readonly value: readonly LocalTunnelDefinition[] }
+  | { readonly kind: 'tunnelLookup'; readonly value: LocalTunnelDefinition | null }
+  | { readonly kind: 'tunnel'; readonly value: LocalTunnelDefinition }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -102,6 +113,9 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'query']) && normalizeSessionSearch(value.query) !== undefined) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.get' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'session.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSavedSessionDraft(value.draft)) {
     return value as unknown as StorageWorkerRequest;
   }
@@ -128,6 +142,12 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   }
   if (value.command === 'session.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'folderId']) &&
       isSessionDefinitionId(value.id) && (value.folderId === null || isSessionFolderId(value.folderId))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
+      isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'tunnel.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeLocalTunnelDraft(value.draft)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   return undefined;
 }
@@ -153,6 +173,7 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'folders' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionFolder)) return true;
   if (value.kind === 'folder' && exactKeys(value, ['kind', 'value']) && isSavedSessionFolder(value.value)) return true;
   if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
+  if (value.kind === 'sessionLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isSavedSessionDefinition(value.value))) return true;
   if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
   if (value.kind === 'folderExport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value, ['folderCount', 'sessionCount'])) return true;
   if (value.kind === 'folderImport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value,
@@ -161,6 +182,9 @@ function parseResult(value: unknown): value is StorageWorkerResult {
     return counts.folderCount > 0 && counts.createdFolderCount <= counts.folderCount && counts.createdSessionCount <= counts.sessionCount &&
       counts.folderCount + counts.sessionCount <= MAX_MIGRATION_ENTRIES;
   }
+  if (value.kind === 'tunnels' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isLocalTunnelDefinition)) return true;
+  if (value.kind === 'tunnelLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isLocalTunnelDefinition(value.value))) return true;
+  if (value.kind === 'tunnel' && exactKeys(value, ['kind', 'value']) && isLocalTunnelDefinition(value.value)) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 
