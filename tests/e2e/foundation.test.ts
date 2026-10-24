@@ -7,13 +7,17 @@ import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { lstat as lstatFile, mkdir, mkdtemp, open as openFile, readFile, readdir as readDirectory, rename as renameFile, rm, stat as statFile, unlink as unlinkFile, writeFile } from 'node:fs/promises';
 import { connect as connectTcp, createServer } from 'node:net';
-import type { AddressInfo, Socket } from 'node:net';
+import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
-interface Ssh2FixtureClient extends EventEmitter { end(): void; }
+interface Ssh2FixtureClient extends EventEmitter {
+  end(): void;
+  forwardOut(boundAddress: string, boundPort: number, remoteAddress: string, remotePort: number,
+    callback: (error: Error | undefined, channel?: Duplex) => void): this;
+}
 type Ssh2FixtureSession = EventEmitter;
 interface Ssh2FixtureStream extends EventEmitter { write(data: string | Buffer): boolean; }
 interface Ssh2AuthenticationContext {
@@ -310,6 +314,7 @@ test('a second application process exits and shows and focuses the primary windo
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(true);
     await app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.hide());
     await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(false);
     const executable = await app.evaluate(() => process.execPath);
@@ -523,6 +528,8 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
+  const remoteBindings = new Map<Ssh2FixtureClient, Map<number, Server>>();
+  const remoteBindRequests: string[] = [];
   const targetSockets = new Set<Socket>();
   const fixtureEvents: string[] = [];
   let bytesReceivedByTarget = 0;
@@ -535,10 +542,28 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
       socket.write(Buffer.concat([Buffer.from('MRT-FORWARDED:'), data]));
     });
   });
+  const forwardRemoteTraffic = (boundPort: number, payload: string): Promise<string> => new Promise((resolvePayload, rejectPayload) => {
+    const socket = connectTcp(boundPort, '127.0.0.1');
+    let received = '';
+    const timer = setTimeout(() => {
+      socket.destroy();
+      rejectPayload(new Error(`Timed out waiting for remote-forwarded TCP data. Events: ${fixtureEvents.join(', ')}; target bytes: ${bytesReceivedByTarget}; target sockets: ${targetSockets.size}`));
+    }, 10_000);
+    socket.on('data', data => {
+      received += data.toString('utf8');
+      if (received.includes(`MRT-FORWARDED:${payload}`)) { clearTimeout(timer); resolvePayload(received); socket.destroy(); }
+    });
+    socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
+    socket.once('connect', () => socket.write(Buffer.from(payload)));
+  });
   const sshServer = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
     const client = rawClient as Ssh2FixtureClient;
     clients.add(client);
-    client.once('close', () => clients.delete(client));
+    client.once('close', () => {
+      clients.delete(client);
+      for (const server of remoteBindings.get(client)?.values() ?? []) server.close();
+      remoteBindings.delete(client);
+    });
     client.on('error', error => fixtureEvents.push(`client-error:${error.message}`));
     client.on('authentication', (rawContext: unknown) => {
       const context = rawContext as Ssh2AuthenticationContext;
@@ -547,6 +572,48 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     });
     client.on('ready', () => {
       fixtureEvents.push('authenticated');
+      client.on('request', (rawAccept: unknown, rawReject: unknown, name: string, rawInfo: unknown) => {
+        const accept = typeof rawAccept === 'function' ? rawAccept as (port?: number) => void : undefined;
+        const reject = typeof rawReject === 'function' ? rawReject as () => void : undefined;
+        const info = rawInfo as { readonly bindAddr: string; readonly bindPort: number };
+        if (name === 'tcpip-forward') {
+          if (info.bindAddr !== '127.0.0.1') { reject?.(); return; }
+          let assignedPort = info.bindPort;
+          const server = createServer(remoteSocket => {
+            const sourceAddress = remoteSocket.remoteAddress ?? '127.0.0.1';
+            const sourcePort = remoteSocket.remotePort ?? 0;
+            client.forwardOut('127.0.0.1', assignedPort, sourceAddress, sourcePort, (error, channel) => {
+              if (error || !channel) { fixtureEvents.push(`remote-forwardOut-error:${error?.message ?? 'no channel'}`); remoteSocket.destroy(); return; }
+              fixtureEvents.push(`remote-forwardOut-open:${assignedPort}`);
+              remoteSocket.once('error', () => channel.destroy());
+              channel.once('error', () => remoteSocket.destroy());
+              channel.pipe(remoteSocket).pipe(channel);
+            });
+          });
+          server.once('error', error => { fixtureEvents.push(`remote-listener-error:${error.message}`); reject?.(); });
+          server.listen(info.bindPort, '127.0.0.1', () => {
+            const address = server.address();
+            if (!address || typeof address === 'string') { server.close(); reject?.(); return; }
+            const port = address.port;
+            assignedPort = port;
+            const ports = remoteBindings.get(client) ?? new Map<number, Server>();
+            ports.set(port, server);
+            remoteBindings.set(client, ports);
+            remoteBindRequests.push(`${info.bindAddr}:${info.bindPort}`);
+            if (info.bindPort === 0) accept?.(port);
+            else accept?.();
+          });
+          return;
+        }
+        if (name === 'cancel-tcpip-forward') {
+          const ports = remoteBindings.get(client);
+          ports?.get(info.bindPort)?.close();
+          ports?.delete(info.bindPort);
+          accept?.();
+          return;
+        }
+        reject?.();
+      });
       client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
         const session = acceptSession();
         session.on('pty', (accept: () => void) => accept());
@@ -654,21 +721,21 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
       if (index === 0) {
         await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(700, 720));
         await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(720);
-        await page.screenshot({ path: 'test-results/ssh-local-forward-manager-narrow.png', fullPage: true });
+        await page.screenshot({ path: 'test-results/ssh-tunnel-manager-narrow.png', fullPage: true });
         await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1200, 800));
         await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(720);
-        await page.screenshot({ path: 'test-results/ssh-local-forward-manager.png', fullPage: true });
+        await page.screenshot({ path: 'test-results/ssh-tunnel-manager.png', fullPage: true });
       }
       await manager.getByRole('button', { name: 'Start tunnel', exact: true }).click();
-      const editor = manager.getByRole('region', { name: 'Local forward settings' });
+      const editor = manager.getByRole('region', { name: 'Tunnel settings' });
       const tunnelStatus = editor.getByRole('status');
       await expect(tunnelStatus).toContainText('Active', { timeout: 20_000 });
       const activeEndpoint = await tunnelStatus.locator('code').innerText();
-      const portMatch = /^127\.0\.0\.1:(\d+)/u.exec(activeEndpoint);
+      const portMatch = /^Local 127\.0\.0\.1:(\d+)/u.exec(activeEndpoint);
       expect(portMatch).not.toBeNull();
       const localPort = Number(portMatch?.[1]);
       expect(localPort).toBeGreaterThan(0);
-      expect(activeEndpoint).toContain(`127.0.0.1:${targetAddress.port}`);
+      expect(activeEndpoint).toContain(`Remote 127.0.0.1:${targetAddress.port}`);
       localPorts.push(localPort);
 
       const payload = `payload-through-tunnel-${index + 1}`;
@@ -702,8 +769,54 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     expect(fixtureEvents.filter(event => event === 'direct-tcpip')).toHaveLength(6);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
 
+    const remoteTunnelName = 'Reverse API forward';
+    await manager.getByRole('button', { name: '+ New tunnel' }).click();
+    await manager.getByLabel('Tunnel name').fill(remoteTunnelName);
+    await manager.getByLabel('Forward direction').selectOption('remote');
+    await expect(manager.getByRole('note', { name: 'Remote forwarding exposure warning' })).toContainText('GatewayPorts');
+    await manager.getByLabel('SSH profile').selectOption({ index: 1 });
+    await manager.getByLabel('Remote port').fill('0');
+    await manager.getByLabel('Local destination host').fill('127.0.0.1');
+    await manager.getByLabel('Local destination port').fill(String(targetAddress.port));
+    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+    await manager.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') }).click();
+    const remoteEditor = manager.getByRole('region', { name: 'Tunnel settings' });
+    const remoteListItem = manager.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
+    await expect(remoteListItem).toContainText('Remote forward');
+    await expect(remoteListItem).toContainText('SSH server 127.0.0.1:Auto → Local 127.0.0.1:');
+    await page.screenshot({ path: 'test-results/ssh-remote-forward-manager.png', fullPage: true });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(700, 720));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(720);
+    await page.screenshot({ path: 'test-results/ssh-remote-forward-manager-narrow.png', fullPage: true });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1200, 800));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(720);
+    await remoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    const remoteStatus = remoteEditor.getByRole('status');
+    await expect(remoteStatus).toContainText('Active', { timeout: 20_000 });
+    const remoteEndpoint = await remoteStatus.locator('code').innerText();
+    expect(remoteEndpoint).toContain(`Local 127.0.0.1:${targetAddress.port}`);
+    const remotePortMatch = /SSH server 127\.0\.0\.1:(\d+)/u.exec(remoteEndpoint);
+    expect(remotePortMatch).not.toBeNull();
+    const remotePort = Number(remotePortMatch?.[1]);
+    expect(remotePort).toBeGreaterThan(0);
+    expect(remoteBindRequests.at(-1)).toBe('127.0.0.1:0');
+    expect(await forwardRemoteTraffic(remotePort, 'reverse-forward-roundtrip')).toContain('MRT-FORWARDED:reverse-forward-roundtrip');
+    expect(fixtureEvents).toContain(`remote-forwardOut-open:${remotePort}`);
+    expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
+
+    await remoteEditor.getByRole('button', { name: 'Stop tunnel', exact: true }).click();
+    await expect(remoteStatus).toContainText('Stopped', { timeout: 15_000 });
+    expect([...remoteBindings.values()].some(ports => ports.has(remotePort))).toBe(false);
+    await remoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await expect(remoteStatus).toContainText('Active', { timeout: 20_000 });
+    const restartedEndpoint = await remoteStatus.locator('code').innerText();
+    const restartedPortMatch = /SSH server 127\.0\.0\.1:(\d+)/u.exec(restartedEndpoint);
+    expect(restartedPortMatch).not.toBeNull();
+    const restartedRemotePort = Number(restartedPortMatch?.[1]);
+
     await app.close();
     app = undefined;
+    expect([...remoteBindings.values()].some(ports => ports.has(restartedRemotePort))).toBe(false);
     for (const localPort of localPorts) {
       const releasedPortError = await new Promise<Error | undefined>(resolveConnection => {
         const socket = connectTcp(localPort, '127.0.0.1');
@@ -723,8 +836,12 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
       const savedTunnel = restoredManager.getByRole('button', { name: new RegExp(tunnelName, 'u') });
       await expect(savedTunnel).toBeVisible();
       await savedTunnel.click();
-      await expect(restoredManager.getByRole('region', { name: 'Local forward settings' }).getByRole('status')).toContainText('Stopped');
+      await expect(restoredManager.getByRole('region', { name: 'Tunnel settings' }).getByRole('status')).toContainText('Stopped');
     }
+    const restoredRemote = restoredManager.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
+    await expect(restoredRemote).toBeVisible();
+    await restoredRemote.click();
+    await expect(restoredManager.getByRole('region', { name: 'Tunnel settings' }).getByRole('status')).toContainText('Stopped');
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
   } finally {
     await app?.close();
@@ -1647,7 +1764,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-      'listLocalTunnels', 'saveLocalTunnel', 'deleteLocalTunnel', 'startLocalTunnel', 'stopLocalTunnel',
+      'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
       'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));

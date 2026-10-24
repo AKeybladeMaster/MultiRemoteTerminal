@@ -5,7 +5,7 @@ import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packa
 import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesSession } from '../../../../packages/application/src/ftp-files.ts';
-import type { LocalTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -15,7 +15,7 @@ import type { LocalShell } from '../../../../packages/domain/src/local-terminal.
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
-import type { LocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
@@ -224,7 +224,7 @@ function Workbench() {
   const [savedFolders, setSavedFolders] = useState<readonly SavedSessionFolder[]>([]);
   const [tunnelManagerOpen, setTunnelManagerOpen] = useState(false);
   const [tunnelProfiles, setTunnelProfiles] = useState<readonly SavedSessionDefinition[]>([]);
-  const [localTunnels, setLocalTunnels] = useState<readonly LocalTunnelSnapshot[]>([]);
+  const [tunnels, setTunnels] = useState<readonly SshTunnelSnapshot[]>([]);
   const [tunnelsLoading, setTunnelsLoading] = useState(false);
   const [tunnelBusyId, setTunnelBusyId] = useState<string>();
   const [tunnelError, setTunnelError] = useState<string>();
@@ -366,7 +366,7 @@ function Workbench() {
     setTunnelsLoading(true);
     try {
       const [tunnelReply, profileReply] = await Promise.all([
-        window.multiRemoteTerminal.listLocalTunnels(),
+        window.multiRemoteTerminal.listSshTunnels(),
         window.multiRemoteTerminal.listSavedSessions('')
       ]);
       if (request !== tunnelManagerRequest.current) return;
@@ -378,7 +378,7 @@ function Workbench() {
         setTunnelError(`Saved SSH profiles could not be loaded (${profileReply.error.code}).`);
         return;
       }
-      setLocalTunnels(tunnelReply.result);
+      setTunnels(tunnelReply.result);
       setTunnelProfiles(profileReply.result.filter(profile => profile.kind === 'ssh' || profile.kind === 'sftp'));
     } catch {
       if (request === tunnelManagerRequest.current) setTunnelError('Saved tunnels could not be loaded.');
@@ -396,12 +396,12 @@ function Workbench() {
 
   const closeTunnelManager = useCallback(() => setTunnelManagerOpen(false), []);
 
-  const saveLocalTunnel = useCallback(async (draft: LocalTunnelDraft): Promise<string | undefined> => {
+  const saveSshTunnel = useCallback(async (draft: SshTunnelDraft): Promise<string | undefined> => {
     const operation = ++tunnelOperationRequest.current;
     setTunnelBusyId('save');
     setTunnelError(undefined);
     try {
-      const reply = await window.multiRemoteTerminal.saveLocalTunnel(draft);
+      const reply = await window.multiRemoteTerminal.saveSshTunnel(draft);
       if (!reply.ok) { setTunnelError(tunnelOpenError(reply.error.code)); return undefined; }
       await loadTunnelManager();
       return reply.result.id;
@@ -413,14 +413,14 @@ function Workbench() {
     }
   }, [loadTunnelManager]);
 
-  const startLocalTunnel = useCallback(async (id: string): Promise<void> => {
+  const startTunnel = useCallback(async (id: string): Promise<void> => {
     const operation = ++tunnelOperationRequest.current;
     setTunnelBusyId(id);
     setTunnelError(undefined);
     try {
-      const reply = await window.multiRemoteTerminal.startLocalTunnel(id);
+      const reply = await window.multiRemoteTerminal.startTunnel(id);
       if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
-      else setLocalTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
+      else setTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
       await loadTunnelManager();
     } catch {
       setTunnelError('Tunnel startup could not be confirmed. Refresh its status before retrying.');
@@ -430,14 +430,14 @@ function Workbench() {
     }
   }, [loadTunnelManager]);
 
-  const stopLocalTunnel = useCallback(async (id: string): Promise<void> => {
+  const stopTunnel = useCallback(async (id: string): Promise<void> => {
     const operation = ++tunnelOperationRequest.current;
     setTunnelBusyId(id);
     setTunnelError(undefined);
     try {
-      const reply = await window.multiRemoteTerminal.stopLocalTunnel(id);
+      const reply = await window.multiRemoteTerminal.stopTunnel(id);
       if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
-      else setLocalTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
+      else setTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
       await loadTunnelManager();
     } catch {
       setTunnelError('Tunnel shutdown could not be confirmed. Refresh its status before retrying.');
@@ -447,15 +447,15 @@ function Workbench() {
     }
   }, [loadTunnelManager]);
 
-  const deleteLocalTunnel = useCallback(async (id: string): Promise<void> => {
+  const deleteTunnel = useCallback(async (id: string): Promise<void> => {
     const operation = ++tunnelOperationRequest.current;
     setTunnelBusyId(id);
     setTunnelError(undefined);
     try {
-      const reply = await window.multiRemoteTerminal.deleteLocalTunnel(id);
+      const reply = await window.multiRemoteTerminal.deleteTunnel(id);
       if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
       else {
-        setLocalTunnels(current => current.filter(item => item.definition.id !== id));
+        setTunnels(current => current.filter(item => item.definition.id !== id));
         setTunnelError(undefined);
       }
     } catch { setTunnelError('The saved tunnel could not be deleted.'); }
@@ -639,7 +639,7 @@ function Workbench() {
   }), []);
 
   useEffect(() => window.multiRemoteTerminal.onTunnelStatus(status => {
-    setLocalTunnels(current => current.map(item => item.definition.id === status.tunnelId ? { ...item, status } : item));
+    setTunnels(current => current.map(item => item.definition.id === status.tunnelId ? { ...item, status } : item));
     if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
   }), []);
 
@@ -1896,9 +1896,9 @@ function Workbench() {
         </form>
       </section>
     </div>}
-    {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={localTunnels}
-      loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveLocalTunnel}
-      onDelete={id => { void deleteLocalTunnel(id); }} onStart={id => { void startLocalTunnel(id); }} onStop={id => { void stopLocalTunnel(id); }} />}
+    {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
+      loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
+      onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
     {currentSshTrust && <div className="ssh-backdrop ssh-trust-backdrop" onMouseDown={event => {
       if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
     }}>

@@ -18,7 +18,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
-    'listLocalTunnels', 'saveLocalTunnel', 'deleteLocalTunnel', 'startLocalTunnel', 'stopLocalTunnel',
+    'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
     'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
   assert.deepEqual(await bridge.describe(), valid);
 });
@@ -41,12 +41,12 @@ test('preload routes tunnel manager requests and validates runtime status events
     deliverStatus = listener;
     return () => { deliverStatus = undefined; };
   });
-  assert.equal((await bridge.listLocalTunnels()).ok, true);
-  assert.equal((await bridge.saveLocalTunnel({ sessionId: savedSessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
+  assert.equal((await bridge.listSshTunnels()).ok, true);
+  assert.equal((await bridge.saveSshTunnel({ sessionId: savedSessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: 'db.internal', targetPort: 5432 })).ok, true);
-  assert.equal((await bridge.startLocalTunnel(tunnelId)).ok, true);
-  assert.equal((await bridge.stopLocalTunnel(tunnelId)).ok, true);
-  assert.equal((await bridge.deleteLocalTunnel(tunnelId)).ok, true);
+  assert.equal((await bridge.startTunnel(tunnelId)).ok, true);
+  assert.equal((await bridge.stopTunnel(tunnelId)).ok, true);
+  assert.equal((await bridge.deleteTunnel(tunnelId)).ok, true);
   let statuses = 0;
   const unsubscribe = bridge.onTunnelStatus(() => { statuses++; });
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 });

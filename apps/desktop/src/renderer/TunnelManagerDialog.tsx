@@ -1,18 +1,18 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
-import type { LocalTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SavedSessionDefinition } from '../../../../packages/domain/src/session-definition.ts';
-import type { LocalTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDraft, SshTunnelMode, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
 
 export interface TunnelManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
   readonly profiles: readonly SavedSessionDefinition[];
-  readonly tunnels: readonly LocalTunnelSnapshot[];
+  readonly tunnels: readonly SshTunnelSnapshot[];
   readonly loading: boolean;
   readonly busyId: string | undefined;
   readonly error: string | undefined;
   readonly onClose: () => void;
-  readonly onSave: (draft: LocalTunnelDraft) => Promise<string | undefined>;
+  readonly onSave: (draft: SshTunnelDraft) => Promise<string | undefined>;
   readonly onDelete: (id: string) => void;
   readonly onStart: (id: string) => void;
   readonly onStop: (id: string) => void;
@@ -42,6 +42,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   const [creating, setCreating] = useState(false);
   const [sessionId, setSessionId] = useState('');
   const [name, setName] = useState('');
+  const [mode, setMode] = useState<SshTunnelMode>('local');
   const [bindPort, setBindPort] = useState('0');
   const [targetHost, setTargetHost] = useState('');
   const [targetPort, setTargetPort] = useState('');
@@ -59,6 +60,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
     setLoadedSelectionId(selected.definition.id);
     setSessionId(selected.definition.sessionId);
     setName(selected.definition.name);
+    setMode(selected.definition.mode);
     setBindPort(String(selected.definition.bindPort));
     setTargetHost(selected.definition.targetHost);
     setTargetPort(String(selected.definition.targetPort));
@@ -74,6 +76,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
     setLoadedSelectionId(undefined);
     setSessionId(eligibleProfiles[0]?.id ?? '');
     setName('');
+    setMode('local');
     setBindPort('0');
     setTargetHost('');
     setTargetPort('');
@@ -82,7 +85,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (locked || busy) return;
-    const id = await onSave({ ...(selectedId ? { id: selectedId } : {}), sessionId, name, mode: 'local', bindHost: '127.0.0.1',
+    const id = await onSave({ ...(selectedId ? { id: selectedId } : {}), sessionId, name, mode, bindHost: '127.0.0.1',
       bindPort: Number(bindPort), targetHost, targetPort: Number(targetPort) });
     if (id) { setCreating(false); setSelectedId(id); }
   }
@@ -104,7 +107,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
         <button className="tunnel-close" type="button" aria-label="Close port forwarding" onClick={onClose}>×</button>
       </header>
       <p className="tunnel-manager-description" id="tunnel-manager-description">
-        Forward a local Windows port through a saved SSH or SFTP connection. Listeners bind only to this computer and stop when the app closes.
+        Local forwards bind a port on this computer and reach a service through SSH. Remote forwards request 127.0.0.1 on the SSH server, but its forwarding policy may expose the listener on other interfaces; review the warning before starting.
       </p>
       <div className="tunnel-manager-body">
         <section className="tunnel-list-column" aria-label="Saved tunnels">
@@ -116,19 +119,32 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               <button type="button" className={`tunnel-list-item ${selectedId === item.definition.id ? 'selected' : ''}`}
                 aria-pressed={selectedId === item.definition.id} onClick={() => { setCreating(false); setSelectedId(item.definition.id); }}>
                 <span className={`tunnel-state-dot ${item.status.state}`} aria-hidden="true" />
-                <span className="tunnel-list-copy"><strong>{item.definition.name}</strong><small>{item.definition.bindHost}:{item.definition.bindPort || 'Auto'} → {item.definition.targetHost}:{item.definition.targetPort}</small></span>
+              <span className="tunnel-list-copy"><strong>{item.definition.name}</strong><small>{item.definition.mode === 'local' ? 'Local forward' : 'Remote forward'}</small><small>{item.definition.mode === 'local'
+                ? `Local ${item.definition.bindHost}:${item.definition.bindPort || 'Auto'} → Remote ${item.definition.targetHost}:${item.definition.targetPort}`
+                : `SSH server ${item.definition.bindHost}:${item.definition.bindPort || 'Auto'} → Local ${item.definition.targetHost}:${item.definition.targetPort}`}</small></span>
                 <span className="tunnel-list-state">{statusLabel(item.status)}</span>
               </button>
             </li>)}
           </ul>
         </section>
-        <section className="tunnel-editor-column" aria-label="Local forward settings">
+        <section className="tunnel-editor-column" aria-label="Tunnel settings">
           <div className="tunnel-editor-heading"><span className="tunnel-editor-icon" aria-hidden="true">↗</span>
-            <div><p className="dialog-eyebrow">LOCAL FORWARD</p><h3>{selected ? 'Forward settings' : 'New local forward'}</h3></div></div>
+            <div><p className="dialog-eyebrow">{mode === 'local' ? 'LOCAL FORWARD' : 'REMOTE FORWARD'}</p><h3>{selected ? 'Forward settings' : `New ${mode} forward`}</h3></div></div>
           <form className="tunnel-form" onSubmit={event => { void submit(event); }}>
             <label htmlFor="tunnel-name">Tunnel name</label>
             <input id="tunnel-name" name="tunnelName" type="text" required maxLength={128} autoComplete="off" disabled={locked || busy}
               placeholder="Development database…" value={name} onChange={event => setName(event.target.value)} />
+
+            <label htmlFor="tunnel-mode">Forward direction</label>
+            <select id="tunnel-mode" name="forwardMode" required disabled={locked || busy} value={mode}
+              onChange={event => setMode(event.target.value as SshTunnelMode)}>
+              <option value="local">Local to remote service</option>
+              <option value="remote">SSH server to local service</option>
+            </select>
+            {mode === 'remote' && <div className="tunnel-exposure-warning" role="note" aria-label="Remote forwarding exposure warning">
+              <strong>The SSH server may expose this listener beyond loopback.</strong>
+              MultiRemoteTerminal requests 127.0.0.1, but the server's GatewayPorts policy may override that request. Confirm the server's forwarding policy before starting.
+            </div>}
 
             <label htmlFor="tunnel-profile">SSH profile</label>
             <select id="tunnel-profile" name="sshProfileId" required disabled={locked || busy || eligibleProfiles.length === 0} value={sessionId}
@@ -139,25 +155,25 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
             {eligibleProfiles.length === 0 && <p className="tunnel-hint">Save an SSH or SFTP profile first to create a forward.</p>}
 
             <div className="tunnel-endpoint-grid">
-              <div><label htmlFor="tunnel-bind-port">Local port</label>
-                <input id="tunnel-bind-port" name="localPort" type="number" required min="0" max="65535" step="1" disabled={locked || busy}
+              <div><label htmlFor="tunnel-bind-port">{mode === 'local' ? 'Local port' : 'Remote port'}</label>
+                <input id="tunnel-bind-port" name="bindPort" type="number" required min="0" max="65535" step="1" disabled={locked || busy}
                   value={bindPort} onChange={event => setBindPort(event.target.value)} />
               </div>
-              <div className="tunnel-bind-host"><span className="tunnel-field-label">Local address</span><code>127.0.0.1</code></div>
+              <div className="tunnel-bind-host"><span className="tunnel-field-label">{mode === 'local' ? 'Local address' : 'SSH server address'}</span><code>127.0.0.1</code></div>
             </div>
-            <p className="tunnel-hint">Use port 0 to let Windows choose an available local port.</p>
+            <p className="tunnel-hint">{mode === 'local' ? 'Use port 0 to let this computer choose an available port.' : 'Use port 0 to let the SSH server choose an available port. The app requests a loopback bind.'}</p>
 
-            <label htmlFor="tunnel-target-host">Remote destination host</label>
-            <input id="tunnel-target-host" name="remoteHost" type="text" required maxLength={255} autoComplete="off" spellCheck={false} disabled={locked || busy}
-              placeholder="database.internal…" value={targetHost} onChange={event => setTargetHost(event.target.value)} />
-            <label htmlFor="tunnel-target-port">Remote destination port</label>
-            <input id="tunnel-target-port" name="remotePort" type="number" required min="1" max="65535" step="1" disabled={locked || busy}
+            <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
+            <input id="tunnel-target-host" name="targetHost" type="text" required maxLength={255} autoComplete="off" spellCheck={false} disabled={locked || busy}
+              placeholder={mode === 'local' ? 'database.internal…' : '127.0.0.1'} value={targetHost} onChange={event => setTargetHost(event.target.value)} />
+            <label htmlFor="tunnel-target-port">{mode === 'local' ? 'Remote destination port' : 'Local destination port'}</label>
+            <input id="tunnel-target-port" name="targetPort" type="number" required min="1" max="65535" step="1" disabled={locked || busy}
               value={targetPort} onChange={event => setTargetPort(event.target.value)} />
 
             {selected && <div className={`tunnel-status-card ${selected.status.state}`} role="status" aria-live="polite">
               <span className={`tunnel-state-dot ${selected.status.state}`} aria-hidden="true" />
-              <div><strong>{statusLabel(selected.status)}</strong>
-                {selected.status.state === 'active' ? <code>{selected.status.bindHost}:{selected.status.bindPort} → {selected.definition.targetHost}:{selected.definition.targetPort}</code>
+              <div><strong>{statusLabel(selected.status)}</strong><small>{selected.definition.mode === 'local' ? 'Local forward' : 'Remote forward'}</small>
+                {selected.status.state === 'active' ? <code>{selected.definition.mode === 'local' ? 'Local' : 'SSH server'} {selected.status.bindHost}:{selected.status.bindPort} → {selected.definition.mode === 'local' ? 'Remote' : 'Local'} {selected.definition.targetHost}:{selected.definition.targetPort}</code>
                   : selected.status.state === 'failed' ? <small>The saved definition remains available to retry.</small>
                     : <small>Saved tunnels remain stopped until you start them.</small>}</div>
             </div>}

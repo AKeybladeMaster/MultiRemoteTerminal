@@ -3,11 +3,11 @@ import type { ErrorCode, Outcome } from './errors.ts';
 import { canonicalizeRemoteEndpoint } from './remote-endpoint.ts';
 import { isSessionDefinitionId } from './session-definition.ts';
 
-export interface LocalTunnelDefinition {
+export interface SshTunnelDefinition {
   readonly id: string;
   readonly sessionId: string;
   readonly name: string;
-  readonly mode: 'local';
+  readonly mode: SshTunnelMode;
   readonly bindHost: '127.0.0.1';
   readonly bindPort: number;
   readonly targetHost: string;
@@ -15,16 +15,18 @@ export interface LocalTunnelDefinition {
   readonly createdAt: string;
 }
 
-export interface LocalTunnelDraft {
+export interface SshTunnelDraft {
   readonly id?: string;
   readonly sessionId: string;
   readonly name: string;
-  readonly mode: 'local';
+  readonly mode: SshTunnelMode;
   readonly bindHost: '127.0.0.1';
   readonly bindPort: number;
   readonly targetHost: string;
   readonly targetPort: number;
 }
+
+export type SshTunnelMode = 'local' | 'remote';
 
 export type TunnelRunStatus =
   | { readonly tunnelId: string; readonly state: 'stopped' | 'starting' | 'stopping' }
@@ -33,8 +35,8 @@ export type TunnelRunStatus =
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function normalizeLocalTunnelDraft(value: unknown): LocalTunnelDraft | undefined {
-  if (!isPlainRecord(value) || value.mode !== 'local' ||
+export function normalizeSshTunnelDraft(value: unknown): SshTunnelDraft | undefined {
+  if (!isPlainRecord(value) || (value.mode !== 'local' && value.mode !== 'remote') ||
       !exactKeys(value, ['sessionId', 'name', 'mode', 'bindHost', 'bindPort', 'targetHost', 'targetPort'], ['id'])) return undefined;
   const id = value.id;
   const sessionId = value.sessionId;
@@ -45,14 +47,14 @@ export function normalizeLocalTunnelDraft(value: unknown): LocalTunnelDraft | un
   if (!isSessionDefinitionId(sessionId) || !name || value.bindHost !== '127.0.0.1' ||
       !Number.isSafeInteger(bindPort) || (bindPort as number) < 0 || (bindPort as number) > 65_535 || !endpoint) return undefined;
   return {
-    ...(id === undefined ? {} : { id }), sessionId, name, mode: 'local', bindHost: '127.0.0.1',
+    ...(id === undefined ? {} : { id }), sessionId, name, mode: value.mode, bindHost: '127.0.0.1',
     bindPort: bindPort as number, targetHost: endpoint.host, targetPort: endpoint.port
   };
 }
 
-export function isLocalTunnelDefinition(value: unknown): value is LocalTunnelDefinition {
+export function isSshTunnelDefinition(value: unknown): value is SshTunnelDefinition {
   if (!isPlainRecord(value) || !exactKeys(value, ['id', 'sessionId', 'name', 'mode', 'bindHost', 'bindPort', 'targetHost', 'targetPort', 'createdAt'])) return false;
-  const draft = normalizeLocalTunnelDraft({
+  const draft = normalizeSshTunnelDraft({
     id: value.id, sessionId: value.sessionId, name: value.name, mode: value.mode, bindHost: value.bindHost,
     bindPort: value.bindPort, targetHost: value.targetHost, targetPort: value.targetPort
   });

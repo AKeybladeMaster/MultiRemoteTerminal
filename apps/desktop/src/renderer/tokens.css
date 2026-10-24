@@ -260,8 +260,8 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .ssh-connect-dialog input:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .ssh-connect-dialog select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .ssh-connect-dialog input[type="number"] { width: min(260px, 100%); }
-.telnet-plaintext-warning { margin: 0 0 16px; padding: 11px 12px; border-left: 3px solid #e59d32; background: color-mix(in srgb, #e59d32 14%, var(--surface)); color: var(--text); font-size: 13px; line-height: 1.5; }
-.telnet-plaintext-warning strong { display: block; margin-bottom: 3px; }
+.telnet-plaintext-warning, .tunnel-exposure-warning { margin: 0 0 16px; padding: 11px 12px; border-left: 3px solid #e59d32; background: color-mix(in srgb, #e59d32 14%, var(--surface)); color: var(--text); font-size: 13px; line-height: 1.5; }
+.telnet-plaintext-warning strong, .tunnel-exposure-warning strong { display: block; margin-bottom: 3px; }
 .telnet-connect-dialog .ssh-connect-actions { margin-top: 10px; }
 .ssh-connect-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .ssh-connect-actions button {
