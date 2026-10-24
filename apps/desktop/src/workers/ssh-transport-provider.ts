@@ -26,7 +26,7 @@ const SFTP_OPERATION_TIMEOUT_MS = 10_000;
 const SFTP_CLOSE_GRACE_MS = 1_000;
 const SFTP_STATUS_EOF = 1;
 const LOCAL_FORWARD_BIND_TIMEOUT_MS = 10_000;
-const LOCAL_FORWARD_OPEN_TIMEOUT_MS = 15_000;
+const FORWARDED_CONNECTION_OPEN_TIMEOUT_MS = 15_000;
 const LOCAL_FORWARD_CLOSE_GRACE_MS = 1_000;
 const REMOTE_FORWARD_BIND_TIMEOUT_MS = 10_000;
 const REMOTE_FORWARD_CLOSE_GRACE_MS = 1_500;
@@ -126,6 +126,7 @@ interface RuntimeSession {
 export function createSshTransportProvider(
   clients: SshTransportClientFactory,
   publish: (event: LocalTerminalEvent) => void,
+  connectToDestination: (port: number, host: string) => Socket = connectTcp,
 ): SshTransportProvider {
   const sessions = new Map<string, RuntimeSession>();
   const fileTransfers = createSftpFileTransfers();
@@ -200,7 +201,7 @@ export function createSshTransportProvider(
     catch { reject(); return; }
     const connection: RemoteForwardedConnection = {
       channel,
-      timer: setTimeout(() => closeRemoteForwardConnection(forward, connection), LOCAL_FORWARD_OPEN_TIMEOUT_MS),
+      timer: setTimeout(() => closeRemoteForwardConnection(forward, connection), FORWARDED_CONNECTION_OPEN_TIMEOUT_MS),
       closed: false
     };
     forward.connections.add(connection);
@@ -208,7 +209,7 @@ export function createSshTransportProvider(
     channel.once('close', () => closeRemoteForwardConnection(forward, connection));
 
     let socket: Socket;
-    try { socket = connectTcp(forward.definition.targetPort, forward.definition.targetHost); }
+    try { socket = connectToDestination(forward.definition.targetPort, forward.definition.targetHost); }
     catch { closeRemoteForwardConnection(forward, connection); return; }
     connection.socket = socket;
     socket.once('error', () => closeRemoteForwardConnection(forward, connection));
@@ -250,7 +251,7 @@ export function createSshTransportProvider(
     }
     const connection: ForwardedConnection = {
       socket,
-      timer: setTimeout(() => closeForwardConnection(forward, connection), LOCAL_FORWARD_OPEN_TIMEOUT_MS),
+      timer: setTimeout(() => closeForwardConnection(forward, connection), FORWARDED_CONNECTION_OPEN_TIMEOUT_MS),
       closed: false
     };
     forward.connections.add(connection);

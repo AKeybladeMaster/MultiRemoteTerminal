@@ -27,13 +27,15 @@
 
 ## Validation
 
-Validation ran on Windows x64 with Node 24.14.1 and Electron 45:
+`corepack pnpm check` passed on Windows x64 with Node 24.14.1 and Electron 45,
+running these stages:
 
 - `corepack pnpm typecheck` passed for the TypeScript projects and tools.
 - `corepack pnpm lint` passed ESLint and import-boundary checks.
-- `corepack pnpm test` passed all 218 unit tests, including remote-mode validation, SQLite
+- `corepack pnpm test` passed all 220 unit tests, including remote-mode validation, SQLite
   persistence, worker protocol validation, controller lifecycle, provider
-  traffic/cleanup, the 64-channel rejection bound and late bind-timeout cleanup.
+  traffic/cleanup, the 64-channel rejection bound, and bind-, channel-open- and
+  unbind-timeout cleanup.
 - `corepack pnpm build` passed the native and renderer builds. Vite reported the existing non-fatal
   renderer chunk-size warning (643.46 kB minified, above its 500 kB advisory).
 - `corepack pnpm exec playwright test` passed all 16 Electron E2E scenarios.

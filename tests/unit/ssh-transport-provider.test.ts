@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { connect as connectTcp, createServer } from 'node:net';
-import type { Server } from 'node:net';
+import type { Server, Socket } from 'node:net';
 import { createSshTransportProvider } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshTransportChannel as ClientChannel, SshTransportClient as Client, SshTransportConfig as ConnectConfig } from '../../apps/desktop/src/workers/ssh-transport-provider.ts';
 import type { SshHostKeyParser } from '../../apps/desktop/src/adapters/host-key-evidence.ts';
@@ -66,6 +66,8 @@ class RemoteForwardingFakeClient extends FakeClient {
   readonly forwardInCalls: Array<{ readonly address: string; readonly port: number }> = [];
   readonly unforwardInCalls: Array<{ readonly address: string; readonly port: number }> = [];
   readonly assignedPort = 47_321;
+  readonly acknowledgeUnforward: boolean;
+  constructor(acknowledgeUnforward = true) { super(); this.acknowledgeUnforward = acknowledgeUnforward; }
   forwardIn(address: string, port: number, callback?: (error: Error | undefined, port: number) => void): this {
     this.forwardInCalls.push({ address, port });
     callback?.(undefined, port === 0 ? this.assignedPort : 0);
@@ -73,7 +75,7 @@ class RemoteForwardingFakeClient extends FakeClient {
   }
   unforwardIn(address: string, port: number, callback?: (error?: Error) => void): this {
     this.unforwardInCalls.push({ address, port });
-    callback?.();
+    if (this.acknowledgeUnforward) callback?.();
     return this;
   }
   attemptRemoteConnection(port: number): { readonly channel?: PassThrough; readonly rejected: boolean } {
@@ -291,6 +293,37 @@ test('remote SSH forwarding rejects connections beyond the 64-channel bound and 
   }
 });
 
+test('a remote forwarded channel is closed when connecting to its local destination exceeds the open deadline', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new RemoteForwardingFakeClient();
+  const destinationSockets: PassThrough[] = [];
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {}, () => {
+    const socket = new PassThrough();
+    destinationSockets.push(socket);
+    return socket as unknown as Socket;
+  });
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333339', sessionId, name: 'Slow reverse destination', mode: 'remote' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+    const channel = client.emitRemoteConnection(bindPort);
+    assert.equal(destinationSockets.length, 1);
+
+    context.mock.timers.tick(15_000);
+    assert.equal(channel.destroyed, true);
+    assert.equal(destinationSockets[0]?.destroyed, true);
+    const retry = client.attemptRemoteConnection(bindPort);
+    assert.ok(retry.channel, 'the timed-out connection releases its slot');
+    retry.channel?.destroy();
+  } finally {
+    await provider.close(sessionId);
+    context.mock.timers.reset();
+  }
+});
+
 test('a late remote bind result is explicitly unbound after the setup timeout', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const client = new DelayedRemoteForwardingFakeClient();
@@ -307,6 +340,31 @@ test('a late remote bind result is explicitly unbound after the setup timeout', 
 
     client.completeForwardIn();
     assert.deepEqual(client.unforwardInCalls, [{ address: '127.0.0.1', port: client.assignedPort }]);
+  } finally {
+    await provider.close(sessionId);
+    context.mock.timers.reset();
+  }
+});
+
+test('a missing remote unbind acknowledgement cannot hold stop beyond its deadline', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new RemoteForwardingFakeClient(false);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333340', sessionId, name: 'Unacknowledged reverse bind', mode: 'remote' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+    const stopping = provider.stopForward(sessionId, definition.id);
+    assert.deepEqual(client.unforwardInCalls, [{ address: '127.0.0.1', port: bindPort }]);
+
+    context.mock.timers.tick(1_500);
+    await stopping;
+    assert.equal(client.ended, false, 'the worker provider remains available until the controller closes the dedicated SSH runtime');
+    await provider.close(sessionId);
+    assert.equal(client.ended, true, 'closing the dedicated transport drops an unacknowledged server-side bind');
   } finally {
     await provider.close(sessionId);
     context.mock.timers.reset();
