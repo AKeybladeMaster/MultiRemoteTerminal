@@ -26,7 +26,7 @@
 ## Electron minimum configuration
 
 - Current patched Electron version; renderer `sandbox=true`, `contextIsolation=true`, `nodeIntegration=false`, secure custom app protocol, `webSecurity=true`.
-- Deny unnecessary permissions and navigation. The only current permission exception is `clipboard-sanitized-write` for the trusted `mrt://app` main frame; clipboard reads, subframes and all other origins remain denied. The renderer requests a write only from the explicit terminal-tab Copy selection action. External URL access requires allowlisting.
+- Deny unnecessary permissions and navigation. The only current permission exception is `clipboard-sanitized-write` for the trusted `mrt://app` main frame; clipboard reads from the renderer, subframes and all other origins remain denied. Copy selection writes only after the explicit terminal-tab action. Ctrl+V and Ctrl+Shift+V are handled by xterm's focused terminal and send a typed session-only paste request; the main broker reads at most 16,384 characters and writes directly to that session, so clipboard contents never return to the renderer. NUL-containing and oversized text is rejected. External URL access requires allowlisting.
 - Strict CSP; no unsafe-eval, no arbitrary HTML/JS rendering of terminal output.
 - Validate IPC origin/sender and schemas for **every** command; do not expose raw `ipcRenderer` from preload.
 - Main or privileged worker owns filesystem, system processes and vault. Distinguish worker process isolation from a strong OS sandbox.
@@ -67,6 +67,8 @@ Saved-folder bundle files are explicit user-selected imports/exports through Ele
 ## Third-party licensing and integrity
 
 Every bundled or launched provider has `name`, `source`, `version`, `license`, `distribution-rights`, `hash/signature-check`, `update-policy`, `vulnerability-scan-status`. GPL/LGPL components require counsel/maintenance review before bundling; prefer explicit user-installed providers if unclear. Never copy comparison-product proprietary assets or internal scripts.
+
+Optional Git for Windows Bash is user-installed and is not redistributed by the application. Opening a Bash terminal is an explicit user action; its normal `--login -i` startup files therefore run as part of launching the selected shell. This is separate from an app-managed profile script, which remains disabled unless previewed and explicitly enabled. The current resolver checks the standard install path but does not enforce a signature or hash; consult [WP-01's provider record](dependencies/WP-01.md) for the observed machine evidence and its limitation.
 
 ## Release security gate
 

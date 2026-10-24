@@ -11,12 +11,24 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-    'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+    'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
     'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'onTerminalEvent', 'onSshTrustEvent']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload invokes explicit clipboard paste with only the selected session id', async () => {
+  const sessionId = id();
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => { seen.push(request); return { requestId: id(), ok: true, result: {} }; }, id);
+  assert.equal((await bridge.pasteTerminal(sessionId)).ok, true);
+  assert.equal((await bridge.pasteSshTerminal(sessionId)).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'terminal.paste', requestId: id(), contractVersion: 1, payload: { sessionId } },
+    { command: 'ssh.paste', requestId: id(), contractVersion: 1, payload: { sessionId } }
+  ]);
 });
 
 test('preload exposes saved-folder import and export through fixed commands', async () => {

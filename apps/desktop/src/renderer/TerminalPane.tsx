@@ -53,6 +53,17 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
         if (!reply.ok) onError(`Terminal input could not be sent (${reply.error.code}).`);
       });
     });
+    instance.attachCustomKeyEventHandler(event => {
+      if (event.type !== 'keydown' || !event.ctrlKey || event.altKey || event.key.toLowerCase() !== 'v') return true;
+      event.preventDefault();
+      const pasted = transport === 'ssh'
+        ? window.multiRemoteTerminal.pasteSshTerminal(sessionId)
+        : window.multiRemoteTerminal.pasteTerminal(sessionId);
+      void pasted.then(reply => {
+        if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
+      });
+      return false;
+    });
     instance.onResize(({ cols, rows }) => {
       if (!canWriteRef.current) return;
       const resized = transport === 'ssh'

@@ -52,7 +52,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   }
 
   function requestId(): string { return makeId(); }
-  function voidRequest(command: 'terminal.write' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' | 'ssh.write' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
+  function voidRequest(command: 'terminal.write' | 'terminal.paste' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' |
+    'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
     'session.folder.delete' | 'session.move', payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
@@ -77,6 +78,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         else pendingWriteChars.delete(sessionId);
       };
       return send(voidRequest('terminal.write', { sessionId, data }), 5_000, settle);
+    },
+    pasteTerminal(sessionId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('terminal.paste', { sessionId }), 5_000);
     },
     resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
       return send(voidRequest('terminal.resize', { sessionId, columns, rows }), 5_000);
@@ -103,6 +107,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         else pendingWriteChars.delete(sessionId);
       };
       return send(voidRequest('ssh.write', { sessionId, data }), 5_000, settle);
+    },
+    pasteSshTerminal(sessionId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('ssh.paste', { sessionId }), 5_000);
     },
     resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
       return send(voidRequest('ssh.resize', { sessionId, columns, rows }), 5_000);

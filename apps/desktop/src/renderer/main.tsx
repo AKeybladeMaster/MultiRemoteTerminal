@@ -46,17 +46,15 @@ interface PaletteCommand {
   readonly run: () => void;
 }
 
-function shellName(shell: LocalShell): string {
-  return shell === 'powershell' ? 'PowerShell' : shell === 'cmd' ? 'cmd' : 'Bash';
-}
+const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly badge: string; readonly mark: string }> = {
+  powershell: { name: 'PowerShell', badge: 'PS', mark: '›_' },
+  cmd: { name: 'cmd', badge: 'CMD', mark: 'C:\\' },
+  bash: { name: 'Bash', badge: 'BASH', mark: '$' }
+};
 
-function shellBadge(shell: LocalShell): string {
-  return shell === 'powershell' ? 'PS' : shell === 'cmd' ? 'CMD' : 'BASH';
-}
-
-function shellMark(shell: LocalShell): string {
-  return shell === 'powershell' ? '›_' : shell === 'cmd' ? 'C:\\' : '$';
-}
+function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell].name; }
+function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell].badge; }
+function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
 function openingName(opening: OpeningTerminal): string {
   return opening.transport === 'local' ? `${shellName(opening.shell)} terminal` : `SSH connection to ${sshEndpointLabel(opening.host, opening.port)}`;

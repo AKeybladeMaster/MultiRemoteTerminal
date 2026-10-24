@@ -2,13 +2,14 @@ import { test, expect, _electron as electron } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
 const unicodeSample = String.fromCodePoint(0x416, 0x96ea, 0x1f642);
+const bashUnicodeSample = String.fromCodePoint(0x416, 0x96ea);
 let nextPowerShellSizeProbe = 0;
 
 function electronEnvironment(): Record<string, string> {
@@ -59,9 +60,8 @@ function windowsPowerShellExecutable(): string {
 }
 
 function installedGitBashExecutable(): string | undefined {
-  const roots = [process.env.ProgramW6432, process.env.ProgramFiles, process.env['ProgramFiles(x86)'],
-    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs') : undefined];
-  return roots.filter((root): root is string => Boolean(root)).map(root => join(root, 'Git', 'bin', 'bash.exe')).find(existsSync);
+  try { return resolveShellExecutable('bash'); }
+  catch { return undefined; }
 }
 
 function processIsRunning(pid: number): boolean {
@@ -713,8 +713,8 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.require).toBe('undefined');
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
-    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
+    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+      'openSshTerminal', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
@@ -859,7 +859,32 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await runPaletteCommand(page, 'New Bash terminal');
     await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
     const versionCommand = "printf 'MRT-BASH:%s\\n' \"$BASH_VERSION\"";
-    await sendLine(page, 'Bash session 1', versionCommand, /MRT-BASH:\d+\.\d+/);
+    await sendLine(page, 'Bash session 1', "printf 'MRT-BASH-OUTPUT:%s\\n' $'\\U0001F642'", `MRT-BASH-OUTPUT:${String.fromCodePoint(0x1f642)}`);
+
+    const bashPanel = await selectTerminal(page, 'Bash session 1');
+    const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
+    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);
+    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(pasteCommand);
+    await bashPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(bashPanel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('Control+V');
+    await page.keyboard.press('Enter');
+    await expect(bashPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:${bashUnicodeSample}`, { timeout: 15_000 });
+
+    const initialWidth = await page.evaluate(() => innerWidth);
+    const initialSizeCommand = "printf 'MRT-BASH-SIZE:%s\\n' \"$(stty size)\"";
+    const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE:\d+ \d+/);
+    const initialSizeMatch = (await initialSize.rows.innerText()).match(/MRT-BASH-SIZE:(\d+) (\d+)/);
+    const initialColumns = Number(initialSizeMatch?.[2]);
+    expect(Number.isSafeInteger(initialColumns) && initialColumns > 1).toBe(true);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(initialWidth);
+    let resizedColumns = initialColumns;
+    await expect.poll(async () => {
+      const resized = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE:\d+ \d+/);
+      resizedColumns = Number((await resized.rows.innerText()).match(/MRT-BASH-SIZE:(\d+) (\d+)/)?.[2]);
+      return resizedColumns;
+    }, { timeout: 10_000, intervals: [250] }).toBeLessThan(initialColumns);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();
     const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
@@ -870,6 +895,16 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await openSaved.click();
     await expect(page.getByRole('tab', { name: 'Reusable Bash', exact: true })).toBeVisible({ timeout: 15_000 });
     await sendLine(page, 'Reusable Bash', versionCommand, /MRT-BASH:\d+\.\d+/);
+
+    await runPaletteCommand(page, 'New Bash terminal');
+    const bashTabs = page.getByRole('tab').filter({ hasText: /Bash session \d+/ });
+    await expect(bashTabs).toHaveCount(2, { timeout: 15_000 });
+    await bashTabs.last().focus();
+    await page.keyboard.press('Control+W');
+    const closeConfirmation = page.getByRole('alertdialog');
+    await expect(closeConfirmation).toContainText('Bash session');
+    await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
+    await expect(bashTabs).toHaveCount(1);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

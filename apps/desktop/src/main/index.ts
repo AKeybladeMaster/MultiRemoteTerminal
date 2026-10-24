@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -262,7 +262,8 @@ function boot(): void {
     try {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
-        noteUserActivity: () => idleLock.noteUserActivity(), terminals, sshTerminals, sessionCatalog, cancellation: cancellation.signal
+        noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
+        terminals, sshTerminals, sessionCatalog, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
