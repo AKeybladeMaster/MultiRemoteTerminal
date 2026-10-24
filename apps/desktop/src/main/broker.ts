@@ -35,13 +35,16 @@ export interface CommandActions {
 async function pasteFromClipboard(
   requestId: string,
   sessionId: string,
-  actions: Pick<CommandActions, 'readClipboardText' | 'confirmMultilinePaste'>,
+  actions: Pick<CommandActions, 'readClipboardText' | 'confirmMultilinePaste' | 'cancellation'>,
   write: (sessionId: string, data: string) => Promise<Outcome<Record<string, never>>>,
 ): Promise<CommandReply<Record<string, never>>> {
+  if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
   const data = await actions.readClipboardText();
+  if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
   if (data.length > MAX_TERMINAL_INPUT_CHARS) return { requestId, ...failure('OUTPUT_LIMIT', 'terminal') };
   if (data.includes('\0')) return { requestId, ...failure('INVALID_REQUEST') };
   if (/[\r\n]/u.test(data) && !await actions.confirmMultilinePaste()) return { requestId, ...failure('CANCELLED', 'terminal') };
+  if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
   return { requestId, ...await write(sessionId, data) };
 }
 

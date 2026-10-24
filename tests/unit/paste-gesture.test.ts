@@ -44,10 +44,12 @@ test('preload authorizes only trusted paste keys from a terminal and binds them 
   assert.equal(await gestures.consume(firstSession), false);
   assert.deepEqual(authorized, []);
   keydown?.(event());
+  assert.deepEqual(authorized, [], 'a terminal key only stores a local gesture until the bridge consumes it');
+  assert.equal(await gestures.consume(secondSession), false);
+  const authorizedPaste = gestures.consume(firstSession);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(authorized, [firstSession]);
-  assert.equal(await gestures.consume(secondSession), false);
-  assert.equal(await gestures.consume(firstSession), true);
+  assert.equal(await authorizedPaste, true);
   assert.equal(await gestures.consume(firstSession), false);
   keydown?.(event());
   now += 751;

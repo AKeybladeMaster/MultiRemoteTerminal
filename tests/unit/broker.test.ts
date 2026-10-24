@@ -196,6 +196,22 @@ test('confirmed multiline clipboard paste is sent only after the native confirma
   assert.deepEqual(writes, ['echo first\r\necho second']);
 });
 
+test('clipboard paste does not write after its renderer request is cancelled during confirmation', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let writes = 0;
+  const cancellation = { aborted: false, addEventListener() {}, removeEventListener() {} };
+  const base = actions();
+  const withClipboard: CommandActions = { ...base, cancellation, authorizeClipboardPaste: () => true,
+    readClipboardText: async () => 'echo first\necho second',
+    confirmMultilinePaste: async () => { cancellation.aborted = true; return true; },
+    terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
+  const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, withClipboard, () => {});
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'CANCELLED');
+  assert.equal(writes, 0);
+});
+
 test('rejects foreign windows, subframes, origins and documents before dispatch', async () => {
   let dispatched = false;
   for (const sender of [{ ...owner, owned: false }, { ...owner, mainFrame: false },

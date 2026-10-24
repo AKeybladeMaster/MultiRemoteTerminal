@@ -41,6 +41,51 @@ test('preload does not invoke clipboard paste without a trusted terminal gesture
   assert.equal(calls, 0);
 });
 
+test('preload keeps later terminal input behind a paste awaiting gesture authorization', async () => {
+  const sessionId = id();
+  const commands: string[] = [];
+  let allowPaste!: (allowed: boolean) => void;
+  let signalAuthorizationRequested!: () => void;
+  const authorizationRequested = new Promise<void>(resolve => { signalAuthorizationRequested = resolve; });
+  const authorization = new Promise<boolean>(resolve => { allowPaste = resolve; });
+  const bridge = createBridge(async request => {
+    commands.push(request.command);
+    return { requestId: request.requestId, ok: true, result: {} };
+  }, id, undefined, undefined, undefined, async () => {
+    signalAuthorizationRequested();
+    return authorization;
+  });
+  const paste = bridge.pasteTerminal(sessionId);
+  const enter = bridge.writeTerminal(sessionId, '\r');
+  await authorizationRequested;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, [], 'no later input may reach the shell while paste is awaiting authorization');
+  allowPaste(true);
+  const replies = await Promise.all([paste, enter]);
+  assert.equal(replies.every(reply => reply.ok), true);
+  assert.deepEqual(commands, ['terminal.paste', 'terminal.write']);
+});
+
+test('preload sends a pending write before a paste requested while it is still in flight', async () => {
+  const sessionId = id();
+  const commands: string[] = [];
+  let finishWrite!: (reply: unknown) => void;
+  const bridge = createBridge(request => {
+    commands.push(request.command);
+    if (request.command === 'terminal.write') return new Promise(resolve => { finishWrite = resolve; });
+    return Promise.resolve({ requestId: request.requestId, ok: true, result: {} });
+  }, id, undefined, undefined, undefined, () => true);
+  const write = bridge.writeTerminal(sessionId, 'echo before paste');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const paste = bridge.pasteTerminal(sessionId);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, ['terminal.write'], 'paste must wait for input already sent to the main process');
+  finishWrite({ requestId: id(), ok: true, result: {} });
+  assert.equal((await write).ok, true);
+  assert.equal((await paste).ok, true);
+  assert.deepEqual(commands, ['terminal.write', 'terminal.paste']);
+});
+
 test('preload exposes saved-folder import and export through fixed commands', async () => {
   const folderId = '18f2f903-7b6f-4c8d-9c42-b63a58c4b087';
   const seen: unknown[] = [];
@@ -70,6 +115,20 @@ test('saved-folder native picker requests wait for user dismissal without an IPC
   assert.equal(settled, false);
   finish({ requestId: id(), ok: true, result: { folderCount: 1, sessionCount: 0, createdFolderCount: 1, createdSessionCount: 0 } });
   assert.equal((await pending).ok, true);
+});
+
+test('clipboard paste waits for the main-process confirmation result without a misleading timeout', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish!: (value: unknown) => void;
+  const bridge = createBridge(() => new Promise(resolve => { finish = resolve; }), id,
+    undefined, undefined, undefined, () => true);
+  let settled = false;
+  const pending = bridge.pasteTerminal(id()).then(reply => { settled = true; return reply; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(120_000);
+  assert.equal(settled, false, 'an open native confirmation is an explicit user decision, not a paste timeout');
+  finish({ requestId: id(), ok: true, result: {} });
+  assert.deepEqual(await pending, { requestId: id(), ok: true, result: {} });
 });
 
 test('preload routes saved-session commands through fixed validated requests', async () => {

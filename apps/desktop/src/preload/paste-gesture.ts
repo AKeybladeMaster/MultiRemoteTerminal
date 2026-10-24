@@ -34,7 +34,7 @@ export interface TerminalPasteGestureStore {
 
 export function installTerminalPasteGestureStore(documentTarget: PasteGestureDocument,
   authorize: (sessionId: string) => Promise<boolean>, now: () => number = () => performance.now()): TerminalPasteGestureStore {
-  const gestures = new Map<string, { readonly expiresAt: number; readonly authorization: Promise<boolean> }>();
+  const gestures = new Map<string, { readonly expiresAt: number }>();
   const observeKeydown = (event: Event): void => {
     const key = event as unknown as TrustedPasteKeyEvent;
     if (key.type !== 'keydown' || !key.isTrusted || key.repeat || !key.ctrlKey && !key.metaKey || key.altKey || key.key.toLowerCase() !== 'v') return;
@@ -46,8 +46,7 @@ export function installTerminalPasteGestureStore(documentTarget: PasteGestureDoc
       if (oldest !== undefined) gestures.delete(oldest);
     }
     gestures.delete(sessionId);
-    const authorization = Promise.resolve().then(() => authorize(sessionId)).then(value => value === true, () => false);
-    gestures.set(sessionId, { expiresAt: now() + GESTURE_TTL_MS, authorization });
+    gestures.set(sessionId, { expiresAt: now() + GESTURE_TTL_MS });
   };
   documentTarget.addEventListener('keydown', observeKeydown, true);
   return Object.freeze({
@@ -55,7 +54,8 @@ export function installTerminalPasteGestureStore(documentTarget: PasteGestureDoc
       const gesture = gestures.get(sessionId);
       gestures.delete(sessionId);
       if (!gesture || gesture.expiresAt < now()) return false;
-      return gesture.authorization;
+      try { return await authorize(sessionId) === true; }
+      catch { return false; }
     },
     dispose(): void {
       documentTarget.removeEventListener('keydown', observeKeydown, true);

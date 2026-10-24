@@ -250,8 +250,11 @@ function boot(): void {
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
     const catalogRequest = parsed.ok && parsed.result.command.startsWith('session.') && owned && mainFrame && isAppDocument(frameUrl);
+    const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste') &&
+      owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
     const trackedRequestId = catalogRequest && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
+    const observeSenderLifecycle = catalogRequest || pasteRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,
@@ -260,6 +263,8 @@ function boot(): void {
     };
     if (trackedRequestId) {
       trackCatalogCommand(event.sender.id, trackedRequestId, pending, true);
+    }
+    if (observeSenderLifecycle && !event.sender.isDestroyed()) {
       event.sender.once('destroyed', cancelIfSenderCloses);
       event.sender.once('render-process-gone', cancelIfSenderCloses);
     } else if (event.sender.isDestroyed()) cancelIfSenderCloses();
@@ -292,9 +297,11 @@ function boot(): void {
       }
       return reply;
     } finally {
-      if (trackedRequestId) {
+      if (observeSenderLifecycle) {
         event.sender.removeListener('destroyed', cancelIfSenderCloses);
         event.sender.removeListener('render-process-gone', cancelIfSenderCloses);
+      }
+      if (trackedRequestId) {
         trackCatalogCommand(event.sender.id, trackedRequestId, pending, false);
         pending.complete();
       }
