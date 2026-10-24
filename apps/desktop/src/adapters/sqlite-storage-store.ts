@@ -1,5 +1,6 @@
 import { channel } from 'node:diagnostics_channel';
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import type { UtilityProcess } from 'electron';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
@@ -11,10 +12,12 @@ import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, n
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
+import type { SessionFolderExportResult, SessionFolderImportResult } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
 import type { StorageWorkerErrorCode } from '../workers/storage-protocol.ts';
 import type { StorageWorkerRequest, StorageWorkerResult } from '../workers/storage-protocol.ts';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const START_TIMEOUT_MS = 5_000;
@@ -25,7 +28,7 @@ const storageDiagnostics = channel(STORAGE_DIAGNOSTICS_CHANNEL_NAME);
 type StorageDiagnosticEvent = {
   readonly component: 'storage';
   readonly event: 'protocol-invalid' | 'request-cancelled' | 'request-timeout' | 'startup-error' | 'startup-timeout' | 'worker-exit';
-  readonly code: 'BUSY' | 'CANCELLED' | 'CONFLICT' | 'CORRUPT' | 'NOT_FOUND' | 'UNAVAILABLE';
+  readonly code: 'BUSY' | 'CANCELLED' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
 };
 
 function publishStorageDiagnostic(event: StorageDiagnosticEvent['event'], code: StorageDiagnosticEvent['code']): void {
@@ -47,6 +50,7 @@ interface PendingRequest {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly cancellation?: CredentialPromptCancellation;
+  readonly temporaryPath?: string;
   abortListener?: () => void;
 }
 
@@ -74,9 +78,10 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
   private migration: SharedMigration | undefined;
   private migrated = false;
 
-  constructor(databasePath: string, legacyFilePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher) {
+  constructor(databasePath: string, legacyFilePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher,
+    removeTemporaryFile: (path: string) => Promise<void> = path => rm(path, { force: true })) {
     this.legacyStore = new HostTrustJsonStore(legacyFilePath);
-    this.worker = new StorageWorkerClient(databasePath, workerPath, appRoot, launchWorker);
+    this.worker = new StorageWorkerClient(databasePath, workerPath, appRoot, launchWorker, removeTemporaryFile);
   }
 
   async find(endpoint: SshHostEndpoint, cancellation?: CredentialPromptCancellation): Promise<TrustedHostKey | undefined> {
@@ -181,6 +186,23 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
     return result.value;
   }
 
+  async exportFolderToFile(folderId: string, path: string, cancellation?: CancellationSignal): Promise<SessionFolderExportResult> {
+    if (!isSessionFolderId(folderId) || !isFilePath(path)) throw new HostTrustStoreError('invalid');
+    await this.ensureMigrated(cancellation);
+    const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+    const result = await this.worker.request({ command: 'session.folder.export', folderId, path, temporaryPath }, cancellation);
+    if (result.kind !== 'folderExport') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
+  async importFolderFromFile(path: string, cancellation?: CancellationSignal): Promise<SessionFolderImportResult> {
+    if (!isFilePath(path)) throw new HostTrustStoreError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.folder.import', path }, cancellation);
+    if (result.kind !== 'folderImport') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
   async shutdown(): Promise<void> {
     await this.worker.shutdown();
   }
@@ -232,10 +254,12 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore {
 
 class StorageWorkerClient {
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly exportTemporaryPaths = new Set<string>();
   private readonly databasePath: string;
   private readonly workerPath: string;
   private readonly appRoot: string;
   private readonly launchWorker: StorageWorkerLauncher;
+  private readonly removeTemporaryFile: (path: string) => Promise<void>;
   private worker: UtilityProcess | undefined;
   private shuttingDown = false;
   private requesters = 0;
@@ -245,11 +269,13 @@ class StorageWorkerClient {
   private readyResolve: (() => void) | undefined;
   private readyReject: ((error: Error) => void) | undefined;
 
-  constructor(databasePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher) {
+  constructor(databasePath: string, workerPath: string, appRoot: string, launchWorker: StorageWorkerLauncher,
+    removeTemporaryFile: (path: string) => Promise<void>) {
     this.databasePath = databasePath;
     this.workerPath = workerPath;
     this.appRoot = appRoot;
     this.launchWorker = launchWorker;
+    this.removeTemporaryFile = removeTemporaryFile;
   }
 
   async request(command: StorageWorkerCommand, cancellation?: CredentialPromptCancellation): Promise<StorageWorkerResult> {
@@ -263,31 +289,39 @@ class StorageWorkerClient {
       const requestId = randomUUID();
       const request = { version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'request', requestId, ...command } as StorageWorkerRequest;
       return await new Promise<StorageWorkerResult>((resolve, reject) => {
-        const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 : REQUEST_TIMEOUT_MS;
+        const rejectAfterCleanup = (error: HostTrustStoreError): void => {
+          void this.terminate(worker).then(() => reject(error), () => reject(error));
+        };
+        const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 :
+          request.command === 'session.folder.import' || request.command === 'session.folder.export' ? 60_000 : REQUEST_TIMEOUT_MS;
         const timer = setTimeout(() => {
           const pending = this.pending.get(requestId);
           if (!pending) return;
           this.clearPending(requestId, pending);
           publishStorageDiagnostic('request-timeout', 'BUSY');
-          reject(new HostTrustStoreError('busy'));
-          void this.terminate(worker);
+          rejectAfterCleanup(new HostTrustStoreError('busy'));
         }, timeoutMs);
-        const pending: PendingRequest = { resolve, reject, timer, ...(cancellation ? { cancellation } : {}) };
+        const pending: PendingRequest = {
+          resolve, reject, timer,
+          ...(cancellation ? { cancellation } : {}),
+          ...(command.command === 'session.folder.export' ? { temporaryPath: command.temporaryPath } : {})
+        };
         this.pending.set(requestId, pending);
         if (cancellation) {
           const abortListener = () => {
             if (this.pending.get(requestId) !== pending) return;
             this.clearPending(requestId, pending);
             publishStorageDiagnostic('request-cancelled', 'CANCELLED');
-            reject(new HostTrustStoreError('cancelled'));
-            void this.terminate(worker);
+            rejectAfterCleanup(new HostTrustStoreError('cancelled'));
           };
           pending.abortListener = abortListener;
           cancellation.addEventListener('abort', abortListener, { once: true });
           if (cancellation.aborted) { abortListener(); return; }
         }
+        if (pending.temporaryPath) this.exportTemporaryPaths.add(pending.temporaryPath);
         try { worker.postMessage(request); }
         catch {
+          if (pending.temporaryPath) this.exportTemporaryPaths.delete(pending.temporaryPath);
           this.clearPending(requestId, pending);
           reject(new HostTrustStoreError('unavailable'));
           void this.terminate(worker);
@@ -297,6 +331,7 @@ class StorageWorkerClient {
       if (error instanceof HostTrustStoreError && error.kind === 'cancelled' && this.requesters === 1 && this.pending.size === 0) {
         const worker = this.worker;
         if (worker) await this.terminate(worker);
+        else if (this.workerExit) await this.workerExit;
       }
       throw error;
     } finally {
@@ -368,6 +403,7 @@ class StorageWorkerClient {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
     this.clearPending(message.requestId, pending);
+    if (pending.temporaryPath) this.exportTemporaryPaths.delete(pending.temporaryPath);
     if (message.ok) pending.resolve(message.result);
     else pending.reject(storeError(message.errorCode));
   }
@@ -376,15 +412,25 @@ class StorageWorkerClient {
     if (this.worker !== worker) return;
     if (!this.workerExit) publishStorageDiagnostic('worker-exit', 'UNAVAILABLE');
     this.worker = undefined;
-    this.resolveWorkerExit?.();
-    this.resolveWorkerExit = undefined;
-    this.workerExit = undefined;
+    if (!this.workerExit) {
+      this.workerExit = new Promise<void>(resolveExit => { this.resolveWorkerExit = resolveExit; });
+    }
     const error = new HostTrustStoreError('unavailable');
     this.readyReject?.(error);
-    for (const [requestId, pending] of this.pending) {
-      this.clearPending(requestId, pending);
-      pending.reject(error);
-    }
+    const temporaryPaths = [...this.exportTemporaryPaths];
+    this.exportTemporaryPaths.clear();
+    void Promise.all(temporaryPaths.map(async path => {
+      try { await this.removeTemporaryFile(path); } catch { /* Failed best-effort cleanup cannot block worker recovery. */ }
+    })).then(() => {
+      for (const [requestId, pending] of this.pending) {
+        this.clearPending(requestId, pending);
+        pending.reject(error);
+      }
+      const resolveExit = this.resolveWorkerExit;
+      this.resolveWorkerExit = undefined;
+      this.workerExit = undefined;
+      resolveExit?.();
+    });
   }
 
   private clearPending(requestId: string, pending: PendingRequest): void {
@@ -406,12 +452,15 @@ class StorageWorkerClient {
   }
 }
 
-export { SqliteStorageStore as SqliteHostTrustStore };
-
 function storeError(code: StorageWorkerErrorCode): HostTrustStoreError {
   if (code === 'CONFLICT') return new HostTrustStoreError('conflict');
   if (code === 'NOT_FOUND') return new HostTrustStoreError('not-found');
+  if (code === 'INVALID_BUNDLE') return new HostTrustStoreError('invalid');
   return new HostTrustStoreError(code.toLowerCase() as 'busy' | 'corrupt' | 'unavailable');
+}
+
+function isFilePath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32_767 && !value.includes('\0') && isAbsolute(value);
 }
 
 function throwIfCancelled(cancellation?: CredentialPromptCancellation): void {

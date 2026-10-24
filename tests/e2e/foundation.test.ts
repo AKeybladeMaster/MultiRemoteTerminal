@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -424,6 +424,70 @@ test('saved-session folders create, nest, move, rename, delete safely and persis
   }
 });
 
+test('saved-folder JSON export imports into a fresh profile and stays persisted after restart', async () => {
+  test.setTimeout(90_000);
+  const sourceProfile = await mkdtemp(join(tmpdir(), 'mrt-folder-export-source-'));
+  const targetProfile = await mkdtemp(join(tmpdir(), 'mrt-folder-export-target-'));
+  const bundleDirectory = await mkdtemp(join(tmpdir(), 'mrt-folder-export-file-'));
+  const bundlePath = join(bundleDirectory, 'portable.mrt-session-folder.json');
+  let app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${sourceProfile}`], env: electronEnvironment() });
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'Save active session' });
+    await dialog.getByLabel('Session name').fill('Portable shell');
+    await dialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Create folder' });
+    await dialog.getByLabel('Folder name').fill('Portable');
+    await dialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for saved session Portable shell' }).click();
+    await page.getByRole('button', { name: 'Move saved session Portable shell', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Move Portable shell' });
+    await dialog.getByLabel('Move to').selectOption({ label: 'Portable' });
+    await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePath }) });
+    }, bundlePath);
+    await page.getByRole('button', { name: 'Actions for folder Portable' }).click();
+    await page.getByRole('button', { name: 'Export folder Portable', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
+    const bundleText = await readFile(bundlePath, 'utf8');
+    expect(bundleText).toContain('multiremote-terminal/session-folder');
+    expect(bundleText).toContain('Portable shell');
+    expect(bundleText).not.toMatch(/password|credential|privateKey/i);
+    await app.close();
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, bundlePath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1 saved session (1 folders and 1 sessions added).');
+    await expect(page.getByRole('button', { name: 'Collapse folder Portable', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open Portable shell', exact: true })).toBeVisible();
+    await expect(page.getByLabel('1 saved session')).toBeVisible();
+
+    await app.close();
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Collapse folder Portable', exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Open Portable shell', exact: true })).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(sourceProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(targetProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(bundleDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('a timed-out saved-session write must be checked before retrying, even after dialog dismissal', async () => {
   test.setTimeout(30_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-session-timeout-e2e-'));
@@ -645,7 +709,8 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'writeSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'approveSshHost', 'rejectSshHost', 'revokeSshHost',
       'listSavedSessions', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
-      'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'moveSavedSession',
+      'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
+      'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
       'onTerminalEvent', 'onSshTrustEvent']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));

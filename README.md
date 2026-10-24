@@ -2,7 +2,7 @@
 
 An independent Windows remote terminal workbench, developed incrementally on `dev-1`.
 
-**Current state: WP-03C saved-session folders plus WP-01D terminal interactions.** Saved definitions are kept in the per-user SQLite catalog and survive application exit/restart; this app has no separate account sign-in/logout flow. Windows E2E covers explicit local save, search, favorites, reopen/delete, nested folder operations and persistence, plus `Ctrl+W`/middle-click close confirmation and terminal-tab context actions. Saved definitions contain no credentials or terminal history. F-004 remains planned until the full 1,000-definition workflow passes end-to-end; P-13 is partial because automatic saving through a user preference is not implemented. Saved SSH reconnect still needs a disposable OpenSSH test. There is no installable or portable `.exe` package yet. P-30 syntax highlighting also remains planned; the ANSI color palette is contrast-tested but does not parse command syntax.
+**Current state: WP-03D saved-folder bundles, WP-03C folders and WP-01D terminal interactions.** Saved definitions are kept in the per-user SQLite catalog and survive application exit/restart; this app has no separate account sign-in/logout flow. Windows E2E covers explicit save, search, favorites, reopen/delete, nested folder operations, versioned JSON folder export/import across profiles, persistence after restart, `Ctrl+W`/middle-click close confirmation and terminal-tab context actions. Bundles include connection configuration but exclude credentials and terminal history. F-004 remains planned until the full 1,000-definition workflow passes end-to-end; P-13 is partial because automatic saving through a user preference is not implemented. F-018 is partial because settings templates and encrypted secret export remain outstanding. Saved SSH reconnect still needs a disposable OpenSSH test. There is no installable or portable `.exe` package yet. P-30 syntax highlighting also remains planned; the ANSI color palette is contrast-tested but does not parse command syntax.
 
 ## Run the development preview
 
@@ -30,14 +30,14 @@ npm exec --yes --package=pnpm@12.15.0 -- pnpm dependencies:inventory
 
 - [Start here](docs/CODEX-START-HERE.md), [mandatory rules](AGENTS.md), [canonical specification](docs/SPEC-001-MultiRemoteTerminal.md)
 - [Architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [feature matrix](docs/FEATURE-MATRIX.md), [implementation plan](docs/IMPLEMENTATION-PLAN.md)
-- [WP-00 interfaces](docs/WP-00-CONTRACTS.md), [WP-00 results](docs/results/WP-00-2026-10-23.md), [WP-01 results](docs/results/WP-01-2026-10-23.md), [WP-02 SSH results](docs/results/WP-02-ssh-2026-10-23.md), [WP-03A storage results](docs/results/WP-03-storage-2026-10-23.md), [WP-03B catalog results](docs/results/WP-03B-catalog-2026-10-23.md), [WP-03C folder results](docs/results/WP-03C-folders-2026-10-23.md)
+- [WP-00 interfaces](docs/WP-00-CONTRACTS.md), [WP-00 results](docs/results/WP-00-2026-10-23.md), [WP-01 results](docs/results/WP-01-2026-10-23.md), [WP-02 SSH results](docs/results/WP-02-ssh-2026-10-23.md), [WP-03A storage results](docs/results/WP-03-storage-2026-10-23.md), [WP-03B catalog results](docs/results/WP-03B-catalog-2026-10-23.md), [WP-03C folder results](docs/results/WP-03C-folders-2026-10-23.md), [WP-03D folder bundle results](docs/results/WP-03D-session-folder-bundles-2026-10-24.md)
 - [Dependency decisions](docs/dependencies/)
 
 Domain and application code have no Electron, Node, React, storage or protocol imports. The renderer communicates through typed, validated preload commands; credentials and protocol/storage adapters stay in privileged processes or supervised workers. Main validates window ownership and contracts, and serves only immutable application assets.
 
 ## Development and promotion
 
-`main` is the default branch. Work is prepared on `dev-1` and reviewed before promotion. An MVP release requires complete MVP behavior, Windows smoke/E2E and installer/portable tests, security review, and a signing/verified packaging decision. The current preview does not satisfy that release gate. Next: verify full 1,000-definition acceptance, complete auto-save/settings and import/export behavior, and test saved SSH reconnect against OpenSSH.
+`main` is the default branch. Work is prepared on `dev-1` and reviewed before promotion. An MVP release requires complete MVP behavior, Windows smoke/E2E and installer/portable tests, security review, and a signing/verified packaging decision. The current preview does not satisfy that release gate. Next: add Bash support through an explicitly selected installed WSL shell, verify full 1,000-definition acceptance, complete auto-save/settings, and test saved SSH reconnect against OpenSSH.
 
 ## Independence
 
