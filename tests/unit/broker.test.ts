@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { dispatchCommand } from '../../apps/desktop/src/main/broker.ts';
 import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/broker.ts';
+import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 
@@ -196,17 +198,29 @@ test('confirmed multiline clipboard paste is sent only after the native confirma
   assert.deepEqual(writes, ['echo first\r\necho second']);
 });
 
-test('clipboard paste does not write after its renderer request is cancelled during confirmation', async () => {
+test('renderer teardown cancels pending multiline paste before any terminal write', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   let writes = 0;
-  const cancellation = { aborted: false, addEventListener() {}, removeEventListener() {} };
+  let confirmPaste!: (approved: boolean) => void;
+  let confirmationRequested!: () => void;
+  const requested = new Promise<void>(resolve => { confirmationRequested = resolve; });
+  const confirmation = new Promise<boolean>(resolve => { confirmPaste = resolve; });
+  const cancellation = new AbortController();
+  const sender = new EventEmitter() as EventEmitter & { isDestroyed(): boolean };
+  sender.isDestroyed = () => false;
+  const unbind = bindRendererRequestCancellation(sender as unknown as Parameters<typeof bindRendererRequestCancellation>[0], cancellation);
   const base = actions();
-  const withClipboard: CommandActions = { ...base, cancellation, authorizeClipboardPaste: () => true,
+  const withClipboard: CommandActions = { ...base, cancellation: cancellation.signal, authorizeClipboardPaste: () => true,
     readClipboardText: async () => 'echo first\necho second',
-    confirmMultilinePaste: async () => { cancellation.aborted = true; return true; },
+    confirmMultilinePaste: async () => { confirmationRequested(); return confirmation; },
     terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
-  const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
+  const pending = dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId } }, withClipboard, () => {});
+  await requested;
+  sender.emit('destroyed');
+  confirmPaste(true);
+  const reply = await pending;
+  unbind();
   assert.equal(reply.ok, false);
   if (!reply.ok) assert.equal(reply.error.code, 'CANCELLED');
   assert.equal(writes, 0);

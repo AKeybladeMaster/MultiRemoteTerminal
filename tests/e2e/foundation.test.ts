@@ -255,9 +255,15 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     await openSaved.click();
     await expect(page.getByRole('tab')).toHaveCount(2);
     await expect(page.getByRole('tab').filter({ hasText: 'Reusable PowerShell' })).toHaveCount(1);
-    page.once('dialog', dialog => dialog.accept());
     await page.getByRole('button', { name: 'Actions for saved session Reusable PowerShell' }).click();
-    await page.getByRole('button', { name: 'Delete saved session Reusable PowerShell', exact: true }).click();
+    await expect(page.locator('.saved-session-row').filter({ hasText: 'Reusable PowerShell' }).locator('details.saved-actions-menu')).toHaveAttribute('open', '');
+    const deleteSavedSession = page.getByRole('button', { name: 'Delete saved session Reusable PowerShell', exact: true });
+    await expect(deleteSavedSession).toBeVisible();
+    await expect(deleteSavedSession).toBeEnabled();
+    await Promise.all([
+      page.waitForEvent('dialog', { timeout: 5_000 }).then(dialog => dialog.accept()),
+      deleteSavedSession.click()
+    ]);
     await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
   } finally {
     await app.close();

@@ -86,6 +86,30 @@ test('preload sends a pending write before a paste requested while it is still i
   assert.deepEqual(commands, ['terminal.write', 'terminal.paste']);
 });
 
+test('a timed-out terminal write stays in the ordering barrier until its invocation settles', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = id();
+  const commands: string[] = [];
+  let finishWrite!: (reply: unknown) => void;
+  const bridge = createBridge(request => {
+    commands.push(request.command);
+    if (request.command === 'terminal.write') return new Promise(resolve => { finishWrite = resolve; });
+    return Promise.resolve({ requestId: request.requestId, ok: true, result: {} });
+  }, id, undefined, undefined, undefined, () => true);
+  const write = bridge.writeTerminal(sessionId, 'previous input');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(5_000);
+  const writeReply = await write;
+  assert.equal(writeReply.ok, false);
+  if (!writeReply.ok) assert.equal(writeReply.error.code, 'TIMEOUT');
+  const paste = bridge.pasteTerminal(sessionId);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, ['terminal.write'], 'a timeout reply cannot let later input overtake a still-running invocation');
+  finishWrite({ requestId: id(), ok: true, result: {} });
+  assert.equal((await paste).ok, true);
+  assert.deepEqual(commands, ['terminal.write', 'terminal.paste']);
+});
+
 test('preload exposes saved-folder import and export through fixed commands', async () => {
   const folderId = '18f2f903-7b6f-4c8d-9c42-b63a58c4b087';
   const seen: unknown[] = [];

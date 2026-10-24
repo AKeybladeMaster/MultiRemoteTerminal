@@ -17,7 +17,7 @@ const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 interface TerminalInputBarrier {
   tail: Promise<void>;
-  readonly pendingWrites: Set<Promise<TerminalActionReply>>;
+  readonly pendingWrites: Set<Promise<void>>;
   pendingPaste: boolean;
   closing: boolean;
   closePromise?: Promise<TerminalActionReply>;
@@ -28,7 +28,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
-  const activeTerminalWrites = new Map<string, Set<Promise<TerminalActionReply>>>();
+  const activeTerminalWrites = new Map<string, Set<Promise<void>>>();
   const pendingInputChars = new Map<string, number>();
 
   function send<T>(request: CommandRequest, timeoutMs?: number, onSettled?: () => void): Promise<CommandReply<T>> {
@@ -85,25 +85,33 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     };
   }
 
-  function sendReservedInput(request: CommandRequest, release: () => void, timeoutMs?: number): Promise<TerminalActionReply> {
+  function createSettlementSignal(): { readonly promise: Promise<void>; settle(): void } {
+    let resolve!: () => void;
+    let settled = false;
+    const promise = new Promise<void>(complete => { resolve = complete; });
+    return { promise, settle() { if (settled) return; settled = true; resolve(); } };
+  }
+
+  function sendReservedInput(request: CommandRequest, release: () => void, timeoutMs?: number, onInvocationSettled: () => void = () => {}): Promise<TerminalActionReply> {
+    // A reply timeout only bounds the renderer wait; ordering remains held until invoke itself settles.
     const inFlightBeforeSend = inFlight;
-    const sent = send<Record<string, never>>(request, timeoutMs, release);
-    if (inFlight === inFlightBeforeSend) release();
+    const settle = () => { release(); onInvocationSettled(); };
+    const sent = send<Record<string, never>>(request, timeoutMs, settle);
+    if (inFlight === inFlightBeforeSend) settle();
     return sent;
   }
 
-  function trackTerminalWrite(sessionId: string, write: Promise<TerminalActionReply>): Promise<TerminalActionReply> {
+  function trackTerminalWrite(sessionId: string, invocationSettled: Promise<void>): void {
     let active = activeTerminalWrites.get(sessionId);
     if (!active) {
       active = new Set();
       activeTerminalWrites.set(sessionId, active);
     }
-    const tracked = write.finally(() => {
+    const tracked = invocationSettled.then(() => {
       active?.delete(tracked);
       if (active?.size === 0 && activeTerminalWrites.get(sessionId) === active) activeTerminalWrites.delete(sessionId);
     });
     active.add(tracked);
-    return tracked;
   }
 
   function waitForActiveWrites(sessionId: string): Promise<void> {
@@ -130,23 +138,30 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     if (!reserveInputChars(sessionId, data.length)) return Promise.resolve({ requestId: requestId(), ...failure('BUSY', 'terminal') });
     const request = voidRequest(command, { sessionId, data });
     const release = reserveRelease(sessionId, data.length);
-    if (!barrier) return trackTerminalWrite(sessionId, sendReservedInput(request, release, 5_000));
+    if (!barrier) {
+      const invocation = createSettlementSignal();
+      const reply = sendReservedInput(request, release, 5_000, invocation.settle);
+      trackTerminalWrite(sessionId, invocation.promise);
+      return reply;
+    }
     if (queuedInputOperations >= MAX_PENDING_REQUESTS) {
       release();
       return Promise.resolve({ requestId: request.requestId, ...failure('BUSY', 'terminal') });
     }
     queuedInputOperations++;
-    const queued = barrier.tail.then(() => sendReservedInput(request, release, 5_000))
+    const invocation = createSettlementSignal();
+    const queued = barrier.tail.then(() => sendReservedInput(request, release, 5_000, invocation.settle))
       .catch(() => {
         release();
+        invocation.settle();
         return { requestId: request.requestId, ...failure('UNAVAILABLE', 'terminal') };
-      }).then(reply => {
-        barrier.pendingWrites.delete(queued);
-        finishBarrierOperation(sessionId, barrier);
-        return reply;
       });
-    barrier.pendingWrites.add(queued);
-    barrier.tail = queued.then(() => undefined);
+    const finished = queued.then(() => invocation.promise).then(() => {
+        barrier.pendingWrites.delete(invocation.promise);
+        finishBarrierOperation(sessionId, barrier);
+      });
+    barrier.pendingWrites.add(invocation.promise);
+    barrier.tail = finished;
     return queued;
   }
 

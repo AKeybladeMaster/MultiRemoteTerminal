@@ -23,6 +23,7 @@ import { createWindowsCredentialPrompt } from '../adapters/windows-credential-pr
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { PasteGestureGate } from './paste-gesture.ts';
+import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
 
 app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
@@ -245,7 +246,6 @@ function boot(): void {
   ipcMain.handle(COMMAND_CHANNEL, async (event, input: unknown) => {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
     const cancellation = new AbortController();
-    const cancelIfSenderCloses = () => cancellation.abort();
     const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
@@ -264,10 +264,9 @@ function boot(): void {
     if (trackedRequestId) {
       trackCatalogCommand(event.sender.id, trackedRequestId, pending, true);
     }
-    if (observeSenderLifecycle && !event.sender.isDestroyed()) {
-      event.sender.once('destroyed', cancelIfSenderCloses);
-      event.sender.once('render-process-gone', cancelIfSenderCloses);
-    } else if (event.sender.isDestroyed()) cancelIfSenderCloses();
+    const unbindSenderCancellation = observeSenderLifecycle
+      ? bindRendererRequestCancellation(event.sender, cancellation)
+      : () => {};
     try {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
@@ -297,10 +296,7 @@ function boot(): void {
       }
       return reply;
     } finally {
-      if (observeSenderLifecycle) {
-        event.sender.removeListener('destroyed', cancelIfSenderCloses);
-        event.sender.removeListener('render-process-gone', cancelIfSenderCloses);
-      }
+      unbindSenderCancellation();
       if (trackedRequestId) {
         trackCatalogCommand(event.sender.id, trackedRequestId, pending, false);
         pending.complete();
