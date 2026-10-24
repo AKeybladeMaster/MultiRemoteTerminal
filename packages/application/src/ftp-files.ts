@@ -14,15 +14,18 @@ export interface FtpCredentials {
   readonly password: string;
 }
 
-export type FtpFilesProviderErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'CANCELLED' | 'TIMEOUT' | 'BUSY' | 'OUTPUT_LIMIT' | 'AUTHENTICATION_FAILED' | 'CONFLICT';
+export type FtpFilesProviderErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'CANCELLED' | 'TIMEOUT' | 'BUSY' | 'OUTPUT_LIMIT' |
+  'AUTHENTICATION_FAILED' | 'CONFLICT' | 'NOT_FOUND' | 'FORBIDDEN' | 'NOT_SUPPORTED';
 
 export class FtpFilesProviderError extends Error {
   readonly code: FtpFilesProviderErrorCode;
+  readonly sessionUsable: boolean | undefined;
 
-  constructor(code: FtpFilesProviderErrorCode) {
+  constructor(code: FtpFilesProviderErrorCode, sessionUsable?: boolean) {
     super('FTP file operation failed');
     this.name = 'FtpFilesProviderError';
     this.code = code;
+    this.sessionUsable = sessionUsable;
   }
 }
 
@@ -69,6 +72,7 @@ interface ActiveFtpTransfer {
   readonly sessionId: string;
   readonly cancellation: CancellationSource;
   readonly settled: Promise<void>;
+  phase: 'transferring' | 'committing';
   readonly settle: () => void;
 }
 
@@ -189,7 +193,7 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
     let transferSettle!: () => void;
     const settled = new Promise<void>(resolveSettled => { transferSettle = resolveSettled; });
     const transfer: ActiveFtpTransfer = {
-      sessionId, cancellation: operationCancellation, settled,
+      sessionId, cancellation: operationCancellation, settled, phase: 'transferring',
       settle: () => transferSettle()
     };
     transfers.set(operationId, transfer);
@@ -198,6 +202,7 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
     try {
       const progress = (event: FtpTransferProgress) => {
         if (transfers.get(operationId) !== transfer || event.operationId !== operationId || event.sessionId !== sessionId || !isFtpTransferProgress(event)) return;
+        if (event.phase === 'committing') transfer.phase = 'committing';
         try { onProgress?.(event); } catch { /* A UI progress listener cannot interrupt the transfer owner. */ }
       };
       const result = args.direction === 'upload'
@@ -208,7 +213,10 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
       return { ok: true, result };
     } catch (error) {
       const code: ErrorCode = error instanceof FtpFilesProviderError ? error.code : 'UNAVAILABLE';
-      if (code !== 'CANCELLED' && code !== 'CONFLICT' && sessions.delete(sessionId)) await provider.close(sessionId).catch(() => undefined);
+      const sessionWasLost = error instanceof FtpFilesProviderError && error.sessionUsable === false;
+      const transportFailed = code === 'TIMEOUT' || (code === 'UNAVAILABLE' &&
+        !(error instanceof FtpFilesProviderError && error.sessionUsable === true));
+      if ((sessionWasLost || transportFailed) && sessions.delete(sessionId)) await provider.close(sessionId).catch(() => undefined);
       return failure(code, 'terminal');
     } finally {
       cancellation?.removeEventListener('abort', cancelForCaller);
@@ -232,8 +240,11 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
   async function cancelTransfer(sessionId: string, operationId: string): Promise<Outcome<Record<string, never>>> {
     const transfer = transfers.get(operationId);
     if (!transfer || transfer.sessionId !== sessionId) return failure('NOT_FOUND', 'terminal');
+    if (transfer.phase === 'committing') return failure('CONFLICT', 'terminal');
     transfer.cancellation.abort();
     await transfer.settled;
+    const settledPhase = () => transfer.phase;
+    if (settledPhase() === 'committing') return failure('CONFLICT', 'terminal');
     return { ok: true, result: EMPTY_RESULT };
   }
 
@@ -242,9 +253,11 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
     for (const operation of openingOperations) operation.abort();
     const activeTransfers = [...transfers.values()];
     for (const transfer of activeTransfers) transfer.cancellation.abort();
-    await Promise.all(activeTransfers.map(transfer => transfer.settled));
-    sessions.clear();
-    const closing = provider.shutdown();
+    const closing = (async () => {
+      await Promise.all(activeTransfers.map(transfer => transfer.settled));
+      sessions.clear();
+      await provider.shutdown();
+    })();
     shutdownPromise = closing;
     try { await closing; }
     finally { if (shutdownPromise === closing) shutdownPromise = undefined; }

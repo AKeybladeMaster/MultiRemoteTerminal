@@ -199,6 +199,20 @@ test('saved-folder native picker requests wait for user dismissal without an IPC
   assert.equal((await pending).ok, true);
 });
 
+test('FTP transfer requests remain pending while native file and conflict dialogs are open', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish!: (value: unknown) => void;
+  const bridge = createBridge(() => new Promise(resolve => { finish = resolve; }), id);
+  let settled = false;
+  const pending = bridge.uploadFtpFile(id(), id(), '/incoming').then(reply => { settled = true; return reply; });
+  await Promise.resolve();
+  context.mock.timers.tick(120_000);
+  await Promise.resolve();
+  assert.equal(settled, false, 'the upload may be waiting for an explicit native picker/conflict decision');
+  finish({ requestId: id(), ok: true, result: { direction: 'upload', fileName: 'archive.zip', bytesTransferred: 5, state: 'completed' } });
+  assert.equal((await pending).ok, true);
+});
+
 test('clipboard paste waits for the main-process confirmation result without a misleading timeout', async context => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   let finish!: (value: unknown) => void;

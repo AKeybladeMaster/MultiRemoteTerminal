@@ -14,8 +14,11 @@ interface PendingRequest {
   readonly resolve: (result: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
-  readonly cleanup: () => void;
+  cleanup: () => void;
   readonly onProgress?: (progress: FtpTransferProgress) => void;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
+  timedOut: boolean;
+  progressPhase?: FtpTransferProgress['phase'];
 }
 
 export type FtpWorkerLaunchOptions = {
@@ -32,6 +35,8 @@ const OPEN_TIMEOUT_MS = 45_000;
 const LIST_TIMEOUT_MS = 20_000;
 const TRANSFER_TIMEOUT_MS = 60 * 60_000;
 const ACTION_TIMEOUT_MS = 5_000;
+const WORKER_CLEANUP_GRACE_MS = 2_000;
+const COMMIT_SETTLEMENT_GRACE_MS = 2 * 60_000;
 
 function providerErrorCode(code: FtpWorkerErrorCode): FtpWorkerErrorCode {
   return code;
@@ -119,12 +124,31 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
       let removeCancellation = () => {};
       const timer = setTimeout(() => {
         removeCancellation();
+        const current = this.pending.get(request.requestId);
+        if (!current) return;
+        current.timedOut = true;
+        const isTransfer = request.command === 'files.upload' || request.command === 'files.download';
+        if (request.command === 'files.list' || isTransfer) {
+          const committing = isTransfer && current.progressPhase === 'committing';
+          if (!committing) {
+            const operationId = request.command === 'files.list' ? request.requestId : request.operationId;
+            try {
+              worker.postMessage({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.cancel',
+                sessionId: request.sessionId, operationId } satisfies FtpWorkerRequest);
+            } catch { /* The bounded cleanup timer below terminates a worker that cannot accept cancellation. */ }
+          }
+          this.scheduleWorkerTermination(worker, request.requestId, current,
+            committing ? COMMIT_SETTLEMENT_GRACE_MS : WORKER_CLEANUP_GRACE_MS);
+          return;
+        }
         this.pending.delete(request.requestId);
-        reject(new FtpFilesProviderError('TIMEOUT'));
-        void this.killWorker(worker);
+        current.cleanup();
+        void this.killWorker(worker).finally(() => current.reject(new FtpFilesProviderError('TIMEOUT')));
       }, timeoutMs);
-      const cleanup = () => { clearTimeout(timer); removeCancellation(); };
-      this.pending.set(request.requestId, { resolve, reject, timer, cleanup, ...(onProgress ? { onProgress } : {}) });
+      const current: PendingRequest = { resolve, reject, timer, cleanup: () => {}, timedOut: false,
+        ...(onProgress ? { onProgress } : {}) };
+      current.cleanup = () => { clearTimeout(timer); clearTimeout(current.cleanupTimer); removeCancellation(); };
+      this.pending.set(request.requestId, current);
       const operationId = request.command === 'files.upload' || request.command === 'files.download' ? request.operationId : request.requestId;
       if ((request.command === 'files.list' || request.command === 'files.upload' || request.command === 'files.download' || request.command === 'open') && cancellation) {
         const cancel = () => {
@@ -141,7 +165,7 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
       }
       try { worker.postMessage(request); }
       catch {
-        cleanup();
+        current.cleanup();
         this.pending.delete(request.requestId);
         reject(new FtpFilesProviderError('UNAVAILABLE'));
         void this.killWorker(worker);
@@ -185,14 +209,31 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
     if (message.type === 'progress') {
+      const previouslyCommitting = pending.progressPhase === 'committing';
+      pending.progressPhase = message.progress.phase;
+      if (pending.timedOut && message.progress.phase === 'committing' && !previouslyCommitting) {
+        this.scheduleWorkerTermination(worker, message.requestId, pending, COMMIT_SETTLEMENT_GRACE_MS);
+      }
       try { pending.onProgress?.(message.progress); } catch { /* The UI listener cannot interrupt worker ownership. */ }
       return;
     }
     clearTimeout(pending.timer);
+    clearTimeout(pending.cleanupTimer);
     this.pending.delete(message.requestId);
     pending.cleanup();
     if (message.ok) pending.resolve(message.result);
-    else pending.reject(new FtpFilesProviderError(providerErrorCode(message.errorCode)));
+    else pending.reject(new FtpFilesProviderError(pending.timedOut && message.errorCode === 'CANCELLED' ? 'TIMEOUT' : providerErrorCode(message.errorCode),
+      message.sessionUsable));
+  }
+
+  private scheduleWorkerTermination(worker: UtilityProcess, requestId: string, pending: PendingRequest, delayMs: number): void {
+    clearTimeout(pending.cleanupTimer);
+    pending.cleanupTimer = setTimeout(() => {
+      if (this.pending.get(requestId) !== pending) return;
+      this.pending.delete(requestId);
+      pending.cleanup();
+      void this.killWorker(worker).finally(() => pending.reject(new FtpFilesProviderError('TIMEOUT')));
+    }, delayMs);
   }
 
   private onWorkerExit(worker: UtilityProcess): void {

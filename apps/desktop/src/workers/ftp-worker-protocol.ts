@@ -27,10 +27,12 @@ export type FtpWorkerErrorCode = FtpFilesProviderErrorCode | 'INVALID_REQUEST';
 export type FtpWorkerMessage =
   | { readonly version: 1; readonly type: 'progress'; readonly requestId: string; readonly progress: FtpTransferProgress }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing | FtpTransferResult }
-  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: FtpWorkerErrorCode };
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: FtpWorkerErrorCode;
+      readonly sessionUsable?: boolean };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ERROR_CODES: readonly FtpWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'CANCELLED', 'TIMEOUT', 'BUSY', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'CONFLICT'];
+const ERROR_CODES: readonly FtpWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'CANCELLED', 'TIMEOUT', 'BUSY', 'OUTPUT_LIMIT',
+  'AUTHENTICATION_FAILED', 'CONFLICT', 'NOT_FOUND', 'FORBIDDEN', 'NOT_SUPPORTED'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -85,7 +87,11 @@ export function parseFtpWorkerMessage(value: unknown): FtpWorkerMessage | undefi
   if (value.type !== 'reply' || typeof value.ok !== 'boolean') return undefined;
   if (value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) && record(value.result) &&
       (exactKeys(value.result, []) || isFtpDirectoryListing(value.result) || isFtpTransferResult(value.result))) return value as unknown as FtpWorkerMessage;
-  if (!value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode']) && ERROR_CODES.includes(value.errorCode as FtpWorkerErrorCode)) {
+  const hasSessionUsable = Object.hasOwn(value, 'sessionUsable');
+  const validErrorReplyKeys = exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode']) ||
+    exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode', 'sessionUsable']);
+  if (!value.ok && validErrorReplyKeys && (!hasSessionUsable || typeof value.sessionUsable === 'boolean') &&
+      ERROR_CODES.includes(value.errorCode as FtpWorkerErrorCode)) {
     return value as unknown as FtpWorkerMessage;
   }
   return undefined;

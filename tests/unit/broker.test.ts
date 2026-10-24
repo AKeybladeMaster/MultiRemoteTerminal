@@ -115,7 +115,8 @@ test('FTP transfers keep local paths in main, forward explicit conflict choices,
   const cancellation = new AbortController().signal;
   const progressEvents: unknown[] = [];
   const observed: unknown[] = [];
-  const progress = { sessionId, operationId, direction: 'upload' as const, fileName: 'archive.bin', bytesTransferred: 5, totalBytes: 10 };
+  const progress = { sessionId, operationId, direction: 'upload' as const, phase: 'transferring' as const,
+    fileName: 'archive.bin', bytesTransferred: 5, totalBytes: 10 };
   const base = actions();
   const withTransfers: CommandActions = { ...base, cancellation,
     selectFtpUploadFile: async () => ({ localPath: 'C:\\private\\archive.bin', fileName: 'archive.bin' }),

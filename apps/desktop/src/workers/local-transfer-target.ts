@@ -10,7 +10,7 @@ const MAX_TRANSFER_PATH_CHARS = 32_768;
 const MAX_COPY_NAME_CHARS = 240;
 const MAX_COPY_NAME_ATTEMPTS = 9_999;
 
-export type LocalTransferTargetErrorCode = 'INVALID_REQUEST' | 'CONFLICT' | 'UNAVAILABLE';
+export type LocalTransferTargetErrorCode = 'INVALID_REQUEST' | 'CONFLICT' | 'CANCELLED' | 'UNAVAILABLE' | 'NOT_FOUND' | 'FORBIDDEN';
 
 export class LocalTransferTargetError extends Error {
   readonly code: LocalTransferTargetErrorCode;
@@ -21,11 +21,19 @@ export class LocalTransferTargetError extends Error {
   }
 }
 
+export function mapLocalTransferTargetError(error: unknown): LocalTransferTargetError {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  if (code === 'EACCES' || code === 'EPERM') return new LocalTransferTargetError('FORBIDDEN');
+  if (code === 'ENOENT') return new LocalTransferTargetError('NOT_FOUND');
+  if (code === 'EISDIR' || code === 'ENOTDIR') return new LocalTransferTargetError('INVALID_REQUEST');
+  return new LocalTransferTargetError('UNAVAILABLE');
+}
+
 export interface LocalTransferTarget {
   readonly state: 'ready' | 'skipped';
   readonly fileName: string;
   readonly stream?: WriteStream;
-  complete(): Promise<{ readonly fileName: string; readonly bytes: number }>;
+  complete(beginCommit: () => boolean): Promise<{ readonly fileName: string; readonly bytes: number; readonly state: 'completed' | 'skipped' }>;
   cleanup(): Promise<void>;
 }
 
@@ -50,7 +58,7 @@ async function inspect(path: string): Promise<Awaited<ReturnType<typeof lstat>> 
   try { return await lstat(path); }
   catch (error) {
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return undefined;
-    throw new LocalTransferTargetError('UNAVAILABLE');
+    throw mapLocalTransferTargetError(error);
   }
 }
 
@@ -101,13 +109,13 @@ export async function prepareLocalTransferTarget(selectedPath: string, policy: F
   try {
     const handle = await open(temporaryPath, 'wx');
     stream = handle.createWriteStream({ autoClose: true });
-  } catch { throw new LocalTransferTargetError('UNAVAILABLE'); }
+  } catch (error) { throw mapLocalTransferTargetError(error); }
 
   let completed = false;
   let cleaned = false;
   return {
     state: 'ready', fileName: finalName, stream,
-    async complete() {
+    async complete(beginCommit) {
       if (completed || cleaned) throw new LocalTransferTargetError('INVALID_REQUEST');
       try {
         await finished(stream);
@@ -120,29 +128,47 @@ export async function prepareLocalTransferTarget(selectedPath: string, policy: F
           if (!current || !current.isFile() || current.isSymbolicLink() || !sameIdentity(originalIdentity, identity(current))) {
             throw new LocalTransferTargetError('CONFLICT');
           }
+          if (!beginCommit()) throw new LocalTransferTargetError('CANCELLED');
           await rename(temporaryPath, finalPath);
         } else {
+          if (!beginCommit()) throw new LocalTransferTargetError('CANCELLED');
           try {
             await link(temporaryPath, finalPath);
             await unlink(temporaryPath);
           } catch (error) {
             if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') {
+              if (policy === 'skip') {
+                await unlink(temporaryPath);
+                completed = true;
+                return { fileName: finalName, bytes: 0, state: 'skipped' };
+              }
               if (policy !== 'rename') throw new LocalTransferTargetError('CONFLICT');
               const alternate = await nextAvailablePath(selectedPath, originalName);
               finalPath = alternate.path;
               finalName = alternate.fileName;
-              await link(temporaryPath, finalPath);
-              await unlink(temporaryPath);
+              for (let attempt = 0; attempt < MAX_COPY_NAME_ATTEMPTS; attempt++) {
+                try {
+                  await link(temporaryPath, finalPath);
+                  await unlink(temporaryPath);
+                  break;
+                } catch (renameError) {
+                  if (typeof renameError !== 'object' || renameError === null || !('code' in renameError) || renameError.code !== 'EEXIST') throw renameError;
+                  const next = await nextAvailablePath(selectedPath, originalName);
+                  finalPath = next.path;
+                  finalName = next.fileName;
+                  if (attempt === MAX_COPY_NAME_ATTEMPTS - 1) throw new LocalTransferTargetError('CONFLICT');
+                }
+              }
             } else {
               throw error;
             }
           }
         }
         completed = true;
-        return { fileName: finalName, bytes: temporaryStats.size };
+        return { fileName: finalName, bytes: temporaryStats.size, state: 'completed' };
       } catch (error) {
         if (error instanceof LocalTransferTargetError) throw error;
-        throw new LocalTransferTargetError('UNAVAILABLE');
+        throw mapLocalTransferTargetError(error);
       }
     },
     async cleanup() {

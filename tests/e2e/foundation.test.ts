@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
 const unicodeSample = String.fromCodePoint(0x416, 0x96ea, 0x1f642);
@@ -292,8 +292,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   test.setTimeout(75_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ftp-e2e-'));
   const uploadSource = join(profile, 'e2e-upload.txt');
+  const uploadContents = Buffer.alloc(4 * 1024 * 1024, 65);
   const downloadRoot = join(profile, 'downloads');
-  await writeFile(uploadSource, 'fixture upload');
+  await writeFile(uploadSource, uploadContents);
   await mkdir(downloadRoot);
   const remoteFiles = new Map<string, Buffer>([
     ['readme.txt', Buffer.from('hello remote')],
@@ -305,6 +306,11 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   let acceptedPassword = false;
   const ftpCommandVerbs: string[] = [];
   const ftpListArguments: string[] = [];
+  const ftpStouCommands: string[] = [];
+  const ftpCwdArguments: string[] = [];
+  const ftpDeleteArguments: string[] = [];
+  let stouCount = 0;
+  let uploadTransferStartedCount = 0;
   const control = createServer(socket => {
     controlSockets.add(socket);
     socket.on('error', () => {});
@@ -316,6 +322,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     let transferSocket: Socket | undefined;
     let listRequested = false;
     let requestedListingPath = '.';
+    let currentDirectory = '/';
     let transferStarted = false;
     let uploadName: string | undefined;
     let downloadName: string | undefined;
@@ -376,11 +383,16 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     const receiveUpload = () => {
       if (transferStarted || !transferSocket || !uploadName) return;
       transferStarted = true;
+      uploadTransferStartedCount++;
+      if (stouCount === 2) {
+        transferSocket.pause();
+        setTimeout(() => transferSocket?.resume(), 1_500);
+      }
       const name = uploadName;
       const chunks: Buffer[] = [];
       transferSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
       transferSocket.once('end', () => {
-        remoteFiles.set(name, Buffer.concat(chunks));
+        remoteFiles.set(posix.join(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
         transferSocket?.end();
         reply('226 Transfer complete');
         finishTransfer();
@@ -412,8 +424,12 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
         else if (verb === 'FEAT') socket.write('211-Features\r\n EPSV\r\n PASV\r\n211 End\r\n');
         else if (verb === 'SYST') reply('215 UNIX Type: L8');
         else if (verb === 'TYPE' || verb === 'OPTS' || verb === 'NOOP') reply('200 Command okay');
-        else if (verb === 'PWD') reply('257 "/" is current directory');
-        else if (verb === 'CWD') reply('250 Directory changed');
+        else if (verb === 'PWD') reply(`257 "${currentDirectory}" is current directory`);
+        else if (verb === 'CWD') {
+          ftpCwdArguments.push(argument);
+          currentDirectory = posix.resolve(currentDirectory, argument || '.');
+          reply('250 Directory changed');
+        }
         else if (verb === 'PASV') beginPassive(false);
         else if (verb === 'EPSV') beginPassive(true);
         else if (verb === 'LIST' || verb === 'NLST') {
@@ -422,6 +438,20 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           listRequested = true;
           reply('150 Opening data connection');
           sendListing();
+        }
+        else if (verb === 'STOU') {
+          ftpStouCommands.push(command);
+          if (argument !== '') { reply('501 STOU does not accept a pathname'); continue; }
+          stouCount++;
+          const requestedName = 'mrt-server-generated.txt';
+          const extensionAt = requestedName.lastIndexOf('.');
+          const extension = extensionAt > 0 ? requestedName.slice(extensionAt) : '';
+          const stem = extension ? requestedName.slice(0, -extension.length) : requestedName;
+          uploadName = requestedName;
+          const prefix = currentDirectory === '/' ? '' : `${currentDirectory.replace(/^\//u, '')}/`;
+          for (let ordinal = 1; remoteFiles.has(`${prefix}${uploadName}`); ordinal++) uploadName = `${stem} (${ordinal})${extension}`;
+          reply(`150 FILE: ${uploadName}`);
+          receiveUpload();
         }
         else if (verb === 'STOR') {
           uploadName = argument.slice(argument.lastIndexOf('/') + 1);
@@ -442,8 +472,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           renameSource = undefined;
         }
         else if (verb === 'DELE') {
-          const name = argument.slice(argument.lastIndexOf('/') + 1);
-          remoteFiles.delete(name);
+          ftpDeleteArguments.push(argument);
+          remoteFiles.delete(posix.resolve(currentDirectory, argument).replace(/^\//u, ''));
           reply('250 Delete successful');
         }
         else if (verb === 'QUIT') { reply('221 Goodbye'); socket.end(); }
@@ -482,11 +512,24 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect(browser.getByRole('button', { name: 'Open folder documents', exact: true })).toBeVisible();
     await browser.getByRole('button', { name: 'Open folder documents', exact: true }).click();
     await expect(browser.getByText('nested.txt', { exact: true }), `FTP LIST arguments=${ftpListArguments.join('|')}`).toBeVisible({ timeout: 10_000 });
+    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect.poll(() => ftpStouCommands.length).toBe(1);
+    expect(ftpStouCommands).toEqual(['STOU']);
+    expect(ftpCwdArguments).toEqual(['documents', '/']);
+    await expect.poll(() => remoteFiles.get('documents/mrt-server-generated.txt')?.length).toBe(uploadContents.length);
+    await expect(browser.getByText(/^Uploaded mrt-server-generated\.txt \(/u)).toBeVisible({ timeout: 10_000 });
+
+    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect.poll(() => ftpStouCommands.length).toBe(2);
+    await expect.poll(() => uploadTransferStartedCount).toBe(2);
+    await browser.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(browser.getByText('Upload cancelled. The server may retain a partial file if cleanup was interrupted.')).toBeVisible({ timeout: 10_000 });
+    await expect.poll(() => ftpDeleteArguments.length, { timeout: 10_000 }).toBe(1);
+    expect(remoteFiles.has('documents/mrt-server-generated (1).txt')).toBe(false);
+    expect(ftpStouCommands).toEqual(['STOU', 'STOU']);
+    expect(ftpCwdArguments).toEqual(['documents', '/', 'documents', '/']);
     await browser.getByRole('button', { name: 'Open parent folder', exact: true }).click();
     await expect(browser.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 });
-    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
-    await expect.poll(() => remoteFiles.get('e2e-upload.txt')?.toString()).toBe('fixture upload');
-    await expect(browser.getByText('Uploaded e2e-upload.txt (14 B).', { exact: true })).toBeVisible({ timeout: 10_000 });
     await browser.getByRole('button', { name: 'Download readme.txt', exact: true }).click();
     await expect.poll(() => readFile(join(downloadRoot, 'readme.txt'), 'utf8').catch(() => undefined)).toBe('hello remote');
     await expect(browser.getByText('Downloaded readme.txt (12 B).', { exact: true })).toBeVisible({ timeout: 10_000 });

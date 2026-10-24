@@ -15,6 +15,7 @@ export interface FtpTransferProgress {
   readonly sessionId: string;
   readonly operationId: string;
   readonly direction: FtpTransferDirection;
+  readonly phase: 'transferring' | 'committing';
   readonly fileName: string;
   readonly bytesTransferred: number;
   readonly totalBytes: number | null;
@@ -36,11 +37,11 @@ export function isFtpTransferConflictPolicy(value: unknown): value is FtpTransfe
 export function isFtpTransferProgress(value: unknown): value is FtpTransferProgress {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>;
-  return Object.keys(input).length === 6 && Object.hasOwn(input, 'sessionId') && Object.hasOwn(input, 'operationId') &&
-    Object.hasOwn(input, 'direction') && Object.hasOwn(input, 'fileName') && Object.hasOwn(input, 'bytesTransferred') &&
+  return Object.keys(input).length === 7 && Object.hasOwn(input, 'sessionId') && Object.hasOwn(input, 'operationId') &&
+    Object.hasOwn(input, 'direction') && Object.hasOwn(input, 'phase') && Object.hasOwn(input, 'fileName') && Object.hasOwn(input, 'bytesTransferred') &&
     Object.hasOwn(input, 'totalBytes') && typeof input.sessionId === 'string' && FTP_UUID.test(input.sessionId) &&
     typeof input.operationId === 'string' && FTP_UUID.test(input.operationId) &&
-    (input.direction === 'upload' || input.direction === 'download') && isFtpFileName(input.fileName) &&
+    (input.direction === 'upload' || input.direction === 'download') && (input.phase === 'transferring' || input.phase === 'committing') && isFtpFileName(input.fileName) &&
     Number.isSafeInteger(input.bytesTransferred) && (input.bytesTransferred as number) >= 0 &&
     (input.totalBytes === null || (Number.isSafeInteger(input.totalBytes) && (input.totalBytes as number) >= 0));
 }

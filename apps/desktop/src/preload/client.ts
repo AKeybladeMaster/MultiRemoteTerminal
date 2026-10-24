@@ -24,7 +24,6 @@ const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
 const FTP_LIST_TIMEOUT_MS = 25_000;
-const FTP_TRANSFER_TIMEOUT_MS = 60 * 60_000 + 10_000;
 const FTP_CANCEL_TIMEOUT_MS = 45_000;
 interface TerminalInputBarrier {
   tail: Promise<void>;
@@ -331,11 +330,11 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     uploadFtpFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<FtpTransferReply> {
       return send({ command: 'ftp.files.upload', requestId: requestId(), contractVersion: CONTRACT_VERSION,
-        payload: { sessionId, operationId, remoteDirectory } }, FTP_TRANSFER_TIMEOUT_MS);
+        payload: { sessionId, operationId, remoteDirectory } });
     },
     downloadFtpFile(sessionId: string, operationId: string, remotePath: string): Promise<FtpTransferReply> {
       return send({ command: 'ftp.files.download', requestId: requestId(), contractVersion: CONTRACT_VERSION,
-        payload: { sessionId, operationId, remotePath } }, FTP_TRANSFER_TIMEOUT_MS);
+        payload: { sessionId, operationId, remotePath } });
     },
     cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ftp.files.cancel', { sessionId, operationId }), FTP_CANCEL_TIMEOUT_MS);
