@@ -5,14 +5,16 @@
 This is **requirements coverage**, not an assertion of implemented code. Each feature begins `PLANNED`. Change the status only with a Windows build and linked acceptance evidence.
 
 **Phases:** `MVP` (first independently usable release), `Next` (subsequent development), `Parity` (full-feature verification).  
-**Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. All entries are presently PLANNED.
+**Status:** PLANNED / PARTIAL / VERIFIED / BLOCKED / DECLINED. P-01 is VERIFIED from Windows acceptance evidence. P-13 is PARTIAL: Windows E2E covers explicit save, search, favorites, reopen and folder grouping, but the automatic save preference is not implemented. See [WP-03B catalog evidence](results/WP-03B-catalog-2026-10-23.md) and [WP-03C folder evidence](results/WP-03C-folders-2026-10-23.md). Other entries remain PLANNED.
 
 WP-00 foundation has separate [Windows acceptance evidence](results/WP-00-2026-10-23.md).
 It validates the shell and IPC security controls only; it completes none of the full workflows below.
+WP-01 verifies P-01's ten-tab local-terminal workflow in [Windows acceptance evidence](results/WP-01-2026-10-23.md). It does not mark remote protocols, saved sessions, or packaging as implemented.
+WP-01D adds confirmed `Ctrl+W` and middle-click tab closure, a terminal-tab-only context menu, and contrast-checked ANSI palettes; see [terminal interaction evidence](results/WP-01D-terminal-interactions-2026-10-24.md). P-30 remains planned because configurable command/syntax highlighting is not implemented.
 
 | ID | Reference feature | Planned architecture/provider | Phase | Verification/interpretation |
 |---|---|---|---|---|
-| P-01 | Tabbed terminal | React+xterm.js + runtime tabs | MVP | 10 tabs, independent input/resize/close, accessibility |
+| P-01 | Tabbed terminal (VERIFIED) | React+xterm.js + runtime tabs | MVP | 10 tabs, independent input/resize/close, accessibility |
 | P-02 | Local Unix-like commands | Local ConPTY, user-installed WSL/PATH tools | Next | Common commands through actual installed shell; no false built-in claim |
 | P-03 | SSH sessions | SSH provider with host trust | MVP | Public-key/password, disconnect, host change test |
 | P-04 | Telnet sessions | Opt-in legacy Telnet provider | Parity | Real TCP negotiation and conspicuous plaintext warning |
@@ -24,7 +26,7 @@ It validates the shell and IPC security controls only; it completes none of the 
 | P-10 | FTP sessions | Opt-in FTP provider | Next | Actual list/download/upload; plaintext warning |
 | P-11 | Standalone SFTP sessions | SSH/SFTP adapter | MVP | Standalone session with remote browser |
 | P-12 | Serial/COM sessions | Windows serial adapter | Next | Port list, baud, parity, flow control, hot-unplug |
-| P-13 | Auto-saved sessions sidebar | Catalog and recently-used UI | MVP | Reopen from sidebar, favorites and groups |
+| P-13 | Auto-saved sessions sidebar (PARTIAL) | Catalog and recently-used UI | MVP | Windows E2E verifies explicit save, search, reopen, favorites and folder groups; automatic save preference remains pending. See WP-03B/WP-03C evidence. |
 | P-14 | Graphical automatic SFTP browser | SFTP module + sidebar | MVP | Open after SSH if server supports SFTP; clear fallback when not |
 | P-15 | File drag & drop | Transfer job module | MVP | Upload and download with overwrite/cancel/error |
 | P-16 | X11 server | Capability-checked local licensed X server provider | Parity | Remote X client displayed, lifecycle supervised |

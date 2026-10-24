@@ -1,0 +1,151 @@
+import { canonicalizeSshHostEndpoint, isHostKeyEvidence } from '../../../../packages/domain/src/host-trust.ts';
+import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
+import { isSavedSessionDefinition, isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
+import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
+import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
+import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
+import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
+
+export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
+const MAX_MIGRATION_ENTRIES = 100_000;
+const MAX_MIGRATION_BYTES = 16 * 1024 * 1024;
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export type StorageWorkerRequest =
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.find'; readonly endpoint: SshHostEndpoint }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.trustIfAbsent'; readonly identity: TrustedHostKey }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.remove'; readonly endpoint: SshHostEndpoint }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.importLegacy'; readonly identities: readonly TrustedHostKey[] }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.list'; readonly query: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.favorite'; readonly id: string; readonly favorite: boolean }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.list' }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.create'; readonly draft: SavedSessionFolderDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.rename'; readonly id: string; readonly name: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.move'; readonly id: string; readonly parentId: string | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.folder.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
+
+export type StorageWorkerResult =
+  | { readonly kind: 'identity'; readonly value: TrustedHostKey | null }
+  | { readonly kind: 'insert'; readonly value: 'inserted' | 'matched' | 'changed' }
+  | { readonly kind: 'removed'; readonly value: boolean }
+  | { readonly kind: 'migrated'; readonly value: { readonly sourceCount: number; readonly verifiedCount: number } }
+  | { readonly kind: 'sessions'; readonly value: readonly SavedSessionDefinition[] }
+  | { readonly kind: 'folders'; readonly value: readonly SavedSessionFolder[] }
+  | { readonly kind: 'folder'; readonly value: SavedSessionFolder }
+  | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
+  | { readonly kind: 'changed'; readonly value: boolean }
+  | { readonly kind: 'shutdown' };
+
+export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'NOT_FOUND' | 'UNAVAILABLE';
+
+export type StorageWorkerMessage =
+  | { readonly version: 1; readonly type: 'ready' }
+  | { readonly version: 1; readonly type: 'startup-error'; readonly errorCode: StorageWorkerErrorCode }
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: StorageWorkerResult }
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: StorageWorkerErrorCode };
+
+export function storageWorkerErrorCode(error: unknown): StorageWorkerErrorCode {
+  if (error instanceof StorageOperationError) {
+    if (error.kind === 'busy') return 'BUSY';
+    if (error.kind === 'conflict') return 'CONFLICT';
+    if (error.kind === 'corrupt') return 'CORRUPT';
+    if (error.kind === 'not-found') return 'NOT_FOUND';
+  }
+  return 'UNAVAILABLE';
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+function endpoint(value: unknown): value is SshHostEndpoint {
+  if (!record(value) || !exactKeys(value, ['host', 'port'])) return false;
+  const canonical = canonicalizeSshHostEndpoint(value);
+  return canonical !== undefined && canonical.host === value.host && canonical.port === value.port;
+}
+
+function identity(value: unknown): value is TrustedHostKey {
+  if (!record(value) || !exactKeys(value, ['endpoint', 'algorithm', 'fingerprint', 'publicKey', 'trustedAt', 'approvalSource']) ||
+      !endpoint(value.endpoint) || !Number.isSafeInteger(value.trustedAt) || (value.trustedAt as number) < 0 || value.approvalSource !== 'user') return false;
+  return isHostKeyEvidence({ algorithm: value.algorithm, fingerprint: value.fingerprint, publicKey: value.publicKey });
+}
+
+export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest | undefined {
+  if (!record(value) || value.version !== STORAGE_WORKER_PROTOCOL_VERSION || value.type !== 'request' ||
+      typeof value.requestId !== 'string' || !REQUEST_ID.test(value.requestId) || typeof value.command !== 'string') return undefined;
+  if (value.command === 'hostTrust.find' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'endpoint']) && endpoint(value.endpoint)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'hostTrust.trustIfAbsent' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'identity']) && identity(value.identity)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'hostTrust.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'endpoint']) && endpoint(value.endpoint)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'hostTrust.importLegacy' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'identities']) && Array.isArray(value.identities) && value.identities.length <= MAX_MIGRATION_ENTRIES) {
+    let totalBytes = 0;
+    for (const item of value.identities) {
+      if (!identity(item)) return undefined;
+      totalBytes += item.publicKey.byteLength;
+      if (totalBytes > MAX_MIGRATION_BYTES) return undefined;
+    }
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'query']) && normalizeSessionSearch(value.query) !== undefined) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSavedSessionDraft(value.draft)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.favorite' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'favorite']) &&
+      isSessionDefinitionId(value.id) && typeof value.favorite === 'boolean') return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.folder.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSessionFolderDraft(value.draft)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.folder.rename' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'name']) &&
+      isSessionFolderId(value.id) && normalizeSessionFolderName(value.name) === value.name) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'parentId']) &&
+      isSessionFolderId(value.id) && (value.parentId === null || isSessionFolderId(value.parentId))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.folder.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionFolderId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.move' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'folderId']) &&
+      isSessionDefinitionId(value.id) && (value.folderId === null || isSessionFolderId(value.folderId))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  return undefined;
+}
+
+export function parseStorageWorkerMessage(value: unknown): StorageWorkerMessage | undefined {
+  if (!record(value) || value.version !== STORAGE_WORKER_PROTOCOL_VERSION || typeof value.type !== 'string') return undefined;
+  if (value.type === 'ready' && exactKeys(value, ['version', 'type'])) return value as unknown as StorageWorkerMessage;
+  if (value.type === 'startup-error' && exactKeys(value, ['version', 'type', 'errorCode']) && isErrorCode(value.errorCode)) return value as unknown as StorageWorkerMessage;
+  if (value.type !== 'reply' || !REQUEST_ID.test(String(value.requestId)) || typeof value.ok !== 'boolean') return undefined;
+  if (!value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode']) && isErrorCode(value.errorCode)) return value as unknown as StorageWorkerMessage;
+  if (!value.ok || !exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) || !parseResult(value.result)) return undefined;
+  return value as unknown as StorageWorkerMessage;
+}
+
+function parseResult(value: unknown): value is StorageWorkerResult {
+  if (!record(value) || typeof value.kind !== 'string') return false;
+  if (value.kind === 'identity' && exactKeys(value, ['kind', 'value']) && (value.value === null || identity(value.value))) return true;
+  if (value.kind === 'insert' && exactKeys(value, ['kind', 'value']) && ['inserted', 'matched', 'changed'].includes(String(value.value))) return true;
+  if (value.kind === 'removed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
+  if (value.kind === 'migrated' && exactKeys(value, ['kind', 'value']) && record(value.value) && exactKeys(value.value, ['sourceCount', 'verifiedCount']) &&
+      Number.isSafeInteger(value.value.sourceCount) && value.value.sourceCount === value.value.verifiedCount && (value.value.sourceCount as number) >= 0) return true;
+  if (value.kind === 'sessions' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionDefinition)) return true;
+  if (value.kind === 'folders' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionFolder)) return true;
+  if (value.kind === 'folder' && exactKeys(value, ['kind', 'value']) && isSavedSessionFolder(value.value)) return true;
+  if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
+  if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
+  return value.kind === 'shutdown' && exactKeys(value, ['kind']);
+}
+
+function isErrorCode(value: unknown): value is StorageWorkerErrorCode {
+  return value === 'BUSY' || value === 'CONFLICT' || value === 'CORRUPT' || value === 'NOT_FOUND' || value === 'UNAVAILABLE';
+}

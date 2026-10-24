@@ -6,3 +6,4 @@ saveExact: true
 engineStrict: true
 allowBuilds:
   esbuild: true
+  node-pty: true
