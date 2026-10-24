@@ -1,7 +1,9 @@
 # WP-09B — Warning-gated Telnet terminal
 
-**Date:** 2026-10-24  
-**Requirements:** P-04, F-019 (Telnet portion); WP-09 overall remains incomplete.  
+**Date:** 2026-10-24
+
+**Requirements:** P-04, F-019 (Telnet portion); WP-09 overall remains incomplete.
+
 **Status:** P-04 verified by Windows loopback acceptance; other WP-09 protocols remain planned.
 
 ## Behavior
