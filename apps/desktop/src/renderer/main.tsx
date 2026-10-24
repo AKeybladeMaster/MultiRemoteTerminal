@@ -821,10 +821,11 @@ function Workbench() {
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : 'ssh'}`} aria-hidden="true">
-          {session.kind === 'ssh' ? 'SSH' : shellBadge(session.shell)}
+          {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : 'TELNET'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
-        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell : sshEndpointLabel(session.host, session.port)}</span>
+        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell
+          : `${sshEndpointLabel(session.host, session.port)} · ${session.kind.toUpperCase()}`}</span>
       </button>
       <div className="saved-session-actions">
         <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
@@ -890,7 +891,8 @@ function Workbench() {
 
   function openSavedSession(session: SavedSessionDefinition) {
     if (session.kind === 'local') void openTerminal(session.shell, session.name);
-    else void openSshTerminal(session.host, String(session.port), session.name);
+    else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name);
+    else setAlert('Telnet connections are not available in this phase. This profile is saved for later use.');
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string): void {
@@ -947,7 +949,7 @@ function Workbench() {
     const alreadySaved = definitions.some(definition => {
       if (definition.kind !== draft.kind || definition.name !== draft.name) return false;
       if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell;
-      return definition.kind === 'ssh' && definition.host === draft.host && definition.port === draft.port;
+      return definition.kind !== 'local' && definition.host === draft.host && definition.port === draft.port;
     });
     setAlert(alreadySaved
       ? 'This session is already saved. Open it from Saved sessions instead of saving it again.'
