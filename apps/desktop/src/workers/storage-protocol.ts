@@ -5,8 +5,8 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
-import { isLocalTunnelDefinition, isTunnelId, normalizeLocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
-import type { LocalTunnelDefinition, LocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isSshTunnelDefinition, isTunnelId, normalizeSshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDefinition, SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
@@ -34,7 +34,7 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.move'; readonly id: string; readonly folderId: string | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
-  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: LocalTunnelDraft }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.remove'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
 
@@ -51,9 +51,9 @@ export type StorageWorkerResult =
   | { readonly kind: 'changed'; readonly value: boolean }
   | { readonly kind: 'folderExport'; readonly value: { readonly folderCount: number; readonly sessionCount: number } }
   | { readonly kind: 'folderImport'; readonly value: { readonly folderCount: number; readonly sessionCount: number; readonly createdFolderCount: number; readonly createdSessionCount: number } }
-  | { readonly kind: 'tunnels'; readonly value: readonly LocalTunnelDefinition[] }
-  | { readonly kind: 'tunnelLookup'; readonly value: LocalTunnelDefinition | null }
-  | { readonly kind: 'tunnel'; readonly value: LocalTunnelDefinition }
+  | { readonly kind: 'tunnels'; readonly value: readonly SshTunnelDefinition[] }
+  | { readonly kind: 'tunnelLookup'; readonly value: SshTunnelDefinition | null }
+  | { readonly kind: 'tunnel'; readonly value: SshTunnelDefinition }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -145,7 +145,7 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
       isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
-  if (value.command === 'tunnel.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeLocalTunnelDraft(value.draft)) {
+  if (value.command === 'tunnel.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSshTunnelDraft(value.draft)) {
     return value as unknown as StorageWorkerRequest;
   }
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
@@ -182,9 +182,9 @@ function parseResult(value: unknown): value is StorageWorkerResult {
     return counts.folderCount > 0 && counts.createdFolderCount <= counts.folderCount && counts.createdSessionCount <= counts.sessionCount &&
       counts.folderCount + counts.sessionCount <= MAX_MIGRATION_ENTRIES;
   }
-  if (value.kind === 'tunnels' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isLocalTunnelDefinition)) return true;
-  if (value.kind === 'tunnelLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isLocalTunnelDefinition(value.value))) return true;
-  if (value.kind === 'tunnel' && exactKeys(value, ['kind', 'value']) && isLocalTunnelDefinition(value.value)) return true;
+  if (value.kind === 'tunnels' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSshTunnelDefinition)) return true;
+  if (value.kind === 'tunnelLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isSshTunnelDefinition(value.value))) return true;
+  if (value.kind === 'tunnel' && exactKeys(value, ['kind', 'value']) && isSshTunnelDefinition(value.value)) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 

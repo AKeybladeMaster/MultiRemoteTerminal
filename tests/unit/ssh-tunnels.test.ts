@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { LocalTunnelDefinition } from '../../packages/domain/src/ssh-tunnel.ts';
-import type { LocalTunnelCatalog, LocalTunnelForwardProvider, SavedSessionReader } from '../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelDefinition } from '../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelCatalog, SshTunnelForwardProvider, SavedSessionReader } from '../../packages/application/src/ssh-tunnels.ts';
 import { createSshTunnelController } from '../../packages/application/src/ssh-tunnels.ts';
 import type { SshTerminalController } from '../../packages/application/src/ssh-terminals.ts';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
@@ -10,7 +10,7 @@ import type { SavedSessionDefinition } from '../../packages/domain/src/session-d
 const profileId = '00000000-0000-4000-8000-000000000001';
 const tunnelId = '00000000-0000-4000-8000-000000000002';
 const runtimeId = '00000000-0000-4000-8000-000000000003';
-const definition: LocalTunnelDefinition = { id: tunnelId, sessionId: profileId, name: 'Database', mode: 'local', bindHost: '127.0.0.1',
+const definition: SshTunnelDefinition = { id: tunnelId, sessionId: profileId, name: 'Database', mode: 'local', bindHost: '127.0.0.1',
   bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
 const profile: SavedSessionDefinition = { id: profileId, folderId: null, kind: 'ssh', name: 'SSH gateway', host: 'gateway.test', port: 22,
   favorite: false, createdAt: definition.createdAt, updatedAt: definition.createdAt };
@@ -19,23 +19,23 @@ function harness(overrides: {
   readonly startForward?: () => Promise<number>;
   readonly open?: SshTerminalController['openFiles'];
   readonly newId?: () => string;
-  readonly getTunnel?: (id: string) => Promise<LocalTunnelDefinition | undefined>;
+  readonly getTunnel?: (id: string) => Promise<SshTunnelDefinition | undefined>;
   readonly getProfile?: (id: string) => Promise<SavedSessionDefinition | undefined>;
 } = {}) {
-  const saved = new Map<string, LocalTunnelDefinition>();
+  const saved = new Map<string, SshTunnelDefinition>();
   saved.set(tunnelId, definition);
   const events: TunnelStatusEvent[] = [];
   const sshEvents = new Set<(event: LocalTerminalEvent) => void>();
-  const calls = { opened: [] as string[], closed: [] as string[], forwarded: [] as string[], stopped: [] as string[] };
-  const catalog: LocalTunnelCatalog = {
-    async listLocalTunnels() { return [...saved.values()]; },
-    async getLocalTunnel(id) { return overrides.getTunnel ? overrides.getTunnel(id) : saved.get(id); },
-    async saveLocalTunnel(draft) {
-      const result: LocalTunnelDefinition = { ...draft, id: draft.id ?? tunnelId, createdAt: definition.createdAt };
+  const calls = { opened: [] as string[], closed: [] as string[], forwarded: [] as string[], forwardModes: [] as string[], stopped: [] as string[] };
+  const catalog: SshTunnelCatalog = {
+    async listSshTunnels() { return [...saved.values()]; },
+    async getSshTunnel(id) { return overrides.getTunnel ? overrides.getTunnel(id) : saved.get(id); },
+    async saveSshTunnel(draft) {
+      const result: SshTunnelDefinition = { ...draft, id: draft.id ?? tunnelId, createdAt: definition.createdAt };
       saved.set(result.id, result);
       return result;
     },
-    async removeLocalTunnel(id) { return saved.delete(id); }
+    async removeSshTunnel(id) { return saved.delete(id); }
   };
   const profiles: SavedSessionReader = { async getSessionDefinition(id) {
     return overrides.getProfile ? overrides.getProfile(id) : id === profileId ? profile : undefined;
@@ -48,9 +48,9 @@ function harness(overrides: {
     async close(sessionId) { calls.closed.push(sessionId); return { ok: true, result: {} }; },
     subscribe(listener) { sshEvents.add(listener); return () => sshEvents.delete(listener); }
   };
-  const forwarding: LocalTunnelForwardProvider = {
-    async startLocalForward(sessionId, id) { calls.forwarded.push(`${sessionId}:${id}`); return overrides.startForward ? overrides.startForward() : 51_234; },
-    async stopLocalForward(sessionId, id) { calls.stopped.push(`${sessionId}:${id}`); }
+  const forwarding: SshTunnelForwardProvider = {
+    async startForward(sessionId, id, tunnel) { calls.forwarded.push(`${sessionId}:${id}`); calls.forwardModes.push(tunnel.mode); return overrides.startForward ? overrides.startForward() : 51_234; },
+    async stopForward(sessionId, id) { calls.stopped.push(`${sessionId}:${id}`); }
   };
   const controller = createSshTunnelController(catalog, profiles, ssh, forwarding, overrides.newId ?? (() => runtimeId));
   controller.subscribe(status => events.push(status));
@@ -73,6 +73,19 @@ test('local tunnel starts through a files-only SSH runtime and closes both liste
   assert.deepEqual(calls.closed, [runtimeId]);
   assert.deepEqual(events.map(event => event.state), ['starting', 'active', 'stopping', 'stopped']);
   assert.equal((await controller.list()).ok, true);
+  await controller.dispose();
+});
+
+test('remote tunnel uses the saved SSH profile and publishes the assigned server loopback port', async () => {
+  const remote = { ...definition, name: 'Reverse API', mode: 'remote' as const, targetHost: '127.0.0.1', targetPort: 3000 };
+  const { controller, calls } = harness({ getTunnel: async () => remote });
+
+  const started = await controller.start(tunnelId);
+
+  assert.deepEqual(started, { ok: true, result: { tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 51_234 } });
+  assert.deepEqual(calls.forwardModes, ['remote']);
+  const stopped = await controller.stop(tunnelId);
+  assert.deepEqual(stopped, { ok: true, result: { tunnelId, state: 'stopped' } });
   await controller.dispose();
 });
 

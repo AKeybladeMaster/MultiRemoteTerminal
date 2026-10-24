@@ -23,9 +23,9 @@ import { isRemoteDirectoryListing, isRemotePath } from '../../domain/src/remote-
 import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
 import { isFileTransferProgress, isFileTransferResult } from '../../domain/src/file-transfer.ts';
 import type { FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
-import { isLocalTunnelDefinition, isTunnelId, isTunnelRunStatus, normalizeLocalTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
-import type { LocalTunnelDefinition, LocalTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
-import type { LocalTunnelSnapshot } from '../../application/src/ssh-tunnels.ts';
+import { isSshTunnelDefinition, isTunnelId, isTunnelRunStatus, normalizeSshTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
+import type { SshTunnelDefinition, SshTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
+import type { SshTunnelSnapshot } from '../../application/src/ssh-tunnels.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -110,12 +110,12 @@ export type DeleteSessionFolderRequest = Request<'session.folder.delete', { read
 export type ExportSessionFolderRequest = Request<'session.folder.export', { readonly id: string }>;
 export type ImportSessionFolderRequest = Request<'session.folder.import', Record<string, never>>;
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
-export type ListLocalTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
-export type SaveLocalTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
-  readonly mode: 'local'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number }>;
-export type DeleteLocalTunnelRequest = Request<'tunnel.delete', { readonly id: string }>;
-export type StartLocalTunnelRequest = Request<'tunnel.start', { readonly id: string }>;
-export type StopLocalTunnelRequest = Request<'tunnel.stop', { readonly id: string }>;
+export type ListSshTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
+export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
+  readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number }>;
+export type DeleteSshTunnelRequest = Request<'tunnel.delete', { readonly id: string }>;
+export type StartSshTunnelRequest = Request<'tunnel.start', { readonly id: string }>;
+export type StopSshTunnelRequest = Request<'tunnel.stop', { readonly id: string }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | DownloadSshFileRequest | CancelSshTransferRequest |
@@ -123,7 +123,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
-  ListLocalTunnelsRequest | SaveLocalTunnelRequest | DeleteLocalTunnelRequest | StartLocalTunnelRequest | StopLocalTunnelRequest;
+  ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -145,8 +145,8 @@ export type ListSessionFoldersReply = CommandReply<readonly SavedSessionFolder[]
 export type CreateSessionFolderReply = CommandReply<SavedSessionFolder>;
 export type ExportSessionFolderReply = CommandReply<SessionFolderExportResult>;
 export type ImportSessionFolderReply = CommandReply<SessionFolderImportResult>;
-export type ListLocalTunnelsReply = CommandReply<readonly LocalTunnelSnapshot[]>;
-export type SaveLocalTunnelReply = CommandReply<LocalTunnelDefinition>;
+export type ListSshTunnelsReply = CommandReply<readonly SshTunnelSnapshot[]>;
+export type SaveSshTunnelReply = CommandReply<SshTunnelDefinition>;
 export type TunnelStatusReply = CommandReply<TunnelRunStatus>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 
@@ -197,11 +197,11 @@ export interface DesktopBridge {
   exportSavedSessionFolder(id: string): Promise<ExportSessionFolderReply>;
   importSavedSessionFolder(): Promise<ImportSessionFolderReply>;
   moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply>;
-  listLocalTunnels(): Promise<ListLocalTunnelsReply>;
-  saveLocalTunnel(draft: LocalTunnelDraft): Promise<SaveLocalTunnelReply>;
-  deleteLocalTunnel(id: string): Promise<TerminalActionReply>;
-  startLocalTunnel(id: string): Promise<TunnelStatusReply>;
-  stopLocalTunnel(id: string): Promise<TunnelStatusReply>;
+  listSshTunnels(): Promise<ListSshTunnelsReply>;
+  saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply>;
+  deleteTunnel(id: string): Promise<TerminalActionReply>;
+  startTunnel(id: string): Promise<TunnelStatusReply>;
+  stopTunnel(id: string): Promise<TunnelStatusReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
@@ -368,13 +368,13 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'session.move' && exactKeys(payload, ['id', 'folderId']) && isSessionDefinitionId(payload.id) &&
       (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
-  if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListLocalTunnelsRequest };
-  if (value.command === 'tunnel.save' && normalizeLocalTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveLocalTunnelRequest };
+  if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSshTunnelsRequest };
+  if (value.command === 'tunnel.save' && normalizeSshTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveSshTunnelRequest };
   if ((value.command === 'tunnel.delete' || value.command === 'tunnel.start' || value.command === 'tunnel.stop') &&
       exactKeys(payload, ['id']) && isTunnelId(payload.id)) {
-    if (value.command === 'tunnel.delete') return { ok: true, result: value as unknown as DeleteLocalTunnelRequest };
-    if (value.command === 'tunnel.start') return { ok: true, result: value as unknown as StartLocalTunnelRequest };
-    return { ok: true, result: value as unknown as StopLocalTunnelRequest };
+    if (value.command === 'tunnel.delete') return { ok: true, result: value as unknown as DeleteSshTunnelRequest };
+    if (value.command === 'tunnel.start') return { ok: true, result: value as unknown as StartSshTunnelRequest };
+    return { ok: true, result: value as unknown as StopSshTunnelRequest };
   }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
@@ -452,8 +452,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'session.folder.create') return isSavedSessionFolder(value.result);
     if (request.command === 'session.folder.export') return isFolderExportResult(value.result);
     if (request.command === 'session.folder.import') return isFolderImportResult(value.result);
-    if (request.command === 'tunnel.list') return Array.isArray(value.result) && value.result.every(isLocalTunnelSnapshot);
-    if (request.command === 'tunnel.save') return isLocalTunnelDefinition(value.result);
+    if (request.command === 'tunnel.list') return Array.isArray(value.result) && value.result.every(isSshTunnelSnapshot);
+    if (request.command === 'tunnel.save') return isSshTunnelDefinition(value.result);
     if (request.command === 'tunnel.delete') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'tunnel.start' || request.command === 'tunnel.stop') {
       return isTunnelRunStatus(value.result) && value.result.tunnelId === request.payload.id;
@@ -463,8 +463,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);
 }
 
-function isLocalTunnelSnapshot(value: unknown): value is LocalTunnelSnapshot {
-  return record(value) && exactKeys(value, ['definition', 'status']) && isLocalTunnelDefinition(value.definition) &&
+function isSshTunnelSnapshot(value: unknown): value is SshTunnelSnapshot {
+  return record(value) && exactKeys(value, ['definition', 'status']) && isSshTunnelDefinition(value.definition) &&
     isTunnelRunStatus(value.status) && value.status.tunnelId === value.definition.id;
 }
 

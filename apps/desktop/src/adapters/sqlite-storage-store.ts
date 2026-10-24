@@ -6,7 +6,7 @@ import { HostTrustStoreError } from '../../../../packages/application/src/host-t
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
 import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
-import type { LocalTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
@@ -14,8 +14,8 @@ import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, n
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
-import { isTunnelId, normalizeLocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
-import type { LocalTunnelDefinition, LocalTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isTunnelId, normalizeSshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDefinition, SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import { HostTrustJsonStore } from './host-trust-json-store.ts';
 import { parseStorageWorkerMessage, STORAGE_WORKER_PROTOCOL_VERSION } from '../workers/storage-protocol.ts';
@@ -76,7 +76,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
     : never
   : never;
 
-export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, LocalTunnelCatalog, SavedSessionReader {
+export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, SshTunnelCatalog, SavedSessionReader {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -197,14 +197,14 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value;
   }
 
-  async listLocalTunnels(): Promise<readonly LocalTunnelDefinition[]> {
+  async listSshTunnels(): Promise<readonly SshTunnelDefinition[]> {
     await this.ensureMigrated();
     const result = await this.worker.request({ command: 'tunnel.list' });
     if (result.kind !== 'tunnels') throw new StorageOperationError('corrupt');
     return result.value;
   }
 
-  async getLocalTunnel(id: string): Promise<LocalTunnelDefinition | undefined> {
+  async getSshTunnel(id: string): Promise<SshTunnelDefinition | undefined> {
     if (!isTunnelId(id)) throw new StorageOperationError('invalid');
     await this.ensureMigrated();
     const result = await this.worker.request({ command: 'tunnel.get', id });
@@ -212,8 +212,8 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value ?? undefined;
   }
 
-  async saveLocalTunnel(input: LocalTunnelDraft): Promise<LocalTunnelDefinition> {
-    const draft = normalizeLocalTunnelDraft(input);
+  async saveSshTunnel(input: SshTunnelDraft): Promise<SshTunnelDefinition> {
+    const draft = normalizeSshTunnelDraft(input);
     if (!draft) throw new StorageOperationError('invalid');
     await this.ensureMigrated();
     const result = await this.worker.request({ command: 'tunnel.save', draft });
@@ -221,7 +221,7 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value;
   }
 
-  async removeLocalTunnel(id: string): Promise<boolean> {
+  async removeSshTunnel(id: string): Promise<boolean> {
     if (!isTunnelId(id)) throw new StorageOperationError('invalid');
     await this.ensureMigrated();
     const result = await this.worker.request({ command: 'tunnel.remove', id });

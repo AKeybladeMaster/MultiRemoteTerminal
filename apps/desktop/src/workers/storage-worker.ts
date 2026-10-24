@@ -100,16 +100,16 @@ parent.on('message', async event => {
         result: { kind: 'changed', value: await sessionCatalogRepository.moveSession(request.id, request.folderId) } });
     } else if (request.command === 'tunnel.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
-        result: { kind: 'tunnels', value: await tunnelRepository.listLocalTunnels() } });
+        result: { kind: 'tunnels', value: await tunnelRepository.listSshTunnels() } });
     } else if (request.command === 'tunnel.get') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
-        result: { kind: 'tunnelLookup', value: await tunnelRepository.getLocalTunnel(request.id) ?? null } });
+        result: { kind: 'tunnelLookup', value: await tunnelRepository.getSshTunnel(request.id) ?? null } });
     } else if (request.command === 'tunnel.save') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
-        result: { kind: 'tunnel', value: await tunnelRepository.saveLocalTunnel(request.draft) } });
+        result: { kind: 'tunnel', value: await tunnelRepository.saveSshTunnel(request.draft) } });
     } else if (request.command === 'tunnel.remove') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
-        result: { kind: 'removed', value: await tunnelRepository.removeLocalTunnel(request.id) } });
+        result: { kind: 'removed', value: await tunnelRepository.removeSshTunnel(request.id) } });
     } else {
       closed = true;
       repository.close();

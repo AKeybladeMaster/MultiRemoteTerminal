@@ -1,7 +1,7 @@
 import { failure } from '../../domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../domain/src/errors.ts';
-import type { LocalTunnelDefinition, LocalTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
-import { isTunnelId, normalizeLocalTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
+import type { SshTunnelDefinition, SshTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
+import { isTunnelId, normalizeSshTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
 import { isSessionDefinitionId } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition } from '../../domain/src/session-definition.ts';
 import type { CancellationSignal } from './cancellation.ts';
@@ -9,30 +9,30 @@ import type { SshTerminalController } from './ssh-terminals.ts';
 import type { StorageOperationKind } from './storage-errors.ts';
 import { StorageOperationError } from './storage-errors.ts';
 
-export interface LocalTunnelCatalog {
-  listLocalTunnels(): Promise<readonly LocalTunnelDefinition[]>;
-  getLocalTunnel(id: string): Promise<LocalTunnelDefinition | undefined>;
-  saveLocalTunnel(draft: LocalTunnelDraft): Promise<LocalTunnelDefinition>;
-  removeLocalTunnel(id: string): Promise<boolean>;
+export interface SshTunnelCatalog {
+  listSshTunnels(): Promise<readonly SshTunnelDefinition[]>;
+  getSshTunnel(id: string): Promise<SshTunnelDefinition | undefined>;
+  saveSshTunnel(draft: SshTunnelDraft): Promise<SshTunnelDefinition>;
+  removeSshTunnel(id: string): Promise<boolean>;
 }
 
 export interface SavedSessionReader {
   getSessionDefinition(id: string): Promise<SavedSessionDefinition | undefined>;
 }
 
-export interface LocalTunnelForwardProvider {
-  startLocalForward(sessionId: string, tunnelId: string, definition: LocalTunnelDefinition): Promise<number>;
-  stopLocalForward(sessionId: string, tunnelId: string): Promise<void>;
+export interface SshTunnelForwardProvider {
+  startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition): Promise<number>;
+  stopForward(sessionId: string, tunnelId: string): Promise<void>;
 }
 
-export interface LocalTunnelSnapshot {
-  readonly definition: LocalTunnelDefinition;
+export interface SshTunnelSnapshot {
+  readonly definition: SshTunnelDefinition;
   readonly status: TunnelRunStatus;
 }
 
 export interface SshTunnelController {
-  list(): Promise<Outcome<readonly LocalTunnelSnapshot[]>>;
-  save(draft: unknown): Promise<Outcome<LocalTunnelDefinition>>;
+  list(): Promise<Outcome<readonly SshTunnelSnapshot[]>>;
+  save(draft: unknown): Promise<Outcome<SshTunnelDefinition>>;
   remove(id: unknown): Promise<Outcome<Record<string, never>>>;
   start(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>>;
   stop(id: unknown): Promise<Outcome<TunnelRunStatus>>;
@@ -44,7 +44,7 @@ export interface SshTunnelController {
 }
 
 interface RuntimeTunnel {
-  readonly definition: LocalTunnelDefinition;
+  readonly definition: SshTunnelDefinition;
   readonly sshSessionId: string;
   status: TunnelRunStatus;
   startPromise?: Promise<Outcome<TunnelRunStatus>>;
@@ -66,10 +66,10 @@ const TERMINAL_ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_
   'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CANCELLED', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
 
 export function createSshTunnelController(
-  catalog: LocalTunnelCatalog,
+  catalog: SshTunnelCatalog,
   profiles: SavedSessionReader,
   ssh: Pick<SshTerminalController, 'openFiles' | 'close' | 'subscribe'>,
-  forwarding: LocalTunnelForwardProvider,
+  forwarding: SshTunnelForwardProvider,
   newId: () => string,
 ): SshTunnelController {
   const runtimes = new Map<string, RuntimeTunnel>();
@@ -103,7 +103,7 @@ export function createSshTunnelController(
   async function closeRuntimeResources(runtime: RuntimeTunnel): Promise<void> {
     if (runtime.bound) {
       runtime.bound = false;
-      await forwarding.stopLocalForward(runtime.sshSessionId, runtime.definition.id).catch(() => undefined);
+      await forwarding.stopForward(runtime.sshSessionId, runtime.definition.id).catch(() => undefined);
     }
     await ssh.close(runtime.sshSessionId).catch(() => undefined);
   }
@@ -116,25 +116,25 @@ export function createSshTunnelController(
     if (runtimes.get(runtime.definition.id) === runtime) runtimes.delete(runtime.definition.id);
   }
 
-  async function list(): Promise<Outcome<readonly LocalTunnelSnapshot[]>> {
+  async function list(): Promise<Outcome<readonly SshTunnelSnapshot[]>> {
     if (disposed) return failure('CANCELLED');
     try {
-      const definitions = await catalog.listLocalTunnels();
+      const definitions = await catalog.listSshTunnels();
       return { ok: true, result: definitions.map(definition => ({ definition,
         status: statuses.get(definition.id) ?? { tunnelId: definition.id, state: 'stopped' as const } })) };
     } catch (error) { return failure(storageErrorCode(error)); }
   }
 
-  async function save(input: unknown): Promise<Outcome<LocalTunnelDefinition>> {
+  async function save(input: unknown): Promise<Outcome<SshTunnelDefinition>> {
     if (disposed) return failure('CANCELLED');
-    const draft = normalizeLocalTunnelDraft(input);
+    const draft = normalizeSshTunnelDraft(input);
     if (!draft) return failure('INVALID_REQUEST');
     if (draft.id && (runtimes.has(draft.id) || startingRequests.has(draft.id))) return failure('BUSY', 'terminal');
     try {
       const profile = await profiles.getSessionDefinition(draft.sessionId);
       if (!profile) return failure('NOT_FOUND');
       if (profile.kind !== 'ssh' && profile.kind !== 'sftp') return failure('INVALID_REQUEST');
-      return { ok: true, result: await catalog.saveLocalTunnel(draft) };
+      return { ok: true, result: await catalog.saveSshTunnel(draft) };
     } catch (error) { return failure(storageErrorCode(error)); }
   }
 
@@ -143,7 +143,7 @@ export function createSshTunnelController(
     if (!isTunnelId(id)) return failure('INVALID_REQUEST');
     if (runtimes.has(id) || startingRequests.has(id)) return failure('BUSY', 'terminal');
     try {
-      const removed = await catalog.removeLocalTunnel(id);
+      const removed = await catalog.removeSshTunnel(id);
       if (!removed) return failure('NOT_FOUND');
       statuses.delete(id);
       return { ok: true, result: EMPTY_RESULT };
@@ -193,10 +193,10 @@ export function createSshTunnelController(
 
   async function performStartRequest(id: string, attempt: StartAttempt): Promise<Outcome<TunnelRunStatus>> {
     if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
-    let definition: LocalTunnelDefinition | undefined;
+    let definition: SshTunnelDefinition | undefined;
     let profile: SavedSessionDefinition | undefined;
     try {
-      definition = await catalog.getLocalTunnel(id);
+      definition = await catalog.getSshTunnel(id);
       if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
       if (!definition) return failure('NOT_FOUND');
       attempt.sessionId = definition.sessionId;
@@ -240,7 +240,7 @@ export function createSshTunnelController(
         if (runtimes.get(runtime.definition.id) === runtime) runtimes.delete(runtime.definition.id);
         return runtime.stopRequested ? failure('CANCELLED', 'terminal') : failure(code, 'terminal');
       }
-      const portAssigned = await forwarding.startLocalForward(runtime.sshSessionId, runtime.definition.id, runtime.definition);
+      const portAssigned = await forwarding.startForward(runtime.sshSessionId, runtime.definition.id, runtime.definition);
       runtime.bound = true;
       if (!Number.isSafeInteger(portAssigned) || portAssigned < 1 || portAssigned > 65_535) throw new Error('Invalid listener result');
       if (runtime.stopRequested || runtime.failureCode) {

@@ -1,6 +1,6 @@
 import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
-  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListLocalTunnelsReply, SaveLocalTunnelReply, TunnelStatusReply,
+  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
@@ -13,7 +13,7 @@ import type { LocalTerminalEvent } from '../../../../packages/application/src/lo
 import type { SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
-import type { LocalTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
@@ -404,19 +404,19 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply> {
       return send(voidRequest('session.move', { id, folderId }), 8_000);
     },
-    listLocalTunnels(): Promise<ListLocalTunnelsReply> {
+    listSshTunnels(): Promise<ListSshTunnelsReply> {
       return send({ command: 'tunnel.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
     },
-    saveLocalTunnel(draft: LocalTunnelDraft): Promise<SaveLocalTunnelReply> {
+    saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply> {
       return send({ command: 'tunnel.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
     },
-    deleteLocalTunnel(id: string): Promise<TerminalActionReply> {
+    deleteTunnel(id: string): Promise<TerminalActionReply> {
       return send(voidRequest('tunnel.delete', { id }), 8_000);
     },
-    startLocalTunnel(id: string): Promise<TunnelStatusReply> {
+    startTunnel(id: string): Promise<TunnelStatusReply> {
       return send({ command: 'tunnel.start', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, SSH_OPEN_TIMEOUT_MS);
     },
-    stopLocalTunnel(id: string): Promise<TunnelStatusReply> {
+    stopTunnel(id: string): Promise<TunnelStatusReply> {
       return send({ command: 'tunnel.stop', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, 10_000);
     },
     onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void {

@@ -11,8 +11,8 @@ import type { RemoteDirectoryListing } from '../../../../packages/domain/src/rem
 import { isRemoteFileName } from '../../../../packages/domain/src/remote-files.ts';
 import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
-import { isLocalTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
-import type { LocalTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { isAbsoluteNormalizedLocalPath } from './local-transfer-target.ts';
 
 export const SSH_WORKER_PROTOCOL_VERSION = 1;
@@ -32,8 +32,8 @@ export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.download'; readonly sessionId: string;
       readonly operationId: string; readonly remotePath: string; readonly localPath: string; readonly conflictPolicy: FileTransferConflictPolicy }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.cancel'; readonly sessionId: string; readonly operationId: string }
-  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'local-forward.start'; readonly sessionId: string; readonly definition: LocalTunnelDefinition }
-  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'local-forward.stop'; readonly sessionId: string; readonly tunnelId: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.start'; readonly sessionId: string; readonly definition: SshTunnelDefinition }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.stop'; readonly sessionId: string; readonly tunnelId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'close'; readonly sessionId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' }
   | { readonly version: 1; readonly type: 'host-key-result'; readonly sessionId: string; readonly checkId: string; readonly accepted: boolean };
@@ -106,9 +106,9 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
       isFileTransferConflictPolicy(value.conflictPolicy)) return value as unknown as SshWorkerRequest;
   if (value.command === 'files.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId']) &&
       isUuid(value.sessionId) && isUuid(value.operationId)) return value as unknown as SshWorkerRequest;
-  if (value.command === 'local-forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition']) &&
-      isUuid(value.sessionId) && isLocalTunnelDefinition(value.definition)) return value as unknown as SshWorkerRequest;
-  if (value.command === 'local-forward.stop' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'tunnelId']) &&
+  if (value.command === 'tunnel.forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition']) &&
+      isUuid(value.sessionId) && isSshTunnelDefinition(value.definition)) return value as unknown as SshWorkerRequest;
+  if (value.command === 'tunnel.forward.stop' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'tunnelId']) &&
       isUuid(value.sessionId) && isTunnelId(value.tunnelId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'close' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId']) && isUuid(value.sessionId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as SshWorkerRequest;

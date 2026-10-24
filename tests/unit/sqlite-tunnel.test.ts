@@ -6,7 +6,7 @@ import { SqliteSessionCatalogRepository } from '../../apps/desktop/src/adapters/
 import { SqliteTunnelRepository } from '../../apps/desktop/src/adapters/sqlite-tunnel-repository.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 
-test('SQLite persists named loopback forwards against saved SSH and SFTP profiles only', async () => {
+test('SQLite persists local and remote loopback forwards against saved SSH and SFTP profiles only', async () => {
   const database = new DatabaseSync(':memory:');
   try {
     new SqliteHostTrustRepository(database).migrate();
@@ -18,28 +18,31 @@ test('SQLite persists named loopback forwards against saved SSH and SFTP profile
 
     const draft = { sessionId: ssh.id, name: 'Database', mode: 'local' as const, bindHost: '127.0.0.1' as const, bindPort: 0,
       targetHost: 'DB.INTERNAL.', targetPort: 5432 };
-    const saved = await tunnels.saveLocalTunnel(draft);
+    const saved = await tunnels.saveSshTunnel(draft);
     assert.deepEqual({ name: saved.name, bindHost: saved.bindHost, bindPort: saved.bindPort, targetHost: saved.targetHost },
       { name: 'Database', bindHost: '127.0.0.1', bindPort: 0, targetHost: 'db.internal' });
-    assert.deepEqual(await tunnels.listLocalTunnels(), [saved]);
-    assert.deepEqual(await tunnels.getLocalTunnel(saved.id), saved);
+    assert.deepEqual(await tunnels.listSshTunnels(), [saved]);
+    assert.deepEqual(await tunnels.getSshTunnel(saved.id), saved);
     assert.equal((await sessions.getSessionDefinition(ssh.id))?.id, ssh.id);
 
-    const metrics = await tunnels.saveLocalTunnel({ ...draft, name: 'Metrics', bindPort: 15_433 });
-    const queue = await tunnels.saveLocalTunnel({ ...draft, name: 'Queue', bindPort: 15_434 });
-    assert.equal((await tunnels.listLocalTunnels()).length, 3, 'the catalog stores more than two definitions');
+    const metrics = await tunnels.saveSshTunnel({ ...draft, name: 'Metrics', bindPort: 15_433 });
+    const queue = await tunnels.saveSshTunnel({ ...draft, name: 'Queue', bindPort: 15_434 });
+    const remote = await tunnels.saveSshTunnel({ ...draft, name: 'Reverse API', mode: 'remote', targetHost: '127.0.0.1', targetPort: 3000 });
+    assert.equal(remote.mode, 'remote');
+    assert.equal((await tunnels.getSshTunnel(remote.id))?.mode, 'remote');
+    assert.equal((await tunnels.listSshTunnels()).length, 4, 'the catalog stores both local and remote definitions');
 
-    const updated = await tunnels.saveLocalTunnel({ ...draft, id: saved.id, sessionId: sftp.id, name: 'SFTP database', bindPort: 15432 });
+    const updated = await tunnels.saveSshTunnel({ ...draft, id: saved.id, sessionId: sftp.id, name: 'SFTP database', bindPort: 15432 });
     assert.equal(updated.id, saved.id);
     assert.equal(updated.sessionId, sftp.id);
     assert.equal(updated.bindPort, 15_432);
-    await assert.rejects(() => tunnels.saveLocalTunnel({ ...draft, sessionId: ftp.id }),
+    await assert.rejects(() => tunnels.saveSshTunnel({ ...draft, sessionId: ftp.id }),
       error => error instanceof StorageOperationError && error.kind === 'invalid');
-    await assert.rejects(() => tunnels.saveLocalTunnel({ ...draft, bindHost: '0.0.0.0' as '127.0.0.1' }),
+    await assert.rejects(() => tunnels.saveSshTunnel({ ...draft, bindHost: '0.0.0.0' as '127.0.0.1' }),
       error => error instanceof StorageOperationError && error.kind === 'invalid');
 
     assert.equal(await sessions.removeSession(sftp.id), true);
-    assert.equal(await tunnels.getLocalTunnel(saved.id), undefined, 'deleting its saved SSH profile cascades the dependent tunnel');
-    assert.deepEqual((await tunnels.listLocalTunnels()).map(tunnel => tunnel.name).sort(), [metrics.name, queue.name]);
+    assert.equal(await tunnels.getSshTunnel(saved.id), undefined, 'deleting its saved SSH profile cascades the dependent tunnel');
+    assert.deepEqual((await tunnels.listSshTunnels()).map(tunnel => tunnel.name).sort(), [metrics.name, queue.name, remote.name]);
   } finally { database.close(); }
 });

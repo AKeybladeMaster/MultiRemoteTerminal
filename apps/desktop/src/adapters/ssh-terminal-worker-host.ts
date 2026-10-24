@@ -3,9 +3,9 @@ import type { UtilityProcess } from 'electron';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
-import type { LocalTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
-import { isLocalTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
-import type { LocalTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
+import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import { isRemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
@@ -56,7 +56,7 @@ function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCo
   return code;
 }
 
-export class SshTerminalWorkerHost implements SshTerminalProvider, LocalTunnelForwardProvider {
+export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForwardProvider {
   private readonly workerPath: string;
   private readonly appRoot: string;
   private readonly launchWorker: SshWorkerLauncher;
@@ -149,21 +149,21 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, LocalTunnelFo
     return result;
   }
 
-  async startLocalForward(sessionId: string, tunnelId: string, definition: LocalTunnelDefinition): Promise<number> {
-    if (!this.sessions.has(sessionId) || !isTunnelId(tunnelId) || !isLocalTunnelDefinition(definition) || definition.id !== tunnelId) {
+  async startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition): Promise<number> {
+    if (!this.sessions.has(sessionId) || !isTunnelId(tunnelId) || !isSshTunnelDefinition(definition) || definition.id !== tunnelId) {
       throw new SshTerminalProviderError('INVALID_REQUEST');
     }
-    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'local-forward.start',
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'tunnel.forward.start',
       sessionId, definition } as const satisfies SshWorkerRequest;
     const result = await this.request(request, 20_000);
     if (!isBindPortResult(result)) throw new SshTerminalProviderError('UNAVAILABLE');
     return result.bindPort;
   }
 
-  async stopLocalForward(sessionId: string, tunnelId: string): Promise<void> {
+  async stopForward(sessionId: string, tunnelId: string): Promise<void> {
     if (!isTunnelId(tunnelId)) throw new SshTerminalProviderError('INVALID_REQUEST');
     if (!this.sessions.has(sessionId)) return;
-    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'local-forward.stop',
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'tunnel.forward.stop',
       sessionId, tunnelId } as const satisfies SshWorkerRequest;
     await this.request(request, 5_000);
   }

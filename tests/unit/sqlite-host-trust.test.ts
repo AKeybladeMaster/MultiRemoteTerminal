@@ -150,7 +150,7 @@ test('SQLite schema v1 upgrades existing saved profiles, tunnel definitions, and
     assert.equal((database.prepare('SELECT name FROM tunnel_definitions WHERE id = ?').get(tunnelId) as { name: string }).name, 'Local forward');
     assert.equal((database.prepare('SELECT name FROM session_definitions WHERE id = ?').get(sessionId) as { name: string }).name, 'Existing gateway');
     const tunnels = new SqliteTunnelRepository(database);
-    assert.equal((await tunnels.getLocalTunnel(tunnelId))?.name, 'Local forward', 'upgraded rows must pass the current runtime decoder');
+    assert.equal((await tunnels.getSshTunnel(tunnelId))?.name, 'Local forward', 'upgraded rows must pass the current runtime decoder');
     const restoredTrust = upgraded.find({ host: 'gateway.example', port: 22 });
     assert.ok(restoredTrust && sameHostKey(restoredTrust, trusted));
   } finally {
