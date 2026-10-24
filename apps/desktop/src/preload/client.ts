@@ -15,6 +15,7 @@ type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
 type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
+const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 interface TerminalInputBarrier {
   tail: Promise<void>;
   readonly pendingWrites: Set<Promise<void>>;
@@ -277,7 +278,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return send(voidRequest('ssh.host.revoke', { host, port }), 8_000);
     },
     listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply> {
-      return send({ command: 'ssh.files.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, path } }, 25_000);
+      return send({ command: 'ssh.files.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, path } }, SSH_DIRECTORY_TIMEOUT_MS);
     },
     listSavedSessions(query: string): Promise<ListSessionsReply> {
       return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);

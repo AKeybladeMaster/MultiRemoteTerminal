@@ -51,9 +51,11 @@ class FakeClient extends EventEmitter {
 }
 
 class DelayedSftpClient extends FakeClient {
-  sftpCallback: ((error: Error | undefined, channel?: unknown) => void) | undefined;
+  sftpCalls = 0;
+  readonly sftpCallbacks: Array<(error: Error | undefined, channel?: unknown) => void> = [];
   override sftp(callback: (error: Error | undefined, channel?: unknown) => void): this {
-    this.sftpCallback = callback;
+    this.sftpCalls += 1;
+    this.sftpCallbacks.push(callback);
     return this;
   }
 }
@@ -229,22 +231,59 @@ test('cancelling while the SFTP subsystem is opening settles immediately and clo
 
   const cancellation = new AbortController();
   const listing = provider.listRemoteDirectory(sessionId, '.', cancellation.signal);
-  assert.equal(typeof client.sftpCallback, 'function');
+  assert.equal(client.sftpCalls, 1);
   cancellation.abort();
   const result = await Promise.race([
     listing.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
     new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
   ]);
+  const competing = provider.listRemoteDirectory(sessionId, '.');
+  const competingResult = await Promise.race([
+    competing.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
+    new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
+  ]);
+  const openCountAfterRetry = client.sftpCalls;
   const shellSurvivedCancellation = !client.ended;
-  client.sftpCallback?.(undefined, sftp);
+  client.sftpCallbacks[0]?.(undefined, sftp);
+  client.sftpCallbacks[1]?.(undefined, new FakeSftp([]));
   await new Promise<void>(resolve => setImmediate(resolve));
+  await Promise.allSettled([competing]);
   const lateChannelClosed = sftp.ended;
   await provider.close(sessionId);
   context.mock.timers.reset();
 
   assert.equal(result, 'CANCELLED');
+  assert.equal(competingResult, 'BUSY');
+  assert.equal(openCountAfterRetry, 1);
   assert.equal(shellSurvivedCancellation, true);
   assert.equal(lateChannelClosed, true);
+});
+
+test('an unanswered cancelled SFTP open stays guarded until its watchdog closes the transport', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new DelayedSftpClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  const cancellation = new AbortController();
+  const listing = provider.listRemoteDirectory(sessionId, '.', cancellation.signal);
+  cancellation.abort();
+  await assert.rejects(listing, error => (error as { code?: string }).code === 'CANCELLED');
+  const retry = provider.listRemoteDirectory(sessionId, '.');
+  const retryResult = await Promise.race([
+    retry.then(() => 'RESOLVED', error => (error as { code?: string }).code ?? 'UNKNOWN'),
+    new Promise<string>(resolve => setImmediate(() => resolve('STILL_PENDING')))
+  ]);
+  const openCountAfterRetry = client.sftpCalls;
+
+  context.mock.timers.tick(15_000);
+  assert.equal(client.ended, true);
+  await assert.rejects(provider.listRemoteDirectory(sessionId, '.'), error => (error as { code?: string }).code === 'UNAVAILABLE');
+  context.mock.timers.reset();
+  assert.equal(retryResult, 'BUSY');
+  assert.equal(openCountAfterRetry, 1);
 });
 
 test('an unavailable SFTP subsystem produces a clear capability error without closing SSH', async () => {

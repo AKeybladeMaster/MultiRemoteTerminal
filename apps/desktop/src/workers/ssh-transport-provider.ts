@@ -23,6 +23,10 @@ const SFTP_STATUS_EOF = 1;
 
 type SftpChannel = SFTPWrapper & { end(): void };
 
+interface PendingSftpOpen {
+  cancel(error: Error): void;
+}
+
 export type SshTransportClient = Client;
 export type SshTransportChannel = ClientChannel;
 export type SshTransportConfig = ConnectConfig;
@@ -50,6 +54,7 @@ interface RuntimeSession {
   channel?: ClientChannel;
   sftp: SftpChannel | undefined;
   sftpBusy: boolean;
+  sftpOpenAttempt: PendingSftpOpen | undefined;
   opening: boolean;
   closing: boolean;
   terminalEventSent: boolean;
@@ -95,6 +100,9 @@ export function createSshTransportProvider(
     if (session.closing) return;
     session.closing = true;
     sessions.delete(session.sessionId);
+    session.sftpOpenAttempt?.cancel(new SshTerminalProviderError('CANCELLED'));
+    session.sftpOpenAttempt = undefined;
+    session.sftpBusy = false;
     session.clearPassword();
     clearTimeout(session.openTimer);
     session.pendingText = '';
@@ -196,7 +204,7 @@ export function createSshTransportProvider(
       const client = clients.create();
       const session: RuntimeSession = {
         sessionId, client, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
-        sftp: undefined, sftpBusy: false,
+        sftp: undefined, sftpBusy: false, sftpOpenAttempt: undefined,
         nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
         outputBytesBySequence: new Map(), outputPaused: false, clearPassword: () => {},
         openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
@@ -336,7 +344,7 @@ export function createSshTransportProvider(
           throw new SshTerminalProviderError('CANCELLED');
         }
         return await listSftpDirectory(session, sftp, path, cancellation);
-      } finally { session.sftpBusy = false; }
+      } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
     },
 
     async close(sessionId): Promise<void> {
@@ -352,41 +360,74 @@ export function createSshTransportProvider(
   function getSftp(session: RuntimeSession, cancellation?: CancellationSignal): Promise<SftpChannel> {
     if (session.sftp) return Promise.resolve(session.sftp);
     if (session.closing || cancellation?.aborted) return Promise.reject(new SshTerminalProviderError('CANCELLED'));
+    if (session.sftpOpenAttempt) return Promise.reject(new SshTerminalProviderError('BUSY'));
     return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (error?: Error, channel?: SftpChannel) => {
-        if (settled) { if (channel) void closeSftpChannel(session, channel); return; }
-        settled = true;
-        clearTimeout(timer);
-        cancellation?.removeEventListener('abort', cancel);
-        if (error) reject(error);
-        else if (!channel || session.closing) {
-          if (channel) void closeSftpChannel(session, channel);
-          reject(new SshTerminalProviderError('UNAVAILABLE'));
-        }
-        else if (cancellation?.aborted) {
-          void closeSftpChannel(session, channel).finally(() => reject(new SshTerminalProviderError('CANCELLED')));
-        } else {
-          session.sftp = channel;
-          channel.on('error', () => { if (session.sftp === channel) session.sftp = undefined; });
-          channel.once('close', () => { if (session.sftp === channel) session.sftp = undefined; });
-          resolve(channel);
-        }
-      };
+      let callerSettled = false;
+      let callbackSettled = false;
+      let removeCancellation = () => {};
       const timer = setTimeout(() => {
         const timeout = new SshTerminalProviderError('TIMEOUT');
         session.failureCode = 'TIMEOUT';
         emitFailure(session, 'TIMEOUT');
+        attempt.cancel(timeout);
         terminate(session);
-        finish(timeout);
       }, SFTP_OPEN_TIMEOUT_MS);
-      const cancel = () => finish(new SshTerminalProviderError('CANCELLED'));
-      cancellation?.addEventListener('abort', cancel, { once: true });
-      if (cancellation?.aborted) { cancel(); return; }
+      const attempt: PendingSftpOpen = {
+        cancel(error) {
+          if (callbackSettled) return;
+          callbackSettled = true;
+          clearTimeout(timer);
+          removeCancellation();
+          if (session.sftpOpenAttempt === attempt) session.sftpOpenAttempt = undefined;
+          session.sftpBusy = false;
+          if (!callerSettled) { callerSettled = true; reject(error); }
+        }
+      };
+      session.sftpOpenAttempt = attempt;
+      const cancelCaller = () => {
+        if (callerSettled) return;
+        callerSettled = true;
+        removeCancellation();
+        reject(new SshTerminalProviderError('CANCELLED'));
+        // Keep the open attempt and watchdog until its callback arrives or the SSH session is closed.
+      };
+      if (cancellation) {
+        cancellation.addEventListener('abort', cancelCaller, { once: true });
+        removeCancellation = () => cancellation.removeEventListener('abort', cancelCaller);
+      }
+      if (cancellation?.aborted) { cancelCaller(); return; }
       try {
-        session.client.sftp((error, channel) => finish(error ? new SshTerminalProviderError('NOT_SUPPORTED') : undefined,
-          channel as SftpChannel | undefined));
-      } catch { finish(new SshTerminalProviderError('UNAVAILABLE')); }
+        session.client.sftp((error, rawChannel) => {
+          const channel = rawChannel as SftpChannel | undefined;
+          if (callbackSettled) { if (channel) void closeSftpChannel(session, channel); return; }
+          callbackSettled = true;
+          clearTimeout(timer);
+          removeCancellation();
+          if (session.sftpOpenAttempt === attempt) session.sftpOpenAttempt = undefined;
+          if (callerSettled) {
+            if (channel) void closeSftpChannel(session, channel);
+            session.sftpBusy = false;
+            return;
+          }
+          callerSettled = true;
+          if (error) { session.sftpBusy = false; reject(new SshTerminalProviderError('NOT_SUPPORTED')); return; }
+          if (!channel || session.closing) {
+            if (channel) void closeSftpChannel(session, channel);
+            session.sftpBusy = false;
+            reject(new SshTerminalProviderError('UNAVAILABLE'));
+            return;
+          }
+          if (cancellation?.aborted) {
+            session.sftpBusy = false;
+            void closeSftpChannel(session, channel).finally(() => reject(new SshTerminalProviderError('CANCELLED')));
+            return;
+          }
+          session.sftp = channel;
+          channel.on('error', () => { if (session.sftp === channel) session.sftp = undefined; });
+          channel.once('close', () => { if (session.sftp === channel) session.sftp = undefined; });
+          resolve(channel);
+        });
+      } catch { attempt.cancel(new SshTerminalProviderError('UNAVAILABLE')); }
     });
   }
 
