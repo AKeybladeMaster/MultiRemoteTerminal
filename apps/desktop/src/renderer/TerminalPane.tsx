@@ -1,13 +1,16 @@
 import { useLayoutEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
-import type { ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { terminalThemes } from './terminal-theme.ts';
+import type { TerminalTheme } from './terminal-theme.ts';
 
-export type TerminalTheme = 'dark' | 'light';
+export type { TerminalTheme } from './terminal-theme.ts';
 
 export interface TerminalUiHandle {
   readonly write: (data: string, onParsed: () => void) => void;
   readonly focus: () => void;
+  readonly clear: () => void;
+  readonly copySelection: () => Promise<boolean>;
   readonly acknowledgeOutput: (sequence: number) => Promise<void>;
 }
 
@@ -22,23 +25,6 @@ interface Props {
   readonly onReady: (sessionId: string, handle: TerminalUiHandle | undefined) => void;
   readonly onError: (message: string) => void;
 }
-
-const terminalThemes: Record<TerminalTheme, ITheme> = {
-  dark: {
-    background: '#101c28', foreground: '#e7edf4', cursor: '#f5ce85', cursorAccent: '#142231',
-    selectionBackground: '#38546f', black: '#142231', red: '#e98d8d', green: '#9bd0a8', yellow: '#f5ce85',
-    blue: '#a5c9f4', magenta: '#d3afe8', cyan: '#8ccfd2', white: '#e7edf4',
-    brightBlack: '#74879a', brightRed: '#f19e9e', brightGreen: '#afe1bb', brightYellow: '#ffdfa0',
-    brightBlue: '#c0dafa', brightMagenta: '#e3c3f4', brightCyan: '#a8e0e1', brightWhite: '#ffffff'
-  },
-  light: {
-    background: '#fbfcfe', foreground: '#182a3d', cursor: '#825600', cursorAccent: '#ffffff',
-    selectionBackground: '#c3d8ee', black: '#182a3d', red: '#a53232', green: '#327145', yellow: '#825600',
-    blue: '#275b96', magenta: '#6d4388', cyan: '#216c70', white: '#f3f6fa',
-    brightBlack: '#52687e', brightRed: '#bd4747', brightGreen: '#428a5b', brightYellow: '#956600',
-    brightBlue: '#3973b5', brightMagenta: '#8757a6', brightCyan: '#36878b', brightWhite: '#ffffff'
-  }
-};
 
 export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -84,6 +70,13 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     const handle: TerminalUiHandle = Object.freeze({
       write: (data: string, onParsed: () => void) => instance.write(data, onParsed),
       focus: () => instance.focus(),
+      clear: () => instance.clear(),
+      copySelection: async () => {
+        const selection = instance.getSelection();
+        if (!selection) return false;
+        await navigator.clipboard.writeText(selection);
+        return true;
+      },
       acknowledgeOutput: async (sequence: number) => {
         const reply = transport === 'ssh'
           ? await window.multiRemoteTerminal.acknowledgeSshTerminalOutput(sessionId, sequence)

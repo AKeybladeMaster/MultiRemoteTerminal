@@ -2,7 +2,7 @@
 
 An independent Windows remote terminal workbench, developed incrementally on `dev-1`.
 
-**Current state: WP-03C saved-session folders (partial acceptance).** Windows E2E covers explicit local save, search, favorites, reopen/delete, nested folder create/rename/move/delete, safe child promotion and persistence across restart. Saved definitions contain no credentials or terminal history. F-004 remains planned until the full 1,000-definition workflow passes end-to-end; P-13 is partial because automatic saving through a user preference is not implemented. Saved SSH reconnect still needs a disposable OpenSSH test. There is no installable or portable `.exe` package yet.
+**Current state: WP-03C saved-session folders plus WP-01D terminal interactions.** Saved definitions are kept in the per-user SQLite catalog and survive application exit/restart; this app has no separate account sign-in/logout flow. Windows E2E covers explicit local save, search, favorites, reopen/delete, nested folder operations and persistence, plus `Ctrl+W`/middle-click close confirmation and terminal-tab context actions. Saved definitions contain no credentials or terminal history. F-004 remains planned until the full 1,000-definition workflow passes end-to-end; P-13 is partial because automatic saving through a user preference is not implemented. Saved SSH reconnect still needs a disposable OpenSSH test. There is no installable or portable `.exe` package yet. P-30 syntax highlighting also remains planned; the ANSI color palette is contrast-tested but does not parse command syntax.
 
 ## Run the development preview
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MouseEvent, ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packages/application/src/local-terminals.ts';
@@ -32,6 +32,12 @@ type SavedFolderDialogState =
   | { readonly mode: 'rename'; readonly folder: SavedSessionFolder }
   | { readonly mode: 'move-folder'; readonly folder: SavedSessionFolder }
   | { readonly mode: 'move-session'; readonly session: SavedSessionDefinition };
+
+interface TerminalTabContextMenu {
+  readonly sessionId: string;
+  readonly x: number;
+  readonly y: number;
+}
 
 type CommandName = 'new-powershell' | 'new-cmd' | 'connect-ssh' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
@@ -152,6 +158,7 @@ function Workbench() {
   const [alert, setAlert] = useState<string>();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
+  const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
   const [selectedCommand, setSelectedCommand] = useState(0);
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
@@ -203,6 +210,9 @@ function Workbench() {
   const closeDialog = useRef<HTMLElement>(null);
   const closeReturnFocus = useRef<HTMLElement | null>(null);
   const keepTerminalButton = useRef<HTMLButtonElement>(null);
+  const tabContextMenuElement = useRef<HTMLDivElement>(null);
+  const firstTabContextAction = useRef<HTMLButtonElement>(null);
+  const tabContextReturnFocus = useRef<HTMLElement | null>(null);
   const focusTerminalOnActiveChange = useRef(true);
 
   const showTerminalError = useCallback((message: string) => setAlert(message), []);
@@ -273,6 +283,75 @@ function Workbench() {
     closeReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPendingCloseId(sessionId);
   }, []);
+
+  function openTerminalTabContextMenu(event: MouseEvent<HTMLButtonElement>, sessionId: string) {
+    event.preventDefault();
+    tabContextReturnFocus.current = event.currentTarget;
+    setTabContextMenu({ sessionId, x: event.clientX, y: event.clientY });
+  }
+
+  function closeTerminalTabContextMenu(restoreFocus: boolean) {
+    setTabContextMenu(undefined);
+    const target = tabContextReturnFocus.current;
+    tabContextReturnFocus.current = null;
+    if (!restoreFocus) return;
+    requestAnimationFrame(() => { if (target?.isConnected) target.focus(); });
+  }
+
+  async function copyTerminalSelection(sessionId: string) {
+    const handle = handles.current.get(sessionId);
+    try {
+      if (!handle || !(await handle.copySelection())) {
+        setAlert('Select terminal text before choosing Copy selection.');
+      }
+    } catch {
+      setAlert('Clipboard access is unavailable. Select the text and press Ctrl+C instead.');
+    } finally {
+      closeTerminalTabContextMenu(false);
+      requestAnimationFrame(() => handles.current.get(sessionId)?.focus());
+    }
+  }
+
+  function clearTerminalDisplay(sessionId: string) {
+    const handle = handles.current.get(sessionId);
+    if (handle) handle.clear();
+    closeTerminalTabContextMenu(false);
+    requestAnimationFrame(() => handles.current.get(sessionId)?.focus());
+  }
+
+  function focusNextContextAction(direction: -1 | 1) {
+    const menu = tabContextMenuElement.current;
+    if (!menu) return;
+    const actions = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+    if (actions.length === 0) return;
+    const current = actions.indexOf(document.activeElement as HTMLButtonElement);
+    actions[(current + direction + actions.length) % actions.length]?.focus();
+  }
+
+  useLayoutEffect(() => {
+    const menu = tabContextMenuElement.current;
+    if (!menu || !tabContextMenu) return;
+    const bounds = menu.getBoundingClientRect();
+    const margin = 8;
+    menu.style.left = `${Math.max(margin, Math.min(tabContextMenu.x, window.innerWidth - bounds.width - margin))}px`;
+    menu.style.top = `${Math.max(margin, Math.min(tabContextMenu.y, window.innerHeight - bounds.height - margin))}px`;
+  }, [tabContextMenu]);
+
+  useEffect(() => {
+    if (!tabContextMenu) return;
+    requestAnimationFrame(() => firstTabContextAction.current?.focus());
+    const dismissOutsideMenu = (event: PointerEvent) => {
+      if (event.target instanceof Node && tabContextMenuElement.current?.contains(event.target)) return;
+      setTabContextMenu(undefined);
+    };
+    const dismissOnResize = () => setTabContextMenu(undefined);
+    document.addEventListener('pointerdown', dismissOutsideMenu, true);
+    window.addEventListener('resize', dismissOnResize);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutsideMenu, true);
+      window.removeEventListener('resize', dismissOnResize);
+    };
+  }, [tabContextMenu]);
 
   const deliver = useCallback((event: LocalTerminalEvent, handle: TerminalUiHandle) => {
     if (event.kind === 'data') {
@@ -553,6 +632,23 @@ function Workbench() {
         }
         return;
       }
+      if (tabContextMenu) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeTerminalTabContextMenu(true);
+        } else if (event.key === 'Tab') {
+          setTabContextMenu(undefined);
+        }
+        return;
+      }
+      const target = event.target;
+      const editingText = target instanceof HTMLElement && !target.closest('.xterm') &&
+        (target.isContentEditable || target.matches('input, textarea, select'));
+      if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w' && activeId && !editingText) {
+        event.preventDefault();
+        requestCloseTerminal(activeId);
+        return;
+      }
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'p') {
         event.preventDefault();
         if (paletteOpen) setPaletteOpen(false);
@@ -578,7 +674,7 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, catalogBusy, decideSshTrust, folderDialog, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents]);
+  }, [activeId, catalogBusy, decideSshTrust, folderDialog, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -978,7 +1074,7 @@ function Workbench() {
           </ul>
         </div>}
         <section className="saved-session-group" aria-labelledby="saved-sessions-heading">
-          <div className="saved-session-heading"><div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span>{savedSessions.length}</span></div>
+          <div className="saved-session-heading"><div className="rail-heading"><h2 id="saved-sessions-heading">Saved sessions</h2><span className="saved-session-count" aria-label={`${savedSessions.length} saved ${savedSessions.length === 1 ? 'session' : 'sessions'}`}>{savedSessions.length}</span></div>
             <button className="saved-folder-create" type="button" disabled={catalogBusy} onClick={() => openSavedFolderDialog({ mode: 'create', parentId: null })}>+ Folder</button>
           </div>
           <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>
@@ -1009,6 +1105,9 @@ function Workbench() {
             {sessions.map((session, index) => <button className={`tab-item ${session.sessionId === activeId ? 'selected' : ''}`} key={session.sessionId}
               type="button" role="tab" id={`tab-${session.sessionId}`} aria-controls={`panel-${session.sessionId}`}
               aria-selected={session.sessionId === activeId} tabIndex={session.sessionId === activeId ? 0 : -1}
+              aria-haspopup="menu" aria-expanded={tabContextMenu?.sessionId === session.sessionId}
+              onAuxClick={event => { if (event.button === 1) { event.preventDefault(); requestCloseTerminal(session.sessionId); } }}
+              onContextMenu={event => openTerminalTabContextMenu(event, session.sessionId)}
               onClick={() => { focusTerminalOnActiveChange.current = true; setActiveId(session.sessionId); }}
               onKeyDown={event => {
                 let nextIndex = index;
@@ -1076,6 +1175,31 @@ function Workbench() {
         <button type="button" aria-label="Increase terminal font size" onClick={() => setFontSize(value => Math.min(24, value + 1))} disabled={fontSize >= 24}>＋</button>
       </div>
     </footer>
+    {tabContextMenu && sessions.some(session => session.sessionId === tabContextMenu.sessionId) && <div ref={tabContextMenuElement}
+      className="terminal-tab-menu" role="menu" aria-label={`Terminal actions for ${sessions.find(session => session.sessionId === tabContextMenu.sessionId)?.title ?? 'session'}`}
+      style={{ left: `${tabContextMenu.x}px`, top: `${tabContextMenu.y}px` }}
+      onKeyDown={event => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          focusNextContextAction(event.key === 'ArrowDown' ? 1 : -1);
+        } else if (event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          const actions = tabContextMenuElement.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)');
+          (event.key === 'Home' ? actions?.[0] : actions?.[actions.length - 1])?.focus();
+        }
+      }}>
+      <button ref={firstTabContextAction} type="button" role="menuitem" onClick={() => void copyTerminalSelection(tabContextMenu.sessionId)}>Copy selection</button>
+      <button type="button" role="menuitem" onClick={() => clearTerminalDisplay(tabContextMenu.sessionId)}>Clear terminal</button>
+      <button type="button" role="menuitem" onClick={() => {
+        const session = sessions.find(candidate => candidate.sessionId === tabContextMenu.sessionId);
+        const trigger = tabContextReturnFocus.current;
+        closeTerminalTabContextMenu(false);
+        requestAnimationFrame(() => {
+          if (trigger?.isConnected) trigger.focus();
+          if (session) requestCloseTerminal(session.sessionId);
+        });
+      }}>Close terminal</button>
+    </div>}
     <span className="visually-hidden" role="status" aria-live="polite">{status}</span>
     {paletteOpen && <div className="palette-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setPaletteOpen(false); }}>
       <section className="command-palette" role="dialog" aria-modal="true" aria-labelledby="palette-heading">

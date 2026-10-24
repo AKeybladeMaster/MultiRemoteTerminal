@@ -207,6 +207,8 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('No saved sessions yet.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Saved sessions', exact: true })).toHaveText('Saved sessions');
+    await expect(page.getByLabel('0 saved sessions')).toBeVisible();
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();
     const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
     await expect(saveDialog).toBeVisible();
@@ -222,6 +224,9 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     const search = page.getByRole('searchbox', { name: 'Search saved sessions' });
     const openSaved = page.getByRole('button', { name: 'Open Reusable PowerShell', exact: true });
     await expect(openSaved).toBeVisible();
+    await expect(page.getByLabel('1 saved session')).toBeVisible();
+    await openSaved.click({ button: 'right' });
+    await expect(page.locator('.terminal-tab-menu')).toHaveCount(0);
     await page.getByRole('button', { name: 'Make favorite Reusable PowerShell', exact: true }).click();
     const favorite = page.getByRole('button', { name: 'Remove favorite from Reusable PowerShell', exact: true });
     await expect(favorite).toHaveAttribute('aria-pressed', 'true');
@@ -246,6 +251,51 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     await page.getByRole('button', { name: 'Actions for saved session Reusable PowerShell' }).click();
     await page.getByRole('button', { name: 'Delete saved session Reusable PowerShell', exact: true }).click();
     await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only actions', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-tab-actions-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const title = 'PowerShell session 1';
+    const marker = 'MRT-TAB-CONTEXT-CLEARED';
+    const { rows } = await sendLine(page, title, `Write-Output '${marker}'`, marker);
+    const tab = page.getByRole('tab', { name: new RegExp(title) });
+
+    await tab.click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: `Terminal actions for ${title}` });
+    await expect(menu).toBeVisible();
+    await page.screenshot({ path: 'test-results/terminal-tab-context-menu.png', fullPage: true });
+    await expect(menu.getByRole('menuitem', { name: 'Copy selection' })).toBeFocused();
+    await menu.getByRole('menuitem', { name: 'Clear terminal' }).click();
+    await expect(rows).not.toContainText(marker);
+
+    await page.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await page.keyboard.press('Control+W');
+    let confirmation = page.getByRole('alertdialog');
+    await expect(confirmation).toContainText(title);
+    await confirmation.getByRole('button', { name: 'Keep terminal' }).click();
+    await expect(tab).toBeVisible();
+
+    await tab.click({ button: 'middle' });
+    confirmation = page.getByRole('alertdialog');
+    await expect(confirmation).toContainText(title);
+    await confirmation.getByRole('button', { name: 'Keep terminal' }).click();
+    await expect(tab).toBeVisible();
+
+    await tab.click({ button: 'right' });
+    await expect(menu).toBeVisible();
+    await menu.getByRole('menuitem', { name: 'Close terminal' }).click();
+    confirmation = page.getByRole('alertdialog');
+    await expect(confirmation).toContainText(title);
+    await confirmation.getByRole('button', { name: 'Close terminal' }).click();
+    await expect(page.getByRole('tab')).toHaveCount(0);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -47,6 +47,8 @@ Visual contract for this slice (preserve / local extension): a familiar Windows 
 
 Implementation checkpoint (2026-10-23): WP-01's P-01 workflow passed on Windows 11 x64. A follow-up selected system ConPTY after repeated evidence that the bundled-DLL path could leave PowerShell's reported dimensions stale with multiple sessions open. A focused vertical-resize regression also required an explicit constrained workspace grid row so terminal sizing follows the window height. See [ADR-0004](adr/ADR-0004-system-conpty-for-local-terminals.md), [acceptance evidence](results/WP-01-2026-10-23.md) and the [terminal dependency review](dependencies/WP-01.md). This does not satisfy M1/M4 or authorize promotion to `main`.
 
+WP-01D terminal interactions (2026-10-24): confirmed `Ctrl+W` and middle-click closure use the existing stop confirmation; right-clicking terminal tabs opens copy-selection, clear-display and close actions, while saved-session rows do not expose that menu. The saved-session total is separated into a labeled count badge. The 16 ANSI colors in both palettes pass a 4.5:1 contrast test against their terminal background. This does not add shell syntax highlighting; P-30 remains planned. Windows E2E and exact validation results are recorded in [phase evidence](results/WP-01D-terminal-interactions-2026-10-24.md).
+
 ### WP-02 — SSH/trust/vault
 
 **Requires:** WP-00/01.  

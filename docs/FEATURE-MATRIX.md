@@ -10,6 +10,7 @@ This is **requirements coverage**, not an assertion of implemented code. Each fe
 WP-00 foundation has separate [Windows acceptance evidence](results/WP-00-2026-10-23.md).
 It validates the shell and IPC security controls only; it completes none of the full workflows below.
 WP-01 verifies P-01's ten-tab local-terminal workflow in [Windows acceptance evidence](results/WP-01-2026-10-23.md). It does not mark remote protocols, saved sessions, or packaging as implemented.
+WP-01D adds confirmed `Ctrl+W` and middle-click tab closure, a terminal-tab-only context menu, and contrast-checked ANSI palettes; see [terminal interaction evidence](results/WP-01D-terminal-interactions-2026-10-24.md). P-30 remains planned because configurable command/syntax highlighting is not implemented.
 
 | ID | Reference feature | Planned architecture/provider | Phase | Verification/interpretation |
 |---|---|---|---|---|
