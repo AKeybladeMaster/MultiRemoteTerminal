@@ -29,9 +29,9 @@
 
 - TypeScript project and tool typechecks passed.
 - ESLint and import-boundary checks passed.
-- All 216 unit tests passed, including remote-mode validation, SQLite
-  persistence, worker protocol validation, controller lifecycle and provider
-  traffic/cleanup.
+- All 218 unit tests passed, including remote-mode validation, SQLite
+  persistence, worker protocol validation, controller lifecycle, provider
+  traffic/cleanup, the 64-channel rejection bound and late bind-timeout cleanup.
 - Native and renderer build passed. Vite reported the existing non-fatal
   renderer chunk-size warning (643.03 kB minified, above its 500 kB advisory).
 - All 16 Electron E2E scenarios passed.

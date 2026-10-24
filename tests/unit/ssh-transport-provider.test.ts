@@ -76,11 +76,30 @@ class RemoteForwardingFakeClient extends FakeClient {
     callback?.();
     return this;
   }
-  emitRemoteConnection(port: number): PassThrough {
+  attemptRemoteConnection(port: number): { readonly channel?: PassThrough; readonly rejected: boolean } {
     const channel = new PassThrough();
+    let accepted = false;
+    let rejected = false;
     this.emit('tcp connection', { destIP: '127.0.0.1', destPort: port, srcIP: '127.0.0.1', srcPort: 53_222 },
-      () => channel as unknown as ClientChannel, () => { throw new Error('Loopback forwarded connection was rejected'); });
-    return channel;
+      () => { accepted = true; return channel as unknown as ClientChannel; }, () => { rejected = true; });
+    return { ...(accepted ? { channel } : {}), rejected };
+  }
+  emitRemoteConnection(port: number): PassThrough {
+    const result = this.attemptRemoteConnection(port);
+    if (result.rejected || !result.channel) throw new Error('Loopback forwarded connection was rejected');
+    return result.channel;
+  }
+}
+
+class DelayedRemoteForwardingFakeClient extends RemoteForwardingFakeClient {
+  private forwardInCallback: ((error: Error | undefined, port: number) => void) | undefined;
+  override forwardIn(address: string, port: number, callback?: (error: Error | undefined, port: number) => void): this {
+    this.forwardInCalls.push({ address, port });
+    this.forwardInCallback = callback;
+    return this;
+  }
+  completeForwardIn(error?: Error, port = this.assignedPort): void {
+    this.forwardInCallback?.(error, port);
   }
 }
 
@@ -245,6 +264,52 @@ test('remote SSH forwarding requests only a loopback bind, relays to a local des
   } finally {
     await provider.close(sessionId);
     await closeServer(target);
+  }
+});
+
+test('remote SSH forwarding rejects connections beyond the 64-channel bound and closes accepted channels on stop', async () => {
+  const target: Server = createServer();
+  const targetPort = await listen(target);
+  const client = new RemoteForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333337', sessionId, name: 'Bounded reverse echo', mode: 'remote' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+    const attempts = Array.from({ length: 65 }, () => client.attemptRemoteConnection(bindPort));
+    assert.equal(attempts.filter(attempt => attempt.channel).length, 64);
+    assert.equal(attempts.filter(attempt => attempt.rejected).length, 1);
+
+    await provider.stopForward(sessionId, definition.id);
+    assert.ok(attempts.filter(attempt => attempt.channel).every(attempt => attempt.channel?.destroyed));
+  } finally {
+    await provider.close(sessionId);
+    await closeServer(target);
+  }
+});
+
+test('a late remote bind result is explicitly unbound after the setup timeout', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const client = new DelayedRemoteForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333338', sessionId, name: 'Delayed reverse bind', mode: 'remote' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
+    const starting = provider.startForward(sessionId, definition);
+    context.mock.timers.tick(10_000);
+    await assert.rejects(starting, error => (error as { readonly code?: string }).code === 'TIMEOUT');
+
+    client.completeForwardIn();
+    assert.deepEqual(client.unforwardInCalls, [{ address: '127.0.0.1', port: client.assignedPort }]);
+  } finally {
+    await provider.close(sessionId);
+    context.mock.timers.reset();
   }
 });
 
