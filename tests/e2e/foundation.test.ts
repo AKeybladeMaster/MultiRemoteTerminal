@@ -518,7 +518,7 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
 });
 
 test('saved SSH profiles start loopback forwards, relay traffic and restore stopped tunnels after restart', async () => {
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-forward-e2e-'));
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
@@ -639,54 +639,79 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     await openForwardingManager.click();
     manager = page.getByRole('dialog', { name: 'Port forwarding' });
     await expect(manager).toBeVisible();
-    await manager.getByRole('button', { name: '+ New tunnel' }).click();
-    await manager.getByLabel('Tunnel name').fill('Local database forward');
-    const profileSelect = manager.getByLabel('SSH profile');
-    await expect(profileSelect).not.toHaveValue('');
-    await manager.getByLabel('Local port').fill('0');
-    await manager.getByLabel('Remote destination host').fill('127.0.0.1');
-    await manager.getByLabel('Remote destination port').fill(String(targetAddress.port));
-    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
-    await expect(manager.getByRole('button', { name: /Local database forward/ })).toBeVisible();
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(700, 720));
-    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(720);
-    await page.screenshot({ path: 'test-results/ssh-local-forward-manager-narrow.png', fullPage: true });
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1200, 800));
-    await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(720);
-    await page.screenshot({ path: 'test-results/ssh-local-forward-manager.png', fullPage: true });
-    await manager.getByRole('button', { name: 'Start tunnel', exact: true }).click();
-    const editor = manager.getByRole('region', { name: 'Local forward settings' });
-    const tunnelStatus = editor.getByRole('status');
-    await expect(tunnelStatus).toContainText('Active', { timeout: 20_000 });
-    const activeEndpoint = await tunnelStatus.locator('code').innerText();
-    const portMatch = /^127\.0\.0\.1:(\d+)/u.exec(activeEndpoint);
-    expect(portMatch).not.toBeNull();
-    const localPort = Number(portMatch?.[1]);
-    expect(localPort).toBeGreaterThan(0);
-    expect(activeEndpoint).toContain(`127.0.0.1:${targetAddress.port}`);
+    const tunnelNames = ['Local database forward', 'Secondary database forward', 'Tertiary database forward'];
+    const localPorts: number[] = [];
+    for (const [index, tunnelName] of tunnelNames.entries()) {
+      await manager.getByRole('button', { name: '+ New tunnel' }).click();
+      await manager.getByLabel('Tunnel name').fill(tunnelName);
+      const profileSelect = manager.getByLabel('SSH profile');
+      await expect(profileSelect).not.toHaveValue('');
+      await manager.getByLabel('Local port').fill('0');
+      await manager.getByLabel('Remote destination host').fill('127.0.0.1');
+      await manager.getByLabel('Remote destination port').fill(String(targetAddress.port));
+      await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+      await expect(manager.getByRole('button', { name: new RegExp(tunnelName, 'u') })).toBeVisible();
+      if (index === 0) {
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(700, 720));
+        await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(720);
+        await page.screenshot({ path: 'test-results/ssh-local-forward-manager-narrow.png', fullPage: true });
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1200, 800));
+        await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(720);
+        await page.screenshot({ path: 'test-results/ssh-local-forward-manager.png', fullPage: true });
+      }
+      await manager.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+      const editor = manager.getByRole('region', { name: 'Local forward settings' });
+      const tunnelStatus = editor.getByRole('status');
+      await expect(tunnelStatus).toContainText('Active', { timeout: 20_000 });
+      const activeEndpoint = await tunnelStatus.locator('code').innerText();
+      const portMatch = /^127\.0\.0\.1:(\d+)/u.exec(activeEndpoint);
+      expect(portMatch).not.toBeNull();
+      const localPort = Number(portMatch?.[1]);
+      expect(localPort).toBeGreaterThan(0);
+      expect(activeEndpoint).toContain(`127.0.0.1:${targetAddress.port}`);
+      localPorts.push(localPort);
 
-    const forwardedPayload = await new Promise<string>((resolvePayload, rejectPayload) => {
-      const socket = connectTcp(localPort, '127.0.0.1');
-      let received = Buffer.alloc(0);
-      const timer = setTimeout(() => socket.destroy(new Error('Timed out waiting for forwarded TCP data')), 10_000);
-      socket.once('connect', () => socket.end(Buffer.from('payload-through-tunnel')));
-      socket.on('data', chunk => { received = Buffer.concat([received, chunk]); });
-      socket.once('end', () => { clearTimeout(timer); resolvePayload(received.toString('utf8')); });
-      socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
-    });
-    expect(forwardedPayload, `Fixture events: ${fixtureEvents.join(', ')}; target bytes: ${bytesReceivedByTarget}`)
-      .toBe('MRT-FORWARDED:payload-through-tunnel');
-    expect(fixtureEvents.filter(event => event === 'direct-tcpip').length).toBeGreaterThan(0);
+      const payload = `payload-through-tunnel-${index + 1}`;
+      const forwardedPayload = await new Promise<string>((resolvePayload, rejectPayload) => {
+        const socket = connectTcp(localPort, '127.0.0.1');
+        let received = Buffer.alloc(0);
+        const timer = setTimeout(() => socket.destroy(new Error('Timed out waiting for forwarded TCP data')), 10_000);
+        socket.once('connect', () => socket.end(Buffer.from(payload)));
+        socket.on('data', chunk => { received = Buffer.concat([received, chunk]); });
+        socket.once('end', () => { clearTimeout(timer); resolvePayload(received.toString('utf8')); });
+        socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
+      });
+      expect(forwardedPayload, `Fixture events: ${fixtureEvents.join(', ')}; target bytes: ${bytesReceivedByTarget}`)
+        .toBe(`MRT-FORWARDED:${payload}`);
+    }
+    expect(new Set(localPorts).size).toBe(3);
+    for (const [index, localPort] of localPorts.entries()) {
+      const payload = `simultaneous-through-tunnel-${index + 1}`;
+      const forwardedPayload = await new Promise<string>((resolvePayload, rejectPayload) => {
+        const socket = connectTcp(localPort, '127.0.0.1');
+        let received = Buffer.alloc(0);
+        const timer = setTimeout(() => socket.destroy(new Error('Timed out verifying simultaneous forwards')), 10_000);
+        socket.once('connect', () => socket.end(Buffer.from(payload)));
+        socket.on('data', chunk => { received = Buffer.concat([received, chunk]); });
+        socket.once('end', () => { clearTimeout(timer); resolvePayload(received.toString('utf8')); });
+        socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
+      });
+      expect(forwardedPayload, `Tunnel ${index + 1} stopped responding after all forwards were active`)
+        .toBe(`MRT-FORWARDED:${payload}`);
+    }
+    expect(fixtureEvents.filter(event => event === 'direct-tcpip')).toHaveLength(6);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
 
     await app.close();
     app = undefined;
-    const releasedPortError = await new Promise<Error | undefined>(resolveConnection => {
-      const socket = connectTcp(localPort, '127.0.0.1');
-      socket.once('connect', () => { socket.destroy(); resolveConnection(undefined); });
-      socket.once('error', error => resolveConnection(error));
-    });
-    expect(releasedPortError && 'code' in releasedPortError ? releasedPortError.code : undefined).toBe('ECONNREFUSED');
+    for (const localPort of localPorts) {
+      const releasedPortError = await new Promise<Error | undefined>(resolveConnection => {
+        const socket = connectTcp(localPort, '127.0.0.1');
+        socket.once('connect', () => { socket.destroy(); resolveConnection(undefined); });
+        socket.once('error', error => resolveConnection(error));
+      });
+      expect(releasedPortError && 'code' in releasedPortError ? releasedPortError.code : undefined).toBe('ECONNREFUSED');
+    }
 
     app = await launch();
     page = await app.firstWindow();
@@ -694,8 +719,12 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     await expect(page.getByRole('button', { name: 'Open Forwarding SSH profile', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Port forwarding', exact: true }).click();
     const restoredManager = page.getByRole('dialog', { name: 'Port forwarding' });
-    await expect(restoredManager.getByRole('button', { name: /Local database forward/ })).toBeVisible();
-    await expect(restoredManager.getByRole('region', { name: 'Local forward settings' }).getByRole('status')).toContainText('Stopped');
+    for (const tunnelName of tunnelNames) {
+      const savedTunnel = restoredManager.getByRole('button', { name: new RegExp(tunnelName, 'u') });
+      await expect(savedTunnel).toBeVisible();
+      await savedTunnel.click();
+      await expect(restoredManager.getByRole('region', { name: 'Local forward settings' }).getByRole('status')).toContainText('Stopped');
+    }
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
   } finally {
     await app?.close();

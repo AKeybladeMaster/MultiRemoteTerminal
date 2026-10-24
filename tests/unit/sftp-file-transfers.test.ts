@@ -264,13 +264,18 @@ test('SFTP progress reports are coalesced during multi-chunk transfers', async (
   await writeFile(sourcePath, Buffer.alloc(1024 * 1024, 3));
   const sftp = new FakeSftp();
   sftp.delayWrites = true;
-  sftp.writeDelayMs = 5;
-  const progress: Array<{ phase: string; bytesTransferred: number }> = [];
+  sftp.writeDelayMs = 15;
+  const progress: Array<{ phase: string; bytesTransferred: number; at: number }> = [];
   try {
     await transfers.upload(sessionId, operationId, sftp as never, sourcePath, '/home', 'large.bin', 'rename', undefined,
-      event => progress.push({ phase: event.phase, bytesTransferred: event.bytesTransferred }));
+      event => progress.push({ phase: event.phase, bytesTransferred: event.bytesTransferred, at: performance.now() }));
     const transferProgress = progress.filter(event => event.phase === 'transferring');
-    assert.ok(transferProgress.length <= 4, `expected throttled progress updates, received ${transferProgress.length}`);
+    assert.ok(transferProgress.length >= 3, 'the delayed fixture must produce an interval progress update');
+    const intervalReports = transferProgress.slice(0, -1);
+    for (let index = 1; index < intervalReports.length; index += 1) {
+      const elapsed = (intervalReports[index]?.at ?? 0) - (intervalReports[index - 1]?.at ?? 0);
+      assert.ok(elapsed >= 90, `progress updates should be coalesced to roughly 100 ms intervals, received ${elapsed.toFixed(1)} ms`);
+    }
     assert.equal(transferProgress.at(-1)?.bytesTransferred, 1024 * 1024);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
