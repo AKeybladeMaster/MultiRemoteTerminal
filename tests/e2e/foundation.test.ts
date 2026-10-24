@@ -129,15 +129,15 @@ function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promis
   });
 }
 
-test('a second application process exits and focuses the primary window under the same profile', async () => {
+test('a second application process exits and shows and focuses the primary window under the same profile', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-single-instance-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
   let secondInstance: ReturnType<typeof spawn> | undefined;
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.minimize());
-    await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isMinimized())).toBe(true);
+    await app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.hide());
+    await expect.poll(() => app.evaluate(electron => electron.BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(false);
     const executable = await app.evaluate(() => process.execPath);
     secondInstance = spawn(executable, [resolve('apps/desktop'), `--user-data-dir=${profile}`], {
       env: electronEnvironment(), windowsHide: true, stdio: 'ignore'
