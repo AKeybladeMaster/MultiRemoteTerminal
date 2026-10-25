@@ -4,12 +4,14 @@ import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSess
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
+import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
+import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -76,7 +78,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     try {
       return Promise.race([received, new Promise<CommandReply<T>>(resolve => {
         timer = setTimeout(() => {
-          if (request.command.startsWith('session.') || request.command.startsWith('macro.') || request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.')) {
+          if (request.command.startsWith('session.') || request.command.startsWith('macro.') || request.command.startsWith('preferences.') ||
+              request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.')) {
             const reportTimeout = () => resolve({ requestId, ...failure('TIMEOUT') });
             try { void Promise.resolve(cancelCatalogRequest(requestId)).then(reportTimeout, reportTimeout); }
             catch { reportTimeout(); }
@@ -409,6 +412,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     deleteMacroShortcut(macroId: string): Promise<TerminalActionReply> {
       return send(voidRequest('macro.shortcut.delete', { macroId }), 8_000);
+    },
+    getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply> {
+      return send({ command: 'preferences.get', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply> {
+      return send({ command: 'preferences.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { preferences } }, 8_000);
     },
     createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
       return send({ command: 'session.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);

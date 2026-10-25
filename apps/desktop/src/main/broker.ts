@@ -9,6 +9,7 @@ import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgre
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { MacroCatalog } from '../../../../packages/application/src/macros.ts';
+import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -60,6 +61,7 @@ export interface CommandActions {
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
+  readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
 }
 
@@ -282,6 +284,8 @@ export async function dispatchCommand(
       case 'macro.shortcut.list': return { requestId, ...await actions.macros.listShortcuts(actions.cancellation) };
       case 'macro.shortcut.set': return { requestId, ...await actions.macros.setShortcut(parsed.result.payload.macroId, parsed.result.payload.code, actions.cancellation) };
       case 'macro.shortcut.delete': return { requestId, ...await actions.macros.removeShortcut(parsed.result.payload.macroId, actions.cancellation) };
+      case 'preferences.get': return { requestId, ...await actions.preferences.read(actions.cancellation) };
+      case 'preferences.save': return { requestId, ...await actions.preferences.save(parsed.result.payload.preferences, actions.cancellation) };
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };
       case 'tunnel.delete': return { requestId, ...await actions.tunnels.remove(parsed.result.payload.id) };

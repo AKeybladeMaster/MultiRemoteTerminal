@@ -212,7 +212,7 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 | `macro_bindings` | `macro_id TEXT FK`, `session_id TEXT FK`, composite PK | Target presets; confirm multi-target execution |
 | `macro_shortcuts` | `macro_id TEXT PK FK`, `code TEXT UNIQUE NOT NULL` | One app-wide shortcut per macro; macro deletion cascades; only allowlisted physical codes are stored |
 | `ssh_host_keys` | `id TEXT PK`, `canonical_host TEXT`, `port INTEGER`, `key_algorithm TEXT`, `public_key_base64 TEXT`, `sha256_fingerprint TEXT`, `trusted_at TEXT`, `source TEXT` | One key per canonical host+port; mismatches block until explicit reset; host aliases policy defined |
-| `settings` | `key TEXT PK`, `value_json TEXT`, `schema_version INTEGER`, `updated_at TEXT` | Per-key schema validation; startup greeting/logo/profile refs only |
+| `settings` | `key TEXT PK`, `value_json TEXT`, `schema_version INTEGER`, `updated_at TEXT` | Per-key exact schema validation. Current key `workbench` v1 stores only `startupGreeting`; the value is bounded Unicode plain text. Missing row means an empty greeting. |
 | `file_transfer_jobs` | `id TEXT PK`, `session_id TEXT FK`, `direction TEXT`, `source TEXT`, `destination TEXT`, `state TEXT`, `bytes_total INTEGER?`, `bytes_done INTEGER`, `error_code TEXT?`, `created_at TEXT`, `updated_at TEXT` | Jobs on restart marked interrupted; do not auto-resume destructive writes |
 | `provider_config` | `provider_id TEXT PK`, `path TEXT?`, `enabled INTEGER`, `capabilities_json TEXT`, `last_checked_at TEXT?` | Allowlist path, user approval, check executable provenance |
 | `daemon_definitions` | `id TEXT PK`, `kind TEXT`, `bind_host TEXT`, `port INTEGER`, `config_json TEXT`, `enabled INTEGER`, `created_at TEXT` | Never auto-start external access without opt-in |
@@ -253,8 +253,8 @@ Do not call a feature complete when it merely opens an unsupported-protocol erro
 
 - **Information architecture:** left workspace navigation/saved sessions + top tab bar + one or more terminal panes + optional contextual SFTP pane + status bar + command palette.
 - **Interaction:** drag/drop between local and remote file browser, grouped/favorite sessions, quick connect, keyboard tab navigation, accessible contrast, clear connection/host-key status.
-- **Branding:** independent neutral name/logos by default; user can set welcome message, logo, profile script path, enabled tools.
-- **Theme:** dark/light, high-contrast and font scale; UI state persisted separately from domain definitions.
+- **Branding:** independent neutral name/logos by default. P-34 stores a bounded plain-text startup greeting in the SQLite `settings` table; logo, profile script path, and enabled-tool controls remain planned.
+- **Theme:** the workbench currently offers a transient dark/light switch. High-contrast, font scale and persisted theme preferences remain planned; future UI preferences stay separate from session definitions.
 - **Performance:** virtualized session list and file tables; terminal output flows through renderer backpressure; do not run crypto/file operations in UI thread.
 
 ## 11. Architecture fitness rules

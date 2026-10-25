@@ -36,6 +36,7 @@ import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
 import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import { MultiExecDialog } from './MultiExecDialog.tsx';
 import { HelpDialog } from './HelpDialog.tsx';
+import { SettingsDialog } from './SettingsDialog.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -86,7 +87,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -247,6 +248,9 @@ function Workbench() {
   const [alert, setAlert] = useState<string>();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [startupGreeting, setStartupGreeting] = useState('');
+  const [startupGreetingVisible, setStartupGreetingVisible] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -387,6 +391,7 @@ function Workbench() {
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
   const helpReturnFocus = useRef<HTMLElement | null>(null);
+  const settingsReturnFocus = useRef<HTMLElement | null>(null);
   const sshConnectDialog = useRef<HTMLElement>(null);
   const sshHostInput = useRef<HTMLInputElement>(null);
   const sshPortInput = useRef<HTMLInputElement>(null);
@@ -1062,6 +1067,20 @@ function Workbench() {
 
   const closeHelp = useCallback(() => setHelpOpen(false), []);
 
+  const openSettings = useCallback(() => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    settingsReturnFocus.current = paletteOpen ? paletteReturnFocus.current ?? activeElement : activeElement;
+    if (paletteOpen) paletteReturnFocus.current = null;
+    setSettingsOpen(true);
+  }, [paletteOpen]);
+
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+
+  const saveStartupGreeting = useCallback((greeting: string) => {
+    setStartupGreeting(greeting);
+    setStartupGreetingVisible(greeting.length > 0);
+  }, []);
+
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSshConnectMode(mode);
@@ -1532,6 +1551,20 @@ function Workbench() {
   }, [openTerminal]);
 
   useEffect(() => {
+    let active = true;
+    void window.multiRemoteTerminal.getWorkbenchPreferences().then(reply => {
+      if (!active) return;
+      if (reply.ok) {
+        setStartupGreeting(reply.result.startupGreeting);
+        setStartupGreetingVisible(reply.result.startupGreeting.length > 0);
+      } else setAlert(`Workbench settings could not be loaded (${reply.error.code}).`);
+    }).catch(() => {
+      if (active) setAlert('Workbench settings could not be loaded.');
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     if (!activeId) return;
     if (focusTerminalOnActiveChange.current) {
       const targetSessionId = activeId;
@@ -1551,7 +1584,7 @@ function Workbench() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (helpOpen) return;
+      if (helpOpen || settingsOpen) return;
       const currentTrust = sshTrustEvents[0];
       if (currentTrust) {
         if (event.key === 'Escape') {
@@ -1762,7 +1795,7 @@ function Workbench() {
   }, [activeId, cancelMacroPlayback, cancelMultiExec, catalogBusy, closeMacroManager, closeMacroPlayback, closeMultiExec, confirmMultiExec,
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
-    helpOpen, saveMacroShortcut, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+    helpOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -1781,6 +1814,13 @@ function Workbench() {
     helpReturnFocus.current = null;
     requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
   }, [helpOpen]);
+
+  useEffect(() => {
+    if (settingsOpen || !settingsReturnFocus.current) return;
+    const target = settingsReturnFocus.current;
+    settingsReturnFocus.current = null;
+    requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+  }, [settingsOpen]);
 
   useLayoutEffect(() => {
     if (sshConnectOpen) {
@@ -1919,7 +1959,8 @@ function Workbench() {
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
-    { id: 'open-help', label: 'Help and keyboard shortcuts', run: openHelp }
+    { id: 'open-help', label: 'Help and keyboard shortcuts', run: openHelp },
+    { id: 'open-settings', label: 'Workbench settings', run: openSettings }
   ];
   const filteredCommands = commands.filter(command => command.label.toLowerCase().includes(query.toLowerCase()));
   const active = sessions.find(session => session.sessionId === activeId);
@@ -2322,6 +2363,7 @@ function Workbench() {
       <span className="wordmark" translate="no">MultiRemoteTerminal</span>
       <div className="header-actions">
         <span className="build-label">Local and remote sessions</span>
+        <button className="quiet-button" type="button" aria-haspopup="dialog" onClick={openSettings}>Settings</button>
         <button className="quiet-button" type="button" aria-haspopup="dialog" onClick={openHelp}>Help</button>
         <button className="quiet-button" type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={toggleTheme}>
           {theme === 'dark' ? 'Light theme' : 'Dark theme'}
@@ -2384,7 +2426,8 @@ function Workbench() {
           <span>Command palette</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>
         </button>
       </aside>
-      <main className="terminal-workspace" id="workspace" tabIndex={-1} data-opening={openingSessions.length > 0} data-recording={macroRecording !== undefined}>
+      <main className="terminal-workspace" id="workspace" tabIndex={-1} data-opening={openingSessions.length > 0} data-recording={macroRecording !== undefined}
+        style={{ gridTemplateRows: ['48px', ...Array.from({ length: Number(openingSessions.length > 0) + Number(startupGreetingVisible && startupGreeting.length > 0) + Number(macroRecording !== undefined) }, () => 'auto'), 'minmax(0, 1fr)'].join(' ') }}>
         <div className="tab-strip">
           <div className="tab-list" role="tablist" aria-label="Sessions">
             {sessions.map((session, index) => <button className={`tab-item ${session.sessionId === activeId ? 'selected' : ''}`} key={session.sessionId}
@@ -2433,6 +2476,10 @@ function Workbench() {
               onClick={() => cancelOpening(opening.sessionId)}>{opening.cancelling ? 'Cancelling...' : 'Cancel'}</button>
           </div>)}
         </div>}
+        {startupGreetingVisible && startupGreeting.length > 0 && <section className="startup-greeting-banner" aria-label="Startup greeting">
+          <div><h2>Welcome</h2><p>{startupGreeting}</p></div>
+          <button className="quiet-button" type="button" onClick={() => setStartupGreetingVisible(false)}>Dismiss greeting</button>
+        </section>}
         {macroRecording && <section className="macro-recording-banner" aria-label="Macro recording controls">
           <div className="macro-recording-copy">
             <strong>{macroRecording.status === 'saving' ? 'Saving recording' : macroRecording.status === 'stopped' ? `Recording stopped: ${macroRecording.name}` : `${macroRecording.status === 'paused' ? 'Recording paused' : 'Recording'}: ${macroRecording.name}`}</strong>
@@ -2483,6 +2530,7 @@ function Workbench() {
     </div>
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
+    {settingsOpen && <SettingsDialog onClose={closeSettings} onGreetingSaved={saveStartupGreeting} />}
     <footer className="status-bar">
       <div className="terminal-status">
         <span className={`state-dot ${active?.state ?? 'idle'}`} />

@@ -316,3 +316,21 @@ test('macro IPC accepts only typed steps and credential-free replies', () => {
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { macroId, code: 'F3' } }, parsedShortcutSet.result), false);
   }
 });
+
+test('workbench preference IPC accepts bounded plain Unicode greeting text only', () => {
+  const get = { command: 'preferences.get', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const save = { command: 'preferences.save', requestId: request.requestId, contractVersion: 1,
+    payload: { preferences: { startupGreeting: 'Terminal ready — こんにちは 👋' } } };
+  assert.equal(parseRequest(get).ok, true);
+  const parsed = parseRequest(save);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'bad\u0000text' } } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'safe', code: 'run' } } }).ok, false);
+  assert.equal(parseRequest({ ...get, payload: { unexpected: true } }).ok, false);
+  if (parsed.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { startupGreeting: 'Terminal ready — こんにちは 👋' } }, parsed.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { startupGreeting: 'safe', command: 'whoami' } }, parsed.result), false);
+  }
+});

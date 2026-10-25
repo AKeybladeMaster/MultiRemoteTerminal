@@ -59,6 +59,8 @@ Default is **no external analytics or telemetry**. Diagnostic logs locally opt-i
 
 The SQLite storage adapter exposes only static `{component, event, code}` failure events on the local `multi-remote-terminal.storage` diagnostics channel. No listener or persistent log writer is installed by default; a future opt-in logger must remain local, capped and redacted, and must not add paths, SQL, hostnames, request IDs or stored values.
 
+The customizable startup greeting is user-supplied UI text stored in the versioned `workbench` settings row, limited to 512 Unicode code points and accepted control characters. React renders it as text; the app never evaluates it or forwards it to a shell. It is ordinary app configuration, not a credential or encrypted vault value.
+
 Portable profile initialization failures write the static `{component: "main", event: "portable_profile_initialization_failed", code: "PORTABLE_PROFILE_INIT_FAILED"}` record to stderr; the exception and filesystem paths are omitted. The user receives a generic message with a recovery suggestion.
 
 ## Secrets and key provenance

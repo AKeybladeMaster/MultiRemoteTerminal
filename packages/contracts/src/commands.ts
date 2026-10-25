@@ -31,6 +31,8 @@ import { isMacroId, isMacroDefinition, normalizeMacroDraft } from '../../domain/
 import type { MacroDefinition, MacroDraft } from '../../domain/src/macro.ts';
 import { isMacroShortcutBinding, isMacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
+import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import type { WorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
@@ -130,6 +132,8 @@ export type DeleteMacroRequest = Request<'macro.delete', { readonly id: string }
 export type ListMacroShortcutsRequest = Request<'macro.shortcut.list', Record<string, never>>;
 export type SetMacroShortcutRequest = Request<'macro.shortcut.set', { readonly macroId: string; readonly code: MacroShortcutCode }>;
 export type DeleteMacroShortcutRequest = Request<'macro.shortcut.delete', { readonly macroId: string }>;
+export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<string, never>>;
+export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | DownloadSshFileRequest | CancelSshTransferRequest |
@@ -138,7 +142,8 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
-  ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest;
+  ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
+  GetWorkbenchPreferencesRequest | SaveWorkbenchPreferencesRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -167,6 +172,7 @@ export type ListMacrosReply = CommandReply<readonly MacroDefinition[]>;
 export type MacroDefinitionReply = CommandReply<MacroDefinition>;
 export type ListMacroShortcutsReply = CommandReply<readonly MacroShortcutBinding[]>;
 export type MacroShortcutReply = CommandReply<MacroShortcutBinding>;
+export type WorkbenchPreferencesReply = CommandReply<WorkbenchPreferences>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 
 export interface DesktopBridge {
@@ -229,6 +235,8 @@ export interface DesktopBridge {
   listMacroShortcuts(): Promise<ListMacroShortcutsReply>;
   setMacroShortcut(macroId: string, code: MacroShortcutCode): Promise<MacroShortcutReply>;
   deleteMacroShortcut(macroId: string): Promise<TerminalActionReply>;
+  getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply>;
+  saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
@@ -418,6 +426,10 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'macro.shortcut.delete' && exactKeys(payload, ['macroId']) && isMacroId(payload.macroId)) {
     return { ok: true, result: value as unknown as DeleteMacroShortcutRequest };
   }
+  if (value.command === 'preferences.get' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetWorkbenchPreferencesRequest };
+  if (value.command === 'preferences.save' && exactKeys(payload, ['preferences']) && normalizeWorkbenchPreferences(payload.preferences)) {
+    return { ok: true, result: value as unknown as SaveWorkbenchPreferencesRequest };
+  }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.download', 'ssh.files.cancel',
@@ -426,7 +438,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
-    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete'].includes(value.command)) {
+    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'preferences.get', 'preferences.save'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -508,6 +520,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'macro.shortcut.set') return isMacroShortcutBinding(value.result) && value.result.macroId === request.payload.macroId &&
       value.result.code === request.payload.code;
     if (request.command === 'macro.shortcut.delete') return record(value.result) && exactKeys(value.result, []);
+    if (request.command === 'preferences.get' || request.command === 'preferences.save') return isWorkbenchPreferences(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

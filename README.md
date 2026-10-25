@@ -2,7 +2,7 @@
 
 An independent Windows remote terminal workbench, developed incrementally on `dev-1`.
 
-**Current state: WP-07A Windows package foundation (partial), with earlier terminal, saved-session, SFTP, SSH forwarding, Telnet, FTP/FTPS, macro, and offline-help slices recorded in the [feature matrix](docs/FEATURE-MATRIX.md).** Windows 11 x64 smoke tests install and uninstall the NSIS package, open a local PowerShell terminal, and verify that the portable executable creates its SQLite profile beside itself. The generated `0.0.0` artifacts are unsigned previews, not a release. Saved definitions persist in the local SQLite profile across app exits and restarts; there is no separate account sign-in/logout flow. Bash requires a separate Git for Windows installation and is not bundled. SFTP, FTP/FTPS and Telnet have explicit documented interoperability and security limits. The requirements matrix and linked evidence describe what is verified and what remains open.
+**Current state: WP-07C verifies the persisted startup greeting; WP-07A's Windows package foundation remains partial.** Earlier terminal, saved-session, SFTP, SSH forwarding, Telnet, FTP/FTPS, macro, offline-help and greeting slices are recorded in the [feature matrix](docs/FEATURE-MATRIX.md). Windows 11 x64 smoke tests install and uninstall the NSIS package, open a local PowerShell terminal, and verify that the portable executable creates its SQLite profile beside itself. The generated `0.0.0` artifacts are unsigned previews, not a release. Saved definitions and the greeting persist in the local SQLite profile across app exits and restarts; there is no separate account sign-in/logout flow. Bash requires a separate Git for Windows installation and is not bundled. SFTP, FTP/FTPS and Telnet have explicit documented interoperability and security limits. The requirements matrix and linked evidence describe what is verified and what remains open.
 
 ## Run the development preview
 
@@ -46,6 +46,7 @@ npm exec --yes --package=pnpm@12.15.0 -- pnpm dependencies:inventory
 - [Start here](docs/CODEX-START-HERE.md), [mandatory rules](AGENTS.md), [canonical specification](docs/SPEC-001-MultiRemoteTerminal.md)
 - [Architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [feature matrix](docs/FEATURE-MATRIX.md), [implementation plan](docs/IMPLEMENTATION-PLAN.md)
 - [WP-07A Windows packaging results](docs/results/WP-07A-windows-package-2026-10-25.md), [electron-builder dependency review](docs/dependencies/WP-07-electron-builder.md)
+- [WP-07B offline-help results](docs/results/WP-07B-offline-help-2026-10-25.md), [WP-07C startup-greeting results](docs/results/WP-07C-startup-greeting-2026-10-25.md)
 - [WP-00 interfaces](docs/WP-00-CONTRACTS.md), [WP-00 results](docs/results/WP-00-2026-10-23.md), [WP-01 results](docs/results/WP-01-2026-10-23.md), [WP-02 SSH results](docs/results/WP-02-ssh-2026-10-23.md), [WP-03A storage results](docs/results/WP-03-storage-2026-10-23.md), [WP-03B catalog results](docs/results/WP-03B-catalog-2026-10-23.md), [WP-03C folder results](docs/results/WP-03C-folders-2026-10-23.md), [WP-03D folder bundle results](docs/results/WP-03D-session-folder-bundles-2026-10-24.md)
 - [Dependency decisions](docs/dependencies/)
 

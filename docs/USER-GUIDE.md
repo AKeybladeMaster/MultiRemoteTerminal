@@ -88,7 +88,12 @@ forwards. Review bind addresses and server policy before starting a forward.
 For a saved SSH connection, choose **Connect through gateways** from its action
 menu to route that connection through up to two saved SSH profiles.
 
-Use the header button or command palette to switch between light and dark themes.
+Use **Workbench settings** in the header or command palette to set a startup
+greeting. It supports up to 512 Unicode code points, is stored in the local app
+profile, and appears below the tab bar after startup until you dismiss it. The
+greeting is plain text and never runs in a terminal. Leave it blank to hide it.
+
+Use the theme button or command palette to switch between light and dark themes.
 
 ## Troubleshooting
 

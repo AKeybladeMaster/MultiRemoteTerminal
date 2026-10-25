@@ -3161,3 +3161,50 @@ test('offline help opens from the workbench and command palette, filters topics,
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('custom Unicode startup greeting saves, dismisses for the current run, and returns after restart', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-preferences-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    const settingsButton = page.getByRole('button', { name: 'Settings', exact: true });
+    await settingsButton.click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings).toBeVisible();
+    const greeting = 'Terminal ready — Добро пожаловать · こんにちは 👋';
+    await settings.getByLabel('Startup greeting').fill(greeting);
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await expect(settings.getByRole('status')).toHaveText('Greeting saved.');
+    const banner = page.getByRole('region', { name: 'Startup greeting' });
+    await expect(banner).toContainText(greeting);
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(620, 760));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(700);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: 'test-results/startup-greeting.png' });
+    await banner.getByRole('button', { name: 'Dismiss greeting' }).click();
+    await expect(banner).toHaveCount(0);
+
+    await settingsButton.focus();
+    await page.keyboard.press('Control+Shift+P');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await palette.getByRole('button', { name: 'Workbench settings', exact: true }).click();
+    await expect(settings).toBeVisible();
+    await page.screenshot({ path: 'test-results/startup-settings-dialog-narrow.png' });
+    await page.keyboard.press('Escape');
+    await expect(settings).toHaveCount(0);
+    await expect(settingsButton).toBeFocused();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('region', { name: 'Startup greeting' })).toContainText(greeting);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});

@@ -6,6 +6,7 @@ import { HostTrustStoreError } from '../../../../packages/application/src/host-t
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
 import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
 import type { MacroCatalogStore } from '../../../../packages/application/src/macros.ts';
+import type { WorkbenchPreferencesStore } from '../../../../packages/application/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 import type { SshTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -15,6 +16,8 @@ import { normalizeMacroDraft, isMacroId } from '../../../../packages/domain/src/
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
+import { isWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
@@ -81,7 +84,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
     : never
   : never;
 
-export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, SshTunnelCatalog, SavedSessionReader {
+export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, WorkbenchPreferencesStore, SshTunnelCatalog, SavedSessionReader {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -206,6 +209,21 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'macro.shortcut.remove', macroId }, cancellation);
     if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async readWorkbenchPreferences(cancellation?: CancellationSignal): Promise<WorkbenchPreferences> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'preferences.get' }, cancellation);
+    if (result.kind !== 'preferences' || !isWorkbenchPreferences(result.value)) throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async saveWorkbenchPreferences(preferences: WorkbenchPreferences, cancellation?: CancellationSignal): Promise<WorkbenchPreferences> {
+    if (!isWorkbenchPreferences(preferences)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'preferences.save', preferences }, cancellation);
+    if (result.kind !== 'preferences' || !isWorkbenchPreferences(result.value)) throw new StorageOperationError('corrupt');
     return result.value;
   }
 

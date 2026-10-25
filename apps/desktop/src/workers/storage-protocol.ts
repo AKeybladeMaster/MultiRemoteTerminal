@@ -11,6 +11,8 @@ import { isMacroDefinition, isMacroId, normalizeMacroDraft } from '../../../../p
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { isMacroShortcutBinding, isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
+import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
@@ -43,6 +45,8 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.set'; readonly macroId: string; readonly code: MacroShortcutCode }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.remove'; readonly macroId: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.get' }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.save'; readonly preferences: WorkbenchPreferences }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
@@ -70,6 +74,7 @@ export type StorageWorkerResult =
   | { readonly kind: 'macroLookup'; readonly value: MacroDefinition | null }
   | { readonly kind: 'macroShortcuts'; readonly value: readonly MacroShortcutBinding[] }
   | { readonly kind: 'macroShortcut'; readonly value: MacroShortcutBinding }
+  | { readonly kind: 'preferences'; readonly value: WorkbenchPreferences }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -173,6 +178,9 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'macro.shortcut.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'macroId']) && isMacroId(value.macroId)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'preferences.get' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'preferences.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'preferences']) &&
+      normalizeWorkbenchPreferences(value.preferences)) return value as unknown as StorageWorkerRequest;
   if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
       isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
@@ -221,6 +229,7 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'macroLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isMacroDefinition(value.value))) return true;
   if (value.kind === 'macroShortcuts' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isMacroShortcutBinding)) return true;
   if (value.kind === 'macroShortcut' && exactKeys(value, ['kind', 'value']) && isMacroShortcutBinding(value.value)) return true;
+  if (value.kind === 'preferences' && exactKeys(value, ['kind', 'value']) && isWorkbenchPreferences(value.value)) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 
