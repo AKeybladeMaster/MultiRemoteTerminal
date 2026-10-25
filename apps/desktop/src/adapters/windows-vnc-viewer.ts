@@ -122,7 +122,9 @@ export class WindowsVncViewer implements VncViewerProvider {
 
 function createViewerEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const sanitized = { ...environment };
-  delete sanitized.VNC_USERNAME;
-  delete sanitized.VNC_PASSWORD;
+  for (const name of Object.keys(sanitized)) {
+    const normalized = name.toUpperCase();
+    if (normalized === 'VNC_USERNAME' || normalized === 'VNC_PASSWORD') delete sanitized[name];
+  }
   return sanitized;
 }

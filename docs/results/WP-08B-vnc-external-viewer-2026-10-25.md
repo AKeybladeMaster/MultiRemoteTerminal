@@ -14,7 +14,7 @@
 
 ## Validation
 
-- Focused Node unit/contract/storage tests — **103 passed, 0 failed**. Coverage includes VNC validation, process arguments and environment, cancellation and launch errors, broker/preload authorization, credential rejection, SQLite persistence, and bundle v1–v5 compatibility.
+- Focused Node unit/contract/storage tests — **103 passed, 0 failed**. Coverage includes VNC validation, process arguments and environment, cancellation and launch errors, broker/preload authorization, credential rejection, SQLite persistence, and bundle v1–v5 compatibility. A mixed-case environment-variable regression first failed against exact-case filtering, then passed after the Windows environment cleanup became case-insensitive.
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including import-boundary checks.
 - `corepack pnpm build` — passed on Windows x64, including the native helper. Vite emitted an advisory because the minified renderer chunk is above 500 kB (736.25 kB).
@@ -29,4 +29,4 @@ Saved definitions and JSON bundles contain only validated host, port, name, and 
 
 ## Review
 
-Independent Standards and Spec reviews are pending for this working tree. The change must not be promoted until those reviews have been resolved and the final pushed commit has been verified.
+The Spec review found that connection-aware reconnect remains outside this slice because the app cannot observe the external viewer's later state; that F-015 gap is documented and P-08 remains PARTIAL. The Standards review found that mixed-case `VNC_USERNAME` / `VNC_PASSWORD` keys could survive cleanup on Windows. A regression assertion reproduced the issue, and the adapter now removes matching names case-insensitively. The final pushed revision still requires independent follow-up review before promotion.

@@ -55,15 +55,14 @@ test('Windows VNC adapter spawns TigerVNC with a validated target and no shell',
   };
   const viewer = new WindowsVncViewer({ getProgramFilesDirectories: () => ['C:\\Program Files'] }, spawnProcess, 'win32',
     candidate => candidate === 'C:\\Program Files\\TigerVNC\\vncviewer.exe',
-    { PATH: 'C:\\Windows\\System32', VNC_USERNAME: 'ambient-user', VNC_PASSWORD: 'ambient-secret', MRT_TEST_SETTING: 'preserved' });
+    { PATH: 'C:\\Windows\\System32', VNC_USERNAME: 'ambient-user', Vnc_Password: 'ambient-secret', vnc_username: 'mixed-case-user', MRT_TEST_SETTING: 'preserved' });
 
   await viewer.launch({ host: '2001:db8::1', port: 5900 });
   assert.equal(calls.length, 1);
   assert.deepEqual({ command: calls[0]?.command, args: calls[0]?.args, shell: calls[0]?.shell, windowsHide: calls[0]?.windowsHide }, {
     command: 'C:\\Program Files\\TigerVNC\\vncviewer.exe', args: ['[2001:db8::1]::5900'], shell: false, windowsHide: true
   });
-  assert.equal(calls[0]?.env.VNC_USERNAME, undefined);
-  assert.equal(calls[0]?.env.VNC_PASSWORD, undefined);
+  assert.equal(Object.keys(calls[0]?.env ?? {}).some(name => /^VNC_(USERNAME|PASSWORD)$/iu.test(name)), false);
   assert.equal(calls[0]?.env.MRT_TEST_SETTING, 'preserved');
   assert.equal(detached, true);
 });
