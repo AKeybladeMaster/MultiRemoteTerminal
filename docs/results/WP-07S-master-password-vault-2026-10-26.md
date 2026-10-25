@@ -28,4 +28,8 @@ Optional master-password mode, encrypted mode conversion, locked restart, persis
 
 ## Review
 
-Pending independent Spec and Standards review before promotion.
+Independent Spec and Standards reviews covered `git diff origin/main...HEAD`, fixed point `b6fee00c203893851d72254ad02cd7b19d7c06c0`, candidate `0f1c1be72ab7b1b81636b3a39baad83ab46ad5aa`.
+
+- The first Spec review found that a lock after KDF completion could leave the candidate key buffer uncleared, and that a late KDF IPC result could leave its key payload uncleared. Commit `0f1c1be` adds `finally`-based cleanup until the key is transferred into the vault, zeroes every late/malformed key payload at the worker boundary, and adds regression tests for both timing windows. The Spec re-review confirmed the finding is fixed, found no new mismatch or scope creep, and kept F-010/P-29 PARTIAL for the stated Windows/platform/security acceptance gaps.
+- The Standards review found no documented-standard violations. It retained two non-blocking smell-baseline judgements: repeated Windows-account/master-password branches in the cohesive vault adapter and repeated prompt-result mapping in the manager. These remain tracked for a future architecture pass; the current code keeps mode-specific vault behavior explicit and avoids introducing a dispatch abstraction solely to remove the repeated branches.
+- Reviewers did not run tests or modify files. Root validation after the fix passed 97/97 focused unit tests, typecheck, lint, Windows build and the focused Windows E2E.
