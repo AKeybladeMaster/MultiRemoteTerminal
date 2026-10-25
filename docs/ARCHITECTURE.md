@@ -61,7 +61,7 @@ flowchart TD
   BOOT --> APP
 ```
 
-- **Domain** is framework-free: connection definitions, session and tunnel rules, macro policies, provider capabilities, errors, value objects.
+- **Domain** is framework-free: connection definitions, session and tunnel rules, macro policies, provider capabilities, errors, value objects. Its only third-party runtime dependency is the pure JavaScript `re2js` policy engine used for bounded terminal highlight patterns; the import-boundary checker allowlists that exact package.
 - **Application** coordinates one user intention per use case; owns state machine orchestration and transactions.
 - **Ports** describe operations the application requires; no transport/library detail in interfaces.
 - **Adapters** translate protocols and storage details; tested against port-level contract suites.
@@ -200,6 +200,8 @@ A WP-06B2 wait step searches the sanitized 64 KiB output collected since playbac
 
 **WP-08C remote text editing:** an explicit Edit action on a regular SFTP file invokes typed `ssh.files.read-text` or `ssh.files.write-text` commands through the preload and main broker. The renderer receives file contents only after that user action. The domain caps UTF-8 content at 512 KiB and rejects NUL and malformed surrogate sequences; the SSH utility worker accepts strict UTF-8 reads only and hashes the loaded bytes with SHA-256. Save stages a unique sibling, re-reads and checks both loaded revision and available remote identity before crossing the commit boundary, then backs up and replaces the source with rollback attempts. One SFTP operation runs per session, reports typed progress, and supports cancellation before commit. The editor has explicit Save, Reload and Close actions, warns before discarding a draft, and retains the draft after a conflict. Syntax profiles, keyword highlighting, autosave and a local editor are not part of this slice. See [ADR-0017](adr/ADR-0017-remote-text-editing.md).
 
+**WP-01F terminal keyword highlighting:** the renderer reads text only from xterm's parsed normal buffer and visible rows, matches bounded user rules with `re2js`, then applies transient foreground decorations to matching cells. It never rewrites terminal input/output, ANSI sequences or persisted scrollback. Rules are capped by count, source length, RE2 program size and group count; scanned line length, rows and match counts are also bounded. Workbench preferences migrate from schema v1 to v2, retaining the greeting and defaulting highlights off with no rules. The application CSP allows runtime inline styles needed by xterm's ANSI palette and decoration stylesheet while keeping scripts self-only and network sources denied. This offers configurable keyword coloring, not a shell parser or full zsh syntax highlighting. See [ADR-0018](adr/ADR-0018-terminal-keyword-highlighting.md).
+
 ## 8. SQLite logical schema (v3)
 
 Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique constraints, WAL mode, transactional migrations. Database file stored in per-user `app.getPath('userData')`. Database has no secret plaintext; `credential_ref` points to the vault. The selected built-in `node:sqlite` driver runs only in the storage utility process; see [ADR-0005](adr/ADR-0005-node-sqlite-storage-worker.md) and the [WP-03 runtime review](dependencies/WP-03.md).
@@ -214,7 +216,7 @@ Use `TEXT` UUIDs for IDs, UTC ISO-8601 timestamps, foreign keys enabled, unique 
 | `macro_bindings` | `macro_id TEXT FK`, `session_id TEXT FK`, composite PK | Target presets; confirm multi-target execution |
 | `macro_shortcuts` | `macro_id TEXT PK FK`, `code TEXT UNIQUE NOT NULL` | One app-wide shortcut per macro; macro deletion cascades; only allowlisted physical codes are stored |
 | `ssh_host_keys` | `id TEXT PK`, `canonical_host TEXT`, `port INTEGER`, `key_algorithm TEXT`, `public_key_base64 TEXT`, `sha256_fingerprint TEXT`, `trusted_at TEXT`, `source TEXT` | One key per canonical host+port; mismatches block until explicit reset; host aliases policy defined |
-| `settings` | `key TEXT PK`, `value_json TEXT`, `schema_version INTEGER`, `updated_at TEXT` | Per-key exact schema validation. Current key `workbench` v1 stores only `startupGreeting`; the value is bounded Unicode plain text. Missing row means an empty greeting. |
+| `settings` | `key TEXT PK`, `value_json TEXT`, `schema_version INTEGER`, `updated_at TEXT` | Per-key exact schema validation. Current key `workbench` v2 stores the bounded plain-text `startupGreeting`, an opt-in terminal highlight toggle and up to eight bounded RE2JS rules. A valid v1 greeting migrates to v2; missing row means the defaults. |
 | `file_transfer_jobs` | `id TEXT PK`, `session_id TEXT FK`, `direction TEXT`, `source TEXT`, `destination TEXT`, `state TEXT`, `bytes_total INTEGER?`, `bytes_done INTEGER`, `error_code TEXT?`, `created_at TEXT`, `updated_at TEXT` | Jobs on restart marked interrupted; do not auto-resume destructive writes |
 | `provider_config` | `provider_id TEXT PK`, `path TEXT?`, `enabled INTEGER`, `capabilities_json TEXT`, `last_checked_at TEXT?` | Allowlist path, user approval, check executable provenance |
 | `daemon_definitions` | `id TEXT PK`, `kind TEXT`, `bind_host TEXT`, `port INTEGER`, `config_json TEXT`, `enabled INTEGER`, `created_at TEXT` | Never auto-start external access without opt-in |
@@ -255,7 +257,7 @@ Do not call a feature complete when it merely opens an unsupported-protocol erro
 
 - **Information architecture:** left workspace navigation/saved sessions + top tab bar + one or more terminal panes + optional contextual SFTP pane + status bar + command palette.
 - **Interaction:** drag/drop between local and remote file browser, grouped/favorite sessions, quick connect, keyboard tab navigation, accessible contrast, clear connection/host-key status.
-- **Branding:** independent neutral name/logos by default. P-34 stores a bounded plain-text startup greeting in the SQLite `settings` table; logo, profile script path, and enabled-tool controls remain planned.
+- **Branding:** independent neutral name/logos by default. P-34 stores a bounded plain-text startup greeting in the SQLite `settings` table; workbench settings also store optional bounded terminal keyword rules. Logo, profile script path, and enabled-tool controls remain planned.
 - **Theme:** the workbench currently offers a transient dark/light switch. High-contrast, font scale and persisted theme preferences remain planned; future UI preferences stay separate from session definitions.
 - **Performance:** virtualized session list and file tables; terminal output flows through renderer backpressure; do not run crypto/file operations in UI thread.
 

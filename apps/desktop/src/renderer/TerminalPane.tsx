@@ -3,6 +3,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
+import { attachTerminalHighlights } from './terminal-highlighting.ts';
+import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 
 export type { TerminalTheme } from './terminal-theme.ts';
@@ -24,6 +26,8 @@ interface Props {
   readonly canWrite: boolean;
   readonly theme: TerminalTheme;
   readonly fontSize: number;
+  readonly terminalHighlightEnabled: boolean;
+  readonly terminalHighlightRules: readonly TerminalHighlightRule[];
   readonly onInput: (sessionId: string, data: string) => void;
   readonly onOutput: (sessionId: string, data: string) => void;
   readonly onReady: (sessionId: string, handle: TerminalUiHandle | undefined) => void;
@@ -61,7 +65,8 @@ function createTransportCommands(bridge: DesktopBridge, transport: Props['transp
   return commands[transport];
 }
 
-export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize, onInput, onOutput, onReady, onError }: Props) {
+export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize,
+  terminalHighlightEnabled, terminalHighlightRules, onInput, onOutput, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | undefined>(undefined);
   const fit = useRef<FitAddon | undefined>(undefined);
@@ -74,7 +79,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     if (!host.current) return;
     const commands = createTransportCommands(window.multiRemoteTerminal, transport);
     const instance = new Terminal({
-      allowProposedApi: false, convertEol: false, cursorBlink: true, cursorStyle: 'block',
+      allowProposedApi: true, convertEol: false, cursorBlink: true, cursorStyle: 'block',
       fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize, lineHeight: 1.35,
       scrollback: 3_000, screenReaderMode: true, theme: terminalThemes[theme]
     });
@@ -150,6 +155,13 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       fit.current = undefined;
     };
   }, [sessionId, title, transport, onInput, onOutput, onReady, onError]);
+
+  useLayoutEffect(() => {
+    const instance = terminal.current;
+    if (!instance) return;
+    const highlights = attachTerminalHighlights(instance, terminalHighlightEnabled, terminalHighlightRules, theme);
+    return () => highlights.dispose();
+  }, [terminalHighlightEnabled, terminalHighlightRules, theme]);
 
   useLayoutEffect(() => {
     const instance = terminal.current;

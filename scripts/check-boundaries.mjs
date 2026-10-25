@@ -29,8 +29,10 @@ async function scan(dir) {
             const contracts = rel.startsWith('packages/contracts/');
             const renderer = rel.includes('/src/renderer/');
             const inward = domain || application || contracts;
+            // The framework-free domain may use this pure-JavaScript regex engine for bounded pattern policy.
+            const domainPolicyLibrary = domain && name === 're2js';
             const relativeAllowed = domain ? dest.startsWith('packages/domain/') : application ? /^packages\/(domain|application)\//.test(dest) : contracts ? /^packages\/(domain|application|contracts)\//.test(dest) : !/packages\/adapters\//.test(dest) && !/apps\/desktop\/src\/(main|preload|workers)\//.test(dest);
-            if ((inward && !name.startsWith('.')) || ((inward || renderer) && name.startsWith('.') && !relativeAllowed) || (renderer && (builtins.has(name) || name === 'electron' || (!name.startsWith('.') && !['react', 'react-dom/client', 'react/jsx-runtime', '@xterm/xterm', '@xterm/addon-fit', '@xterm/xterm/css/xterm.css'].includes(name))))) failures.push(`${rel}: forbidden dependency ${name}`);
+            if ((inward && !name.startsWith('.') && !domainPolicyLibrary) || ((inward || renderer) && name.startsWith('.') && !relativeAllowed) || (renderer && (builtins.has(name) || name === 'electron' || (!name.startsWith('.') && !['react', 'react-dom/client', 'react/jsx-runtime', '@xterm/xterm', '@xterm/addon-fit', '@xterm/xterm/css/xterm.css'].includes(name))))) failures.push(`${rel}: forbidden dependency ${name}`);
           }
         }
         ts.forEachChild(node, visit);

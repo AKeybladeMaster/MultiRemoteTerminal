@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { SqliteWorkbenchPreferencesRepository } from '../../apps/desktop/src/adapters/sqlite-workbench-preferences-repository.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, WORKBENCH_PREFERENCES_SCHEMA_VERSION } from '../../packages/domain/src/workbench-preferences.ts';
 
 test('SQLite stores and restores the Unicode startup greeting across database reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'mrt-preferences-'));
@@ -14,25 +15,43 @@ test('SQLite stores and restores the Unicode startup greeting across database re
     const database = new DatabaseSync(path);
     new SqliteHostTrustRepository(database).migrate();
     const preferences = new SqliteWorkbenchPreferencesRepository(database);
-    assert.deepEqual(preferences.read(), { startupGreeting: '' });
-    assert.deepEqual(preferences.save({ startupGreeting: 'Привет 👋\nこんにちは' }), { startupGreeting: 'Привет 👋\nこんにちは' });
+    assert.deepEqual(preferences.read(), DEFAULT_WORKBENCH_PREFERENCES);
+    const updated = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Привет 👋\nこんにちは',
+      terminalHighlightEnabled: true, terminalHighlightRules: [{ pattern: '\\b(git|ssh)\\b', color: 'cyan' as const }] };
+    assert.deepEqual(preferences.save(updated), updated);
     database.close();
 
     const reopened = new DatabaseSync(path);
     new SqliteHostTrustRepository(reopened).migrate();
-    assert.deepEqual(new SqliteWorkbenchPreferencesRepository(reopened).read(), { startupGreeting: 'Привет 👋\nこんにちは' });
+    assert.deepEqual(new SqliteWorkbenchPreferencesRepository(reopened).read(), updated);
     reopened.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('SQLite migrates schema v1 greeting settings to defaults for highlighting', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Welcome' }), 1, '2026-10-24T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.deepEqual(preferences.read(), { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Welcome' });
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
 });
 
 test('SQLite rejects corrupted or unsupported stored preference records', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();
   const preferences = new SqliteWorkbenchPreferencesRepository(database);
-  preferences.save({ startupGreeting: 'Welcome' });
+  preferences.save({ ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Welcome' });
   database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?').run('{broken', 1, 'workbench');
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
-  database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?').run('{"startupGreeting":"safe"}', 2, 'workbench');
+  database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?')
+    .run('{"startupGreeting":"safe","terminalHighlightEnabled":false,"terminalHighlightRules":[],"extra":true}', 2, 'workbench');
+  assert.throws(() => preferences.read(), /Storage operation corrupt/u);
+  database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?')
+    .run('{"startupGreeting":"safe"}', 3, 'workbench');
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
   database.close();
 });

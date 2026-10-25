@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBridge } from '../../apps/desktop/src/preload/client.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
 
 const id = () => '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
 const valid = { requestId: id(), ok: true, result: describeWorkbench({ version: '0.0.0', platform: 'win32' }) };
@@ -381,17 +382,18 @@ test('preload routes VNC launches only after its trusted dialog gesture', async 
 
 test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
   const greeting = 'Terminal ready — こんにちは 👋';
+  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: greeting };
   const seen: unknown[] = [];
   const bridge = createBridge(async request => {
     seen.push(request);
-    return { requestId: request.requestId, ok: true, result: { startupGreeting: greeting } };
+    return { requestId: request.requestId, ok: true, result: preferences };
   }, id);
-  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: { startupGreeting: greeting } });
-  assert.deepEqual(await bridge.saveWorkbenchPreferences({ startupGreeting: greeting }),
-    { requestId: id(), ok: true, result: { startupGreeting: greeting } });
+  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: preferences });
+  assert.deepEqual(await bridge.saveWorkbenchPreferences(preferences),
+    { requestId: id(), ok: true, result: preferences });
   assert.deepEqual(seen, [
     { command: 'preferences.get', requestId: id(), contractVersion: 1, payload: {} },
-    { command: 'preferences.save', requestId: id(), contractVersion: 1, payload: { preferences: { startupGreeting: greeting } } }
+    { command: 'preferences.save', requestId: id(), contractVersion: 1, payload: { preferences } }
   ]);
 });
 

@@ -117,6 +117,15 @@ greeting. It supports up to 512 Unicode code points, is stored in the local app
 profile, and appears below the tab bar after startup until you dismiss it. The
 greeting is plain text and never runs in a terminal. Leave it blank to hide it.
 
+The same dialog can highlight selected words in visible terminal output. Turn
+on **Highlight terminal keywords**, add a rule, enter an RE2-style regular
+expression such as `ERROR|WARN` or `MRT-[A-Z0-9-]+`, and choose its foreground
+color. Rules are saved in your local profile and apply to open terminal panes.
+Highlighting is off by default. Patterns have bounded size and use RE2 syntax;
+look-around and backreferences are not supported. This colors matching output
+without changing commands, ANSI sequences or terminal history. It is keyword
+coloring rather than full shell syntax highlighting.
+
 Use the theme button or command palette to switch between light and dark themes.
 
 ## Troubleshooting

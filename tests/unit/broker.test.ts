@@ -6,6 +6,7 @@ import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/bro
 import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
 const owner = { owned: true, mainFrame: true, url: APP_URL };
@@ -70,8 +71,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
     async stop(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; }
   }, preferences: {
-    read: async () => ({ ok: true, result: { startupGreeting: '' } }),
-    save: async value => ({ ok: true, result: value as { readonly startupGreeting: string } })
+    read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
+    save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
   }
 });
 

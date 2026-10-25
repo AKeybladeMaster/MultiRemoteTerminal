@@ -3201,6 +3201,9 @@ test('100% scale themes render and CSP/Electron policy deny injected capabilitie
     const result = await page.evaluate(async () => {
       const globals = globalThis as unknown as Record<string, unknown>;
       globals.injectionExecuted = false;
+      const dynamicTerminalStylesApplied = [...document.querySelectorAll<HTMLStyleElement>('.xterm style')].some(style => {
+        try { return (style.sheet?.cssRules.length ?? 0) > 0; } catch { return false; }
+      });
       const script = document.createElement('script');
       script.textContent = 'globalThis.injectionExecuted = true';
       document.body.append(script);
@@ -3209,9 +3212,9 @@ test('100% scale themes render and CSP/Electron policy deny injected capabilitie
       const blockedFetch = await fetch('file:///C:/Windows/win.ini').then(() => false, () => true);
       const popup = window.open('https://example.com');
       const permission = await navigator.permissions.query({ name: 'geolocation' });
-      return { injected: globals.injectionExecuted, blockedFetch, popup: popup === null, permission: permission.state };
+      return { injected: globals.injectionExecuted, blockedFetch, popup: popup === null, permission: permission.state, dynamicTerminalStylesApplied };
     });
-    expect(result).toEqual({ injected: false, blockedFetch: true, popup: true, permission: 'denied' });
+    expect(result).toEqual({ injected: false, blockedFetch: true, popup: true, permission: 'denied', dynamicTerminalStylesApplied: true });
     await page.evaluate(() => {
       const link = document.createElement('a'); link.href = 'https://example.com'; document.body.append(link); link.click();
     });
@@ -3329,7 +3332,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(settings.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     await greetingInput.fill(greeting);
     await settings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(settings.getByRole('status')).toHaveText('Greeting saved.');
+    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
     const banner = page.getByRole('region', { name: 'Startup greeting' });
     await expect(banner).toContainText(greeting);
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -3362,7 +3365,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(reopenedSettings).toBeVisible();
     await reopenedSettings.getByLabel('Startup greeting').fill('');
     await reopenedSettings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(reopenedSettings.getByRole('status')).toHaveText('Greeting saved.');
+    await expect(reopenedSettings.getByRole('status')).toHaveText('Settings saved.');
     await expect(reopenedBanner).toHaveCount(0);
     await reopenedSettings.getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -3371,6 +3374,62 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByRole('region', { name: 'Startup greeting' })).toHaveCount(0);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('terminal keyword highlighting saves rules, preserves ANSI colors, and restores settings after restart', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-highlights-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Highlight matching terminal text' }).check();
+    await settings.getByRole('button', { name: 'Add rule', exact: true }).click();
+    await settings.getByLabel('Rule 1 pattern').fill('MRT-HIGHLIGHT-\\w+');
+    await settings.getByLabel('Rule 1 color').selectOption('cyan');
+    await page.screenshot({ path: 'test-results/terminal-highlight-settings.png' });
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    const title = 'PowerShell session 1';
+    const command = "$mrtEsc = [char]27; [Console]::Write($mrtEsc + '[31m' + 'ANSI-KEEP-RED' + $mrtEsc + '[0m'); $mrtTag = 'MRT-HIGHLIGHT-' + 'OUTPUT'; Write-Output $mrtTag";
+    const { panel, rows } = await sendLine(page, title, command, 'MRT-HIGHLIGHT-OUTPUT');
+    await expect.poll(() => rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+      const rendered = glyphs.map(glyph => glyph.text).join('');
+      const start = rendered.indexOf('MRT-HIGHLIGHT-OUTPUT');
+      return start >= 0 && glyphs.slice(start, start + 'MRT-HIGHLIGHT-OUTPUT'.length)
+        .every(glyph => glyph.color === 'rgb(84, 215, 212)');
+    })).toBe(true);
+    await expect.poll(() => rows.locator('span.xterm-fg-1').evaluateAll(spans => spans.some(span =>
+      span.textContent?.includes('ANSI-KEEP-RED') && getComputedStyle(span).color === 'rgb(255, 104, 104)'))).toBe(true);
+    await expect(panel.locator('.xterm-decoration-container .xterm-decoration').first()).toBeVisible();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('checkbox', { name: 'Highlight matching terminal text' })).toBeChecked();
+    await expect(settings.getByLabel('Rule 1 pattern')).toHaveValue('MRT-HIGHLIGHT-\\w+');
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    const reopened = await sendLine(page, title, "$mrtTag = 'MRT-HIGHLIGHT-' + 'RESTART'; Write-Output $mrtTag", 'MRT-HIGHLIGHT-RESTART');
+    await expect.poll(() => reopened.rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+      const rendered = glyphs.map(glyph => glyph.text).join('');
+      const start = rendered.indexOf('MRT-HIGHLIGHT-RESTART');
+      return start >= 0 && glyphs.slice(start, start + 'MRT-HIGHLIGHT-RESTART'.length)
+        .every(glyph => glyph.color === 'rgb(84, 215, 212)');
+    })).toBe(true);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
