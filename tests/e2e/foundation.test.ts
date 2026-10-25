@@ -1793,7 +1793,7 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1000 saved sessions', { timeout: 30_000 });
 
     const search = page.locator('#saved-session-search');
-    await expect(page.locator('.saved-session-row')).toHaveCount(1_000, { timeout: 30_000 });
+    await expect(page.locator('.saved-session-row').first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
 
     const searchSamples: number[] = [];

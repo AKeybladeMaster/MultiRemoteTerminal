@@ -35,6 +35,8 @@ interface SessionFolderRow {
   readonly name: unknown;
 }
 
+const SESSION_CATALOG_KINDS_SQL = "'local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial'";
+
 export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   private readonly database: DatabaseSync;
   private readonly listByQuery: StatementSync;
@@ -63,10 +65,10 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     this.listByQuery = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
       FROM session_definitions
-      WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      WHERE kind IN (${SESSION_CATALOG_KINDS_SQL}) AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
       ORDER BY favorite DESC, updated_at DESC, id ASC
     `);
-    this.countAllSessions = database.prepare("SELECT COUNT(*) AS count FROM session_definitions WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial')");
+    this.countAllSessions = database.prepare(`SELECT COUNT(*) AS count FROM session_definitions WHERE kind IN (${SESSION_CATALOG_KINDS_SQL})`);
     this.insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
@@ -105,7 +107,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       ) SELECT session.id, session.folder_id, session.kind, session.name, session.host, session.port,
         session.options_json, session.favorite, session.created_at, session.updated_at
       FROM session_definitions session JOIN subtree ON subtree.id = session.folder_id
-      WHERE session.kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial') ORDER BY session.id LIMIT ?
+      WHERE session.kind IN (${SESSION_CATALOG_KINDS_SQL}) ORDER BY session.id LIMIT ?
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
     this.findSameSession = database.prepare(`
