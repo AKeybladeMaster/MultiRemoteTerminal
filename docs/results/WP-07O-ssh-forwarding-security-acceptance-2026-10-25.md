@@ -18,4 +18,7 @@ The focused forwarding-policy checklist item in `docs/SECURITY.md` is checked. T
 
 ## Review
 
-Pending independent Spec and Standards review.
+Independent review of `47617aa36d851008c33a55e5bacf41f09a229130..043eccfbc90a28ced89991c480ab94d849fc6152`:
+
+- **Spec:** No findings. The focused evidence matches the executed tests, including the 20-tunnel case, and leaves F-006/P-23/P-24/P-25 partial.
+- **Standards:** No documented-standard violations, baseline smells or material evidence overstatements found.
