@@ -413,10 +413,13 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
-test('standalone and contextual SFTP sessions verify trust, transfer files, and avoid an unrequested shell', async () => {
+test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
   const remoteRoot = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-remote-'));
+  const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
+  const hostileOutputPathLiteral = JSON.stringify(hostileOutputPath).replace(/'/gu, '&#39;');
+  const hostileShellOutput = `<img src=x onerror='globalThis.__mrtRemoteOutputExecuted = true; require("node:fs").writeFileSync(${hostileOutputPathLiteral}, "owned")'>`;
   const remoteScaleRoot = join(remoteRoot, 'scale');
   const uploadSource = join(profile, 'upload.txt');
   const downloadRoot = join(profile, 'downloads');
@@ -450,7 +453,7 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
       session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
         fixtureEvents.push('shell');
         const stream = acceptShell();
-        stream.write('MRT-SFTP-READY\r\n');
+        stream.write(`MRT-SFTP-READY\r\n${hostileShellOutput}\r\n`);
       });
       session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
         fixtureEvents.push('sftp');
@@ -598,6 +601,14 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
     if (!sshPanelId) throw new Error('Missing SSH terminal panel');
     const sshPanel = page.locator(`#${sshPanelId}`);
     await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-SFTP-READY', { timeout: 10_000 });
+    await expect(sshPanel.locator('.xterm-rows')).toContainText('__mrtRemoteOutputExecuted', { timeout: 10_000 });
+    const hostileOutputResult = await sshPanel.locator('.terminal-host').evaluate(host => {
+      const globals = globalThis as unknown as Record<string, unknown>;
+      return { executed: globals.__mrtRemoteOutputExecuted === true, images: host.querySelectorAll('img').length,
+        process: typeof globals.process, require: typeof globals.require };
+    });
+    expect(hostileOutputResult).toEqual({ executed: false, images: 0, process: 'undefined', require: 'undefined' });
+    expect(await statFile(hostileOutputPath).then(() => true, () => false)).toBe(false);
     const contextualFiles = sshPanel.locator('[data-testid="remote-file-browser"]');
     await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
 

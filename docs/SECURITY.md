@@ -6,7 +6,7 @@
 
 | Threat | Attack path | Mitigation | Acceptance proof |
 |---|---|---|---|
-| Renderer privilege escalation | Terminal escape/XSS to Node or IPC | Sandbox renderer, context isolation, `nodeIntegration=false`, restrictive CSP, typed allowlist with sender checks, deny navigation/window-open | Malicious output test cannot invoke FS/process |
+| Renderer privilege escalation | Terminal escape/XSS to Node or IPC | Sandbox renderer, context isolation, `nodeIntegration=false`, restrictive CSP, typed allowlist with sender checks, deny navigation/window-open | Hostile SSH-output E2E verifies inert text, no injected DOM image, no Node globals and no file write; see [WP-07I](results/WP-07I-hostile-ssh-output-2026-10-25.md) |
 | Command injection | Untrusted host/path interpolated into shell | Structured provider args and APIs, `spawn` without shell, no command concatenation | Host/path with quotes and metacharacters has no side effect |
 | MITM via host key | New/changed SSH host silently accepted | Strict trust-on-first-use approval with fingerprint; changed keys BLOCK, explicit trust reset | Fixture replaces key; connection stopped |
 | Vault disclosure | Secrets in SQLite/logs/UI | Vault encryption, reference IDs, no renderer secret reads, redacted structured logs | Scan DB/logs; review IPC traces |
@@ -30,6 +30,7 @@
 - Windows release builds apply all Electron v1 fuses with `strictlyRequireAllFuses`: disable `RunAsNode`, Node environment options, inspector arguments and extra `file://` privileges; enable cookie encryption, embedded ASAR integrity and ASAR-only app loading; keep Wasm trap handlers enabled and the unused browser-specific V8 snapshot disabled. The Windows package smoke reads back every fuse and launches both artifacts; see [WP-07G](results/WP-07G-electron-fuses-2026-10-25.md).
 - Deny unnecessary permissions and navigation. The only current permission exception is `clipboard-sanitized-write` for the trusted `mrt://app` main frame; clipboard reads from the renderer, subframes and all other origins remain denied. Copy selection writes only after the explicit terminal-tab action. Ctrl+V and Ctrl+Shift+V require a one-use native keyboard gesture and a matching trusted key event from the focused terminal; the main broker reads clipboard text and never returns it to the renderer. It rejects NUL-containing text and text longer than 16,384 characters before sending it to a session. Electron materializes the clipboard string in main before this length check, so the cap bounds terminal input, not the initial clipboard read. Terminal input is queued in order per session, including across the asynchronous paste authorization step. Multiline text requires a native confirmation because writing raw lines can run multiple shell commands; the paste request waits for the user's decision, and renderer teardown cancels it before any write. External URL access requires allowlisting.
 - Strict CSP; no unsafe-eval or arbitrary HTML/JS rendering of terminal output. `style-src` permits inline styles because xterm installs runtime styles for ANSI colors and terminal decorations. Scripts remain `'self'` only; network, object, frame and form sources remain denied. Keep output as text, and preserve the CSP E2E checks for inline script and network denial.
+- A loopback SSH E2E sends terminal output containing an HTML event handler that attempts to write a file through Node. It verifies the payload remains text, creates no DOM image, exposes no `process`/`require`, executes no marker, and writes no file; see [WP-07I](results/WP-07I-hostile-ssh-output-2026-10-25.md).
 - Validate IPC origin/sender and schemas for **every** command; do not expose raw `ipcRenderer` from preload.
 - Main or privileged worker owns filesystem, system processes and vault. Distinguish worker process isolation from a strong OS sandbox.
 - Review Electron security guidance before first release: https://www.electronjs.org/docs/latest/tutorial/security/
@@ -99,7 +100,7 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 ## Release security gate
 
 - [x] Electron checklist reviewed and recorded for pinned Electron 45.0.0; the independent review found no high/critical boundary issue, with remaining evidence gaps tracked in [WP-07H](results/WP-07H-n002-electron-review-follow-up-2026-10-25.md).
-- [ ] IPC validation and renderer isolation penetration tests pass.
+- [x] IPC validation and renderer isolation penetration tests pass for the exercised CSP, foreign-sender and hostile SSH-output cases; broader privilege-injection review remains tracked in [WP-07I](results/WP-07I-hostile-ssh-output-2026-10-25.md).
 - [ ] Host-key mismatch and jump-host verification tests pass.
 - [ ] Vault survives restart and no plaintext secret in DB/log/export/IPC.
 - [ ] SFTP traversal, cancel, symlink and overwrite tests pass.
