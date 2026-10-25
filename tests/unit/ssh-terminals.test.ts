@@ -320,6 +320,8 @@ test('SSH open prompts only on explicit action and blocks on unknown host until 
   const opened = await pending;
   assert.equal(opened.ok, true);
   assert.equal(provider.opened[0]?.credentials.password, 'not-for-renderer');
+  assert.equal(JSON.stringify({ opened, challenge }).includes('not-for-renderer'), false,
+    'SSH credentials stay out of the session result and host-trust challenge');
   await controller.dispose();
 });
 

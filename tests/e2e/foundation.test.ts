@@ -742,6 +742,123 @@ test('a lost SSH transport fails its tab cleanly and allows explicit saved-profi
   }
 });
 
+test('SSH credentials stay out of renderer output, saved storage, exports and application console', async () => {
+  test.skip(process.platform !== 'win32', 'Credential-boundary acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-secret-boundary-'));
+  const bundlePath = join(profile, 'audit.mrt-session-folder.json');
+  const secret = 'sftp-e2e-secret';
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  let acceptedPassword = false;
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === secret) {
+        acceptedPassword = true;
+        context.accept();
+      } else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SECRET-BOUNDARY-READY\r\n'));
+    }));
+  });
+  const mainConsoleMessages: string[] = [];
+  const rendererConsoleMessages: string[] = [];
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The credential-boundary fixture did not bind a TCP address');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    app.on('console', message => mainConsoleMessages.push(message.text()));
+    const page = await app.firstWindow();
+    page.on('console', message => rendererConsoleMessages.push(message.text()));
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connectDialog.getByLabel('Port').fill(String(address.port));
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing credential-boundary SSH terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-SECRET-BOUNDARY-READY', { timeout: 15_000 });
+    expect(acceptedPassword).toBe(true);
+    expect(await page.locator('body').innerText()).not.toContain(secret);
+
+    const savedName = 'Boundary profile';
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill(savedName);
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: `Open ${savedName}`, exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    const folderDialog = page.getByRole('dialog', { name: 'Create folder' });
+    await folderDialog.getByLabel('Folder name').fill('Audit');
+    await folderDialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: `Actions for saved session ${savedName}` }).click();
+    await page.getByRole('button', { name: `Move saved session ${savedName}`, exact: true }).click();
+    const moveDialog = page.getByRole('dialog', { name: `Move ${savedName}` });
+    await moveDialog.getByLabel('Move to').selectOption({ label: 'Audit' });
+    await moveDialog.getByRole('button', { name: 'Move', exact: true }).click();
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePath }) });
+    }, bundlePath);
+    await page.getByRole('button', { name: 'Actions for folder Audit' }).click();
+    await page.getByRole('button', { name: 'Export folder Audit', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
+    const bundleText = await readFile(bundlePath, 'utf8');
+    expect(bundleText).not.toContain(secret);
+    expect(bundleText).not.toMatch(/password|credential|privateKey/i);
+    expect(await page.locator('body').innerText()).not.toContain(secret);
+    expect(mainConsoleMessages.join('\n')).not.toContain(secret);
+    expect(rendererConsoleMessages.join('\n')).not.toContain(secret);
+    expect(pageErrors).toEqual([]);
+
+    await app.close();
+    app = undefined;
+    const database = new DatabaseSync(join(profile, 'multiremote-terminal.sqlite'), { readOnly: true });
+    try {
+      const saved = database.prepare('SELECT id, kind, name, host, port, username, credential_ref, options_json FROM session_definitions WHERE name = ?')
+        .get(savedName) as Record<string, unknown> | undefined;
+      expect(saved).toMatchObject({ kind: 'ssh', name: savedName, host: '127.0.0.1', port: address.port, username: null, credential_ref: null });
+      expect(JSON.stringify(saved)).not.toContain(secret);
+    } finally { database.close(); }
+
+    const pendingDirectories = [profile];
+    while (pendingDirectories.length > 0) {
+      const directory = pendingDirectories.pop();
+      if (!directory) continue;
+      for (const entry of await readDirectory(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        expect(entry.name).not.toContain(secret);
+        if (entry.isDirectory()) pendingDirectories.push(path);
+        else if (entry.isFile()) expect((await readFile(path)).includes(Buffer.from(secret, 'utf8')), path).toBe(false);
+      }
+    }
+  } finally {
+    await app?.close();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('a Windows session-lock event blocks safeStorage credential access until explicit vault unlock', async () => {
   test.skip(process.platform !== 'win32', 'Exercise the Windows safeStorage vault and lock event on Windows');
   test.setTimeout(45_000);
