@@ -4,6 +4,7 @@ import { isLocalShell, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT_CHARS, MAX_TERMI
 import type { LocalShell } from '../../domain/src/local-terminal.ts';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../application/src/local-terminals.ts';
 import type { RdpLaunchResult } from '../../application/src/rdp-viewer.ts';
+import type { VncLaunchResult } from '../../application/src/vnc-viewer.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
 import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
@@ -11,6 +12,7 @@ import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../domain/src/remote-endpoint.ts';
 import { canonicalizeRdpEndpoint } from '../../domain/src/rdp.ts';
+import { canonicalizeVncEndpoint } from '../../domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint, isFtpTransferProgress, isFtpTransferResult } from '../../domain/src/ftp.ts';
 import { isCanonicalFtpEndpoint } from '../../domain/src/ftp.ts';
 import { isFtpDirectoryListing, isFtpRemotePath } from '../../domain/src/ftp.ts';
@@ -43,6 +45,7 @@ export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
+export const VNC_LAUNCH_GESTURE_CHANNEL = 'mrt:vnc-launch-gesture:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
@@ -110,6 +113,7 @@ export type DownloadFtpFileRequest = Request<'ftp.files.download', { readonly se
 export type CancelFtpTransferRequest = Request<'ftp.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
 export type CloseFtpFilesRequest = Request<'ftp.close', { readonly sessionId: string }>;
 export type LaunchRdpViewerRequest = Request<'rdp.launch', { readonly host: string; readonly port: number }>;
+export type LaunchVncViewerRequest = Request<'vnc.launch', { readonly host: string; readonly port: number }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
 export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
 export type SetSessionFavoriteRequest = Request<'session.favorite', { readonly id: string; readonly favorite: boolean }>;
@@ -143,7 +147,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   UploadSshFileRequest | DownloadSshFileRequest | CancelSshTransferRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
-  LaunchRdpViewerRequest |
+  LaunchRdpViewerRequest | LaunchVncViewerRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
@@ -165,6 +169,7 @@ export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type FtpTransferReply = CommandReply<FtpTransferResult>;
 export type LaunchRdpViewerReply = CommandReply<RdpLaunchResult>;
+export type LaunchVncViewerReply = CommandReply<VncLaunchResult>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
 export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
 export type ListSessionFoldersReply = CommandReply<readonly SavedSessionFolder[]>;
@@ -218,6 +223,7 @@ export interface DesktopBridge {
   cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
   closeFtpFiles(sessionId: string): Promise<TerminalActionReply>;
   launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply>;
+  launchVncViewer(host: string, port: number): Promise<LaunchVncViewerReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
   createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
   setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply>;
@@ -275,6 +281,11 @@ export const parseFtpConsentGestureRequest = parsePasteGestureRequest;
 export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
   if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
   return canonicalizeRdpEndpoint(value);
+}
+
+export function parseVncLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
+  if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
+  return canonicalizeVncEndpoint(value);
 }
 
 function validSize(columns: unknown, rows: unknown): boolean {
@@ -374,6 +385,10 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       canonicalizeRdpEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as LaunchRdpViewerRequest };
   }
+  if (value.command === 'vnc.launch' && exactKeys(payload, ['host', 'port']) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      canonicalizeVncEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
+    return { ok: true, result: value as unknown as LaunchVncViewerRequest };
+  }
   if ((value.command === 'ssh.host.approve' || value.command === 'ssh.host.reject') && exactKeys(payload, ['token']) &&
       typeof payload.token === 'string' && TRUST_TOKEN.test(payload.token)) return { ok: true, result: value as unknown as DecideSshHostRequest };
   if (value.command === 'ssh.host.revoke' && exactKeys(payload, ['host', 'port'])) {
@@ -450,7 +465,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.download', 'ssh.files.cancel',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
-    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch',
+    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
@@ -523,6 +538,13 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
       if (!record(value.result) || !exactKeys(value.result, ['provider', 'endpoint', 'state'])) return false;
       const endpoint = canonicalizeRemoteEndpoint(value.result.endpoint);
       const requested = canonicalizeRemoteEndpoint(request.payload);
+      return value.result.provider === 'external' && value.result.state === 'launch-requested' && endpoint !== undefined && requested !== undefined &&
+        endpoint.host === requested.host && endpoint.port === requested.port;
+    }
+    if (request.command === 'vnc.launch') {
+      if (!record(value.result) || !exactKeys(value.result, ['provider', 'endpoint', 'state'])) return false;
+      const endpoint = canonicalizeVncEndpoint(value.result.endpoint);
+      const requested = canonicalizeVncEndpoint(request.payload);
       return value.result.provider === 'external' && value.result.state === 'launch-requested' && endpoint !== undefined && requested !== undefined &&
         endpoint.host === requested.host && endpoint.port === requested.port;
     }

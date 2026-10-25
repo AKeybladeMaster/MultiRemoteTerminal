@@ -13,6 +13,7 @@ import type { SessionFolderBundle, SessionFolderExportResult, SessionFolderImpor
 import { isLocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
+import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 
 interface SavedSessionRow {
   readonly id: unknown;
@@ -58,15 +59,15 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     this.listByQuery = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
       FROM session_definitions
-      WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
       ORDER BY favorite DESC, updated_at DESC, id ASC
     `);
     this.insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
     `);
-    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\')');
-    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\')');
+    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\')');
+    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\')');
     this.listFoldersStatement = database.prepare('SELECT id, parent_id, name FROM folders ORDER BY parent_id, name COLLATE NOCASE, id');
     this.findFolder = database.prepare('SELECT id, parent_id, name FROM folders WHERE id = ?');
     this.findFolderName = database.prepare(`
@@ -99,7 +100,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       ) SELECT session.id, session.folder_id, session.kind, session.name, session.host, session.port,
         session.options_json, session.favorite, session.created_at, session.updated_at
       FROM session_definitions session JOIN subtree ON subtree.id = session.folder_id
-      WHERE session.kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp') ORDER BY session.id LIMIT ?
+      WHERE session.kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc') ORDER BY session.id LIMIT ?
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
     this.insertImportedSession = database.prepare(`
@@ -141,7 +142,8 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       if (draft.kind === 'sftp') return { id, folderId: null, kind: 'sftp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'telnet') return { id, folderId: null, kind: 'telnet', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'ftp') return { id, folderId: null, kind: 'ftp', name: draft.name, host: draft.host, port: draft.port, secure: draft.secure, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      return { id, folderId: null, kind: 'rdp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      if (draft.kind === 'rdp') return { id, folderId: null, kind: 'rdp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      return { id, folderId: null, kind: 'vnc', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
     } catch (error) { throw mapStorageError(error); }
   }
 
@@ -371,6 +373,7 @@ function sameSessionDefinition(left: SavedSessionDefinition, right: SavedSession
   if (left.kind === 'telnet' && right.kind === 'telnet') return left.host === right.host && left.port === right.port;
   if (left.kind === 'ftp' && right.kind === 'ftp') return left.host === right.host && left.port === right.port && left.secure === right.secure;
   if (left.kind === 'rdp' && right.kind === 'rdp') return left.host === right.host && left.port === right.port;
+  if (left.kind === 'vnc' && right.kind === 'vnc') return left.host === right.host && left.port === right.port;
   return false;
 }
 
@@ -492,6 +495,12 @@ function decodeSessionRow(row: SavedSessionRow): SavedSessionDefinition {
     const endpoint = canonicalizeRemoteEndpoint({ host: row.host, port: row.port });
     if (!endpoint || endpoint.host !== row.host || endpoint.port !== row.port || !exactKeys(options, [])) throw new StorageOperationError('corrupt');
     return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'rdp', name: row.name, host: endpoint.host, port: endpoint.port,
+      favorite: row.favorite === 1, createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  if (row.kind === 'vnc') {
+    const endpoint = canonicalizeVncEndpoint({ host: row.host, port: row.port });
+    if (!endpoint || endpoint.host !== row.host || endpoint.port !== row.port || !exactKeys(options, [])) throw new StorageOperationError('corrupt');
+    return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'vnc', name: row.name, host: endpoint.host, port: endpoint.port,
       favorite: row.favorite === 1, createdAt: row.created_at, updatedAt: row.updated_at };
   }
   throw new StorageOperationError('corrupt');

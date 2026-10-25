@@ -1,10 +1,10 @@
-import { canonicalizeRdpEndpoint, formatRdpTarget } from '../../../../packages/domain/src/rdp.ts';
+import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 
 const GESTURE_TTL_MS = 750;
 const MAX_PENDING_GESTURES = 64;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent' | 'rdp-external-launch';
+export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent' | 'external-viewer-launch';
 
 export class RendererGestureGate {
   private readonly expiresAtByGesture = new Map<string, number>();
@@ -13,19 +13,19 @@ export class RendererGestureGate {
   constructor(now: () => number = () => performance.now()) { this.now = now; }
 
   issue(senderId: number, sessionId: string, purpose: RendererGesturePurpose = 'clipboard-paste'): void {
-    if (!Number.isSafeInteger(senderId) || senderId < 1 || purpose === 'rdp-external-launch' || !SESSION_ID.test(sessionId)) return;
+    if (!Number.isSafeInteger(senderId) || senderId < 1 || purpose === 'external-viewer-launch' || !SESSION_ID.test(sessionId)) return;
     this.issueScope(senderId, sessionId, purpose);
   }
 
-  issueRdpLaunch(senderId: number, host: string, port: number): void {
-    const endpoint = canonicalizeRdpEndpoint({ host, port });
+  issueExternalViewerLaunch(senderId: number, protocol: 'rdp' | 'vnc', host: string, port: number): void {
+    const endpoint = canonicalizeRemoteEndpoint({ host, port });
     if (!Number.isSafeInteger(senderId) || senderId < 1 || !endpoint) return;
-    this.issueScope(senderId, formatRdpTarget(endpoint), 'rdp-external-launch');
+    this.issueScope(senderId, `${protocol}\u0000${endpoint.host}\u0000${endpoint.port}`, 'external-viewer-launch');
   }
 
-  consumeRdpLaunch(senderId: number, host: string, port: number): boolean {
-    const endpoint = canonicalizeRdpEndpoint({ host, port });
-    return endpoint !== undefined && this.consumeScope(senderId, formatRdpTarget(endpoint), 'rdp-external-launch');
+  consumeExternalViewerLaunch(senderId: number, protocol: 'rdp' | 'vnc', host: string, port: number): boolean {
+    const endpoint = canonicalizeRemoteEndpoint({ host, port });
+    return endpoint !== undefined && this.consumeScope(senderId, `${protocol}\u0000${endpoint.host}\u0000${endpoint.port}`, 'external-viewer-launch');
   }
 
   private issueScope(senderId: number, scope: string, purpose: RendererGesturePurpose): void {
@@ -40,7 +40,7 @@ export class RendererGestureGate {
   }
 
   consume(senderId: number, sessionId: string, purpose: RendererGesturePurpose = 'clipboard-paste'): boolean {
-    if (!SESSION_ID.test(sessionId) || purpose === 'rdp-external-launch') return false;
+    if (!SESSION_ID.test(sessionId) || purpose === 'external-viewer-launch') return false;
     return this.consumeScope(senderId, sessionId, purpose);
   }
 

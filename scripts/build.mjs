@@ -26,18 +26,32 @@ if (process.platform === 'win32') {
   const bridge = require(resolve('dist/native/system_directory.node'));
   const oldSystemRoot = process.env.SystemRoot;
   const oldWindir = process.env.WINDIR;
+  const oldProgramFiles = process.env.ProgramFiles;
+  const oldProgramFilesX86 = process.env['ProgramFiles(x86)'];
   try {
     process.env.SystemRoot = 'Z:\\untrusted';
     process.env.WINDIR = 'Z:\\untrusted';
+    process.env.ProgramFiles = 'Z:\\untrusted';
+    process.env['ProgramFiles(x86)'] = 'Z:\\untrusted';
     const systemDirectory = bridge.getSystemDirectory();
     if (typeof systemDirectory !== 'string' || !path.isAbsolute(systemDirectory) || !systemDirectory.toLowerCase().endsWith('\\system32')) {
       throw new Error('The system-directory bridge failed its Windows smoke check');
+    }
+    const programFilesDirectories = bridge.getProgramFilesDirectories();
+    if (!Array.isArray(programFilesDirectories) || programFilesDirectories.length < 1 || programFilesDirectories.length > 2 ||
+        programFilesDirectories.some(directory => typeof directory !== 'string' || !path.isAbsolute(directory) || directory.toLowerCase().startsWith('z:\\untrusted')) ||
+        new Set(programFilesDirectories).size !== programFilesDirectories.length) {
+      throw new Error('The Program Files bridge failed its Windows known-folder smoke check');
     }
   } finally {
     if (oldSystemRoot === undefined) delete process.env.SystemRoot;
     else process.env.SystemRoot = oldSystemRoot;
     if (oldWindir === undefined) delete process.env.WINDIR;
     else process.env.WINDIR = oldWindir;
+    if (oldProgramFiles === undefined) delete process.env.ProgramFiles;
+    else process.env.ProgramFiles = oldProgramFiles;
+    if (oldProgramFilesX86 === undefined) delete process.env['ProgramFiles(x86)'];
+    else process.env['ProgramFiles(x86)'] = oldProgramFilesX86;
   }
 } else {
   console.info('Skipping the Windows-only system-directory bridge on this platform.');

@@ -15,7 +15,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
-    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
     'getWorkbenchPreferences', 'saveWorkbenchPreferences',
     'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
@@ -334,6 +334,28 @@ test('preload blocks direct RDP bridge calls without a fresh trusted submit gest
   assert.equal(reply.ok, false);
   if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
   assert.equal(invoked, false);
+});
+
+test('preload routes VNC launches only after its trusted dialog gesture', async () => {
+  let invoked = false;
+  const bridge = createBridge(async request => {
+    invoked = true;
+    assert.deepEqual(request, { command: 'vnc.launch', requestId: id(), contractVersion: 1,
+      payload: { host: 'vnc.example.com', port: 5901 } });
+    return { requestId: id(), ok: true, result: {
+      provider: 'external', endpoint: { host: 'vnc.example.com', port: 5901 }, state: 'launch-requested'
+    } };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+  async () => false, async () => true);
+  assert.deepEqual(await bridge.launchVncViewer('vnc.example.com', 5901), { requestId: id(), ok: true, result: {
+    provider: 'external', endpoint: { host: 'vnc.example.com', port: 5901 }, state: 'launch-requested'
+  } });
+  assert.equal(invoked, true);
+
+  const denied = createBridge(async () => { throw new Error('not authorized'); }, id);
+  const reply = await denied.launchVncViewer('vnc.example.com', 5901);
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
 });
 
 test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
