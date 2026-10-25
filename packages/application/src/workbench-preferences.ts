@@ -38,6 +38,7 @@ function storageErrorCode(error: unknown): ErrorCode {
   if (error.kind === 'invalid') return 'INVALID_REQUEST';
   if (error.kind === 'cancelled') return 'CANCELLED';
   if (error.kind === 'conflict') return 'CONFLICT';
+  if (error.kind === 'corrupt') return 'CORRUPT';
   if (error.kind === 'not-found') return 'NOT_FOUND';
   return 'UNAVAILABLE';
 }

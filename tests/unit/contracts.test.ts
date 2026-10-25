@@ -332,5 +332,7 @@ test('workbench preference IPC accepts bounded plain Unicode greeting text only'
       result: { startupGreeting: 'Terminal ready — こんにちは 👋' } }, parsed.result), true);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
       result: { startupGreeting: 'safe', command: 'whoami' } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: false,
+      error: { code: 'CORRUPT', target: 'application', retryable: false } }, parsed.result), true);
   }
 });

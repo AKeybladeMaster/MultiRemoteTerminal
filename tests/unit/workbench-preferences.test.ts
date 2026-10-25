@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWorkbenchPreferencesManager } from '../../packages/application/src/workbench-preferences.ts';
+import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 import { MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
 test('workbench greeting validation preserves Unicode, normalizes newlines, and accepts clearing the greeting', () => {
@@ -25,4 +26,16 @@ test('preferences manager validates before storage and returns saved values', as
   assert.deepEqual(await manager.save({ startupGreeting: 'bad\u0007value' }),
     { ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
   assert.deepEqual(writes, ['Terminal ready — こんにちは']);
+});
+
+test('preferences manager preserves the corrupt-storage error category', async () => {
+  const manager = createWorkbenchPreferencesManager({
+    async readWorkbenchPreferences() { throw new StorageOperationError('corrupt'); },
+    async saveWorkbenchPreferences(preferences) { return preferences; }
+  });
+
+  assert.deepEqual(await manager.read(), {
+    ok: false,
+    error: { code: 'CORRUPT', target: 'application', retryable: false }
+  });
 });

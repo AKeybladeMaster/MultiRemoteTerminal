@@ -37,6 +37,7 @@ import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import { MultiExecDialog } from './MultiExecDialog.tsx';
 import { HelpDialog } from './HelpDialog.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
+import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -1557,9 +1558,9 @@ function Workbench() {
       if (reply.ok) {
         setStartupGreeting(reply.result.startupGreeting);
         setStartupGreetingVisible(reply.result.startupGreeting.length > 0);
-      } else setAlert(`Workbench settings could not be loaded (${reply.error.code}).`);
+      } else setAlert(workbenchPreferenceFailureMessage('load', reply.error.code));
     }).catch(() => {
-      if (active) setAlert('Workbench settings could not be loaded.');
+      if (active) setAlert(workbenchPreferenceFailureMessage('load', undefined));
     });
     return () => { active = false; };
   }, []);

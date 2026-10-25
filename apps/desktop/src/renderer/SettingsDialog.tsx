@@ -18,7 +18,7 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
   const closeButton = useRef<HTMLButtonElement>(null);
   const retryButton = useRef<HTMLButtonElement>(null);
   const greetingInput = useRef<HTMLTextAreaElement>(null);
-  const validated = normalizeWorkbenchPreferences({ startupGreeting: greeting });
+  const validatedPreferences = normalizeWorkbenchPreferences({ startupGreeting: greeting });
   const characterCount = Array.from(greeting).length;
 
   useEffect(() => {
@@ -72,12 +72,12 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (loading || loadFailed || saving || !validated) return;
+    if (loading || loadFailed || saving || !validatedPreferences) return;
     setSaving(true);
     setError(undefined);
     setStatus('Saving…');
     try {
-      const reply = await window.multiRemoteTerminal.saveWorkbenchPreferences(validated);
+      const reply = await window.multiRemoteTerminal.saveWorkbenchPreferences(validatedPreferences);
       if (!reply.ok) {
         setError(reply.error.code === 'INVALID_REQUEST'
           ? `Use up to ${MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters and omit control characters.`
@@ -112,14 +112,14 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
           disabled={loading || loadFailed || saving} value={greeting} onChange={event => { setGreeting(event.target.value); setError(undefined); setStatus(''); }} />
         <div className="settings-form-meta">
           <span>{characterCount} / {MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters</span>
-          {!validated && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
+          {!validatedPreferences && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
         </div>
         {error && <p className="dialog-error" role="alert">{error}</p>}
         {loadFailed && <button ref={retryButton} type="button" disabled={saving} onClick={() => setLoadGeneration(value => value + 1)}>Try loading settings again</button>}
         {status && <p className="settings-save-status" role="status">{status}</p>}
         <div className="ssh-connect-actions">
           <button type="button" disabled={saving} onClick={onClose}>Cancel</button>
-          <button type="submit" className="ssh-primary" disabled={loading || loadFailed || saving || !validated}>
+          <button type="submit" className="ssh-primary" disabled={loading || loadFailed || saving || !validatedPreferences}>
             {loading ? 'Loading…' : saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>
