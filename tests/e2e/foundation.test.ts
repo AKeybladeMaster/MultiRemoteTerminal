@@ -1883,6 +1883,194 @@ test('macro playback previews exact steps, confirms explicitly, cancels, and req
   }
 });
 
+test('macro playback sends reviewed steps through a trusted SSH terminal', async () => {
+  test.skip(process.platform !== 'win32', 'SSH macro playback acceptance is required on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-ssh-playback-e2e-'));
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const command = 'echo MRT-SSH-MACRO-PLAYBACK-OK';
+  const receivedLines: string[] = [];
+  const fixtureErrors: string[] = [];
+  const clients = new Set<Ssh2FixtureClient>();
+  let shuttingDown = false;
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => { if (!shuttingDown) fixtureErrors.push(error.message); });
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        const stream = acceptShell();
+        stream.write('MRT-SSH-MACRO-PLAYBACK-READY\r\n');
+        let pending = '';
+        stream.on('data', (raw: unknown) => {
+          pending += Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+          const lines = pending.split(/\r\n|\r|\n/u);
+          pending = lines.pop() ?? '';
+          for (const received of lines) {
+            if (!received) continue;
+            receivedLines.push(received);
+            if (received === command) stream.write('MRT-SSH-MACRO-PLAYBACK-OK\r\n');
+          }
+        });
+      });
+    }));
+  });
+  server.on('error', error => { if (!shuttingDown) fixtureErrors.push(`server: ${error.message}`); });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH macro playback fixture did not bind a TCP address.');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const connect = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await connect.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connect.getByLabel('Port').fill(String(address.port));
+    await connect.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust).toBeVisible({ timeout: 15_000 });
+    await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${address.port}`);
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+    const tab = page.getByRole('tab').filter({ hasText: `127.0.0.1:${address.port} - SSH` }).first();
+    await expect(tab).toBeVisible({ timeout: 20_000 });
+    const panelId = await tab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing SSH macro playback terminal panel.');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SSH-MACRO-PLAYBACK-READY', { timeout: 10_000 });
+    const sessionId = await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    if (!sessionId) throw new Error('The SSH macro playback terminal has no session id.');
+
+    const macroId = await page.evaluate(async ({ commandText }) => {
+      const reply = await window.multiRemoteTerminal.createMacro({ name: 'SSH playback', steps: [
+        { kind: 'send', text: commandText }, { kind: 'waitForText', text: 'MRT-SSH-MACRO-PLAYBACK-OK', timeoutMs: 15_000 }
+      ] });
+      if (!reply.ok) throw new Error(`Could not create SSH playback macro (${reply.error.code}).`);
+      return reply.result.id;
+    }, { commandText: command });
+
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByRole('list', { name: 'Saved macros' }).getByRole('button', { name: /^SSH playback\b/u }).click();
+    await dialog.getByRole('button', { name: 'Review & run', exact: true }).click();
+    const review = page.getByRole('dialog', { name: 'Review macro run' });
+    await expect(review.getByLabel('Run on target')).toHaveValue(sessionId);
+    await expect(review.getByRole('list', { name: 'Exact macro steps' })).toContainText(command);
+    expect(receivedLines).toEqual([]);
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('Macro completed', { timeout: 20_000 });
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SSH-MACRO-PLAYBACK-OK', { timeout: 10_000 });
+    expect(receivedLines).toEqual([command]);
+    expect(fixtureErrors).toEqual([]);
+    expect(macroId).toMatch(/^[0-9a-f-]{36}$/u);
+  } finally {
+    shuttingDown = true;
+    await app?.close();
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('macro playback sends reviewed steps through an explicitly acknowledged Telnet terminal', async () => {
+  test.skip(process.platform !== 'win32', 'Telnet macro playback acceptance is required on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-telnet-playback-e2e-'));
+  const command = 'echo MRT-TELNET-MACRO-PLAYBACK-OK';
+  const commandBytes = Buffer.from(`${command}\r`, 'utf8');
+  const sockets = new Set<Socket>();
+  const fixtureErrors: string[] = [];
+  let receivedCount = 0;
+  const server = createServer(socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.on('error', error => { if (server.listening) fixtureErrors.push(error.message); });
+    socket.write(Buffer.from([255, 251, 1, 255, 251, 3, 255, 253, 3, 255, 251, 0, 255, 253, 0, 255, 253, 24, 255, 253, 31]));
+    socket.write(Buffer.from([255, 250, 24, 1, 255, 240]));
+    socket.write('MRT-TELNET-MACRO-PLAYBACK-READY\r\n');
+    let pending = Buffer.alloc(0);
+    socket.on('data', data => {
+      pending = Buffer.concat([pending, data]);
+      while (true) {
+        const index = pending.indexOf(commandBytes);
+        if (index < 0) break;
+        receivedCount++;
+        pending = pending.subarray(index + commandBytes.length);
+        socket.write('MRT-TELNET-MACRO-PLAYBACK-OK\r\n');
+      }
+      if (pending.byteLength > 8_192) pending = pending.subarray(-commandBytes.byteLength);
+    });
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', resolveListen);
+    });
+    const address = server.address() as AddressInfo;
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to Telnet (plaintext)', exact: true }).first().click();
+    const connect = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
+    await expect(connect.getByText('Telnet traffic is sent in plaintext.')).toBeVisible();
+    await connect.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connect.getByLabel('Port').fill(String(address.port));
+    await connect.getByRole('button', { name: 'Connect', exact: true }).click();
+    const tab = page.getByRole('tab').filter({ hasText: /Telnet \(plaintext\)/u }).first();
+    await expect(tab).toBeVisible({ timeout: 15_000 });
+    const panelId = await tab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing Telnet macro playback terminal panel.');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-TELNET-MACRO-PLAYBACK-READY', { timeout: 10_000 });
+    const sessionId = await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    if (!sessionId) throw new Error('The Telnet macro playback terminal has no session id.');
+
+    const macroId = await page.evaluate(async ({ commandText }) => {
+      const reply = await window.multiRemoteTerminal.createMacro({ name: 'Telnet playback', steps: [
+        { kind: 'send', text: commandText }, { kind: 'waitForText', text: 'MRT-TELNET-MACRO-PLAYBACK-OK', timeoutMs: 15_000 }
+      ] });
+      if (!reply.ok) throw new Error(`Could not create Telnet playback macro (${reply.error.code}).`);
+      return reply.result.id;
+    }, { commandText: command });
+
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByRole('list', { name: 'Saved macros' }).getByRole('button', { name: /^Telnet playback\b/u }).click();
+    await dialog.getByRole('button', { name: 'Review & run', exact: true }).click();
+    const review = page.getByRole('dialog', { name: 'Review macro run' });
+    await expect(review.getByLabel('Run on target')).toHaveValue(sessionId);
+    await expect(review.getByRole('list', { name: 'Exact macro steps' })).toContainText(command);
+    expect(receivedCount).toBe(0);
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('Macro completed', { timeout: 20_000 });
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-TELNET-MACRO-PLAYBACK-OK', { timeout: 10_000 });
+    expect(receivedCount).toBe(1);
+    expect(fixtureErrors).toEqual([]);
+    expect(macroId).toMatch(/^[0-9a-f-]{36}$/u);
+  } finally {
+    await app?.close();
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('MultiExec reviews the exact line and sends only after confirmation to three running terminals', async () => {
   test.skip(process.platform !== 'win32', 'MultiExec terminal acceptance evidence is required on Windows');
   test.setTimeout(90_000);
