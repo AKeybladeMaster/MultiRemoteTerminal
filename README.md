@@ -25,7 +25,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm package:win
 ```
 
-The command creates an NSIS installer at `artifacts/windows/MultiRemoteTerminal Setup 0.0.0.exe` and a portable executable at `artifacts/windows/MultiRemoteTerminal 0.0.0.exe`. The portable app keeps its data in `MultiRemoteTerminal-data` beside the executable. To build and then run the install/portable smoke checks, use `corepack pnpm package:win:smoke`.
+The command creates an NSIS installer at `artifacts/windows/MultiRemoteTerminal Setup 0.0.0.exe` and a portable executable at `artifacts/windows/MultiRemoteTerminal 0.0.0.exe`. To choose the portable data location, place the portable executable in a writable folder of your choice; it keeps data in a `MultiRemoteTerminal-data` folder beside the executable. To build and run the install/portable UI smoke checks, use `corepack pnpm package:win:smoke`.
 
 The current artifacts are unsigned development previews. A production release still needs the M4 security, compatibility, signing and distribution checks; see [WP-07A results](docs/results/WP-07A-windows-package-2026-10-25.md).
 

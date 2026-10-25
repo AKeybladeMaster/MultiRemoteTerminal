@@ -55,6 +55,11 @@ try {
     app.setPath('sessionData', sessionData);
   }
 } catch {
+  console.error(JSON.stringify({
+    component: 'main',
+    event: 'portable_profile_initialization_failed',
+    code: 'PORTABLE_PROFILE_INIT_FAILED'
+  }));
   portableProfileInitializationFailed = true;
 }
 

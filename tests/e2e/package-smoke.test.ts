@@ -1,6 +1,8 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { chromium, test, expect, _electron as electron } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
 import { copyFile, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
 
@@ -11,17 +13,29 @@ function cleanEnvironment(): Record<string, string> {
 
 type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
 
-async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userData: string }> {
-  const page = await app.firstWindow();
-  await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
-  const metadata = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() }));
-  expect(metadata.packaged).toBe(true);
+async function reserveLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Could not reserve a loopback port for the portable smoke');
+  await new Promise<void>((resolveClose, rejectClose) => {
+    server.close(error => error ? rejectClose(error) : resolveClose());
+  });
+  return address.port;
+}
+
+async function expectLocalPowerShellTerminal(page: Page): Promise<void> {
+  const existingTabCount = await page.getByRole('tab').count();
   await page.keyboard.press('Control+Shift+P');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await expect(palette).toBeVisible();
   await palette.getByRole('button', { name: 'New PowerShell terminal', exact: true }).click();
-  const tab = page.getByRole('tab').filter({ hasText: 'PowerShell session 1' }).first();
-  await expect(tab).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => page.getByRole('tab').count(), { timeout: 20_000 }).toBeGreaterThan(existingTabCount);
+  const tab = page.getByRole('tab').last();
+  await expect(tab).toBeVisible();
   const panelId = await tab.getAttribute('aria-controls');
   if (!panelId) throw new Error('Packaged PowerShell terminal has no panel');
   const panel = page.locator(`#${panelId}`);
@@ -31,6 +45,14 @@ async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userDa
   await page.keyboard.type("Write-Output 'MRT-PACKAGED-LOCAL-SHELL'");
   await page.keyboard.press('Enter');
   await expect(panel.locator('.xterm-rows')).toContainText('MRT-PACKAGED-LOCAL-SHELL', { timeout: 20_000 });
+}
+
+async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userData: string }> {
+  const page = await app.firstWindow();
+  await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
+  const metadata = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() }));
+  expect(metadata.packaged).toBe(true);
+  await expectLocalPowerShellTerminal(page);
   const profile = await stat(metadata.userData);
   expect(profile.isDirectory()).toBe(true);
   expect(metadata.appPath.toLowerCase()).toContain('resources');
@@ -38,7 +60,8 @@ async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userDa
 }
 
 test('NSIS installs a runnable per-user app and silently uninstalls it', async () => {
-  test.skip(process.platform !== 'win32' || process.env.MRT_PACKAGE_E2E !== '1', 'Run through package:win:smoke on Windows');
+  test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
+    'Run on Windows x64 through package:win:smoke; signature verification is outside this smoke');
   test.setTimeout(240_000);
   const artifacts = resolve('artifacts/windows');
   const installer = join(artifacts, 'MultiRemoteTerminal Setup 0.0.0.exe');
@@ -74,37 +97,60 @@ test('NSIS installs a runnable per-user app and silently uninstalls it', async (
   }
 });
 
-test('portable app starts from its own folder and keeps profile data beside the executable', async () => {
-  test.skip(process.platform !== 'win32' || process.env.MRT_PACKAGE_E2E !== '1', 'Run through package:win:smoke on Windows');
+test('portable app opens a usable terminal and keeps profile data beside the executable', async () => {
+  test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
+    'Run on Windows x64 through package:win:smoke; signature verification is outside this smoke');
   test.setTimeout(180_000);
   const portableArtifact = resolve('artifacts/windows/MultiRemoteTerminal 0.0.0.exe');
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-portable-smoke-'));
   const portableExecutable = join(temporaryRoot, 'MultiRemoteTerminal.exe');
   await copyFile(portableArtifact, portableExecutable);
+  const debugPort = await reserveLoopbackPort();
+  let browser: Browser | undefined;
   let portableApp: ReturnType<typeof spawn> | undefined;
   try {
     const environment = cleanEnvironment();
     const expected = win32.join(temporaryRoot, 'MultiRemoteTerminal-data');
-    portableApp = spawn(portableExecutable, [], { env: environment, stdio: 'ignore', windowsHide: true });
+    portableApp = spawn(portableExecutable, [
+      '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${debugPort}`
+    ], { env: environment, stdio: 'ignore', windowsHide: true });
     if (!portableApp.pid) throw new Error('The portable launcher did not start');
     await expect.poll(async () => (await stat(join(expected, 'multiremote-terminal.sqlite')).catch(() => undefined)) !== undefined,
       { timeout: 60_000, intervals: [200, 500, 1_000] }).toBe(true);
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, { timeout: 60_000 });
+    const context = browser.contexts()[0];
+    if (!context) throw new Error('The portable app did not expose its browser context');
+    await expect.poll(() => context.pages().length, { timeout: 30_000 }).toBeGreaterThan(0);
+    const page = context.pages()[0];
+    if (!page) throw new Error('The portable app did not create a window');
+    await expect(page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
+    await expectLocalPowerShellTerminal(page);
     expect(portableApp.exitCode).toBeNull();
     const profileStat = await stat(expected);
     expect(profileStat.isDirectory()).toBe(true);
   } finally {
-    if (portableApp?.pid && portableApp.exitCode === null) {
+    if (browser) await browser.close().catch(() => undefined);
+    if (portableApp?.pid && portableApp.exitCode === null && portableApp.signalCode === null) {
       const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
-      spawnSync(taskkill, ['/PID', String(portableApp.pid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });
-      await new Promise<void>(resolveExit => {
-        if (portableApp?.exitCode !== null) resolveExit();
-        else {
-          const timer = setTimeout(resolveExit, 5_000);
-          timer.unref();
-          portableApp?.once('exit', () => { clearTimeout(timer); resolveExit(); });
+      const result = spawnSync(taskkill, ['/PID', String(portableApp.pid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });
+      if (result.error) throw result.error;
+      if (result.status !== 0 && portableApp.exitCode === null && portableApp.signalCode === null) {
+        throw new Error(`Could not stop the portable app process tree: ${result.stderr || result.stdout || result.status}`);
+      }
+      await new Promise<void>((resolveExit, rejectExit) => {
+        const child = portableApp;
+        if (!child || child.exitCode !== null || child.signalCode !== null) {
+          resolveExit();
+          return;
         }
+        const onExit = () => { clearTimeout(timer); resolveExit(); };
+        const timer = setTimeout(() => {
+          child.removeListener('exit', onExit);
+          rejectExit(new Error('The portable app process did not exit after taskkill'));
+        }, 10_000);
+        child.once('exit', onExit);
       });
     }
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
   }
 });

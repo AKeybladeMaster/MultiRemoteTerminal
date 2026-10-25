@@ -5,6 +5,9 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+if (process.platform !== 'win32' || process.arch !== 'x64') {
+  throw new Error('Create Windows packages on a Windows x64 host so the native bridge and package target use x64.');
+}
 const packageManagerCli = process.env.npm_execpath;
 if (!packageManagerCli) throw new Error('Run this script with the pinned pnpm');
 const packageManagerIsJavaScript = /\.[cm]?js$/iu.test(packageManagerCli);
