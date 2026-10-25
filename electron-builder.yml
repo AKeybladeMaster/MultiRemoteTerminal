@@ -16,6 +16,7 @@ extraResources:
   - from: apps/desktop/resources/credential-prompt.ps1
     to: credential-prompt.ps1
 asar: true
+afterPack: ./scripts/electron-fuses.mjs
 asarUnpack:
   - "**/*.node"
   - "**/*.exe"

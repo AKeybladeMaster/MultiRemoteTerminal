@@ -156,6 +156,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07F — Windows credential prompt context contract (partial):** SSH endpoint context previously made the helper's fixed `ValidateSet` reject the prompt before it could open or emit JSON. The adapter now sends the typed purpose and sanitized, bounded context as separate arguments; the helper constructs the display message. A Windows PowerShell contract test stubs only `Get-Credential` and verifies the helper protocol, and the packaged NSIS smoke confirms the helper is present in `process.resourcesPath`. The native dialog and live SSH password authentication remain unverified; see [WP-07F evidence](results/WP-07F-credential-prompt-context-2026-10-25.md).
 
+**WP-07G — Electron release fuses (partial):** Pinned `@electron/fuses@2.1.3` applies all nine Electron 45 fuse values to Windows x64 packages with `strictlyRequireAllFuses`. The package smoke reads the packaged executable's fuse wire and launches the NSIS and portable builds. Playwright's Electron-specific launcher requires the Node inspector, which production fuses disable; packaged E2E therefore attaches through a loopback-only Chromium DevTools port. The full package smoke passes 4/4 tests. The independent N-002 security review and a tampered-ASAR termination test remain open; see [WP-07G results](results/WP-07G-electron-fuses-2026-10-25.md) and the [dependency review](dependencies/WP-07-electron-fuses.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
