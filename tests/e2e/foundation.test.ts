@@ -354,6 +354,41 @@ function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promis
   });
 }
 
+test('Windows local text editor preserves drafts on conflict and saves the selected file', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-local-text-editor-e2e-'));
+  const path = join(profile, 'settings.txt');
+  await writeFile(path, 'name=old\r\n');
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    await expect(editor.getByRole('heading', { name: 'settings.txt', exact: true })).toBeVisible();
+    await expect(contents).toHaveValue('name=old\n');
+    await contents.fill('name=draft\n');
+    await writeFile(path, 'name=external\r\n');
+    await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(editor.getByRole('alert')).toContainText('changed since it was opened');
+    await expect(contents).toHaveValue('name=draft\n');
+    await editor.getByRole('button', { name: 'Reload', exact: true }).click();
+    await editor.getByRole('button', { name: 'Discard and reload', exact: true }).click();
+    await expect(contents).toHaveValue('name=external\n');
+    await contents.fill('name=final\n');
+    await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(editor.getByRole('status')).toHaveText('Saved');
+    expect(await readFile(path, 'utf8')).toBe('name=final\r\n');
+    await expect(page.locator('body')).not.toContainText(path);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('a second application process exits and shows and focuses the primary window under the same profile', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-single-instance-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });

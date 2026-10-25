@@ -8,6 +8,7 @@ import type { SerialTerminalController } from '../../../../packages/application/
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import type { RdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import type { VncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
+import type { LocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
@@ -71,6 +72,7 @@ export interface CommandActions {
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
+  readonly localTextEditor: Pick<LocalTextEditorController, 'open' | 'reload' | 'save' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'count' | 'get' | 'create' | 'remember' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
   readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'enableMasterPassword' | 'disableMasterPassword' | 'resetVault' |
     'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
@@ -248,6 +250,11 @@ export async function dispatchCommand(
         const { sessionId, operationId } = parsed.result.payload;
         return { requestId, ...await actions.sshTerminals.cancelTransfer(sessionId, operationId) };
       }
+      case 'local-text.open': return { requestId, ...await actions.localTextEditor.open(actions.cancellation) };
+      case 'local-text.reload': return { requestId, ...await actions.localTextEditor.reload(parsed.result.payload.selectionId, actions.cancellation) };
+      case 'local-text.save': return { requestId, ...await actions.localTextEditor.save(parsed.result.payload.selectionId, parsed.result.payload.content,
+        parsed.result.payload.expectedRevision, actions.cancellation) };
+      case 'local-text.close': return { requestId, ...actions.localTextEditor.close(parsed.result.payload.selectionId) };
       case 'telnet.open': {
         const { sessionId, host, port, columns, rows } = parsed.result.payload;
         if (!actions.authorizeTelnetConsent(sessionId)) return { requestId, ...failure('FORBIDDEN') };
