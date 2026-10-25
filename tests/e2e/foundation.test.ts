@@ -51,7 +51,14 @@ interface Ssh2FixturePackage {
   };
 }
 
-function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2FixturePackage['utils']['sftp']): void {
+interface SftpFixtureOptions {
+  readonly readDelayMs?: number;
+  readonly writeDelayMs?: number;
+  readonly renameDelayMs?: number;
+}
+
+function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2FixturePackage['utils']['sftp'],
+  options: SftpFixtureOptions = {}): void {
   interface DirectoryHandle { readonly names: string[]; read: boolean; }
   const fileHandles = new Map<number, Awaited<ReturnType<typeof openFile>>>();
   const directoryHandles = new Map<number, DirectoryHandle>();
@@ -136,6 +143,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     const file = fileHandles.get(handleId(handle));
     if (!file || !Number.isSafeInteger(length) || length < 0 || length > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
     void (async () => {
+      if (options.readDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, options.readDelayMs));
       const buffer = Buffer.alloc(length);
       const result = await file.read(buffer, 0, length, offset);
       if (result.bytesRead === 0) sftp.status(requestId, api.STATUS_CODE.EOF);
@@ -145,8 +153,10 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
   sftp.on('WRITE', (requestId: number, handle: Buffer, offset: number, data: Buffer) => {
     const file = fileHandles.get(handleId(handle));
     if (!file || data.byteLength > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
-    void file.write(data, 0, data.length, offset).then(() => sftp.status(requestId, api.STATUS_CODE.OK),
-      error => sftp.status(requestId, statusForError(error)));
+    void file.write(data, 0, data.length, offset).then(async () => {
+      if (options.writeDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, options.writeDelayMs));
+      sftp.status(requestId, api.STATUS_CODE.OK);
+    }, error => sftp.status(requestId, statusForError(error)));
   });
   sftp.on('FSTAT', (requestId: number, handle: Buffer) => {
     const file = fileHandles.get(handleId(handle));
@@ -166,6 +176,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
   });
   sftp.on('RENAME', (requestId: number, source: string, destination: string) => {
     void (async () => {
+      if (options.renameDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, options.renameDelayMs));
       const from = remoteLocation(source).local;
       const to = remoteLocation(destination).local;
       try { await lstatFile(to); sftp.status(requestId, api.STATUS_CODE.FAILURE); }
@@ -397,7 +408,7 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
   await mkdir(downloadRoot);
   await writeFile(uploadSource, 'private local upload payload');
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
-  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\n');
+  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\r\n');
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -426,7 +437,7 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
       });
       session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
         fixtureEvents.push('sftp');
-        startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp);
+        startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500 });
       });
     });
     });
@@ -468,25 +479,43 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
     await sftpPanel.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
     await expect(sftpPanel.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
-    await sftpPanel.getByRole('button', { name: 'Edit editor.txt', exact: true }).click();
+    const editButton = sftpPanel.getByRole('button', { name: 'Edit editor.txt', exact: true });
+    await editButton.click();
     const editor = page.getByRole('dialog', { name: 'editor.txt' });
     const editorText = editor.getByRole('textbox', { name: 'File contents' });
-    await expect(editorText).toHaveValue('original remote text\n');
-    await editorText.fill('edited from app\n');
+    await expect(editor.getByRole('status')).toContainText('Reading file', { timeout: 15_000 });
+    const editorClose = editor.getByRole('button', { name: 'Close', exact: true });
+    await expect(editorClose).toBeDisabled();
+    await editor.getByRole('button', { name: 'Cancel request', exact: true }).click();
+    await expect(editorClose).toBeEnabled({ timeout: 15_000 });
+    await editorClose.click();
+    await expect(editor).toHaveCount(0);
+    await expect(editButton).toBeEnabled({ timeout: 15_000 });
+    await editButton.click();
+    await expect(editorText).toHaveValue('original remote text\nsecond line\n');
+    await editorText.fill('edited from app\nsecond line\n');
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor.getByRole('alert')).toContainText('Discard your unsaved changes?');
+    await expect(editor.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled();
+    await editor.getByRole('button', { name: 'Keep editing', exact: true }).click();
     await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(editorClose).toBeDisabled();
+    await expect(editor.getByRole('status')).toContainText('Finishing save', { timeout: 15_000 });
+    await expect(editorClose).toBeDisabled();
     await expect(editor.getByRole('status')).toContainText('Saved', { timeout: 15_000 });
-    expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('edited from app\n');
+    await expect(editor.getByRole('alert')).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('edited from app\r\nsecond line\r\n');
 
     await editor.getByRole('button', { name: 'Reload', exact: true }).click();
-    await expect(editorText).toHaveValue('edited from app\n');
-    await editorText.fill('draft kept on conflict\n');
-    await writeFile(join(remoteRoot, 'editor.txt'), 'remote changed!\n');
+    await expect(editorText).toHaveValue('edited from app\nsecond line\n');
+    await editorText.fill('draft kept on conflict\nsecond line\n');
+    await writeFile(join(remoteRoot, 'editor.txt'), 'remote changed!\r\nsecond line\r\n');
     await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(editor.getByRole('alert')).toContainText('remote file changed', { timeout: 15_000 });
-    await expect(editorText).toHaveValue('draft kept on conflict\n');
+    await expect(editorText).toHaveValue('draft kept on conflict\nsecond line\n');
     await editor.getByRole('button', { name: 'Reload', exact: true }).click();
     await editor.getByRole('button', { name: 'Discard and reload', exact: true }).click();
-    await expect(editorText).toHaveValue('remote changed!\n');
+    await expect(editorText).toHaveValue('remote changed!\nsecond line\n');
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);

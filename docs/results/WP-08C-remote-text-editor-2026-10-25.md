@@ -25,9 +25,9 @@ Domain: `packages/domain/src/remote-text-file.ts`. Application and IPC: `package
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including import-boundary checks.
 - Focused test command over domain, SFTP worker, SSH application, IPC contract, preload, broker, worker protocol and worker host — **113/113 passed**.
-- `corepack pnpm build` — passed for Windows x64 with the local native build tools. Vite reports the renderer JavaScript chunk at 742.53 kB, above its 500 kB advisory threshold.
+- `corepack pnpm build` — passed for Windows x64 with the local native build tools. Vite reports the renderer JavaScript chunk at 742.94 kB, above its 500 kB advisory threshold.
 - `corepack pnpm setup:electron` — passed.
-- Focused Playwright Windows loopback SFTP test — passed. It verifies initial file contents, save bytes on the fixture filesystem, same-size concurrent replacement, conflict reporting, draft retention, explicit reload and the unchanged no-shell SFTP-only path.
+- Focused Playwright Windows loopback SFTP test — passed. It verifies initial file contents, save bytes on the fixture filesystem, same-size concurrent replacement, conflict reporting, draft retention, explicit reload, cancelled-read recovery, the guarded save-commit phase, CRLF preservation, and the unchanged no-shell SFTP-only path.
 - Rendered dialog screenshots were inspected at 980×729 and 650×701. The content area and action row remain visible at the narrower window size. This was a visual inspection, not a pixel comparison against a supplied design target.
 
 ## Security risks and limitations
@@ -36,4 +36,8 @@ Remote file contents are returned only after explicit user action and are not lo
 
 ## Review and promotion
 
-Pending independent Standards and Spec review against `origin/main`. Record the review findings, remediation commits and verified `main` promotion here after they occur.
+- Standards review against `origin/main...3281920`: no documented-standard breaches. It recorded two judgment calls: repeated SFTP session-lock wrapper logic and revision values represented as strings. These remain tracked for later design review; the wrappers preserve operation-specific behavior and revisions are validated at serialized boundaries.
+- Spec review against `docs/SPEC-001-MultiRemoteTerminal.md`: zero actionable findings. F-014 and P-27 remain partial as documented.
+- General review found an important close-during-operation lifecycle issue and a line-ending normalization issue. The original UI regression test failed before the fix: after canceling a delayed read, the SFTP Edit action remained disabled.
+- Fixed by keeping the dialog open until an operation settles, offering pre-commit cancellation, preventing close/discard while busy or committing, clearing activity on effect cleanup, and preserving the original file's first line-ending style. The Windows E2E regression passes after these changes; it also checks the first-style policy with a CRLF fixture.
+- Follow-up independent reviews and `main` promotion are pending.

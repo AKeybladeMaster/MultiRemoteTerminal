@@ -77,7 +77,9 @@ changed it, the editor keeps your draft and asks you to reload before trying
 again. **Reload** replaces the editor contents after you confirm discarding a
 draft. Closing with unsaved changes also asks for confirmation. Binary files,
 invalid UTF-8 and larger files are not opened by the text editor. Saves are
-explicit; autosave and syntax highlighting are not available yet.
+explicit; autosave and syntax highlighting are not available yet. Files with a
+consistent line-ending convention keep it when saved. Mixed line endings use
+the first line-ending style found in the file.
 
 ## Use shortcuts and tools
 

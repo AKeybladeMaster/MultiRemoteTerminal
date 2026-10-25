@@ -13,7 +13,8 @@ F-014 and P-27 call for text editing with remote conflict detection. The existin
 - Identify the loaded contents with a SHA-256 revision. Before commit, re-read the remote file and require both its revision and available SFTP identity metadata to match the original version.
 - Write to a unique exclusive sibling `.mrt-*.partial` file. Cross a reported commit boundary, move the original to a unique `.mrt-*.backup`, verify the moved contents, replace the original, and attempt rollback if replacement fails.
 - Allow one SFTP operation at a time per session. Honor cancellation before commit; once commit starts, permit bounded cleanup to settle.
-- Keep the UI explicit: no autosave, preserve the draft on conflict, and confirm before discarding it for reload or close.
+- Keep the UI explicit: no autosave, preserve the draft on conflict, and confirm before discarding it for reload or close. Keep the dialog open while an operation is active; the user may cancel a pre-commit request and close after it settles. Once a save enters commit, closing and discard actions remain unavailable until it settles.
+- Normalize remote line endings for the HTML textarea, then save using the first line-ending style found in the original file. Consistent LF, CRLF and CR files retain their line-ending convention; mixed-style files are saved with the first style throughout.
 
 ## Consequences
 
