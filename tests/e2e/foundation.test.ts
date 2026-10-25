@@ -721,6 +721,69 @@ test('a lost SSH transport fails its tab cleanly and allows explicit saved-profi
   }
 });
 
+test('a Windows session-lock event blocks safeStorage credential access until explicit vault unlock', async () => {
+  test.skip(process.platform !== 'win32', 'Exercise the Windows safeStorage vault and lock event on Windows');
+  test.setTimeout(45_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-vault-lock-e2e-'));
+  const reference = randomUUID();
+  const secret = `MRT-E2E-VAULT-${randomUUID()}`;
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-vault-probe'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect.poll(() => app!.evaluate(() => {
+      const probe = (globalThis as typeof globalThis & {
+        __mrtE2EVaultProbe?: { getState(): string };
+      }).__mrtE2EVaultProbe;
+      return probe?.getState();
+    })).toBe('available');
+
+    const result = await app.evaluate(async ({ app: electronApp, powerMonitor }, { credentialReference, credentialSecret }) => {
+      interface VaultProbe {
+        getState(): string;
+        store(reference: string, secret: string): Promise<void>;
+        resolve(reference: string): Promise<string>;
+        unlock(): Promise<void>;
+      }
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultProbe }).__mrtE2EVaultProbe;
+      if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
+
+      await probe.store(credentialReference, credentialSecret);
+      const resolvedBeforeLock = await probe.resolve(credentialReference);
+
+      // This synthetic Electron event exercises the registered lock handler; it is not a physical Windows session lock.
+      powerMonitor.emit('lock-screen');
+      const lockedState = probe.getState();
+      let lockedResolutionKind: string | undefined;
+      try {
+        await probe.resolve(credentialReference);
+      } catch (error) {
+        lockedResolutionKind = typeof error === 'object' && error !== null && 'kind' in error
+          ? String(error.kind) : undefined;
+      }
+
+      await probe.unlock();
+      const unlockedState = probe.getState();
+      const resolvedAfterUnlock = await probe.resolve(credentialReference);
+      return { userDataPath: electronApp.getPath('userData'), resolvedBeforeLock, lockedState, lockedResolutionKind,
+        unlockedState, resolvedAfterUnlock };
+    }, { credentialReference: reference, credentialSecret: secret });
+
+    expect(result.resolvedBeforeLock).toBe(secret);
+    expect(result.lockedState).toBe('locked');
+    expect(result.lockedResolutionKind).toBe('locked');
+    expect(result.unlockedState).toBe('available');
+    expect(result.resolvedAfterUnlock).toBe(secret);
+    const encryptedVault = await readFile(join(result.userDataPath, 'credentials.json'), 'utf8');
+    expect(encryptedVault).not.toContain(secret);
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SSH saved-profile jump routes verify every hop and clean up one- and two-gateway chains', async () => {
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));

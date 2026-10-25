@@ -164,6 +164,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07J — N-001 lost-SSH recovery acceptance:** A Windows loopback SSH E2E approves a first-use host key, opens a password-authenticated terminal, saves the credential-free profile, resets the fixture's TCP transport, verifies the tab enters `failed` with `UNAVAILABLE`, and explicitly reopens the saved profile to establish a fresh terminal. The test exercises the real main/preload/worker/renderer path. N-001 remains partial because the locked-vault Windows E2E is open; crashed ConPTY and SFTP conflict scenarios have separate existing acceptance evidence. F-003/P-03 remain partial: changed-host-key blocking has focused unit coverage; key/agent authentication and disposable OpenSSH interoperability are not verified. See [WP-07J results](results/WP-07J-ssh-transport-recovery-2026-10-25.md).
 
+**WP-07K — N-001 locked-vault recovery acceptance:** A Windows E2E uses Electron's actual `safeStorage` adapter to store and resolve a random test credential, emits the registered `powerMonitor` lock-screen event, verifies resolution fails with the `locked` category, explicitly unlocks through a main-process probe gated to unpackaged `MRT_E2E=1` launches, and verifies the credential resolves again. It confirms the secret is absent from `credentials.json`. The lock event is synthetic and does not verify a physical Windows lock/unlock cycle. The test-only unlock does not add a user-facing vault management flow or connect the vault to saved SSH credentials; F-010/P-29 remain partial, and N-001 still needs physical session-lock acceptance. See [WP-07K results](results/WP-07K-vault-lock-recovery-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  

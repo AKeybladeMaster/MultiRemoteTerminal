@@ -5,6 +5,7 @@ import { basename, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { failure } from '../../../../packages/domain/src/errors.ts';
+import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import { describeWorkbench } from '../../../../packages/application/src/workbench.ts';
 import { createLocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
@@ -184,6 +185,25 @@ function boot(): void {
   powerMonitor.on('suspend', lockVaultForSystemEvent);
   idleLock.start();
   void credentialVault.initialize().catch(() => undefined);
+  if (isE2ETestHookEnabled('--mrt-e2e-vault-probe', app.isPackaged, process.env, process.argv)) {
+    Object.defineProperty(globalThis, '__mrtE2EVaultProbe', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: Object.freeze({
+        getState: () => credentialVault.state,
+        store: (reference: string, secret: string) => {
+          const parsed = parseCredentialReference(reference);
+          return parsed ? credentialVault.store(parsed, secret) : Promise.reject(new Error('Invalid E2E vault reference'));
+        },
+        resolve: (reference: string) => {
+          const parsed = parseCredentialReference(reference);
+          return parsed ? credentialVault.resolveForOperation(parsed) : Promise.reject(new Error('Invalid E2E vault reference'));
+        },
+        unlock: () => credentialVault.unlock()
+      })
+    });
+  }
 
   let delayFirstOpenReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-terminal-open', app.isPackaged, process.env, process.argv);
   let delayFirstSessionCreateReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-session-create-reply', app.isPackaged, process.env, process.argv);
