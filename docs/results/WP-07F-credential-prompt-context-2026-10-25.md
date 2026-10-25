@@ -29,7 +29,7 @@ On Windows 11 x64 with Node.js 24.14.1 and pnpm 12.15.0:
 
 ## Independent review
 
-The Spec review found no mismatch or scope creep and confirmed the fix preserves the ADR's credential isolation requirements. The Standards review found no documented-standard violations or baseline smells. Both reviews confirm that native-dialog, live SSH and independent security acceptance remain open.
+The Spec review found no mismatch or scope creep and confirmed the fix preserves the ADR's credential isolation requirements. It also confirmed that native-dialog, live SSH and independent security acceptance remain open. The Standards review found no documented-standard violations or baseline smells.
 
 ## Limits
 
