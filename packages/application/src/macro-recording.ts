@@ -306,7 +306,6 @@ export function createMacroRecorder(): MacroRecorder {
       if (!sessionId || !paused) return;
       const secretPromptStillOpen = pausedSecretPromptOpen;
       pausedPromptLine = '';
-      pausedSecretPromptOpen = false;
       if (secretPromptStillOpen) {
         pausedAfterSecretPrompt = true;
         suppressUntilEnter = true;
@@ -316,6 +315,7 @@ export function createMacroRecorder(): MacroRecorder {
         warning = 'secret-prompt';
         return;
       }
+      pausedSecretPromptOpen = false;
       paused = false;
       if (pausedAfterSecretPrompt) {
         pausedAfterSecretPrompt = false;

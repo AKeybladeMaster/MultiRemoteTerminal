@@ -103,6 +103,8 @@ test('resume stays paused when a recognized secret prompt is already open', () =
   recorder.resume();
   assert.equal(recorder.snapshot().status, 'paused');
   assert.equal(recorder.snapshot().warning, 'secret-prompt');
+  recorder.resume();
+  assert.equal(recorder.snapshot().status, 'paused');
   recorder.recordInput('terminal-a', 'second-secret\r');
   assert.equal(recorder.snapshot().status, 'paused');
 

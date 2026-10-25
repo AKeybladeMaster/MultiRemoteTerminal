@@ -1653,6 +1653,9 @@ test('macro recorder captures completed terminal lines and suppresses a recogniz
     await banner.getByRole('button', { name: 'Resume recording', exact: true }).click();
     await expect(banner.getByRole('status')).toContainText('recognized secret prompt');
     await expect(banner).toContainText('Recording paused');
+    await banner.getByRole('button', { name: 'Resume recording', exact: true }).click();
+    await expect(banner.getByRole('button', { name: 'Resume recording', exact: true })).toBeVisible();
+    await expect(banner.getByRole('status')).toContainText('recognized secret prompt');
     await page.keyboard.type(verificationCode);
     await page.keyboard.press('Enter');
     await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-CODE-READY', { timeout: 15_000 });
