@@ -11,12 +11,16 @@ test('storage worker accepts exact macro catalog requests and rejects secret-sha
     { ...envelope, command: 'macro.list' },
     { ...envelope, command: 'macro.create', draft: { name: 'Build', steps: [{ kind: 'send', text: 'npm run build' }] } },
     { ...envelope, command: 'macro.update', id: macroId, draft: { name: 'Build', steps: [] } },
-    { ...envelope, command: 'macro.remove', id: macroId }
+    { ...envelope, command: 'macro.remove', id: macroId },
+    { ...envelope, command: 'macro.shortcut.list' },
+    { ...envelope, command: 'macro.shortcut.set', macroId, code: 'F2' },
+    { ...envelope, command: 'macro.shortcut.remove', macroId }
   ];
   assert.ok(valid.every(value => parseStorageWorkerRequest(value)));
   assert.equal(parseStorageWorkerRequest({ ...valid[1], draft: { name: 'Build', steps: [], password: 'hidden' } }), undefined);
   assert.equal(parseStorageWorkerRequest({ ...valid[1], draft: { name: 'Build', steps: [{ kind: 'send', text: 'echo ok\nshutdown' }] } }), undefined);
   assert.equal(parseStorageWorkerRequest({ ...valid[2], extra: true }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...valid[5], code: 'Ctrl+F2' }), undefined);
 });
 
 test('storage worker validates macro replies before returning them to main', () => {
@@ -26,4 +30,8 @@ test('storage worker validates macro replies before returning them to main', () 
     result: { kind: 'macroDefinitions', value: [definition] } };
   assert.ok(parseStorageWorkerMessage(message));
   assert.equal(parseStorageWorkerMessage({ ...message, result: { kind: 'macroDefinitions', value: [{ ...definition, credential: 'hidden' }] } }), undefined);
+  const shortcut = { version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+    result: { kind: 'macroShortcuts', value: [{ macroId, code: 'F2' }] } };
+  assert.ok(parseStorageWorkerMessage(shortcut));
+  assert.equal(parseStorageWorkerMessage({ ...shortcut, result: { kind: 'macroShortcuts', value: [{ macroId, code: 'Ctrl+F2' }] } }), undefined);
 });

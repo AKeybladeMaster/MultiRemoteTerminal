@@ -16,7 +16,8 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
-    'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
+    'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
+    'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
     'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
@@ -334,6 +335,28 @@ test('preload routes macro library operations through fixed credential-free comm
     { command: 'macro.create', requestId: id(), contractVersion: 1, payload: { name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] } },
     { command: 'macro.update', requestId: id(), contractVersion: 1, payload: { id: macroId, name: 'Health check', steps: [{ kind: 'send', text: 'whoami' }] } },
     { command: 'macro.delete', requestId: id(), contractVersion: 1, payload: { id: macroId } }
+  ]);
+});
+
+test('preload routes macro shortcut bindings through strict typed commands', async () => {
+  const macroId = '7c08b18a-57cc-4b44-a8b3-2d404850e81c';
+  const binding = { macroId, code: 'F2' as const };
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return request.command === 'macro.shortcut.list'
+      ? { requestId: request.requestId, ok: true, result: [binding] }
+      : request.command === 'macro.shortcut.set'
+        ? { requestId: request.requestId, ok: true, result: binding }
+        : { requestId: request.requestId, ok: true, result: {} };
+  }, id);
+  assert.deepEqual(await bridge.listMacroShortcuts(), { requestId: id(), ok: true, result: [binding] });
+  assert.deepEqual(await bridge.setMacroShortcut(macroId, 'F2'), { requestId: id(), ok: true, result: binding });
+  assert.deepEqual(await bridge.deleteMacroShortcut(macroId), { requestId: id(), ok: true, result: {} });
+  assert.deepEqual(seen, [
+    { command: 'macro.shortcut.list', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'macro.shortcut.set', requestId: id(), contractVersion: 1, payload: { macroId, code: 'F2' } },
+    { command: 'macro.shortcut.delete', requestId: id(), contractVersion: 1, payload: { macroId } }
   ]);
 });
 

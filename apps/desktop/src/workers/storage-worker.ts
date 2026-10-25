@@ -6,6 +6,7 @@ import { SqliteHostTrustRepository, toHostTrustStoreError } from '../adapters/sq
 import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catalog-repository.ts';
 import { SqliteTunnelRepository } from '../adapters/sqlite-tunnel-repository.ts';
 import { SqliteMacroCatalogRepository } from '../adapters/sqlite-macro-catalog-repository.ts';
+import { SqliteMacroShortcutRepository } from '../adapters/sqlite-macro-shortcut-repository.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -18,6 +19,7 @@ let repository: SqliteHostTrustRepository;
 let sessionCatalogRepository: SqliteSessionCatalogRepository;
 let tunnelRepository: SqliteTunnelRepository;
 let macroCatalogRepository: SqliteMacroCatalogRepository;
+let macroShortcutRepository: SqliteMacroShortcutRepository;
 try {
   await mkdir(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath, {
@@ -32,6 +34,7 @@ try {
   sessionCatalogRepository = new SqliteSessionCatalogRepository(database);
   tunnelRepository = new SqliteTunnelRepository(database);
   macroCatalogRepository = new SqliteMacroCatalogRepository(database);
+  macroShortcutRepository = new SqliteMacroShortcutRepository(database);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
   const errorCode = storageWorkerErrorCode(normalizedError);
@@ -113,6 +116,15 @@ parent.on('message', async event => {
     } else if (request.command === 'macro.remove') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: macroCatalogRepository.removeMacro(request.id) } });
+    } else if (request.command === 'macro.shortcut.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'macroShortcuts', value: macroShortcutRepository.list() } });
+    } else if (request.command === 'macro.shortcut.set') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'macroShortcut', value: macroShortcutRepository.set(request.macroId, request.code) } });
+    } else if (request.command === 'macro.shortcut.remove') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: macroShortcutRepository.remove(request.macroId) } });
     } else if (request.command === 'tunnel.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'tunnels', value: await tunnelRepository.listSshTunnels() } });

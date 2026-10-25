@@ -3,12 +3,13 @@ import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSess
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
-import type { ListMacrosReply, MacroDefinitionReply } from '../../../../packages/contracts/src/commands.ts';
+import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
+import type { MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -256,7 +257,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
-    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete' | 'macro.delete', payload: Record<string, unknown>): CommandRequest {
+    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
+    payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
 
@@ -398,6 +400,15 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     deleteMacro(id: string): Promise<TerminalActionReply> {
       return send(voidRequest('macro.delete', { id }), 8_000);
+    },
+    listMacroShortcuts(): Promise<ListMacroShortcutsReply> {
+      return send({ command: 'macro.shortcut.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    setMacroShortcut(macroId: string, code: MacroShortcutCode): Promise<MacroShortcutReply> {
+      return send({ command: 'macro.shortcut.set', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { macroId, code } }, 8_000);
+    },
+    deleteMacroShortcut(macroId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('macro.shortcut.delete', { macroId }), 8_000);
     },
     createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
       return send({ command: 'session.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);

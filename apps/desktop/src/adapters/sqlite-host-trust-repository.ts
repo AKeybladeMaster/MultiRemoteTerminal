@@ -4,8 +4,9 @@ import { HostTrustStoreError } from '../../../../packages/application/src/host-t
 import type { HostTrustInsertResult } from '../../../../packages/application/src/host-trust.ts';
 import { canonicalizeSshHostEndpoint, isHostKeyEvidence, sameHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
+import { MACRO_SHORTCUT_CODES } from '../../../../packages/domain/src/macro-shortcut.ts';
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 const SCHEMA_V1 = `
 CREATE TABLE folders (
   id TEXT PRIMARY KEY,
@@ -132,6 +133,12 @@ CREATE TABLE audit_events (
 CREATE INDEX audit_events_at ON audit_events(at);
 `;
 const SCHEMA_V2 = `ALTER TABLE tunnel_definitions ADD COLUMN name TEXT NOT NULL DEFAULT 'Local forward';`;
+const SCHEMA_V3 = `
+CREATE TABLE macro_shortcuts (
+  macro_id TEXT PRIMARY KEY REFERENCES macro_definitions(id) ON DELETE CASCADE,
+  code TEXT NOT NULL UNIQUE CHECK(code IN (${MACRO_SHORTCUT_CODES.map(code => `'${code}'`).join(', ')}))
+);
+`;
 
 export interface HostTrustMigrationResult {
   readonly sourceCount: number;
@@ -177,6 +184,13 @@ export class SqliteHostTrustRepository {
       if (currentVersion === 1) {
         this.transaction(() => {
           this.database.exec(SCHEMA_V2);
+          this.database.exec('PRAGMA user_version = 2');
+        });
+        currentVersion = 2;
+      }
+      if (currentVersion === 2) {
+        this.transaction(() => {
+          this.database.exec(SCHEMA_V3);
           this.database.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
         });
         currentVersion = CURRENT_SCHEMA_VERSION;

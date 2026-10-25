@@ -54,7 +54,10 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptyMacro }),
     update: async () => ({ ok: true, result: emptyMacro }),
-    remove: noOp
+    remove: noOp,
+    listShortcuts: async () => ({ ok: true, result: [] }),
+    setShortcut: async macroId => ({ ok: true, result: { macroId: macroId as string, code: 'F2' } }),
+    removeShortcut: noOp
   }, tunnels: {
     list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
@@ -122,19 +125,25 @@ test('macro catalog commands reach only the typed catalog and count as user acti
     async list() { calls.push('list'); return { ok: true, result: [emptyMacro] }; },
     async create() { calls.push('create'); return { ok: true, result: emptyMacro }; },
     async update(id, draft) { calls.push('update'); updateCalls.push({ id, draft }); return { ok: true, result: emptyMacro }; },
-    async remove() { calls.push('remove'); return { ok: true, result: {} }; }
+    async remove() { calls.push('remove'); return { ok: true, result: {} }; },
+    async listShortcuts() { calls.push('list-shortcuts'); return { ok: true, result: [] }; },
+    async setShortcut(macroId, code) { calls.push(`set-shortcut:${macroId}:${code}`); return { ok: true, result: { macroId: macroId as string, code: code as 'F2' } }; },
+    async removeShortcut() { calls.push('remove-shortcut'); return { ok: true, result: {} }; }
   } };
   const requests = [
     { command: 'macro.list', payload: {} },
     { command: 'macro.create', payload: { name: 'Build', steps: [] } },
     { command: 'macro.update', payload: { id: emptyMacro.id, name: 'Build', steps: [] } },
-    { command: 'macro.delete', payload: { id: emptyMacro.id } }
+    { command: 'macro.delete', payload: { id: emptyMacro.id } },
+    { command: 'macro.shortcut.list', payload: {} },
+    { command: 'macro.shortcut.set', payload: { macroId: emptyMacro.id, code: 'F2' } },
+    { command: 'macro.shortcut.delete', payload: { macroId: emptyMacro.id } }
   ];
   const replies = await Promise.all(requests.map(item => dispatchCommand(owner, { ...item, requestId: request.requestId, contractVersion: 1 }, tracked, () => {})));
   assert.equal(replies.every(reply => reply.ok), true);
-  assert.deepEqual(calls, ['list', 'create', 'update', 'remove']);
+  assert.deepEqual(calls, ['list', 'create', 'update', 'remove', 'list-shortcuts', `set-shortcut:${emptyMacro.id}:F2`, 'remove-shortcut']);
   assert.deepEqual(updateCalls, [{ id: emptyMacro.id, draft: { name: 'Build', steps: [] } }]);
-  assert.equal(activity, 4);
+  assert.equal(activity, 7);
 });
 
 test('Telnet open requires a fresh plaintext-consent gesture at the main-process broker', async () => {

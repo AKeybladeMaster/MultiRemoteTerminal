@@ -9,6 +9,8 @@ import { isSshTunnelDefinition, isTunnelId, normalizeSshTunnelDraft } from '../.
 import type { SshTunnelDefinition, SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { isMacroDefinition, isMacroId, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
+import { isMacroShortcutBinding, isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
+import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
@@ -38,6 +40,9 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.create'; readonly draft: MacroDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.update'; readonly id: string; readonly draft: MacroDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.list' }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.set'; readonly macroId: string; readonly code: MacroShortcutCode }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.remove'; readonly macroId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
@@ -63,6 +68,8 @@ export type StorageWorkerResult =
   | { readonly kind: 'macroDefinitions'; readonly value: readonly MacroDefinition[] }
   | { readonly kind: 'macroDefinition'; readonly value: MacroDefinition }
   | { readonly kind: 'macroLookup'; readonly value: MacroDefinition | null }
+  | { readonly kind: 'macroShortcuts'; readonly value: readonly MacroShortcutBinding[] }
+  | { readonly kind: 'macroShortcut'; readonly value: MacroShortcutBinding }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -160,6 +167,12 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'macro.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isMacroId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'macro.shortcut.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'macro.shortcut.set' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'macroId', 'code']) &&
+      isMacroId(value.macroId) && isMacroShortcutCode(value.code)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'macro.shortcut.remove' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'macroId']) && isMacroId(value.macroId)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
       isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
@@ -206,6 +219,8 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'macroDefinitions' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isMacroDefinition)) return true;
   if (value.kind === 'macroDefinition' && exactKeys(value, ['kind', 'value']) && isMacroDefinition(value.value)) return true;
   if (value.kind === 'macroLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isMacroDefinition(value.value))) return true;
+  if (value.kind === 'macroShortcuts' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isMacroShortcutBinding)) return true;
+  if (value.kind === 'macroShortcut' && exactKeys(value, ['kind', 'value']) && isMacroShortcutBinding(value.value)) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 

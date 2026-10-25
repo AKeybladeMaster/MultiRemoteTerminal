@@ -288,6 +288,14 @@ test('macro IPC accepts only typed steps and credential-free replies', () => {
   assert.equal(parseRequest({ ...create, payload: { ...draft, password: 'must not persist' } }).ok, false);
   assert.equal(parseRequest({ ...create, payload: { name: 'Unsafe', steps: [{ kind: 'send', text: 'whoami\nshutdown' }] } }).ok, false);
   assert.equal(parseRequest({ command: 'macro.delete', requestId: request.requestId, contractVersion: 1, payload: { id: 'bad' } }).ok, false);
+  const shortcutList = { command: 'macro.shortcut.list', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const shortcutSet = { command: 'macro.shortcut.set', requestId: request.requestId, contractVersion: 1, payload: { macroId, code: 'F2' } };
+  const shortcutDelete = { command: 'macro.shortcut.delete', requestId: request.requestId, contractVersion: 1, payload: { macroId } };
+  assert.equal(parseRequest(shortcutList).ok, true);
+  assert.equal(parseRequest(shortcutSet).ok, true);
+  assert.equal(parseRequest(shortcutDelete).ok, true);
+  assert.equal(parseRequest({ ...shortcutSet, payload: { ...shortcutSet.payload, code: 'Ctrl+F2' } }).ok, false);
+  assert.equal(parseRequest({ ...shortcutSet, payload: { ...shortcutSet.payload, targetSessionId: macroId } }).ok, false);
 
   const definition = { id: macroId, schemaVersion: 1, ...draft, createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
   const parsedList = parseRequest(list);
@@ -297,4 +305,14 @@ test('macro IPC accepts only typed steps and credential-free replies', () => {
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: [{ ...definition, password: 'hidden' }] }, parsedList.result), false);
   }
   if (parsedCreate.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: definition }, parsedCreate.result), true);
+  const parsedShortcutList = parseRequest(shortcutList);
+  const parsedShortcutSet = parseRequest(shortcutSet);
+  if (parsedShortcutList.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: [{ macroId, code: 'F2' }] }, parsedShortcutList.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: [{ macroId, code: 'Ctrl+F2' }] }, parsedShortcutList.result), false);
+  }
+  if (parsedShortcutSet.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { macroId, code: 'F2' } }, parsedShortcutSet.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { macroId, code: 'F3' } }, parsedShortcutSet.result), false);
+  }
 });

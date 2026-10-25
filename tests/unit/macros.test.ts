@@ -3,9 +3,11 @@ import test from 'node:test';
 import { createMacroCatalog } from '../../packages/application/src/macros.ts';
 import type { MacroCatalogStore } from '../../packages/application/src/macros.ts';
 import type { MacroDefinition, MacroDraft } from '../../packages/domain/src/macro.ts';
+import type { MacroShortcutBinding, MacroShortcutCode } from '../../packages/domain/src/macro-shortcut.ts';
 
 function memoryStore(): MacroCatalogStore {
   const records = new Map<string, MacroDefinition>();
+  const shortcuts = new Map<string, MacroShortcutBinding>();
   return {
     async listMacros() { return [...records.values()]; },
     async createMacro(draft: MacroDraft) {
@@ -21,7 +23,14 @@ function memoryStore(): MacroCatalogStore {
       records.set(id, macro);
       return macro;
     },
-    async removeMacro(id) { return records.delete(id); }
+    async removeMacro(id) { const removed = records.delete(id); if (removed) shortcuts.delete(id); return removed; },
+    async listMacroShortcuts() { return [...shortcuts.values()]; },
+    async setMacroShortcut(macroId, code: MacroShortcutCode) {
+      const binding = { macroId, code };
+      shortcuts.set(macroId, binding);
+      return binding;
+    },
+    async removeMacroShortcut(macroId) { return shortcuts.delete(macroId); }
   };
 }
 
