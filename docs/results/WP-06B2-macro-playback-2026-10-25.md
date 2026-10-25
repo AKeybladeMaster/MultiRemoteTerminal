@@ -23,8 +23,10 @@
 - Added a review screen that shows the exact macro steps and a target label
   containing the session name plus shell/protocol and endpoint where
   applicable. The user must press **Run macro**. Manual input to that target
-  is disabled until playback ends; write cancellation waits for an in-flight
-  terminal write to settle.
+  is disabled until playback ends. Cancellation during a terminal write waits
+  for its typed reply or the existing five-second renderer reply deadline; a
+  timeout does not prove that the underlying invocation was rejected, and the
+  runner does not retry it.
 - No credential or target data was added to saved macro definitions, and
   playback never reconnects, resumes or runs automatically.
 - The actual Windows review screen and the design target are recorded at the
@@ -35,10 +37,10 @@
 
 Windows x64 with Node 24.14.1 and Electron 45.0.0:
 
-- Seven focused unit tests cover ordered writes, split literal text with ANSI
-  controls, timeout and case sensitivity, cancellation during wait and
-  confirmation, disconnect, confirmation decline, invalid/unavailable/busy
-  runs and later-step suppression.
+- Eight focused unit tests cover ordered writes, typed write failure and later
+  step suppression, split literal text with ANSI controls, timeout and case
+  sensitivity, cancellation during wait and confirmation, disconnect,
+  confirmation decline, and invalid/unavailable/busy runs.
 - The Windows Electron E2E reviews exact steps and target, runs a successful
   send/wait/delay/confirm/send sequence, and cancels a waiting run. It also
   keeps a second terminal active while the reviewed target exits: playback
