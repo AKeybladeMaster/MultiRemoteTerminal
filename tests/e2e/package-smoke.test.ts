@@ -54,8 +54,14 @@ async function expectPackagedWindow(app: ElectronApp, options: {
 } = {}): Promise<{ readonly userData: string }> {
   const page = await app.firstWindow();
   await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
-  const metadata = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() }));
+  const metadata = await app.evaluate(({ app }) => ({
+    packaged: app.isPackaged,
+    userData: app.getPath('userData'),
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath
+  }));
   expect(metadata.packaged).toBe(true);
+  expect((await stat(join(metadata.resourcesPath, 'credential-prompt.ps1'))).isFile()).toBe(true);
   if (options.deviceScaleFactor !== undefined) {
     await expect.poll(() => page.evaluate(() => devicePixelRatio)).toBe(options.deviceScaleFactor);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
