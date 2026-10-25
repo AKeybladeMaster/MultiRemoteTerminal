@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { EventEmitter } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { lstat as lstatFile, mkdir, mkdtemp, open as openFile, readFile, readdir as readDirectory, rename as renameFile, rm, stat as statFile, unlink as unlinkFile, writeFile } from 'node:fs/promises';
@@ -3183,8 +3184,22 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
 
 test('100% scale themes render and CSP/Electron policy deny injected capabilities', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-security-'));
-  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=1'], env: electronEnvironment() });
+  let networkProbeRequests = 0;
+  const networkProbe = createHttpServer((_request, response) => {
+    networkProbeRequests += 1;
+    response.setHeader('Access-Control-Allow-Origin', '*');
+    response.end('ok');
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      networkProbe.once('error', rejectListen);
+      networkProbe.listen(0, '127.0.0.1', resolveListen);
+    });
+    const address = networkProbe.address();
+    expect(address).not.toBeNull();
+    const networkProbeUrl = `http://127.0.0.1:${(address as AddressInfo).port}/csp-probe`;
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=1'], env: electronEnvironment() });
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
@@ -3198,20 +3213,34 @@ test('100% scale themes render and CSP/Electron policy deny injected capabilitie
     await expect(page.locator('.workbench')).toHaveAttribute('data-theme', 'dark');
     await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#142231');
     await page.screenshot({ path: 'test-results/terminal-dark-100pct.png', fullPage: true });
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (probeUrl) => {
       const globals = globalThis as unknown as Record<string, unknown>;
       globals.injectionExecuted = false;
+      const dynamicTerminalStylesApplied = [...document.querySelectorAll<HTMLStyleElement>('.xterm style')].some(style => {
+        try { return (style.sheet?.cssRules.length ?? 0) > 0; } catch { return false; }
+      });
       const script = document.createElement('script');
       script.textContent = 'globalThis.injectionExecuted = true';
       document.body.append(script);
       const sample = document.querySelector('.terminal-host');
       if (sample) sample.innerHTML = '<img src=x onerror="globalThis.injectionExecuted = true">';
-      const blockedFetch = await fetch('file:///C:/Windows/win.ini').then(() => false, () => true);
+      const blockedFileFetch = await fetch('file:///C:/Windows/win.ini').then(() => false, () => true);
+      let networkDeniedByCsp = false;
+      const cspListener = (event: SecurityPolicyViolationEvent) => {
+        if (event.effectiveDirective === 'connect-src') networkDeniedByCsp = true;
+      };
+      document.addEventListener('securitypolicyviolation', cspListener);
+      const blockedNetworkFetch = await fetch(probeUrl, { signal: AbortSignal.timeout(2_000) }).then(() => false, () => true);
+      await new Promise(resolveTick => setTimeout(resolveTick, 0));
+      document.removeEventListener('securitypolicyviolation', cspListener);
       const popup = window.open('https://example.com');
       const permission = await navigator.permissions.query({ name: 'geolocation' });
-      return { injected: globals.injectionExecuted, blockedFetch, popup: popup === null, permission: permission.state };
-    });
-    expect(result).toEqual({ injected: false, blockedFetch: true, popup: true, permission: 'denied' });
+      return { injected: globals.injectionExecuted, blockedFileFetch, blockedNetworkFetch, networkDeniedByCsp,
+        popup: popup === null, permission: permission.state, dynamicTerminalStylesApplied };
+    }, networkProbeUrl);
+    expect(result).toEqual({ injected: false, blockedFileFetch: true, blockedNetworkFetch: true, networkDeniedByCsp: true,
+      popup: true, permission: 'denied', dynamicTerminalStylesApplied: true });
+    expect(networkProbeRequests).toBe(0);
     await page.evaluate(() => {
       const link = document.createElement('a'); link.href = 'https://example.com'; document.body.append(link); link.click();
     });
@@ -3231,7 +3260,8 @@ test('100% scale themes render and CSP/Electron policy deny injected capabilitie
     expect(foreignReply.ok).toBe(false);
     if (!foreignReply.ok) expect(foreignReply.error.code).toBe('UNAVAILABLE');
   } finally {
-    await app.close();
+    await app?.close();
+    if (networkProbe.listening) await new Promise<void>(resolveClose => networkProbe.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
@@ -3329,7 +3359,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(settings.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     await greetingInput.fill(greeting);
     await settings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(settings.getByRole('status')).toHaveText('Greeting saved.');
+    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
     const banner = page.getByRole('region', { name: 'Startup greeting' });
     await expect(banner).toContainText(greeting);
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -3362,7 +3392,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(reopenedSettings).toBeVisible();
     await reopenedSettings.getByLabel('Startup greeting').fill('');
     await reopenedSettings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(reopenedSettings.getByRole('status')).toHaveText('Greeting saved.');
+    await expect(reopenedSettings.getByRole('status')).toHaveText('Settings saved.');
     await expect(reopenedBanner).toHaveCount(0);
     await reopenedSettings.getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -3371,6 +3401,76 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByRole('region', { name: 'Startup greeting' })).toHaveCount(0);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('terminal keyword highlighting saves rules, preserves ANSI colors, and restores settings after restart', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-highlights-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Highlight matching terminal text' }).check();
+    await settings.getByRole('button', { name: 'Add rule', exact: true }).click();
+    await settings.getByLabel('Rule 1 pattern').fill('MRT-HIGHLIGHT-\\w+');
+    await settings.getByLabel('Rule 1 color').selectOption('cyan');
+    await page.screenshot({ path: 'test-results/terminal-highlight-settings.png' });
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    const title = 'PowerShell session 1';
+    const command = "$mrtEsc = [char]27; [Console]::Write($mrtEsc + '[31m' + 'ANSI-KEEP-RED' + $mrtEsc + '[0m'); $mrtTag = 'MRT-HIGHLIGHT-' + 'OUTPUT'; Write-Output $mrtTag";
+    const { panel, rows } = await sendLine(page, title, command, 'MRT-HIGHLIGHT-OUTPUT');
+    await expect.poll(() => rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+      const rendered = glyphs.map(glyph => glyph.text).join('');
+      const start = rendered.indexOf('MRT-HIGHLIGHT-OUTPUT');
+      return start >= 0 && glyphs.slice(start, start + 'MRT-HIGHLIGHT-OUTPUT'.length)
+        .every(glyph => glyph.color === 'rgb(84, 215, 212)');
+    })).toBe(true);
+    await expect.poll(() => rows.locator('span.xterm-fg-1').evaluateAll(spans => spans.some(span =>
+      span.textContent?.includes('ANSI-KEEP-RED') && getComputedStyle(span).color === 'rgb(255, 104, 104)'))).toBe(true);
+    await expect(panel.locator('.xterm-decoration-container .xterm-decoration').first()).toBeVisible();
+
+    const resizeRun = await sendLine(page, title, "Write-Output (('PAD-' * 30) + ' MRT-HIGHLIGHT-RESIZE')", 'MRT-HIGHLIGHT-RESIZE');
+    const hasCyanResizeTag = () => resizeRun.rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+      const rendered = glyphs.map(glyph => glyph.text).join('');
+      const start = rendered.indexOf('MRT-HIGHLIGHT-RESIZE');
+      return start >= 0 && glyphs.slice(start, start + 'MRT-HIGHLIGHT-RESIZE'.length)
+        .every(glyph => glyph.color === 'rgb(84, 215, 212)');
+    });
+    await expect.poll(hasCyanResizeTag).toBe(true);
+    const initialWindowWidth = await page.evaluate(() => innerWidth);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(860, 700));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(initialWindowWidth);
+    await expect.poll(hasCyanResizeTag).toBe(true);
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('checkbox', { name: 'Highlight matching terminal text' })).toBeChecked();
+    await expect(settings.getByLabel('Rule 1 pattern')).toHaveValue('MRT-HIGHLIGHT-\\w+');
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    const reopened = await sendLine(page, title, "$mrtTag = 'MRT-HIGHLIGHT-' + 'RESTART'; Write-Output $mrtTag", 'MRT-HIGHLIGHT-RESTART');
+    await expect.poll(() => reopened.rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+      const rendered = glyphs.map(glyph => glyph.text).join('');
+      const start = rendered.indexOf('MRT-HIGHLIGHT-RESTART');
+      return start >= 0 && glyphs.slice(start, start + 'MRT-HIGHLIGHT-RESTART'.length)
+        .every(glyph => glyph.color === 'rgb(84, 215, 212)');
+    })).toBe(true);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

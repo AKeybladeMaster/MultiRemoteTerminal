@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  createTerminalHighlightMatcher,
+  MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE,
+  MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS,
+  normalizeTerminalHighlightRules
+} from '../../packages/domain/src/terminal-highlights.ts';
+import { extractBoundedTerminalHighlightLine } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+
+test('terminal highlight rules validate and return Unicode-safe text ranges', () => {
+  const rules = normalizeTerminalHighlightRules([
+    { pattern: '\\b(?:git|ssh)\\b', color: 'cyan' },
+    { pattern: '😄', color: 'magenta' }
+  ]);
+  assert.ok(rules);
+  const text = 'git status, ssh host; 你好 😄';
+  const matches = createTerminalHighlightMatcher(rules).findMatches(text);
+  assert.deepEqual(matches.map(match => ({ text: text.slice(match.start, match.end), color: match.color })), [
+    { text: 'git', color: 'cyan' },
+    { text: 'ssh', color: 'cyan' },
+    { text: '😄', color: 'magenta' }
+  ]);
+});
+
+test('terminal highlight rules reject malformed, unbounded, and unsupported patterns', () => {
+  assert.equal(normalizeTerminalHighlightRules([{ pattern: '(?<=x)y', color: 'red' }]), undefined);
+  assert.equal(normalizeTerminalHighlightRules([{ pattern: '(a)\\1', color: 'red' }]), undefined);
+  assert.equal(normalizeTerminalHighlightRules([{ pattern: 'x'.repeat(MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS + 1), color: 'red' }]), undefined);
+  assert.equal(normalizeTerminalHighlightRules([{ pattern: 'x', color: 'orange' }]), undefined);
+  assert.equal(normalizeTerminalHighlightRules([{ pattern: 'x', color: 'red', command: 'whoami' }]), undefined);
+  assert.equal(normalizeTerminalHighlightRules(Array.from({ length: 9 }, () => ({ pattern: 'x', color: 'red' }))), undefined);
+});
+
+test('terminal highlight matching handles nested quantifiers with bounded results and ignores empty ranges', () => {
+  const rules = normalizeTerminalHighlightRules([
+    { pattern: '(a+)+!', color: 'yellow' },
+    { pattern: '^', color: 'blue' }
+  ]);
+  assert.ok(rules);
+  const text = `${'a'.repeat(1_500)}!`;
+  const matcher = createTerminalHighlightMatcher(rules);
+  const matches = matcher.findMatches(text, 1);
+  assert.equal(matches.length, 1);
+  assert.equal(text.slice(matches[0]!.start, matches[0]!.end), text);
+  assert.equal(matcher.findMatches('short', MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE).length, 0);
+  assert.equal(matcher.findMatches('x'.repeat(2_049)).length, 0);
+  assert.equal(createTerminalHighlightMatcher([{ pattern: 'x', color: 'red' }]).findMatches('x'.repeat(100), 96).length,
+    MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE);
+});
+
+test('terminal highlighting bounds cell extraction before copying oversized cell text', () => {
+  let reads = 0;
+  const extracted = extractBoundedTerminalHighlightLine(80, column => {
+    reads += 1;
+    return { text: column === 0 ? 'x'.repeat(10_000) : 'x', width: 1 };
+  });
+  assert.equal(extracted, undefined);
+  assert.equal(reads, 1);
+
+  const ordinary = extractBoundedTerminalHighlightLine(4, column => ({
+    text: ['A', '😀', ' ', ' '][column] ?? '', width: column === 1 ? 2 : 1
+  }));
+  assert.deepEqual(ordinary, { text: 'A😀', cellSpans: [
+    { start: 0, end: 1, column: 0, width: 1 }, { start: 1, end: 3, column: 1, width: 2 },
+    { start: 3, end: 4, column: 2, width: 1 }, { start: 4, end: 5, column: 3, width: 1 }
+  ] });
+});

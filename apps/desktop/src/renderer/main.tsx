@@ -27,6 +27,8 @@ import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts'
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
+import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
@@ -271,6 +273,8 @@ function Workbench() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [startupGreeting, setStartupGreeting] = useState('');
   const [startupGreetingVisible, setStartupGreetingVisible] = useState(false);
+  const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
+  const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -1108,9 +1112,11 @@ function Workbench() {
 
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
-  const saveStartupGreeting = useCallback((greeting: string) => {
-    setStartupGreeting(greeting);
-    setStartupGreetingVisible(greeting.length > 0);
+  const applyWorkbenchPreferences = useCallback((preferences: WorkbenchPreferences) => {
+    setStartupGreeting(preferences.startupGreeting);
+    setStartupGreetingVisible(preferences.startupGreeting.length > 0);
+    setTerminalHighlightEnabled(preferences.terminalHighlightEnabled);
+    setTerminalHighlightRules(preferences.terminalHighlightRules);
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
@@ -1653,14 +1659,13 @@ function Workbench() {
     void window.multiRemoteTerminal.getWorkbenchPreferences().then(reply => {
       if (!active) return;
       if (reply.ok) {
-        setStartupGreeting(reply.result.startupGreeting);
-        setStartupGreetingVisible(reply.result.startupGreeting.length > 0);
+        applyWorkbenchPreferences(reply.result);
       } else setAlert(workbenchPreferenceFailureMessage('load', reply.error.code));
     }).catch(() => {
       if (active) setAlert(workbenchPreferenceFailureMessage('load', undefined));
     });
     return () => { active = false; };
-  }, []);
+  }, [applyWorkbenchPreferences]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -2665,7 +2670,8 @@ function Workbench() {
                     transport={session.transport}
                     canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId) &&
                       !(multiExecView && multiExecView.phase !== 'finished' && multiExecView.targets.some(target => target.sessionId === session.sessionId))}
-                    theme={theme} fontSize={fontSize} onReady={terminalReady}
+                    theme={theme} fontSize={fontSize} terminalHighlightEnabled={terminalHighlightEnabled}
+                    terminalHighlightRules={terminalHighlightRules} onReady={terminalReady}
                     onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
                 </div>
                 {session.transport === 'ssh' && session.state === 'running' &&
@@ -2689,7 +2695,7 @@ function Workbench() {
     </div>
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
-    {settingsOpen && <SettingsDialog onClose={closeSettings} onGreetingSaved={saveStartupGreeting} />}
+    {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences} />}
     <footer className="status-bar">
       <div className="terminal-status">
         <span className={`state-dot ${active?.state ?? 'idle'}`} />

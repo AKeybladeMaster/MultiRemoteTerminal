@@ -1,6 +1,6 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { DEFAULT_WORKBENCH_PREFERENCES, isWorkbenchPreferences, normalizeWorkbenchPreferences,
-  WORKBENCH_PREFERENCES_SCHEMA_VERSION } from '../../../../packages/domain/src/workbench-preferences.ts';
+  LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSION, WORKBENCH_PREFERENCES_SCHEMA_VERSION } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 
@@ -28,7 +28,9 @@ export class SqliteWorkbenchPreferencesRepository {
     try {
       const row = this.readStatement.get(SETTINGS_KEY) as unknown as StoredPreferencesRow | undefined;
       if (!row) return DEFAULT_WORKBENCH_PREFERENCES;
-      if (row.schema_version !== WORKBENCH_PREFERENCES_SCHEMA_VERSION || typeof row.value_json !== 'string' || row.value_json.length > 8_192) {
+      if ((row.schema_version !== LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSION &&
+           row.schema_version !== WORKBENCH_PREFERENCES_SCHEMA_VERSION) ||
+          typeof row.value_json !== 'string' || row.value_json.length > 8_192) {
         throw new StorageOperationError('corrupt');
       }
       let value: unknown;
@@ -36,6 +38,9 @@ export class SqliteWorkbenchPreferencesRepository {
       catch { throw new StorageOperationError('corrupt'); }
       const preferences = normalizeWorkbenchPreferences(value);
       if (!preferences) throw new StorageOperationError('corrupt');
+      if (row.schema_version === LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSION) {
+        this.saveStatement.run(SETTINGS_KEY, JSON.stringify(preferences), WORKBENCH_PREFERENCES_SCHEMA_VERSION, new Date().toISOString());
+      }
       return preferences;
     } catch (error) { throw mapStorageError(error); }
   }
