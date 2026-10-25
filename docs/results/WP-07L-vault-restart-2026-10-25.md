@@ -1,6 +1,6 @@
 # WP-07L — Windows vault process-restart persistence
 
-**Requirements:** N-001 locked-vault recovery evidence; F-010/P-29 Windows vault persistence.
+**Requirements:** F-010/P-29 Windows vault persistence. This complements WP-07K's N-001 locked-vault recovery test but does not add lock/unlock behavior.
 
 ## Change
 
@@ -21,4 +21,6 @@ The E2E reused the current successful WP-07K build; WP-07L changes the test harn
 
 ## Review and remaining scope
 
-The test demonstrates app-process restart persistence under the same Windows user and profile. It does not cover profile migration, OS-account changes, reinstall/restore, physical Windows session lock, user-facing vault management or saved-credential integration. Full plaintext exclusion across the database, logs, exports and IPC remains open. N-001 and F-010/P-29 remain partial.
+The Spec-axis reviewer found the same-profile persistence checklist item supported and requested that this result not attribute restart-only behavior to N-001; the requirements line above now separates it from WP-07K's lock/unlock test. The Standards-axis reviewer found no documented-standard violations and noted duplicated probe lookup/missing-probe guards in separate `app.evaluate` callbacks. This is accepted as a minor test-harness smell: Playwright serializes and runs each callback in the Electron main process, so a runner-side helper cannot be shared within those isolated callbacks without adding a generalized dispatch layer.
+
+The test demonstrates app-process restart persistence under the same Windows user and profile. It does not cover profile migration, OS-account changes, reinstall/restore, physical Windows session lock, user-facing vault management or saved-credential integration. Full plaintext exclusion across the database, logs, exports and IPC remains open. F-010/P-29 remain partial; N-001 remains partial based on the synthetic lock event and other outstanding reliability evidence.
