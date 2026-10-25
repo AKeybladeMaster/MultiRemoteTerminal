@@ -1,7 +1,7 @@
 import { chromium, test, expect } from '@playwright/test';
 import type { Browser, Page } from '@playwright/test';
 import { getCurrentFuseWire, FuseState, FuseV1Options, FuseVersion } from '@electron/fuses';
-import { copyFile, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -163,6 +163,22 @@ function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex').toUpperCase();
 }
 
+async function corruptPackagedAsarHeaderHash(archivePath: string): Promise<void> {
+  const archive = await readFile(archivePath);
+  if (archive.length < 16) throw new Error('Packaged ASAR is too short to contain its header');
+  const headerLength = archive.readUInt32LE(12);
+  if (headerLength === 0 || 16 + headerLength > archive.length) throw new Error('Packaged ASAR header bounds are invalid');
+  const header = archive.toString('utf8', 16, 16 + headerLength);
+  const integrityHash = /"integrity"\s*:\s*\{\s*"algorithm"\s*:\s*"SHA256"\s*,\s*"hash"\s*:\s*"([0-9a-f]{64})"/iu.exec(header);
+  const hashValue = integrityHash?.[1];
+  if (!integrityHash || integrityHash.index === undefined || !hashValue) throw new Error('Packaged ASAR has no SHA-256 integrity metadata');
+  const hashOffset = 16 + integrityHash.index + integrityHash[0].indexOf(hashValue);
+  const currentByte = archive[hashOffset];
+  if (currentByte === undefined) throw new Error('Packaged ASAR integrity hash offset is invalid');
+  archive[hashOffset] = currentByte === 0x30 ? 0x31 : 0x30;
+  await writeFile(archivePath, archive);
+}
+
 test('Windows package disables unused Electron entry points and validates its ASAR', async () => {
   test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
     'Run on Windows x64 through package:win:smoke');
@@ -250,9 +266,18 @@ test('NSIS package works offline at 200% scale, persists local settings, and uni
     const executable = join(installDirectory, 'MultiRemoteTerminal.exe');
     await expect.poll(async () => (await stat(executable).catch(() => undefined)) !== undefined, { timeout: 30_000 }).toBe(true);
     const profile = join(temporaryRoot, 'user-data');
-    const launchInstalled = () => launchPackagedApp(executable, [`--user-data-dir=${profile}`, '--force-device-scale-factor=2']);
+    const launchInstalled = () => launchPackagedApp(executable, [
+      '--mrt-e2e-delay-first-terminal-open', '--mrt-e2e-delay-first-session-create-reply',
+      `--user-data-dir=${profile}`, '--force-device-scale-factor=2'
+    ]);
     app = await launchInstalled();
     await expectPackagedWindow(app.page, profile, join(installDirectory, 'resources'), { deviceScaleFactor: 2, emulateOffline: true });
+    const savedName = 'Packaged smoke session';
+    await app.page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = app.page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill(savedName);
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(app.page.getByRole('button', { name: `Open ${savedName}`, exact: true })).toBeVisible({ timeout: 8_000 });
     expect(win32.resolve(profile).toLowerCase()).not.toContain(win32.resolve(installDirectory).toLowerCase());
     await closePackagedApp(app);
     app = undefined;
@@ -264,6 +289,19 @@ test('NSIS package works offline at 200% scale, persists local settings, and uni
     await expect(reopenedPage.getByRole('region', { name: 'Startup greeting' })).toContainText('Offline package profile \u2014 caf\u00e9');
     await closePackagedApp(app);
     app = undefined;
+
+    await corruptPackagedAsarHeaderHash(join(installDirectory, 'resources', 'app.asar'));
+    const tamperedProfile = join(temporaryRoot, 'tampered-profile');
+    const tamperedApp = spawn(executable, [`--user-data-dir=${tamperedProfile}`], {
+      env: cleanEnvironment(), stdio: 'ignore', windowsHide: true
+    });
+    if (!tamperedApp.pid) throw new Error('The tampered package process did not start');
+    const exitedAfterTampering = await waitForProcessExit(tamperedApp, 15_000);
+    if (!exitedAfterTampering) {
+      await terminateProcessTree(tamperedApp);
+      throw new Error('The installed app stayed running after its ASAR integrity metadata was altered');
+    }
+    expect(tamperedApp.exitCode).not.toBeNull();
 
     const uninstaller = (await readdir(installDirectory)).find(name => /^uninstall.*\.exe$/iu.test(name));
     if (!uninstaller) throw new Error('The NSIS install did not include an uninstaller');

@@ -3100,7 +3100,7 @@ test('a timed-out saved-session write must be checked before retrying, even afte
   const profile = await mkdtemp(join(tmpdir(), 'mrt-session-timeout-e2e-'));
   const app = await electron.launch({
     args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-delay-first-session-create-reply'],
-    env: electronEnvironment()
+    env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
   try {
     const page = await app.firstWindow();
@@ -3284,7 +3284,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
   const existingPowerShellPids = new Set(powerShellProcessIds());
   const app = await electron.launch({
     args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--force-device-scale-factor=2', '--mrt-e2e-delay-first-terminal-open'],
-    env: electronEnvironment()
+    env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
   try {
     const page = await app.firstWindow();
