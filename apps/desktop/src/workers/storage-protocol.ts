@@ -14,6 +14,8 @@ import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packag
 import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
+import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
+import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -28,6 +30,8 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.list'; readonly query: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.count' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.get'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.get'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.set'; readonly id: string; readonly reference: CredentialReference | null; readonly expectedReference: CredentialReference | null }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remember'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.favorite'; readonly id: string; readonly favorite: boolean }
@@ -66,6 +70,7 @@ export type StorageWorkerResult =
   | { readonly kind: 'folder'; readonly value: SavedSessionFolder }
   | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
   | { readonly kind: 'sessionLookup'; readonly value: SavedSessionDefinition | null }
+  | { readonly kind: 'credentialReference'; readonly value: CredentialReference | null }
   | { readonly kind: 'changed'; readonly value: boolean }
   | { readonly kind: 'folderExport'; readonly value: { readonly folderCount: number; readonly sessionCount: number } }
   | { readonly kind: 'folderImport'; readonly value: { readonly folderCount: number; readonly sessionCount: number; readonly createdFolderCount: number; readonly createdSessionCount: number } }
@@ -141,6 +146,12 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.get' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.credential.get' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'session.credential.set' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'reference', 'expectedReference']) &&
+      isSessionDefinitionId(value.id) && (value.reference === null || parseCredentialReference(value.reference)) &&
+      (value.expectedReference === null || parseCredentialReference(value.expectedReference))) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSavedSessionDraft(value.draft)) {
     return value as unknown as StorageWorkerRequest;
   }
@@ -221,6 +232,7 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'folder' && exactKeys(value, ['kind', 'value']) && isSavedSessionFolder(value.value)) return true;
   if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
   if (value.kind === 'sessionLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isSavedSessionDefinition(value.value))) return true;
+  if (value.kind === 'credentialReference' && exactKeys(value, ['kind', 'value']) && (value.value === null || parseCredentialReference(value.value))) return true;
   if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
   if (value.kind === 'folderExport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value, ['folderCount', 'sessionCount'])) return true;
   if (value.kind === 'folderImport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value,

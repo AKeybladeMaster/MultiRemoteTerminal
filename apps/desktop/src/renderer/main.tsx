@@ -204,12 +204,23 @@ function terminalStatus(session: WorkbenchSession | undefined): string {
 }
 
 function sshOpenError(code: string): string {
+  if (code === 'LOCKED') return 'The credential vault is locked. Open Settings and unlock it, then reopen this saved SSH profile.';
   if (code === 'AUTHENTICATION_FAILED') return 'The SSH server rejected these credentials.';
   if (code === 'HOST_KEY_REJECTED') return 'The SSH host was not trusted, so the connection was stopped.';
   if (code === 'HOST_KEY_CHANGED') return 'The SSH host key changed. The connection was blocked.';
   if (code === 'CANCELLED') return 'The SSH connection was cancelled.';
   if (code === 'TIMEOUT') return 'The SSH connection timed out.';
   return `Could not connect to the SSH server (${code}).`;
+}
+
+function sshCredentialError(code: string): string {
+  if (code === 'CANCELLED') return '';
+  if (code === 'LOCKED') return 'The credential vault is locked. Open Settings and unlock it before saving or forgetting a password.';
+  if (code === 'NOT_FOUND') return 'This saved SSH profile no longer exists. Refresh Saved sessions and try again.';
+  if (code === 'INVALID_REQUEST') return 'The selected profile or Windows credential was invalid. No password was saved.';
+  if (code === 'CORRUPT') return 'The saved credential could not be read. Save the password again to replace it.';
+  if (code === 'BUSY' || code === 'TIMEOUT') return 'The credential operation took too long. Try again.';
+  return `The credential operation failed (${code}).`;
 }
 
 function telnetOpenError(code: string): string {
@@ -367,6 +378,8 @@ function Workbench() {
   savedSearchRef.current = savedSearch;
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
+  const [credentialBusyId, setCredentialBusyId] = useState<string>();
+  const [savedSshCredentialStatus, setSavedSshCredentialStatus] = useState<Record<string, 'loading' | 'saved' | 'none' | 'unavailable'>>({});
   const [openSavedActionsMenuId, setOpenSavedActionsMenuId] = useState<string>();
   const [saveSessionOpen, setSaveSessionOpen] = useState(false);
   const [saveSessionName, setSaveSessionName] = useState('');
@@ -1458,7 +1471,7 @@ function Workbench() {
     setActiveId(reply.result.sessionId);
   }, [rememberOpenedSession]);
 
-  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = []) => {
+  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [], savedProfileId?: string) => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -1479,7 +1492,7 @@ function Workbench() {
     setPaletteOpen(false);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
-    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24, gatewayProfileIds);
+    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24, gatewayProfileIds, savedProfileId);
     pendingOpenRequests.current.set(sessionId, { transport: 'ssh', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'ssh', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -2319,6 +2332,7 @@ function Workbench() {
   function renderSavedSession(session: SavedSessionDefinition, depth: number): ReactElement {
     const menuId = `session:${session.id}`;
     const menuOpen = openSavedActionsMenuId === menuId;
+    const credentialStatus = session.kind === 'ssh' ? savedSshCredentialStatus[session.id] ?? 'none' : undefined;
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : session.kind}`} aria-hidden="true">
@@ -2336,8 +2350,16 @@ function Workbench() {
           aria-pressed={session.favorite} disabled={catalogBusy} onClick={() => void toggleSavedFavorite(session)}>{session.favorite ? '★' : '☆'}</button>
         <details className="saved-actions-menu" open={menuOpen}>
           <summary role="button" aria-label={`Actions for saved session ${session.name}`} title={`Actions for ${session.name}`}
-            aria-expanded={menuOpen} onClick={event => toggleSavedActionsMenu(event, menuId)}>···</summary>
+            aria-expanded={menuOpen} onClick={event => toggleSavedActionsMenu(event, menuId, session.kind === 'ssh' ? session.id : undefined)}>···</summary>
           <div className="saved-actions-panel" aria-label={`Saved-session actions for ${session.name}`}>
+            {session.kind === 'ssh' && <>
+              <p className="saved-session-credential-status" role="status">{credentialStatus === 'saved' ? 'A password is saved securely.'
+                : credentialStatus === 'loading' ? 'Checking saved password…' : credentialStatus === 'unavailable' ? 'Password status is unavailable.' : 'No password is saved.'}</p>
+              <button type="button" disabled={catalogBusy || credentialBusyId === session.id}
+                onClick={() => void saveSshCredential(session)}>{credentialStatus === 'saved' ? 'Replace saved password…' : 'Save password…'}</button>
+              <button type="button" disabled={catalogBusy || credentialBusyId === session.id || credentialStatus !== 'saved'}
+                onClick={() => void forgetSshCredential(session)}>Forget saved password</button>
+            </>}
             {session.kind === 'ssh' && <button type="button" disabled={catalogBusy} aria-label={`Connect ${session.name} through gateways`}
               onClick={() => { setOpenSavedActionsMenuId(undefined); void openSavedSshThroughGateways(session); }}>Connect through gateways…</button>}
             <button type="button" disabled={catalogBusy} aria-label={`Move saved session ${session.name}`}
@@ -2430,7 +2452,7 @@ function Workbench() {
 
   function openSavedSession(session: SavedSessionDefinition) {
     if (session.kind === 'local') void openTerminal(session.shell, session.name);
-    else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name);
+    else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name, [], session.id);
     else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
     else if (session.kind === 'ftp') openFtpConnect(session.host, session.port, session.secure, session.name);
@@ -2471,12 +2493,18 @@ function Workbench() {
     }
     const selected = [sshGatewayOne, sshGatewayTwo].filter(Boolean);
     const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
-    void openSshTerminal(sshHost, sshPort, [...names, sshGatewayTarget.name].join(' → '), selected);
+    void openSshTerminal(sshHost, sshPort, [...names, sshGatewayTarget.name].join(' → '), selected, sshGatewayTarget.id);
   }
 
-  function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string): void {
+  function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string, credentialProfileId?: string): void {
     event.preventDefault();
     setOpenSavedActionsMenuId(current => current === menuId ? undefined : menuId);
+    if (credentialProfileId) {
+      setSavedSshCredentialStatus(current => ({ ...current, [credentialProfileId]: 'loading' }));
+      void window.multiRemoteTerminal.hasSavedSshCredential(credentialProfileId).then(reply => {
+        setSavedSshCredentialStatus(current => ({ ...current, [credentialProfileId]: reply.ok ? reply.result ? 'saved' : 'none' : 'unavailable' }));
+      }, () => setSavedSshCredentialStatus(current => ({ ...current, [credentialProfileId]: 'unavailable' })));
+    }
   }
 
   function beginSaveActiveSession() {
@@ -2560,7 +2588,8 @@ function Workbench() {
   }
 
   async function deleteSavedSession(session: SavedSessionDefinition) {
-    if (catalogBusy || !window.confirm(`Delete saved session "${session.name}"?`)) return;
+    const credentialDetail = session.kind === 'ssh' ? ' Its saved password will also be removed.' : '';
+    if (catalogBusy || !window.confirm(`Delete saved session "${session.name}"?${credentialDetail}`)) return;
     setCatalogBusy(true);
     try {
       const reply = await window.multiRemoteTerminal.deleteSavedSession(session.id);
@@ -2571,6 +2600,35 @@ function Workbench() {
     } finally {
       setCatalogBusy(false);
     }
+  }
+
+  async function saveSshCredential(session: Extract<SavedSessionDefinition, { kind: 'ssh' }>) {
+    if (credentialBusyId) return;
+    setOpenSavedActionsMenuId(undefined);
+    setCredentialBusyId(session.id);
+    try {
+      const reply = await window.multiRemoteTerminal.saveSshCredential(session.id);
+      if (reply.ok) {
+        setSavedSshCredentialStatus(current => ({ ...current, [session.id]: 'saved' }));
+        setAlert(`A password is saved securely for ${session.name}. It will be used when this profile is opened.`);
+      } else if (reply.error.code !== 'CANCELLED') setAlert(sshCredentialError(reply.error.code));
+    } catch { setAlert('The SSH password could not be saved.'); }
+    finally { setCredentialBusyId(undefined); }
+  }
+
+  async function forgetSshCredential(session: Extract<SavedSessionDefinition, { kind: 'ssh' }>) {
+    if (credentialBusyId || !window.confirm(`Forget the saved password for "${session.name}"?`)) return;
+    setOpenSavedActionsMenuId(undefined);
+    setCredentialBusyId(session.id);
+    try {
+      const reply = await window.multiRemoteTerminal.forgetSshCredential(session.id);
+      if (!reply.ok) setAlert(sshCredentialError(reply.error.code));
+      else {
+        setSavedSshCredentialStatus(current => ({ ...current, [session.id]: 'none' }));
+        setAlert(`Saved password forgotten for ${session.name}.`);
+      }
+    } catch { setAlert('The saved SSH password could not be forgotten.'); }
+    finally { setCredentialBusyId(undefined); }
   }
 
   function openSavedFolderDialog(state: SavedFolderDialogState) {

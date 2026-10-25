@@ -15,6 +15,8 @@ import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/hos
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { isSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
+import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
+import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
 
 interface SavedSessionRow {
   readonly id: unknown;
@@ -56,6 +58,8 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   private readonly listSubtreeFolders: StatementSync;
   private readonly listSubtreeSessions: StatementSync;
   private readonly findSession: StatementSync;
+  private readonly findSessionCredentialReference: StatementSync;
+  private readonly updateSessionCredentialReference: StatementSync;
   private readonly findSameSession: StatementSync;
   private readonly touchSession: StatementSync;
   private readonly insertImportedSession: StatementSync;
@@ -115,6 +119,8 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       WHERE session.kind IN (${SESSION_CATALOG_KINDS_SQL}) ORDER BY session.id LIMIT ?
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
+    this.findSessionCredentialReference = database.prepare("SELECT credential_ref FROM session_definitions WHERE id = ? AND kind = 'ssh' AND options_json = '{}'");
+    this.updateSessionCredentialReference = database.prepare("UPDATE session_definitions SET credential_ref = ?, updated_at = ? WHERE id = ? AND kind = 'ssh' AND options_json = '{}' AND credential_ref IS ?");
     this.findSameSession = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
       FROM session_definitions
@@ -150,6 +156,25 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       if (!isSessionDefinitionId(id)) throw new StorageOperationError('invalid');
       const row = this.findSession.get(id) as unknown as SavedSessionRow | undefined;
       return row ? decodeSessionRow(row) : undefined;
+    } catch (error) { throw mapStorageError(error); }
+  }
+
+  async getSessionCredentialReference(id: string): Promise<CredentialReference | undefined> {
+    try {
+      if (!isSessionDefinitionId(id)) throw new StorageOperationError('invalid');
+      const row = this.findSessionCredentialReference.get(id) as { readonly credential_ref: unknown } | undefined;
+      if (!row || row.credential_ref === null) return undefined;
+      const reference = parseCredentialReference(row.credential_ref);
+      if (!reference) throw new StorageOperationError('corrupt');
+      return reference;
+    } catch (error) { throw mapStorageError(error); }
+  }
+
+  async setSessionCredentialReference(id: string, reference: CredentialReference | null, expectedReference: CredentialReference | null): Promise<boolean> {
+    try {
+      if (!isSessionDefinitionId(id) || !(reference === null || parseCredentialReference(reference)) ||
+          !(expectedReference === null || parseCredentialReference(expectedReference))) throw new StorageOperationError('invalid');
+      return Number(this.updateSessionCredentialReference.run(reference, new Date().toISOString(), id, expectedReference).changes) > 0;
     } catch (error) { throw mapStorageError(error); }
   }
 

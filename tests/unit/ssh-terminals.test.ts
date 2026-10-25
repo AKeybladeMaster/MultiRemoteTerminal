@@ -279,6 +279,23 @@ function promptWith(result: CredentialPromptResult, contexts?: string[]): Creden
   return { prompt: async (_purpose, _signal, context) => { if (context) contexts?.push(context); return result; } };
 }
 
+test('saved SSH credentials bypass the native prompt and the application clears its credential object', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const prompts: string[] = [];
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'unexpected', secret: 'unexpected' }, prompts), trust);
+  const credential = { username: 'alice', password: 'saved-secret' };
+
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], credential);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(prompts, []);
+  assert.equal(provider.opened[0]?.credentials.password, 'saved-secret');
+  assert.deepEqual(credential, { username: '', password: '' });
+  await controller.dispose();
+});
+
 test('SSH jump routes prompt and verify each gateway and destination in route order', async () => {
   const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
   const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };

@@ -70,6 +70,8 @@ test('validates SSH connection requests and keeps host approval as a typed event
   const open = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload,
     gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'] } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload,
@@ -90,6 +92,25 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest(revoke).ok, true);
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, host: 'Server.example.com' } }).ok, false);
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, port: 65_536 } }).ok, false);
+});
+
+test('credential and vault commands accept only profile identifiers and safe state replies', () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const save = { command: 'session.credential.save', requestId: request.requestId, contractVersion: 1, payload: { id } };
+  const has = { ...save, command: 'session.credential.has' };
+  const forget = { ...save, command: 'session.credential.forget' };
+  const vault = { command: 'vault.state', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const locked = { requestId: request.requestId, ok: false, error: { code: 'LOCKED', target: 'application', retryable: false } };
+  const parsedSave = parseRequest(save);
+  const parsedHas = parseRequest(has);
+  const parsedVault = parseRequest(vault);
+  assert.equal(parsedSave.ok, true);
+  assert.equal(parseRequest({ ...save, payload: { id, password: 'secret' } }).ok, false);
+  assert.equal(parseRequest({ ...forget, payload: { id, credentialRef: id } }).ok, false);
+  assert.equal(parsedHas.ok && isCommandReply({ requestId: request.requestId, ok: true, result: true }, parsedHas.result), true);
+  assert.equal(parsedHas.ok && isCommandReply({ requestId: request.requestId, ok: true, result: { reference: id } }, parsedHas.result), false);
+  assert.equal(parsedVault.ok && isCommandReply({ requestId: request.requestId, ok: true, result: 'locked' }, parsedVault.result), true);
+  assert.equal(parsedSave.ok && isCommandReply(locked, parsedSave.result), true);
 });
 
 test('SFTP open and close commands share SSH endpoint validation without terminal dimensions', () => {

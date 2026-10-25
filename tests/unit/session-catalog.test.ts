@@ -11,6 +11,7 @@ import { createSessionCatalog } from '../../packages/application/src/session-cat
 import type { SessionCatalogStore } from '../../packages/application/src/session-catalog.ts';
 import type { CancellationSignal } from '../../packages/application/src/cancellation.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
+import { parseCredentialReference } from '../../packages/domain/src/credentials.ts';
 
 test('SQLite catalog creates, searches, favorites and deletes over one thousand non-secret definitions', async () => {
   const database = new DatabaseSync(':memory:');
@@ -134,6 +135,32 @@ test('SQLite catalog rejects secret-bearing or malformed definitions without wri
   }
 });
 
+test('credential references bind only SSH terminal profiles and remain absent from definitions', async () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(database).migrate();
+    const catalog = new SqliteSessionCatalogRepository(database);
+    const ssh = await catalog.createSession({ kind: 'ssh', name: 'Build', host: 'build.example.net', port: 22 });
+    const sftp = await catalog.createSession({ kind: 'sftp', name: 'Build files', host: 'build.example.net', port: 22 });
+    const reference = parseCredentialReference('b64504d8-9bbc-4e11-a4e2-345fcc039841');
+    assert.ok(reference);
+    assert.equal(await catalog.setSessionCredentialReference(ssh.id, reference, null), true);
+    assert.equal(await catalog.getSessionCredentialReference(ssh.id), reference);
+    assert.equal(await catalog.setSessionCredentialReference(ssh.id, reference, null), false, 'a stale credential update cannot replace an attached reference');
+    assert.equal(await catalog.setSessionCredentialReference(sftp.id, reference, null), false);
+    assert.equal(await catalog.getSessionCredentialReference(sftp.id), undefined);
+    assert.equal(await catalog.setSessionCredentialReference(ssh.id, null, null), false, 'clear requires the current expected reference');
+    assert.equal(await catalog.setSessionCredentialReference(ssh.id, null, reference), true);
+    assert.equal(await catalog.getSessionCredentialReference(ssh.id), undefined);
+    assert.equal(await catalog.setSessionCredentialReference(ssh.id, reference, null), true);
+    const exposedProfile = await catalog.getSessionDefinition(ssh.id);
+    assert.ok(exposedProfile);
+    assert.equal(Object.hasOwn(exposedProfile, 'credential_ref'), false);
+    const raw = database.prepare('SELECT credential_ref FROM session_definitions WHERE id = ?').get(ssh.id) as { readonly credential_ref: string };
+    assert.equal(raw.credential_ref, reference);
+  } finally { database.close(); }
+});
+
 test('remembering a connection reuses its normalized profile and updates its last-used time', async () => {
   const database = new DatabaseSync(':memory:');
   try {
@@ -212,6 +239,8 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
     async getSessionDefinition() { throw new Error('not called'); },
     async createSession() { throw new Error('not called'); },
     async rememberSession() { throw new Error('not called'); },
+    async getSessionCredentialReference() { throw new Error('not called'); },
+    async setSessionCredentialReference() { throw new Error('not called'); },
     async setFavorite() { throw new Error('not called'); },
     async removeSession() { throw new Error('not called'); },
     async listFolders() { throw new Error('not called'); },
@@ -240,6 +269,15 @@ test('storage worker validates exact session-count requests and non-negative int
   assert.deepEqual(parseStorageWorkerMessage(reply), reply);
   assert.equal(parseStorageWorkerMessage({ ...reply, result: { kind: 'sessionCount', value: -1 } }), undefined);
   assert.equal(parseStorageWorkerMessage({ ...reply, result: { kind: 'sessionCount', value: 1.5 } }), undefined);
+});
+
+test('storage worker requires exact expected credential references for compare-and-set updates', () => {
+  const base = { version: 1, type: 'request', requestId: '00000000-0000-4000-8000-000000000001', command: 'session.credential.set',
+    id: '11111111-1111-4111-8111-111111111111', reference: '22222222-2222-4222-8222-222222222222', expectedReference: null };
+  assert.deepEqual(parseStorageWorkerRequest(base), base);
+  assert.equal(parseStorageWorkerRequest({ ...base, expectedReference: '../credentials.json' }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...base, expectedReference: undefined }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...base, secret: 'never-store' }), undefined);
 });
 
 test('session removal respects the tunnel guard and always releases its deletion reservation', async () => {

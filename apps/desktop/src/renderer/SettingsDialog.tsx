@@ -21,6 +21,9 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState('');
+  const [credentialVaultState, setCredentialVaultState] = useState<'uninitialized' | 'available' | 'locked' | 'unavailable'>('uninitialized');
+  const [credentialVaultBusy, setCredentialVaultBusy] = useState(false);
+  const [credentialVaultError, setCredentialVaultError] = useState<string>();
   const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const retryButton = useRef<HTMLButtonElement>(null);
@@ -57,6 +60,21 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
       }
     }).finally(() => {
       if (active) setLoading(false);
+    });
+    void window.multiRemoteTerminal.getCredentialVaultState().then(reply => {
+      if (!active) return;
+      if (reply.ok) {
+        setCredentialVaultState(reply.result);
+        setCredentialVaultError(undefined);
+      } else {
+        setCredentialVaultState('unavailable');
+        setCredentialVaultError(`Credential vault status could not be loaded (${reply.error.code}).`);
+      }
+    }, () => {
+      if (active) {
+        setCredentialVaultState('unavailable');
+        setCredentialVaultError('Credential vault status could not be loaded.');
+      }
     });
     return () => { active = false; };
   }, [loadGeneration]);
@@ -113,6 +131,26 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
     } finally { setSaving(false); }
   }
 
+  async function changeCredentialVaultLock() {
+    if (credentialVaultBusy) return;
+    setCredentialVaultBusy(true);
+    setCredentialVaultError(undefined);
+    try {
+      if (credentialVaultState === 'available') {
+        const reply = await window.multiRemoteTerminal.lockCredentialVault();
+        if (reply.ok) setCredentialVaultState('locked');
+        else setCredentialVaultError(`Credential vault could not be locked (${reply.error.code}).`);
+      } else {
+        const reply = await window.multiRemoteTerminal.unlockCredentialVault();
+        if (reply.ok) setCredentialVaultState(reply.result);
+        else setCredentialVaultError(reply.error.code === 'LOCKED'
+          ? 'The vault changed state while unlocking. Refresh its status and try again.'
+          : `Credential vault could not be unlocked (${reply.error.code}).`);
+      }
+    } catch { setCredentialVaultError('Credential vault could not be updated.'); }
+    finally { setCredentialVaultBusy(false); }
+  }
+
   return <div className="settings-backdrop" onMouseDown={event => {
     if (event.target === event.currentTarget && !saving) onClose();
   }}>
@@ -126,6 +164,19 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         <button ref={closeButton} type="button" className="quiet-button" disabled={saving} onClick={onClose}>Close</button>
       </header>
       <form className="settings-form" onSubmit={event => { void save(event); }}>
+        <div className="settings-highlights">
+          <h3>Credential vault</h3>
+          <p className="settings-highlight-help">
+            Saved SSH passwords are encrypted with Windows account protection. Locking the vault blocks saved-password connections until you unlock it. This is not a separate master password.
+          </p>
+          <p role="status" aria-live="polite">Status: {credentialVaultState === 'available' ? 'Unlocked'
+            : credentialVaultState === 'locked' ? 'Locked' : credentialVaultState === 'uninitialized' ? 'Starting' : 'Unavailable'}</p>
+          {credentialVaultError && <p className="dialog-error" role="alert">{credentialVaultError}</p>}
+          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy}
+            onClick={() => void changeCredentialVaultLock()}>
+            {credentialVaultBusy ? 'Updating…' : credentialVaultState === 'available' ? 'Lock credentials' : 'Unlock credentials'}
+          </button>
+        </div>
         <div className="settings-highlights">
           <label className="settings-highlight-toggle" htmlFor="auto-save-sessions">
             <input id="auto-save-sessions" type="checkbox" checked={autoSaveSessions}
