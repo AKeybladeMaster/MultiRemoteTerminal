@@ -290,6 +290,32 @@ test('locking during KDF discards and zeroes a late derived key', async () => {
   }
 });
 
+test('locking after KDF completion zeroes the local key when sentinel verification becomes stale', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-master-vault-post-kdf-lock-'));
+  const path = join(directory, 'credentials.json');
+  const safeStorage = new FakeSafeStorage();
+  const deriver = new PostKdfGateKeyDeriver();
+  try {
+    const first = new SafeStorageSecretVault(path, safeStorage, deriver);
+    await first.initialize();
+    await first.enableMasterPassword('master password');
+
+    const reopened = new SafeStorageSecretVault(path, safeStorage, deriver);
+    await reopened.initialize();
+    deriver.pauseNextDerive();
+    const unlocking = reopened.unlock('master password');
+    await deriver.derived;
+    deriver.resume();
+    queueMicrotask(() => queueMicrotask(() => reopened.lock()));
+
+    await assert.rejects(unlocking, error => isVaultError(error, 'locked'));
+    assert.equal(deriver.returnedKey?.every(byte => byte === 0), true);
+    assert.equal(reopened.state, 'locked');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('unknown master-password profile fails closed before the KDF worker is called', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mrt-master-vault-profile-'));
   const path = join(directory, 'credentials.json');
@@ -415,6 +441,31 @@ class LateKeyDeriver implements MasterPasswordKeyDeriver {
     return this.returnedKey;
   }
   resume(): void { this.resumeGate(); }
+}
+
+class PostKdfGateKeyDeriver extends TestKeyDeriver {
+  private announceDerived!: () => void;
+  private releaseDerived!: () => void;
+  private gate: Promise<void> | undefined;
+  readonly derived = new Promise<void>(resolve => { this.announceDerived = resolve; });
+  returnedKey: Buffer | undefined;
+
+  pauseNextDerive(): void {
+    this.gate = new Promise<void>(resolve => { this.releaseDerived = resolve; });
+  }
+
+  override async derive(password: Uint8Array, salt: Uint8Array, signal: AbortSignal): Promise<Buffer> {
+    const key = await super.derive(password, salt, signal);
+    const gate = this.gate;
+    if (!gate) return key;
+    this.gate = undefined;
+    this.returnedKey = key;
+    this.announceDerived();
+    await gate;
+    return key;
+  }
+
+  resume(): void { this.releaseDerived(); }
 }
 
 class FakeSafeStorage implements AsyncSafeStorage {

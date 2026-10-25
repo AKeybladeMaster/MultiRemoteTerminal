@@ -37,6 +37,19 @@ test('locking aborts KDF and terminates its utility process', async () => {
   assert.equal(worker.killed, 1);
 });
 
+test('a late KDF key message after cancellation is zeroed before it is discarded', async () => {
+  const worker = new FakeKdfProcess(false);
+  const deriver = new MasterPasswordKeyDeriverAdapter('worker.js', 'app-root', () => worker, 100);
+  const controller = new AbortController();
+  const result = deriver.derive(Buffer.from('password'), Buffer.alloc(16), controller.signal);
+  controller.abort();
+  await assert.rejects(result, error => error instanceof MasterPasswordKdfError && error.kind === 'cancelled');
+
+  const lateKey = new Uint8Array(32).fill(9);
+  worker.emitResult(lateKey);
+  assert.equal(lateKey.every(byte => byte === 0), true);
+});
+
 class FakeKdfProcess extends EventEmitter implements KdfUtilityProcess {
   readonly respond: boolean;
   received: Record<string, unknown> | undefined;
@@ -48,7 +61,10 @@ class FakeKdfProcess extends EventEmitter implements KdfUtilityProcess {
     this.postedPassword = message.password as Uint8Array;
     this.received = { ...message, password: new Uint8Array(message.password as Uint8Array), salt: new Uint8Array(message.salt as Uint8Array) };
     if (!this.respond) return;
-    setImmediate(() => this.emit('message', { version: 1, type: 'result', requestId: this.received?.requestId, key: new Uint8Array(32).fill(9) }));
+    setImmediate(() => this.emitResult(new Uint8Array(32).fill(9)));
+  }
+  emitResult(key: Uint8Array): void {
+    this.emit('message', { version: 1, type: 'result', requestId: this.received?.requestId, key });
   }
   kill(): void { this.killed += 1; setImmediate(() => this.emit('exit', 0)); }
 }

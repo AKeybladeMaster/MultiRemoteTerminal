@@ -209,23 +209,25 @@ export class SafeStorageSecretVault implements SecretVault {
 
       if (!isValidMasterPassword(masterPassword)) throw new SecretVaultError('invalid-input');
       if (this.blockedUntil > this.now()) throw new SecretVaultError('locked');
-      const key = await this.deriveUsingStoredSalt(masterPassword, generation);
-      let authenticated = false;
-      try { authenticated = await verifyMasterSentinel(this.requireMasterSentinel(), key); }
-      catch { authenticated = false; }
-      if (!authenticated) {
-        key.fill(0);
-        await this.recordFailedUnlock();
-        throw new SecretVaultError('password-rejected');
-      }
+      let key: Buffer | undefined = await this.deriveUsingStoredSalt(masterPassword, generation);
+      try {
+        let authenticated = false;
+        try { authenticated = await verifyMasterSentinel(this.requireMasterSentinel(), key); }
+        catch { authenticated = false; }
+        if (!authenticated) {
+          await this.recordFailedUnlock();
+          throw new SecretVaultError('password-rejected');
+        }
 
-      this.requireSameGeneration(generation);
-      await this.persistSuccessfulUnlock();
-      this.requireSameGeneration(generation);
-      this.clearMasterKey();
-      this.masterKey = key;
-      this.lockRequested = false;
-      this.vaultState = 'available';
+        this.requireSameGeneration(generation);
+        await this.persistSuccessfulUnlock();
+        this.requireSameGeneration(generation);
+        this.clearMasterKey();
+        this.masterKey = key;
+        key = undefined;
+        this.lockRequested = false;
+        this.vaultState = 'available';
+      } finally { key?.fill(0); }
     });
   }
 

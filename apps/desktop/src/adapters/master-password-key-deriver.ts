@@ -80,19 +80,24 @@ export class MasterPasswordKeyDeriverAdapter implements MasterPasswordKeyDeriver
         reject(new MasterPasswordKdfError(kind));
       };
       worker.on('message', value => {
+        const returnedKey = isRecord(value) && value.key instanceof Uint8Array ? value.key : undefined;
+        if (settled) {
+          returnedKey?.fill(0);
+          return;
+        }
         if (!isRecord(value) || Object.keys(value).length !== 4 || value.version !== DERIVATION_PROTOCOL_VERSION ||
-            value.type !== 'result' || value.requestId !== requestId || !(value.key instanceof Uint8Array) || value.key.byteLength !== 32) {
+            value.type !== 'result' || value.requestId !== requestId || !returnedKey || returnedKey.byteLength !== 32) {
+          returnedKey?.fill(0);
           finishError('unavailable');
           return;
         }
-        if (settled) return;
         settled = true;
         clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
         passwordCopy.fill(0);
         saltCopy.fill(0);
-        const key = Buffer.from(value.key);
-        value.key.fill(0);
+        const key = Buffer.from(returnedKey);
+        returnedKey.fill(0);
         try { worker.kill(); } catch { /* The completed key remains valid. */ }
         resolve(key);
       });
