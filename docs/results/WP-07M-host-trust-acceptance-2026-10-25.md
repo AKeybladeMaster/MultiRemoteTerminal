@@ -1,6 +1,6 @@
 # WP-07M — SSH host-trust and gateway security acceptance
 
-**Requirements:** N-002 host-key mismatch prevention and jump-host verification gate; supporting F-003/P-03 and F-011/P-22 acceptance.
+**Requirements:** Narrow N-002 security checklist evidence, supporting F-003/P-03 and F-011/P-22 acceptance.
 
 ## Evidence
 
@@ -14,4 +14,4 @@ Re-ran the Windows saved-profile gateway E2E:
 
 ## Status
 
-The specific security checklist item for changed-host-key blocking and jump-host verification is now checked in `docs/SECURITY.md`. This does not verify a public OpenSSH server or general internet-host interoperability. F-003/P-03 remain partial for key/agent authentication and disposable OpenSSH interoperability. F-011/P-22 remain partial for SFTP-only routes, gateway-routed tunnels, longer chains and broader interoperability.
+The specific security checklist item for changed-host-key blocking and jump-host verification is now checked in `docs/SECURITY.md`: the changed-key behavior has unit coverage, and the route fixture verifies one-/two-gateway trust. This is not the host-key-rotation E2E acceptance described separately in the threat table, and it does not verify a public OpenSSH server or general internet-host interoperability. F-003/P-03 remain partial for key/agent authentication, packaged native credential prompting and disposable OpenSSH interoperability. F-011/P-22 remain partial for SFTP-only routes, gateway-routed tunnels, longer chains and broader interoperability.

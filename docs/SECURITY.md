@@ -103,7 +103,7 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 
 - [x] Electron checklist reviewed and recorded for pinned Electron 45.0.0; the independent review found no high/critical boundary issue, with remaining evidence gaps tracked in [WP-07H](results/WP-07H-n002-electron-review-follow-up-2026-10-25.md).
 - [x] IPC validation and renderer isolation penetration tests pass for the exercised CSP, foreign-sender and hostile SSH-output cases; broader privilege-injection review remains tracked in [WP-07I](results/WP-07I-hostile-ssh-output-2026-10-25.md).
-- [x] Host-key mismatch blocking and jump-host verification tests pass; WP-07M records the focused changed-key unit coverage and one-/two-gateway Windows E2E ([evidence](results/WP-07M-host-trust-acceptance-2026-10-25.md)).
+- [x] Focused changed-host-key blocking unit coverage and one-/two-gateway Windows verification E2E pass ([WP-07M evidence](results/WP-07M-host-trust-acceptance-2026-10-25.md)); the host-key-rotation E2E described in the threat table above remains open.
 - [x] Windows safeStorage vault survives an app process restart under the same user profile, with no plaintext in `credentials.json` ([WP-07L evidence](results/WP-07L-vault-restart-2026-10-25.md)).
 - [ ] No plaintext secret in DB/log/export/IPC; those channels are not covered by WP-07K/WP-07L ([WP-07K](results/WP-07K-vault-lock-recovery-2026-10-25.md), [WP-07L](results/WP-07L-vault-restart-2026-10-25.md)).
 - [ ] SFTP traversal, cancel, symlink and overwrite tests pass.
