@@ -58,6 +58,8 @@
 
 OS-protected storage on Windows is encrypted using a user-context mechanism; same-user malware can often access it. Optional master-password mode must add an independently derived encryption key using vetted Argon2id + authenticated encryption, versioned KDF settings, clear lock semantics, failure handling and recovery policy. WP-02 provides no password recovery or escrow: loss requires an explicit vault reset and re-entry of credentials. Application should not transmit master passwords outside local cryptographic path. Test persistence across reinstall, OS account changes and data restore. For WP-02, both vault modes lock after 15 minutes without a validated user-initiated app command and immediately on Windows session lock or suspend; already authenticated SSH transports may stay connected after credentials have been discarded. See [ADR-0003](adr/ADR-0003-wp02-interim-identity-storage.md).
 
+WP-07K's Windows E2E uses Electron's real `safeStorage` and confirms a synthetic `powerMonitor` lock-screen event blocks vault resolution until an explicit test-only unlock, then checks that the random secret is absent from `credentials.json`. The event is emitted by the test and does not verify Windows physical lock/resume behavior. The test hook exists only for unpackaged launches with `MRT_E2E=1` and its exact flag; it is not exposed through renderer IPC or preload. Saved-credential use in connection flows, user-facing vault management, and full plaintext exclusion from the database, logs, exports and IPC remain open.
+
 **Caveat from Electron docs:** `safeStorage` synchronous API is deprecated in current docs; use async variant when supported by the selected pinned release. Confirm this API at implementation time, not by guessing Electron version.
 
 ## Telemetry and logs
@@ -102,7 +104,7 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 - [x] Electron checklist reviewed and recorded for pinned Electron 45.0.0; the independent review found no high/critical boundary issue, with remaining evidence gaps tracked in [WP-07H](results/WP-07H-n002-electron-review-follow-up-2026-10-25.md).
 - [x] IPC validation and renderer isolation penetration tests pass for the exercised CSP, foreign-sender and hostile SSH-output cases; broader privilege-injection review remains tracked in [WP-07I](results/WP-07I-hostile-ssh-output-2026-10-25.md).
 - [ ] Host-key mismatch and jump-host verification tests pass.
-- [ ] Vault survives restart and no plaintext secret in DB/log/export/IPC.
+- [ ] Vault restart behavior and no plaintext secret in DB/log/export/IPC (WP-07K verifies encrypted vault-file storage only; see [evidence](results/WP-07K-vault-lock-recovery-2026-10-25.md)).
 - [ ] SFTP traversal, cancel, symlink and overwrite tests pass.
 - [ ] Local/remote/dynamic SSH forwarding policy tests pass.
 - [ ] Network daemons/X11, when implemented, not exposed publicly by default.
