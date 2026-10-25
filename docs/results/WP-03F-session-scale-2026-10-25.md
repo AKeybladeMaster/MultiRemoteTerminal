@@ -1,6 +1,6 @@
 # WP-03F: 1,000-session Windows acceptance
 
-**Date:** 2026-10-25  
+**Date:** 2026-10-25
 **Requirements:** F-004, P-38 and the saved-session search portion of N-009.
 
 ## Behavior and implementation
