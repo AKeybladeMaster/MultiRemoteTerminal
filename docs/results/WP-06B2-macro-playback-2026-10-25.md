@@ -14,7 +14,9 @@
   authored single-line input through the existing typed terminal commands and
   allows only one active run.
 - Added case-sensitive literal output waits with bounded timeouts and a
-  64 KiB transient decoded-text window, bounded delays, inline explicit
+  64 KiB transient decoded-text window. A wait can match output received after
+  playback starts, including output from earlier steps in the same run; it does
+  not inspect pre-run scrollback. Also added bounded delays, inline explicit
   confirmation steps, progress, cancellation and stop-on-disconnect behavior.
   The output reader removes ANSI/control strings as data arrives and clears
   transient text when playback ends. It does not persist a transcript.

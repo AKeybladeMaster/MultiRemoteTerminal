@@ -86,6 +86,25 @@ test('macro playback sends ordered lines and waits for literal terminal text bef
   assert.ok(progress.some(item => item.phase === 'confirming' && item.stepNumber === 4));
 });
 
+test('macro playback stops after a typed terminal write failure and suppresses later steps', async () => {
+  const sent: string[] = [];
+  const error = { code: 'TIMEOUT', target: 'terminal', retryable: true } as const;
+  const runner = createMacroRunner(runtime({
+    sendLine: async (_target, line) => {
+      sent.push(line);
+      return { ok: false, error };
+    }
+  }));
+
+  const result = await runner.run(definition([
+    { kind: 'send', text: 'Write-Output first' },
+    { kind: 'send', text: 'Write-Output should-not-run' }
+  ]), sessionId, callbacks());
+
+  assert.deepEqual(result, { status: 'failed', error });
+  assert.deepEqual(sent, ['Write-Output first\r']);
+});
+
 test('macro playback cancellation during a literal wait prevents later commands', async () => {
   const runner = createMacroRunner(runtime());
   const progress: MacroRunProgress[] = [];

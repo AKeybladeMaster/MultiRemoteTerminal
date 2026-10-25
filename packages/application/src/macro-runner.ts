@@ -23,11 +23,36 @@ export type MacroRunResult =
   | { readonly status: 'cancelled' }
   | { readonly status: 'failed'; readonly error: AppError };
 
+/**
+ * Ports for one existing local, SSH or Telnet terminal. The caller owns the
+ * terminal lifecycle and completes connection authentication before the
+ * runner sees the target; this port never opens, reauthenticates or reconnects.
+ * The runner owns each run's cancellation state, waiter and bounded sanitized
+ * output window. The terminal adapter owns transport resources and maps
+ * unavailable or failed terminal states to typed errors.
+ */
 export interface MacroRunnerRuntime {
+  /** True only while the session is running with a registered terminal handle; this does not reserve the session. */
   isTargetReady(sessionId: string): boolean;
-  /** Sends one authored line, including its Enter key, through the existing terminal command. */
+  /**
+   * Sends one authored command plus Enter through typed terminal IPC. Success
+   * means the write command replied successfully, not that the shell completed
+   * the command. It returns a typed terminal error on a rejected write. The
+   * existing reply deadline is five seconds; TIMEOUT ends the renderer wait but
+   * cannot prove that the underlying invocation was not accepted. Run
+   * cancellation cannot retract an in-flight write: the runner waits for this
+   * promise or its deadline, then stops without sending later steps. Auth is
+   * established by opening the session; auth/session loss is reported through
+   * readiness, disconnect or the typed write error. A running target can exit
+   * during a write; the runner rechecks readiness after the reply and stops
+   * with UNAVAILABLE rather than continuing on a changed target.
+   */
   sendLine(sessionId: string, line: string): Promise<Outcome<void>>;
-  /** Schedules a bounded timeout and returns an idempotent cancellation function. */
+  /**
+   * Schedules a validated wait/delay of at most 120 seconds. The runtime owns
+   * the timer handle; the runner owns and calls the returned idempotent cleanup
+   * when the wait matches, is cancelled, or settles.
+   */
   scheduleTimeout(callback: () => void, delayMs: number): () => void;
 }
 
