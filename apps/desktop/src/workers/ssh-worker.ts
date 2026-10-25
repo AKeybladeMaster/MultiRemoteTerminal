@@ -101,7 +101,8 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     } finally { pendingFileOperations.delete(request.requestId); }
     return;
   }
-  if (request.command === 'files.upload' || request.command === 'files.download') {
+  if (request.command === 'files.upload' || request.command === 'files.download' || request.command === 'files.read-text' ||
+      request.command === 'files.write-text') {
     if (pendingFileOperations.has(request.operationId)) {
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: 'BUSY' });
       return;
@@ -114,8 +115,13 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
       const result = request.command === 'files.upload'
         ? await provider.uploadRemoteFile(request.sessionId, request.operationId, request.localPath, request.remoteDirectory,
           request.fileName, request.conflictPolicy, cancellation.signal, onProgress)
-        : await provider.downloadRemoteFile(request.sessionId, request.operationId, request.remotePath, request.localPath,
-          request.conflictPolicy, cancellation.signal, onProgress);
+        : request.command === 'files.download'
+          ? await provider.downloadRemoteFile(request.sessionId, request.operationId, request.remotePath, request.localPath,
+            request.conflictPolicy, cancellation.signal, onProgress)
+          : request.command === 'files.read-text'
+            ? await provider.readRemoteTextFile(request.sessionId, request.operationId, request.remotePath, cancellation.signal, onProgress)
+            : await provider.saveRemoteTextFile(request.sessionId, request.operationId, request.remotePath, request.content,
+              request.expectedRevision, cancellation.signal, onProgress);
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
     } catch (error) {
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });

@@ -70,6 +70,17 @@ The transfer view shows progress and offers cancellation and conflict actions.
 FTP/FTPS sessions provide the same basic browse and transfer actions. Remote
 permissions, server policy, and network interruption can prevent a transfer.
 
+For an SFTP file, choose **Edit** to open a UTF-8 text file up to 512 KB. Make
+your changes and choose **Save Changes** to write them back. The editor checks
+that the remote file still matches the version you opened; if another process
+changed it, the editor keeps your draft and asks you to reload before trying
+again. **Reload** replaces the editor contents after you confirm discarding a
+draft. Closing with unsaved changes also asks for confirmation. Binary files,
+invalid UTF-8 and larger files are not opened by the text editor. Saves are
+explicit; autosave and syntax highlighting are not available yet. Files with a
+consistent line-ending convention keep it when saved. Mixed line endings use
+the first line-ending style found in the file.
+
 ## Use shortcuts and tools
 
 | Keys | Action |

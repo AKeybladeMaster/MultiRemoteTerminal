@@ -339,7 +339,8 @@ function boot(): void {
       parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch') && owned && mainFrame && isAppDocument(frameUrl);
     const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.download') &&
       owned && mainFrame && isAppDocument(frameUrl);
-    const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download') &&
+    const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' ||
+      parsed.result.command === 'ssh.files.read-text' || parsed.result.command === 'ssh.files.write-text') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);

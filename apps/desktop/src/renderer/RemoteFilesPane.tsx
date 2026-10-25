@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import { RemoteTextEditorDialog } from './RemoteTextEditorDialog.tsx';
 
 interface RemoteFilesPaneProps {
   readonly sessionId: string;
@@ -60,6 +61,9 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
   const activeTransferId = useRef<string | undefined>(undefined);
   const [transfer, setTransfer] = useState<ActiveFileTransfer>();
   const [transferNotice, setTransferNotice] = useState<string>();
+  const [editorPath, setEditorPath] = useState<string>();
+  const [editorBusy, setEditorBusy] = useState(false);
+  const editorTrigger = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async (path: string, restoreFocus = false) => {
     const generation = ++requestGeneration.current;
@@ -170,6 +174,13 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
     }
   }, [sessionId, transfer, transport]);
 
+  const closeEditor = useCallback(() => {
+    setEditorPath(undefined);
+    requestAnimationFrame(() => editorTrigger.current?.focus());
+  }, []);
+
+  const refreshAfterEdit = useCallback(() => { void load(listing?.path ?? '.'); }, [listing?.path, load]);
+
   const parentPath = listing ? remoteParentPath(listing.path) : undefined;
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
   return <aside className="remote-file-panel" aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser">
@@ -228,11 +239,21 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
             <span className="remote-file-name"><span className={`remote-file-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'symlink' ? '↗' : '·'}</span>
               <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
             <span className="remote-file-file-actions"><span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
-              {entry.kind === 'file' && <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
-                disabled={loading || Boolean(transfer)} onClick={() => void transferFile('download', entry.path)}>Download</button>}</span>
+              {entry.kind === 'file' && <>
+                {transport === 'sftp' && <button type="button" className="remote-file-download"
+                  aria-label={`Edit ${entry.name}`} disabled={loading || Boolean(transfer) || editorBusy} onClick={event => {
+                    editorTrigger.current = event.currentTarget;
+                    setTransferNotice(undefined);
+                    setEditorPath(entry.path);
+                  }}>Edit</button>}
+                <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
+                  disabled={loading || Boolean(transfer) || editorBusy} onClick={() => void transferFile('download', entry.path)}>Download</button>
+              </>}</span>
           </div>}
       </li>)}
     </ul>}
     {!loading && !error && listing?.truncated && <p className="remote-file-status remote-file-limit" role="status">Showing the first 500 items.</p>}
+    <RemoteTextEditorDialog open={transport === 'sftp' && editorPath !== undefined} sessionId={sessionId} remotePath={editorPath}
+      onClose={closeEditor} onSaved={refreshAfterEdit} onActivityChange={setEditorBusy} />
   </aside>;
 }

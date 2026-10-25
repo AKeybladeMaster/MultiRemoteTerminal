@@ -14,7 +14,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
-    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
+    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer',
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
     'getWorkbenchPreferences', 'saveWorkbenchPreferences',
@@ -114,6 +114,27 @@ test('preload routes SFTP transfers through fixed commands without accepting ren
     { command: 'ssh.files.upload', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remoteDirectory: '/home/alice' } },
     { command: 'ssh.files.download', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remotePath: '/home/alice/report.txt' } },
     { command: 'ssh.files.cancel', requestId: id(), contractVersion: 1, payload: { sessionId, operationId } }
+  ]);
+});
+
+test('preload routes bounded remote text reads and saves through fixed SFTP commands', async () => {
+  const sessionId = id();
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  const path = '/home/alice/config.txt';
+  const revision = 'a'.repeat(64);
+  const content = 'hello from editor';
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return { requestId: request.requestId, ok: true, result: request.command === 'ssh.files.read-text'
+      ? { path, content, revision, bytes: Buffer.byteLength(content) }
+      : { path, revision, bytesSaved: Buffer.byteLength(content) } };
+  }, id);
+  assert.equal((await bridge.readSshTextFile(sessionId, operationId, path)).ok, true);
+  assert.equal((await bridge.saveSshTextFile(sessionId, operationId, path, content, revision)).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'ssh.files.read-text', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remotePath: path } },
+    { command: 'ssh.files.write-text', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remotePath: path, content, expectedRevision: revision } }
   ]);
 });
 

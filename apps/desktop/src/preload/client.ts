@@ -5,6 +5,7 @@ import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSess
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
+import type { SshTextFileReply, SshTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
 import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
@@ -41,6 +42,7 @@ const SSH_WORKER_OPEN_TIMEOUT_MS = 140_000;
 // Covers two bounded catalog reads, worker startup, and IPC scheduling after three sequential prompts.
 const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
+const SSH_TEXT_FILE_TIMEOUT_MS = 60_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
 const FTP_LIST_TIMEOUT_MS = 25_000;
@@ -364,6 +366,14 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     downloadSshFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTransferReply> {
       return send({ command: 'ssh.files.download', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, operationId, remotePath } }, SSH_TRANSFER_TIMEOUT_MS);
+    },
+    readSshTextFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTextFileReply> {
+      return send({ command: 'ssh.files.read-text', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, operationId, remotePath } }, SSH_TEXT_FILE_TIMEOUT_MS);
+    },
+    saveSshTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string): Promise<SshTextFileSaveReply> {
+      return send({ command: 'ssh.files.write-text', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, operationId, remotePath, content, expectedRevision } }, SSH_TEXT_FILE_TIMEOUT_MS);
     },
     cancelSshTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ssh.files.cancel', { sessionId, operationId }), SSH_CANCEL_TIMEOUT_MS);

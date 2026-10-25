@@ -9,6 +9,8 @@ import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts'
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import { isRemoteDirectoryListing, isRemotePath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
+import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
+import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import { isRemoteFileName } from '../../../../packages/domain/src/remote-files.ts';
 import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
@@ -33,6 +35,10 @@ export type SshWorkerRequest =
       readonly conflictPolicy: FileTransferConflictPolicy }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.download'; readonly sessionId: string;
       readonly operationId: string; readonly remotePath: string; readonly localPath: string; readonly conflictPolicy: FileTransferConflictPolicy }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.read-text'; readonly sessionId: string;
+      readonly operationId: string; readonly remotePath: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.write-text'; readonly sessionId: string;
+      readonly operationId: string; readonly remotePath: string; readonly content: string; readonly expectedRevision: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.cancel'; readonly sessionId: string; readonly operationId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.start'; readonly sessionId: string; readonly definition: SshTunnelDefinition }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.stop'; readonly sessionId: string; readonly tunnelId: string }
@@ -44,7 +50,8 @@ export type SshWorkerErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'NOT_SUPPOR
   'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED' | 'CONFLICT' | 'NOT_FOUND' | 'FORBIDDEN';
 
 export type SshWorkerMessage =
-  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing | FileTransferResult | { readonly bindPort: number } }
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing |
+      FileTransferResult | RemoteTextFile | RemoteTextFileSaveResult | { readonly bindPort: number } }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: SshWorkerErrorCode }
   | { readonly version: 1; readonly type: 'progress'; readonly requestId: string; readonly progress: FileTransferProgress }
   | { readonly version: 1; readonly type: 'event'; readonly event: LocalTerminalEvent }
@@ -118,6 +125,15 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
     'localPath', 'conflictPolicy']) && isUuid(value.sessionId) && isUuid(value.operationId) && isRemotePath(value.remotePath) &&
       isAbsoluteNormalizedLocalPath(value.localPath) &&
       isFileTransferConflictPolicy(value.conflictPolicy)) return value as unknown as SshWorkerRequest;
+  if (value.command === 'files.read-text' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId', 'remotePath']) &&
+      isUuid(value.sessionId) && isUuid(value.operationId) && isRemotePath(value.remotePath) && value.remotePath !== '.' && value.remotePath !== '/') {
+    return value as unknown as SshWorkerRequest;
+  }
+  if (value.command === 'files.write-text' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId', 'remotePath', 'content', 'expectedRevision']) &&
+      isUuid(value.sessionId) && isUuid(value.operationId) && isRemotePath(value.remotePath) && value.remotePath !== '.' && value.remotePath !== '/' &&
+      typeof value.content === 'string' && remoteTextByteLength(value.content) !== undefined && isRemoteTextRevision(value.expectedRevision)) {
+    return value as unknown as SshWorkerRequest;
+  }
   if (value.command === 'files.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId']) &&
       isUuid(value.sessionId) && isUuid(value.operationId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'tunnel.forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition']) &&
@@ -135,7 +151,8 @@ export function parseSshWorkerMessage(value: unknown): SshWorkerMessage | undefi
       isFileTransferProgress(value.progress)) return value as unknown as SshWorkerMessage;
   if (value.type === 'reply' && isUuid(value.requestId) && typeof value.ok === 'boolean') {
     if (value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) && record(value.result) &&
-        (exactKeys(value.result, []) || isRemoteDirectoryListing(value.result) || isFileTransferResult(value.result) ||
+        (exactKeys(value.result, []) || isRemoteDirectoryListing(value.result) || isFileTransferResult(value.result) || isRemoteTextFile(value.result) ||
+          isRemoteTextFileSaveResult(value.result) ||
           isPortResult(value.result))) {
       return value as unknown as SshWorkerMessage;
     }

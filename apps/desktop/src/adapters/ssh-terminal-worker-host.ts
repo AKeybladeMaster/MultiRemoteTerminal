@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { UtilityProcess } from 'electron';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshConnectionGatewayCredentials, SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
@@ -12,6 +12,8 @@ import { isRemoteDirectoryListing } from '../../../../packages/domain/src/remote
 import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
 import { isFileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
+import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
+import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { parseSshWorkerMessage, SSH_WORKER_PROTOCOL_VERSION } from '../workers/ssh-protocol.ts';
 import type { SshWorkerErrorCode, SshWorkerRequest } from '../workers/ssh-protocol.ts';
@@ -37,23 +39,31 @@ const OPEN_TIMEOUT_MS = 140_000;
 // 15s setup + 10s listing + 1s channel-close grace leaves 4s for worker IPC within this deadline.
 const FILE_LIST_TIMEOUT_MS = 30_000;
 const FILE_TRANSFER_TIMEOUT_MS = 60 * 60_000;
+const REMOTE_TEXT_TIMEOUT_MS = 60_000;
 const FILE_TRANSFER_CLEANUP_GRACE_MS = 10_000;
 const FILE_COMMIT_SETTLEMENT_GRACE_MS = 2 * 60_000;
 
 function isCancellableFileRequest(request: Extract<SshWorkerRequest, { readonly type: 'request' }>): request is Extract<SshWorkerRequest,
-  { readonly command: 'files.list' | 'files.upload' | 'files.download' }> {
-  return request.command === 'files.list' || request.command === 'files.upload' || request.command === 'files.download';
+  { readonly command: 'files.list' | 'files.upload' | 'files.download' | 'files.read-text' | 'files.write-text' }> {
+  return request.command === 'files.list' || request.command === 'files.upload' || request.command === 'files.download' ||
+    request.command === 'files.read-text' || request.command === 'files.write-text';
 }
 
-function isFileTransferRequest(request: Extract<SshWorkerRequest, { readonly type: 'request' }>): request is Extract<SshWorkerRequest,
-  { readonly command: 'files.upload' | 'files.download' }> {
-  return request.command === 'files.upload' || request.command === 'files.download';
+function isCommitAwareFileRequest(request: Extract<SshWorkerRequest, { readonly type: 'request' }>): request is Extract<SshWorkerRequest,
+  { readonly command: 'files.upload' | 'files.download' | 'files.write-text' }> {
+  return request.command === 'files.upload' || request.command === 'files.download' || request.command === 'files.write-text';
 }
 export type SshWorkerLaunchOptions = { readonly cwd: string; readonly env: { readonly MRT_APP_ROOT: string }; readonly serviceName: string; readonly stdio: 'ignore' };
 export type SshWorkerLauncher = (workerPath: string, args: string[], options: SshWorkerLaunchOptions) => UtilityProcess;
 
 function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCode {
   return code;
+}
+
+function hasMatchingRemoteTextRevision(value: unknown, remotePath: string): value is RemoteTextFile {
+  if (!isRemoteTextFile(value) || value.path !== remotePath) return false;
+  const actualRevision = createHash('sha256').update(Buffer.from(value.content, 'utf8')).digest('hex');
+  return actualRevision === value.revision;
 }
 
 export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForwardProvider {
@@ -152,6 +162,30 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     return result;
   }
 
+  async readRemoteTextFile(sessionId: string, operationId: string, remotePath: string, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile> {
+    if (!this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.read-text',
+      sessionId, operationId, remotePath } as const satisfies SshWorkerRequest;
+    const result = await this.request(request, REMOTE_TEXT_TIMEOUT_MS, cancellation, onProgress);
+    if (!hasMatchingRemoteTextRevision(result, remotePath)) throw new SshTerminalProviderError('UNAVAILABLE');
+    return result;
+  }
+
+  async saveRemoteTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFileSaveResult> {
+    if (!this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
+    const expectedBytes = remoteTextByteLength(content);
+    if (expectedBytes === undefined || !isRemoteTextRevision(expectedRevision)) throw new SshTerminalProviderError('INVALID_REQUEST');
+    const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.write-text',
+      sessionId, operationId, remotePath, content, expectedRevision } as const satisfies SshWorkerRequest;
+    const result = await this.request(request, REMOTE_TEXT_TIMEOUT_MS, cancellation, onProgress);
+    if (!isRemoteTextFileSaveResult(result) || result.path !== remotePath || result.bytesSaved !== expectedBytes) {
+      throw new SshTerminalProviderError('UNAVAILABLE');
+    }
+    return result;
+  }
+
   async startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition): Promise<number> {
     if (!this.sessions.has(sessionId) || !isTunnelId(tunnelId) || !isSshTunnelDefinition(definition) || definition.id !== tunnelId) {
       throw new SshTerminalProviderError('INVALID_REQUEST');
@@ -201,9 +235,9 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
         const pending = this.pending.get(request.requestId);
         if (!pending) return;
         pending.timedOut = true;
-        if (isCancellableFileRequest(request) && (!isFileTransferRequest(request) || pending.progressPhase !== 'committing')) sendCancel();
+        if (isCancellableFileRequest(request) && (!isCommitAwareFileRequest(request) || pending.progressPhase !== 'committing')) sendCancel();
         this.scheduleWorkerTermination(worker, request.requestId, pending,
-          isFileTransferRequest(request) && pending.progressPhase === 'committing' ? FILE_COMMIT_SETTLEMENT_GRACE_MS : FILE_TRANSFER_CLEANUP_GRACE_MS,
+          isCommitAwareFileRequest(request) && pending.progressPhase === 'committing' ? FILE_COMMIT_SETTLEMENT_GRACE_MS : FILE_TRANSFER_CLEANUP_GRACE_MS,
           new SshTerminalProviderError('TIMEOUT'));
       }, timeoutMs);
       const cleanup = () => { clearTimeout(timer); clearTimeout(current.cleanupTimer); removeCancellation(); };
@@ -220,7 +254,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
         const cancelOperation = () => {
           const pending = this.pending.get(request.requestId);
           if (!pending) return;
-          if (isFileTransferRequest(request) && pending.progressPhase === 'committing') {
+          if (isCommitAwareFileRequest(request) && pending.progressPhase === 'committing') {
             this.scheduleWorkerTermination(worker, request.requestId, pending, FILE_COMMIT_SETTLEMENT_GRACE_MS,
               new SshTerminalProviderError('CANCELLED'));
             return;

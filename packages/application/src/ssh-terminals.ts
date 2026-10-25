@@ -13,6 +13,8 @@ import { isRemoteDirectoryListing, isRemoteFileName, isRemotePath } from '../../
 import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
 import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferResult } from '../../domain/src/file-transfer.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
+import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../domain/src/remote-text-file.ts';
+import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../domain/src/remote-text-file.ts';
 
 export interface SshTerminalCredentials {
   readonly username: string;
@@ -62,6 +64,10 @@ export interface SshTerminalProvider {
   downloadRemoteFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
     onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
+  readRemoteTextFile(sessionId: string, operationId: string, remotePath: string, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile>;
+  saveRemoteTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFileSaveResult>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void;
@@ -90,6 +96,10 @@ export interface SshTerminalController {
   downloadRemoteFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
     onProgress?: (progress: FileTransferProgress) => void): Promise<Outcome<FileTransferResult>>;
+  readRemoteTextFile(sessionId: string, operationId: string, remotePath: string, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<Outcome<RemoteTextFile>>;
+  saveRemoteTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<Outcome<RemoteTextFileSaveResult>>;
   cancelTransfer(sessionId: string, operationId: string): Promise<Outcome<Record<string, never>>>;
   close(sessionId: string): Promise<Outcome<Record<string, never>>>;
   approveHostKey(token: string): Promise<Outcome<Record<string, never>>>;
@@ -431,6 +441,62 @@ export function createSshTerminalController(
     return transferRemoteFile(sessionId, operationId, { direction: 'download', remotePath, localPath, conflictPolicy }, cancellation, onProgress);
   }
 
+  async function runSftpOperation<T>(sessionId: string, operationId: string, cancellation: CancellationSignal | undefined,
+    onProgress: ((progress: FileTransferProgress) => void) | undefined,
+    operation: (signal: CancellationSignal, progress: (event: FileTransferProgress) => void) => Promise<T>,
+    validate: (value: unknown) => value is T): Promise<Outcome<T>> {
+    const session = sessions.get(sessionId);
+    if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
+    if (!SESSION_ID.test(operationId) || transfers.has(operationId)) return failure('INVALID_REQUEST');
+    if ([...transfers.values()].some(transfer => transfer.sessionId === sessionId)) return failure('BUSY', 'terminal');
+    if (cancellation?.aborted) return failure('CANCELLED', 'terminal');
+    if (disposed || shutdownPromise) return failure('CANCELLED', 'terminal');
+
+    const operationCancellation = createCancellationSource();
+    let settleOperation!: () => void;
+    const settled = new Promise<void>(resolveSettled => { settleOperation = resolveSettled; });
+    const active: ActiveSftpTransfer = { sessionId, cancellation: operationCancellation, settled, settle: settleOperation, phase: 'transferring' };
+    transfers.set(operationId, active);
+    const cancelForCaller = () => operationCancellation.cancel();
+    cancellation?.addEventListener('abort', cancelForCaller, { once: true });
+    try {
+      const progress = (event: FileTransferProgress) => {
+        if (transfers.get(operationId) !== active || event.sessionId !== sessionId || event.operationId !== operationId || !isFileTransferProgress(event)) return;
+        if (event.phase === 'committing') active.phase = 'committing';
+        try { onProgress?.(event); } catch { /* A UI progress listener cannot interrupt file cleanup. */ }
+      };
+      const result = await operation(operationCancellation.token, progress);
+      if (!validate(result)) return failure('UNAVAILABLE', 'terminal');
+      return { ok: true, result };
+    } catch (error) {
+      const code: ErrorCode = error instanceof SshTerminalProviderError ? error.code : 'UNAVAILABLE';
+      return failure(code, 'terminal');
+    } finally {
+      cancellation?.removeEventListener('abort', cancelForCaller);
+      if (transfers.get(operationId) === active) transfers.delete(operationId);
+      active.settle();
+    }
+  }
+
+  async function readRemoteTextFile(sessionId: string, operationId: string, remotePath: string, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<Outcome<RemoteTextFile>> {
+    if (!isRemotePath(remotePath) || remotePath === '.' || remotePath === '/') return failure('INVALID_REQUEST');
+    return runSftpOperation(sessionId, operationId, cancellation, onProgress,
+      (signal, progress) => provider.readRemoteTextFile(sessionId, operationId, remotePath, signal, progress),
+      (value): value is RemoteTextFile => isRemoteTextFile(value) && value.path === remotePath);
+  }
+
+  async function saveRemoteTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<Outcome<RemoteTextFileSaveResult>> {
+    const contentBytes = typeof content === 'string' ? remoteTextByteLength(content) : undefined;
+    if (!isRemotePath(remotePath) || remotePath === '.' || remotePath === '/' || contentBytes === undefined || !isRemoteTextRevision(expectedRevision)) {
+      return failure('INVALID_REQUEST');
+    }
+    return runSftpOperation(sessionId, operationId, cancellation, onProgress,
+      (signal, progress) => provider.saveRemoteTextFile(sessionId, operationId, remotePath, content, expectedRevision, signal, progress),
+      (value): value is RemoteTextFileSaveResult => isRemoteTextFileSaveResult(value) && value.path === remotePath && value.bytesSaved === contentBytes);
+  }
+
   async function cancelTransfer(sessionId: string, operationId: string): Promise<Outcome<Record<string, never>>> {
     const transfer = transfers.get(operationId);
     if (!transfer || transfer.sessionId !== sessionId) return failure('NOT_FOUND', 'terminal');
@@ -458,7 +524,8 @@ export function createSshTerminalController(
   }
 
   return Object.freeze({
-    open, openFiles, write, resize, acknowledgeOutput, listRemoteDirectory, uploadRemoteFile, downloadRemoteFile, cancelTransfer, close,
+    open, openFiles, write, resize, acknowledgeOutput, listRemoteDirectory, uploadRemoteFile, downloadRemoteFile, readRemoteTextFile,
+    saveRemoteTextFile, cancelTransfer, close,
     async approveHostKey(token: string): Promise<Outcome<Record<string, never>>> {
       if (!sessionByTrustToken.has(token)) return failure('NOT_FOUND');
       const approved = await hostTrust.approve(token);
