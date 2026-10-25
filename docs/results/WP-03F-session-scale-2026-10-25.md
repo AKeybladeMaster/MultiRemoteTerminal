@@ -24,7 +24,7 @@ The 50 ms search debounce keeps typing responsive while coalescing events. The s
 - Hardware: System Product Name (generic system model reported by firmware); AMD Ryzen 7 3700X, 8 cores/16 logical processors; 31.9 GiB RAM.
 - Storage: repository on `E:`, a Seagate ST2000DM008-2FR102 SATA HDD.
 - OS: Windows 11 Pro x64, build 26200.
-- Build/source ID: MultiRemoteTerminal `0.0.0`, commit `65731bc`; Node.js `24.14.1`; Electron `45.0.0`.
+- Build/source ID: MultiRemoteTerminal `0.0.0`, source commit `ed79b4f`; Node.js `24.14.1`; Electron `45.0.0`.
 
 ## Status and limits
 
