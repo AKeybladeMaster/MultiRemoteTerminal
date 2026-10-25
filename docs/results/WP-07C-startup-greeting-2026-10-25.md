@@ -27,7 +27,7 @@ All commands ran on Windows from the repository root on 2026-10-25:
 | `corepack pnpm lint` | Passed; import boundary check passed |
 | `node --test --test-reporter=tap tests/unit/workbench-preference-errors.test.ts tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/workbench-preferences-protocol.test.ts tests/unit/contracts.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` | 73 passed, 0 failed |
 | `corepack pnpm build` | Passed; renderer bundle 725.60 kB minified / 195.03 kB gzip |
-| `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "custom Unicode startup greeting saves"` | 1 Windows Electron E2E passed; verifies edit/save, dismissal, keyboard/focus behavior, narrow layout and persistence after relaunch |
+| `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "custom Unicode startup greeting saves"` | 1 Windows Electron E2E passed; verifies edit/save, dismissal, empty-value clearing, keyboard/focus behavior, narrow layout, and both populated and cleared values after relaunch |
 | `git diff --check` | Passed |
 
 A focused regression assertion first reproduced acceptance of U+0085, then passed after domain validation was updated to reject Unicode `Cc` characters while retaining tabs and newlines. Independent review also caught two error-reporting gaps: the app startup alert and settings dialog now use actionable user-facing messages, and corrupt storage remains a distinct `CORRUPT` category through the application manager and typed IPC. Focused tests cover both message guidance and preserving that error category.
@@ -42,4 +42,4 @@ The greeting is ordinary local configuration stored in the app profile, not encr
 
 ## Review status
 
-Final independent spec, standards and merge-readiness reviews are pending after the review-driven error-reporting corrections.
+Final independent spec, standards and merge-readiness reviews are pending after review-driven corrections. The standards reviewer’s possible duplicated SQLite error-classification logic is a non-blocking cleanup candidate to revisit when another storage slice touches these adapters; it does not conflict with a documented rule.

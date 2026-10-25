@@ -3162,7 +3162,7 @@ test('offline help opens from the workbench and command palette, filters topics,
   }
 });
 
-test('custom Unicode startup greeting saves, dismisses for the current run, and returns after restart', async () => {
+test('custom Unicode startup greeting saves, dismisses, clears, and persists across restart', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-preferences-e2e-'));
   const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
   let app = await launch();
@@ -3202,7 +3202,23 @@ test('custom Unicode startup greeting saves, dismisses for the current run, and 
     app = await launch();
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await expect(page.getByRole('region', { name: 'Startup greeting' })).toContainText(greeting);
+    const reopenedBanner = page.getByRole('region', { name: 'Startup greeting' });
+    await expect(reopenedBanner).toContainText(greeting);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const reopenedSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(reopenedSettings).toBeVisible();
+    await reopenedSettings.getByLabel('Startup greeting').fill('');
+    await reopenedSettings.getByRole('button', { name: 'Save changes' }).click();
+    await expect(reopenedSettings.getByRole('status')).toHaveText('Greeting saved.');
+    await expect(reopenedBanner).toHaveCount(0);
+    await reopenedSettings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('region', { name: 'Startup greeting' })).toHaveCount(0);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
