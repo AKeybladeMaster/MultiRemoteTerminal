@@ -2,6 +2,8 @@ import { failure } from '../../domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../domain/src/errors.ts';
 import { isMacroId, normalizeMacroDraft } from '../../domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft } from '../../domain/src/macro.ts';
+import { isMacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
+import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import type { CancellationSignal } from './cancellation.ts';
 import { StorageOperationError } from './storage-errors.ts';
 
@@ -10,6 +12,9 @@ export interface MacroCatalogStore {
   createMacro(draft: MacroDraft, cancellation?: CancellationSignal): Promise<MacroDefinition>;
   updateMacro(id: string, draft: MacroDraft, cancellation?: CancellationSignal): Promise<MacroDefinition | undefined>;
   removeMacro(id: string, cancellation?: CancellationSignal): Promise<boolean>;
+  listMacroShortcuts(cancellation?: CancellationSignal): Promise<readonly MacroShortcutBinding[]>;
+  setMacroShortcut(macroId: string, code: MacroShortcutCode, cancellation?: CancellationSignal): Promise<MacroShortcutBinding>;
+  removeMacroShortcut(macroId: string, cancellation?: CancellationSignal): Promise<boolean>;
 }
 
 export interface MacroCatalog {
@@ -17,6 +22,9 @@ export interface MacroCatalog {
   create(draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<MacroDefinition>>;
   update(id: unknown, draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<MacroDefinition>>;
   remove(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
+  listShortcuts(cancellation?: CancellationSignal): Promise<Outcome<readonly MacroShortcutBinding[]>>;
+  setShortcut(macroId: unknown, code: unknown, cancellation?: CancellationSignal): Promise<Outcome<MacroShortcutBinding>>;
+  removeShortcut(macroId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
 }
 
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
@@ -48,6 +56,23 @@ export function createMacroCatalog(store: MacroCatalogStore): MacroCatalog {
       if (!isMacroId(id)) return failure('INVALID_REQUEST');
       if (cancellation?.aborted) return failure('CANCELLED');
       try { return await store.removeMacro(id, cancellation) ? { ok: true, result: EMPTY_RESULT } : failure('NOT_FOUND'); }
+      catch (error) { return failure(errorCode(error)); }
+    },
+    async listShortcuts(cancellation?: CancellationSignal): Promise<Outcome<readonly MacroShortcutBinding[]>> {
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try { return { ok: true, result: await store.listMacroShortcuts(cancellation) }; }
+      catch (error) { return failure(errorCode(error)); }
+    },
+    async setShortcut(macroId: unknown, code: unknown, cancellation?: CancellationSignal): Promise<Outcome<MacroShortcutBinding>> {
+      if (!isMacroId(macroId) || !isMacroShortcutCode(code)) return failure('INVALID_REQUEST');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try { return { ok: true, result: await store.setMacroShortcut(macroId, code, cancellation) }; }
+      catch (error) { return failure(errorCode(error)); }
+    },
+    async removeShortcut(macroId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>> {
+      if (!isMacroId(macroId)) return failure('INVALID_REQUEST');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try { return await store.removeMacroShortcut(macroId, cancellation) ? { ok: true, result: EMPTY_RESULT } : failure('NOT_FOUND'); }
       catch (error) { return failure(errorCode(error)); }
     }
   };

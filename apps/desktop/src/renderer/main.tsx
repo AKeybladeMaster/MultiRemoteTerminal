@@ -9,6 +9,8 @@ import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh
 import { normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroStep } from '../../../../packages/domain/src/macro.ts';
+import { formatMacroShortcut, isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
+import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import { createMacroRunner } from '../../../../packages/application/src/macro-runner.ts';
 import type { MacroPlaybackView } from './MacroManagerDialog.tsx';
@@ -229,6 +231,11 @@ function macroRecordingWarningText(warning: MacroRecordingWarning): string {
   return 'The 64-step recording limit was reached.';
 }
 
+function macroShortcutCodeFromEvent(event: KeyboardEvent): MacroShortcutCode | undefined {
+  if (!event.ctrlKey || !event.altKey || !event.shiftKey || event.metaKey || event.repeat || event.isComposing || event.getModifierState('AltGraph')) return undefined;
+  return isMacroShortcutCode(event.code) ? event.code : undefined;
+}
+
 function Workbench() {
   const [theme, setTheme] = useState<TerminalTheme>('dark');
   const [fontSize, setFontSize] = useState(14);
@@ -279,6 +286,9 @@ function Workbench() {
   const [multiExecView, setMultiExecView] = useState<MultiExecView>();
   const [macroManagerOpen, setMacroManagerOpen] = useState(false);
   const [macros, setMacros] = useState<readonly MacroDefinition[]>([]);
+  const [macroShortcuts, setMacroShortcuts] = useState<readonly MacroShortcutBinding[]>([]);
+  const [macroShortcutCaptureMacroId, setMacroShortcutCaptureMacroId] = useState<string>();
+  const [macroShortcutNotice, setMacroShortcutNotice] = useState<string>();
   const [macrosLoading, setMacrosLoading] = useState(false);
   const [macroBusy, setMacroBusy] = useState(false);
   const [macroError, setMacroError] = useState<string>();
@@ -314,6 +324,7 @@ function Workbench() {
   const tunnelManagerRequest = useRef(0);
   const tunnelOperationRequest = useRef(0);
   const macroManagerRequest = useRef(0);
+  const macroShortcutRequest = useRef(0);
   const macroRecorder = useState(createMacroRecorder)[0];
   const macroPlaybackRun = useRef(false);
   const multiExecRun = useRef(false);
@@ -533,27 +544,49 @@ function Workbench() {
     if (current.status !== next.status || current.stepCount !== next.stepCount || current.warning !== next.warning) publishMacroRecording(next);
   }, [publishMacroRecording]);
 
+  const loadMacroShortcuts = useCallback(async (): Promise<void> => {
+    const request = ++macroShortcutRequest.current;
+    try {
+      const reply = await window.multiRemoteTerminal.listMacroShortcuts();
+      if (request === macroShortcutRequest.current && reply.ok) setMacroShortcuts(reply.result);
+    } catch { /* Shortcuts remain unavailable until the manager can report the storage error. */ }
+  }, []);
+
   const loadMacroManager = useCallback(async (): Promise<void> => {
     const request = ++macroManagerRequest.current;
+    const shortcutsRequest = ++macroShortcutRequest.current;
     setMacrosLoading(true);
     try {
-      const reply = await window.multiRemoteTerminal.listMacros();
+      const [macrosReply, shortcutsReply] = await Promise.all([
+        window.multiRemoteTerminal.listMacros(), window.multiRemoteTerminal.listMacroShortcuts()
+      ]);
       if (request !== macroManagerRequest.current) return;
-      if (!reply.ok) {
-        setMacroError(`Saved macros could not be loaded (${reply.error.code}).`);
-        return;
+      if (!macrosReply.ok) setMacroError(`Saved macros could not be loaded (${macrosReply.error.code}).`);
+      else setMacros(macrosReply.result);
+      if (shortcutsRequest === macroShortcutRequest.current) {
+        if (!shortcutsReply.ok) setMacroShortcutNotice(`Keyboard shortcuts could not be loaded (${shortcutsReply.error.code}).`);
+        else setMacroShortcuts(shortcutsReply.result);
       }
-      setMacros(reply.result);
     } catch {
-      if (request === macroManagerRequest.current) setMacroError('Saved macros could not be loaded.');
+      if (request === macroManagerRequest.current) {
+        setMacroError('Saved macros could not be loaded.');
+        if (shortcutsRequest === macroShortcutRequest.current) setMacroShortcutNotice('Keyboard shortcuts could not be loaded.');
+      }
     } finally {
       if (request === macroManagerRequest.current) setMacrosLoading(false);
     }
   }, []);
 
+  useEffect(() => {
+    void loadMacroShortcuts();
+    return () => { macroShortcutRequest.current++; };
+  }, [loadMacroShortcuts]);
+
   const openMacroManager = useCallback(() => {
     macroManagerReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setMacroError(undefined);
+    setMacroShortcutNotice(undefined);
+    setMacroShortcutCaptureMacroId(undefined);
     setMacroManagerOpen(true);
     void loadMacroManager();
   }, [loadMacroManager]);
@@ -657,15 +690,76 @@ function Workbench() {
   const closeMacroManager = useCallback(() => {
     if (macroPlaybackRun.current) return;
     macroManagerRequest.current++;
+    macroShortcutRequest.current++;
     setMacrosLoading(false);
+    setMacroShortcutCaptureMacroId(undefined);
+    setMacroShortcutNotice(undefined);
     setMacroManagerOpen(false);
     setMacroPlayback(undefined);
     setMacroPlaybackMacroId(undefined);
   }, []);
 
   const reviewMacroPlayback = useCallback((macroId: string) => {
+    setMacroShortcutCaptureMacroId(undefined);
+    setMacroShortcutNotice(undefined);
     setMacroPlayback(undefined);
     setMacroPlaybackMacroId(macroId);
+  }, []);
+
+  const openMacroShortcutReview = useCallback((macroId: string) => {
+    macroManagerReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMacroError(undefined);
+    setMacroShortcutNotice(undefined);
+    setMacroShortcutCaptureMacroId(undefined);
+    setMacroManagerOpen(true);
+    setMacroPlayback(undefined);
+    setMacroPlaybackMacroId(macroId);
+    void loadMacroManager();
+  }, [loadMacroManager]);
+
+  const beginMacroShortcutCapture = useCallback((macroId: string) => {
+    if (macroBusy || macroPlaybackRun.current || macroRecordingView.current || multiExecRun.current) return;
+    setMacroShortcutCaptureMacroId(macroId);
+    setMacroShortcutNotice('Press Ctrl+Alt+Shift, then a letter, number, numpad key, or F1–F12. Press Escape to cancel.');
+  }, [macroBusy]);
+
+  const cancelMacroShortcutCapture = useCallback(() => {
+    setMacroShortcutCaptureMacroId(undefined);
+    setMacroShortcutNotice(undefined);
+  }, []);
+
+  const saveMacroShortcut = useCallback(async (macroId: string, code: MacroShortcutCode): Promise<void> => {
+    setMacroShortcutCaptureMacroId(undefined);
+    setMacroShortcutNotice('Saving shortcut…');
+    setMacroBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.setMacroShortcut(macroId, code);
+      if (!reply.ok) {
+        if (reply.error.code === 'CONFLICT') {
+          setMacroShortcutCaptureMacroId(macroId);
+          setMacroShortcutNotice('That shortcut is already assigned. Press a different combination or Escape to cancel.');
+        } else setMacroShortcutNotice(`The shortcut could not be saved (${reply.error.code}).`);
+        return;
+      }
+      setMacroShortcuts(current => [...current.filter(binding => binding.macroId !== macroId), reply.result]);
+      setMacroShortcutNotice(`Shortcut saved: ${formatMacroShortcut(code)}.`);
+    } catch {
+      setMacroShortcutNotice('The shortcut could not be saved.');
+    } finally { setMacroBusy(false); }
+  }, []);
+
+  const clearMacroShortcut = useCallback(async (macroId: string): Promise<void> => {
+    setMacroShortcutCaptureMacroId(undefined);
+    setMacroBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.deleteMacroShortcut(macroId);
+      if (!reply.ok) setMacroShortcutNotice(`The shortcut could not be cleared (${reply.error.code}).`);
+      else {
+        setMacroShortcuts(current => current.filter(binding => binding.macroId !== macroId));
+        setMacroShortcutNotice('Shortcut cleared.');
+      }
+    } catch { setMacroShortcutNotice('The shortcut could not be cleared.'); }
+    finally { setMacroBusy(false); }
   }, []);
 
   const startMacroPlayback = useCallback((macroId: string, sessionId: string) => {
@@ -1481,6 +1575,33 @@ function Workbench() {
         return;
       }
       if (macroManagerOpen) {
+        if (macroShortcutCaptureMacroId) {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            setMacroShortcutCaptureMacroId(undefined);
+            setMacroShortcutNotice('Shortcut assignment cancelled.');
+            return;
+          }
+          if (event.key === 'Tab') {
+            setMacroShortcutCaptureMacroId(undefined);
+            setMacroShortcutNotice('Shortcut assignment cancelled.');
+          } else if (event.key === 'Control' || event.key === 'Alt' || event.key === 'Shift' || event.key === 'Meta') {
+            return;
+          } else if (isMacroShortcutCode(event.code)) {
+            event.preventDefault();
+            event.stopPropagation();
+            const code = macroShortcutCodeFromEvent(event);
+            if (code) void saveMacroShortcut(macroShortcutCaptureMacroId, code);
+            else setMacroShortcutNotice('Use Ctrl+Alt+Shift with a letter, number, numpad key, or F1–F12.');
+            return;
+          } else if (event.ctrlKey || event.altKey || event.metaKey) {
+            event.preventDefault();
+            event.stopPropagation();
+            setMacroShortcutNotice('Use Ctrl+Alt+Shift with a letter, number, numpad key, or F1–F12.');
+            return;
+          }
+        }
         if (event.key === 'Escape' && !macroBusy) {
           event.preventDefault();
           if (macroPlaybackRun.current) cancelMacroPlayback();
@@ -1585,6 +1706,16 @@ function Workbench() {
       const target = event.target;
       const editingText = target instanceof HTMLElement && !target.closest('.xterm') &&
         (target.isContentEditable || target.matches('input, textarea, select'));
+      if (!editingText && !paletteOpen) {
+        const code = macroShortcutCodeFromEvent(event);
+        const binding = code ? macroShortcuts.find(candidate => candidate.code === code) : undefined;
+        if (binding) {
+          event.preventDefault();
+          event.stopPropagation();
+          openMacroShortcutReview(binding.macroId);
+          return;
+        }
+      }
       if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w' && activeId && !editingText) {
         event.preventDefault();
         requestCloseTerminal(activeId);
@@ -1616,9 +1747,9 @@ function Workbench() {
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
   }, [activeId, cancelMacroPlayback, cancelMultiExec, catalogBusy, closeMacroManager, closeMacroPlayback, closeMultiExec, confirmMultiExec,
-    decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, multiExecOpen, multiExecView,
-    openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents,
-    tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+    decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
+    macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
+    saveMacroShortcut, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -2553,12 +2684,14 @@ function Workbench() {
     {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
-    {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} loading={macrosLoading} busy={macroBusy} error={macroError}
+    {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} shortcuts={macroShortcuts} loading={macrosLoading} busy={macroBusy} error={macroError}
       recordingTargets={sessions.filter(isMacroTerminal).filter(session => session.state === 'running').map(session => ({ sessionId: session.sessionId, title: macroTargetTitle(session) }))}
       recordingActive={macroRecording !== undefined} playbackMacroId={macroPlaybackMacroId} playback={macroPlayback}
+      shortcutCaptureMacroId={macroShortcutCaptureMacroId} shortcutNotice={macroShortcutNotice}
       onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} onStartRecording={startMacroRecording}
       onReviewPlayback={reviewMacroPlayback} onClosePlayback={closeMacroPlayback} onStartPlayback={startMacroPlayback}
-      onCancelPlayback={cancelMacroPlayback} onConfirmPlayback={confirmMacroPlayback} />}
+      onCancelPlayback={cancelMacroPlayback} onConfirmPlayback={confirmMacroPlayback} onCaptureShortcut={beginMacroShortcutCapture}
+      onCancelShortcutCapture={cancelMacroShortcutCapture} onClearShortcut={id => { void clearMacroShortcut(id); }} />}
     {multiExecOpen && <MultiExecDialog dialogRef={multiExecDialog} targets={multiExecTargets} view={multiExecView}
       blockedReason={multiExecBlockedReason} onClose={closeMultiExec} onReview={reviewMultiExec}
       onConfirm={confirmMultiExec} onCancel={cancelMultiExec} />}

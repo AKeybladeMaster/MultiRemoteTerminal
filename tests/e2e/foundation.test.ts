@@ -1680,6 +1680,70 @@ test('100 saved macro definitions survive restart and each replays through the W
   }
 });
 
+test('macro shortcuts persist and open exact review before explicit playback approval', async () => {
+  test.skip(process.platform !== 'win32', 'macro shortcut acceptance is required on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-shortcut-e2e-'));
+  const markerFile = join(profile, 'macro-shortcut-approved.txt');
+  let app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const marker = 'MRT-MACRO-SHORTCUT-APPROVED';
+    const codes = Array.from(marker, character => character.charCodeAt(0)).join(',');
+    const escapedMarkerFile = markerFile.replaceAll("'", "''");
+    const command = `$mrtMarker = -join ([char[]](${codes})); [System.IO.File]::AppendAllText('${escapedMarkerFile}', $mrtMarker); Write-Output $mrtMarker`;
+    const macroId = await page.evaluate(async ({ commandText, waitText }) => {
+      const reply = await window.multiRemoteTerminal.createMacro({ name: 'Shortcut review', steps: [
+        { kind: 'send', text: commandText }, { kind: 'waitForText', text: waitText, timeoutMs: 15_000 }
+      ] });
+      if (!reply.ok) throw new Error(`Could not save macro (${reply.error.code}).`);
+      return reply.result.id;
+    }, { commandText: command, waitText: marker });
+
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByRole('list', { name: 'Saved macros' }).getByRole('button', { name: /^Shortcut review\b/u }).click();
+    await dialog.getByRole('button', { name: 'Set shortcut for Shortcut review' }).click();
+    await expect(dialog.getByRole('status')).toContainText('Press Ctrl+Alt+Shift');
+    await page.keyboard.press('Control+Alt+Shift+F2');
+    await expect(dialog.getByRole('status')).toContainText('Shortcut saved: Ctrl+Alt+Shift+F2.');
+    await expect(dialog.locator('kbd')).toHaveText('Ctrl+Alt+Shift+F2');
+    await dialog.getByRole('button', { name: 'Close macro manager', exact: true }).click();
+
+    await app.close();
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByRole('list', { name: 'Saved macros' }).getByRole('button', { name: /^Shortcut review\b/u }).click();
+    await expect(dialog.locator('kbd')).toHaveText('Ctrl+Alt+Shift+F2');
+    await dialog.getByRole('button', { name: 'Close macro manager', exact: true }).click();
+
+    const terminalTitle = 'PowerShell session 1';
+    const panel = await selectTerminal(page, terminalTitle);
+    const sessionId = await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    if (!sessionId) throw new Error('The shortcut playback terminal has no session id.');
+    await page.keyboard.press('Control+Alt+Shift+F2');
+    const review = page.getByRole('dialog', { name: 'Review macro run' });
+    await expect(review.getByText('Shortcut review', { exact: true })).toBeVisible();
+    await expect(review.getByLabel('Run on target')).toHaveValue(sessionId);
+    await expect.poll(async () => {
+      try { return await readFile(markerFile, 'utf8'); }
+      catch { return undefined; }
+    }).toBeUndefined();
+
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('Macro completed', { timeout: 20_000 });
+    expect(await readFile(markerFile, 'utf8')).toBe(marker);
+    expect(macroId).toMatch(/^[0-9a-f-]{36}$/u);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('macro playback previews exact steps, confirms explicitly, cancels, and requires deliberate target selection after disconnect', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-playback-e2e-'));

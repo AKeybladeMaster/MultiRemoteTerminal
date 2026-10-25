@@ -59,7 +59,7 @@ export interface CommandActions {
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
-  readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove'>;
+  readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
 }
 
@@ -279,6 +279,9 @@ export async function dispatchCommand(
         return { requestId, ...await actions.macros.update(id, draft, actions.cancellation) };
       }
       case 'macro.delete': return { requestId, ...await actions.macros.remove(parsed.result.payload.id, actions.cancellation) };
+      case 'macro.shortcut.list': return { requestId, ...await actions.macros.listShortcuts(actions.cancellation) };
+      case 'macro.shortcut.set': return { requestId, ...await actions.macros.setShortcut(parsed.result.payload.macroId, parsed.result.payload.code, actions.cancellation) };
+      case 'macro.shortcut.delete': return { requestId, ...await actions.macros.removeShortcut(parsed.result.payload.macroId, actions.cancellation) };
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };
       case 'tunnel.delete': return { requestId, ...await actions.tunnels.remove(parsed.result.payload.id) };

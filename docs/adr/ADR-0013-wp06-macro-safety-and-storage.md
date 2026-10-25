@@ -17,9 +17,7 @@ The initial SQLite schema already contains `macro_definitions` and
 1. Split WP-06 into independently reviewable slices: WP-06A persists and edits
    typed definitions; WP-06B adds explicit single-terminal recording and
    playback; WP-06C adds confirmed MultiExec fanout; WP-06D adds Windows
-   acceptance for 100 stored and replayed definitions. Macro-specific
-   keyboard bindings and SSH/Telnet macro playback interoperability remain
-   open acceptance items.
+   acceptance for 100 stored and replayed definitions. WP-06E adds persistent macro-specific shortcuts that open the exact playback review without executing it; SSH/Telnet macro playback interoperability remains open.
 2. A definition contains ordered `send`, literal `waitForText`, bounded `delay`
    and explicit `confirm` steps. It has a versioned, exact schema. Definitions
    are not capped by count; each definition has bounded size and step count.
@@ -99,8 +97,7 @@ stores no target/command data, and blocks manual input to selected terminals
 during preview and delivery. P-19/F-008 is verified by Windows local-terminal
 and three-independent-SSH-host E2E coverage plus focused unit tests. WP-06D
 verifies 100 saved definitions survive restart and each replays through the
-Windows PowerShell workbench. The WP-06 gate remains open for macro-specific
-keyboard bindings and SSH/Telnet macro playback interoperability.
+Windows PowerShell workbench. The WP-06 gate remains open for SSH/Telnet macro playback interoperability and heuristic secret-prompt detection.
 
 ## Verification
 

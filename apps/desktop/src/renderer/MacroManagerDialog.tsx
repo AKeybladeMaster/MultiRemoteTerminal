@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
 import { MAX_MACRO_STEPS, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft, MacroStep } from '../../../../packages/domain/src/macro.ts';
+import { formatMacroShortcut } from '../../../../packages/domain/src/macro-shortcut.ts';
+import type { MacroShortcutBinding } from '../../../../packages/domain/src/macro-shortcut.ts';
 import { playbackStatusText } from './macro-playback-status.ts';
 import type { MacroPlaybackView } from './macro-playback-status.ts';
 export type { MacroPlaybackView } from './macro-playback-status.ts';
@@ -9,6 +11,7 @@ export type { MacroPlaybackView } from './macro-playback-status.ts';
 export interface MacroManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
   readonly macros: readonly MacroDefinition[];
+  readonly shortcuts: readonly MacroShortcutBinding[];
   readonly loading: boolean;
   readonly busy: boolean;
   readonly error: string | undefined;
@@ -16,6 +19,8 @@ export interface MacroManagerDialogProps {
   readonly recordingActive: boolean;
   readonly playbackMacroId: string | undefined;
   readonly playback: MacroPlaybackView | undefined;
+  readonly shortcutCaptureMacroId: string | undefined;
+  readonly shortcutNotice: string | undefined;
   readonly onClose: () => void;
   readonly onSave: (id: string | undefined, draft: MacroDraft) => Promise<string | undefined>;
   readonly onDelete: (id: string) => Promise<boolean>;
@@ -25,6 +30,9 @@ export interface MacroManagerDialogProps {
   readonly onStartPlayback: (macroId: string, sessionId: string) => void;
   readonly onCancelPlayback: () => void;
   readonly onConfirmPlayback: (accepted: boolean) => void;
+  readonly onCaptureShortcut: (macroId: string) => void;
+  readonly onCancelShortcutCapture: () => void;
+  readonly onClearShortcut: (macroId: string) => void;
 }
 
 type MacroStepKind = MacroStep['kind'];
@@ -63,8 +71,9 @@ function playbackStepPresentation(step: MacroStep): PlaybackStepPresentation {
   }
 }
 
-export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, recordingTargets, recordingActive, playbackMacroId, playback,
-  onClose, onSave, onDelete, onStartRecording, onReviewPlayback, onClosePlayback, onStartPlayback, onCancelPlayback, onConfirmPlayback }: MacroManagerDialogProps): ReactElement {
+export function MacroManagerDialog({ dialogRef, macros, shortcuts, loading, busy, error, recordingTargets, recordingActive, playbackMacroId, playback,
+  shortcutCaptureMacroId, shortcutNotice, onClose, onSave, onDelete, onStartRecording, onReviewPlayback, onClosePlayback, onStartPlayback,
+  onCancelPlayback, onConfirmPlayback, onCaptureShortcut, onCancelShortcutCapture, onClearShortcut }: MacroManagerDialogProps): ReactElement {
   const [selectedId, setSelectedId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
@@ -81,7 +90,11 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   const playbackDoneButton = useRef<HTMLButtonElement>(null);
   const [playbackTargetId, setPlaybackTargetId] = useState('');
   const [playbackTargetTitle, setPlaybackTargetTitle] = useState('');
+  const recordingTargetsRef = useRef(recordingTargets);
+  recordingTargetsRef.current = recordingTargets;
   const selected = macros.find(macro => macro.id === selectedId);
+  const selectedShortcut = selected ? shortcuts.find(shortcut => shortcut.macroId === selected.id) : undefined;
+  const capturingShortcut = selected !== undefined && shortcutCaptureMacroId === selected.id;
   const reviewedMacro = macros.find(macro => macro.id === playbackMacroId);
   const isReviewingPlayback = playbackMacroId !== undefined;
 
@@ -119,7 +132,15 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
     if (!playback) requestAnimationFrame(() => playbackTarget.current?.focus());
   }, [isReviewingPlayback, playback]);
 
+  useEffect(() => {
+    if (!playbackMacroId) return;
+    const target = recordingTargetsRef.current[0];
+    setPlaybackTargetId(target?.sessionId ?? '');
+    setPlaybackTargetTitle(target?.title ?? '');
+  }, [playbackMacroId]);
+
   function startNew(): void {
+    onCancelShortcutCapture();
     if (playbackMacroId) onClosePlayback();
     setCreating(true);
     setSelectedId(undefined);
@@ -130,6 +151,7 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   }
 
   function selectMacro(id: string): void {
+    onCancelShortcutCapture();
     if (playbackMacroId) onClosePlayback();
     setCreating(false);
     setSelectedId(id);
@@ -300,6 +322,24 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
               <input ref={nameInput} id="macro-name" value={name} maxLength={256} onChange={event => setName(event.target.value)} disabled={busy} required autoComplete="off" />
               <label htmlFor="macro-description">Description <span>(optional)</span></label>
               <input id="macro-description" value={description} maxLength={1024} onChange={event => setDescription(event.target.value)} disabled={busy} autoComplete="off" />
+              {selected && <section className="macro-shortcut-setting" aria-labelledby="macro-shortcut-heading">
+                <div className="macro-shortcut-copy">
+                  <span id="macro-shortcut-heading" className="tunnel-field-label">Keyboard shortcut</span>
+                  <small>Opens the exact review. Running still needs your approval.</small>
+                </div>
+                <div className="macro-shortcut-controls">
+                  {selectedShortcut ? <kbd>{formatMacroShortcut(selectedShortcut.code)}</kbd> : <span className="macro-shortcut-unassigned">Not set</span>}
+                  <button type="button" onClick={() => onCaptureShortcut(selected.id)} disabled={busy}
+                    aria-label={`${selectedShortcut ? 'Change' : 'Set'} shortcut for ${selected.name}`}>
+                    {capturingShortcut ? 'Waiting for keys…' : selectedShortcut ? 'Change shortcut' : 'Set shortcut'}
+                  </button>
+                  {selectedShortcut && <button type="button" onClick={() => onClearShortcut(selected.id)} disabled={busy}>Clear</button>}
+                </div>
+                {capturingShortcut && <p className="macro-shortcut-status" role="status" aria-live="polite">
+                  {shortcutNotice ?? 'Press Ctrl+Alt+Shift, then a letter, number, numpad key, or F1–F12. Press Escape to cancel.'}
+                </p>}
+                {!capturingShortcut && shortcutNotice && <p className="macro-shortcut-status" role="status" aria-live="polite">{shortcutNotice}</p>}
+              </section>}
               <div className="macro-steps-heading"><div><span className="tunnel-field-label">Ordered steps</span><small>{steps.length} / {MAX_MACRO_STEPS}</small></div>
                 <div className="macro-add-step"><label className="visually-hidden" htmlFor="macro-step-kind">Step type to add</label>
                   <select id="macro-step-kind" value={stepToAdd} disabled={busy || steps.length >= MAX_MACRO_STEPS} onChange={event => setStepToAdd(event.target.value as MacroStepKind)}>

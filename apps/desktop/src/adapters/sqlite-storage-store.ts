@@ -13,6 +13,8 @@ import type { CredentialPromptCancellation } from '../../../../packages/applicat
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import { normalizeMacroDraft, isMacroId } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
+import { isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
+import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
@@ -180,6 +182,29 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     if (!isMacroId(id)) throw new StorageOperationError('invalid');
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'macro.remove', id }, cancellation);
+    if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async listMacroShortcuts(cancellation?: CancellationSignal): Promise<readonly MacroShortcutBinding[]> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.shortcut.list' }, cancellation);
+    if (result.kind !== 'macroShortcuts') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async setMacroShortcut(macroId: string, code: MacroShortcutCode, cancellation?: CancellationSignal): Promise<MacroShortcutBinding> {
+    if (!isMacroId(macroId) || !isMacroShortcutCode(code)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.shortcut.set', macroId, code }, cancellation);
+    if (result.kind !== 'macroShortcut') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async removeMacroShortcut(macroId: string, cancellation?: CancellationSignal): Promise<boolean> {
+    if (!isMacroId(macroId)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'macro.shortcut.remove', macroId }, cancellation);
     if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
     return result.value;
   }

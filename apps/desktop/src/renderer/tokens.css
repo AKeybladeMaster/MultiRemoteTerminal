@@ -363,6 +363,14 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .macro-storage-warning strong { margin-right: 4px; }
 .macro-form input:focus-visible, .macro-form select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .macro-form label span, .macro-steps-heading small { color: var(--muted); font-size: 10px; font-weight: 400; }
+.macro-shortcut-setting { display: grid; gap: 8px; margin-top: 13px; padding: 10px; border: 1px solid var(--line); border-radius: 3px; background: color-mix(in srgb, var(--canvas) 35%, var(--surface)); }
+.macro-shortcut-copy { display: grid; gap: 3px; }
+.macro-shortcut-copy small, .macro-shortcut-unassigned { color: var(--muted); font-size: 10px; }
+.macro-shortcut-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.macro-shortcut-controls kbd { padding: 5px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--terminal-background); color: var(--text); font: 11px "Cascadia Mono", Consolas, monospace; }
+.macro-shortcut-controls button { min-height: 30px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); font-size: 10px; cursor: pointer; }
+.macro-shortcut-controls button:disabled { opacity: .55; cursor: default; }
+.macro-shortcut-status { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .macro-steps-heading { display: flex; align-items: end; justify-content: space-between; gap: 10px; margin-top: 12px; }
 .macro-steps-heading > div:first-child { display: grid; gap: 3px; }
 .macro-add-step { display: flex; min-width: min(300px, 68%); gap: 5px; }
