@@ -20,6 +20,12 @@ interface Ssh2FixtureClient extends EventEmitter {
   forwardOut(boundAddress: string, boundPort: number, remoteAddress: string, remotePort: number,
     callback: (error: Error | undefined, channel?: Duplex) => void): this;
 }
+interface VaultE2EProbe {
+  getState(): string;
+  store(reference: string, secret: string): Promise<void>;
+  resolve(reference: string): Promise<string>;
+  unlock(): Promise<void>;
+}
 type Ssh2FixtureSession = EventEmitter;
 interface Ssh2FixtureStream extends EventEmitter { write(data: string | Buffer): boolean; }
 interface Ssh2AuthenticationContext {
@@ -208,6 +214,21 @@ let nextPowerShellSizeProbe = 0;
 function electronEnvironment(): Record<string, string> {
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
     entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE'));
+}
+
+function launchVaultE2EApp(profile: string) {
+  return electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-vault-probe'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+}
+
+function vaultE2EProbeState(app: Awaited<ReturnType<typeof electron.launch>>) {
+  return app.evaluate(() => (globalThis as typeof globalThis & {
+    __mrtE2EVaultProbe?: Pick<VaultE2EProbe, 'getState'>;
+  }).__mrtE2EVaultProbe?.getState());
+}
+
+async function waitForVaultE2EProbe(app: Awaited<ReturnType<typeof electron.launch>>): Promise<void> {
+  await expect.poll(() => vaultE2EProbeState(app), { timeout: 15_000 }).toBe('available');
 }
 
 async function focusVirtualizedListBoundary(list: Locator, edge: 'first' | 'last') {
@@ -729,25 +750,13 @@ test('a Windows session-lock event blocks safeStorage credential access until ex
   const secret = `MRT-E2E-VAULT-${randomUUID()}`;
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
-    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-vault-probe'],
-      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    app = await launchVaultE2EApp(profile);
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await expect.poll(() => app!.evaluate(() => {
-      const probe = (globalThis as typeof globalThis & {
-        __mrtE2EVaultProbe?: { getState(): string };
-      }).__mrtE2EVaultProbe;
-      return probe?.getState();
-    })).toBe('available');
+    await waitForVaultE2EProbe(app);
 
     const result = await app.evaluate(async ({ app: electronApp, powerMonitor }, { credentialReference, credentialSecret }) => {
-      interface VaultProbe {
-        getState(): string;
-        store(reference: string, secret: string): Promise<void>;
-        resolve(reference: string): Promise<string>;
-        unlock(): Promise<void>;
-      }
-      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultProbe }).__mrtE2EVaultProbe;
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultE2EProbe }).__mrtE2EVaultProbe;
       if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
 
       await probe.store(credentialReference, credentialSecret);
@@ -778,6 +787,50 @@ test('a Windows session-lock event blocks safeStorage credential access until ex
     expect(result.resolvedAfterUnlock).toBe(secret);
     const encryptedVault = await readFile(join(result.userDataPath, 'credentials.json'), 'utf8');
     expect(encryptedVault).not.toContain(secret);
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Windows safeStorage vault credentials survive an application restart without plaintext storage', async () => {
+  test.skip(process.platform !== 'win32', 'Exercise persisted Windows safeStorage credentials on Windows');
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-vault-restart-e2e-'));
+  const reference = randomUUID();
+  const secret = `MRT-E2E-VAULT-RESTART-${randomUUID()}`;
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await launchVaultE2EApp(profile);
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await waitForVaultE2EProbe(app);
+    const firstRun = await app.evaluate(async ({ app: electronApp }, { credentialReference, credentialSecret }) => {
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultE2EProbe }).__mrtE2EVaultProbe;
+      if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
+      await probe.store(credentialReference, credentialSecret);
+      return { state: probe.getState(), userDataPath: electronApp.getPath('userData') };
+    }, { credentialReference: reference, credentialSecret: secret });
+    expect(firstRun.state).toBe('available');
+    const firstVault = await readFile(join(firstRun.userDataPath, 'credentials.json'), 'utf8');
+    expect(firstVault).not.toContain(secret);
+
+    await app.close();
+    app = await launchVaultE2EApp(profile);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await waitForVaultE2EProbe(app);
+    const secondRun = await app.evaluate(async ({ app: electronApp }, credentialReference) => {
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultE2EProbe }).__mrtE2EVaultProbe;
+      if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
+      return { state: probe.getState(), userDataPath: electronApp.getPath('userData'),
+        resolvedSecret: await probe.resolve(credentialReference) };
+    }, reference);
+    expect(secondRun.state).toBe('available');
+    expect(secondRun.userDataPath).toBe(firstRun.userDataPath);
+    expect(secondRun.resolvedSecret).toBe(secret);
+    const reopenedVault = await readFile(join(secondRun.userDataPath, 'credentials.json'), 'utf8');
+    expect(reopenedVault).not.toContain(secret);
   } finally {
     await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

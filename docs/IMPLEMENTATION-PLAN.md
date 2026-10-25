@@ -166,6 +166,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07K — N-001 locked-vault recovery acceptance:** A Windows E2E uses Electron's actual `safeStorage` adapter to store and resolve a random test credential, emits the registered `powerMonitor` lock-screen event, verifies resolution fails with the `locked` category, explicitly unlocks through a main-process probe gated to unpackaged `MRT_E2E=1` launches, and verifies the credential resolves again. It confirms the secret is absent from `credentials.json`. The lock event is synthetic and does not verify a physical Windows lock/unlock cycle. The test-only unlock does not add a user-facing vault management flow or connect the vault to saved SSH credentials; F-010/P-29 remain partial, and N-001 still needs physical session-lock acceptance. See [WP-07K results](results/WP-07K-vault-lock-recovery-2026-10-25.md).
 
+**WP-07L — Windows vault restart persistence:** A second Windows E2E stores a random credential through the guarded main-process probe, closes the Electron app, reopens it with the same temporary user profile, and verifies the real `safeStorage` vault resolves the credential after initialization. It checks that the secret is absent from `credentials.json` both before and after restart. This confirms persistence for a process restart under the same Windows user and profile; it does not test profile migration, OS-account changes, reinstall/restore, or user-facing saved-credential flows. P-29 and the broader security gate remain partial. See [WP-07L results](results/WP-07L-vault-restart-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
