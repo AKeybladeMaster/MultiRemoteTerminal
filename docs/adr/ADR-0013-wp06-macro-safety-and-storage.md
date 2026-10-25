@@ -57,6 +57,16 @@ The initial SQLite schema already contains `macro_definitions` and
    for a detected prompt and the line is submitted, recording pauses and
    requires an explicit user resume. Prompt and redraw detection are heuristic;
    arbitrary secrets and unsupported redraw styles may go unrecognized.
+9. MultiExec accepts a bounded one-line request for two to 256 selected active
+   local, SSH or Telnet terminals, with at most four writes in flight. Control
+   characters, Unicode line/paragraph separators and bidi formatting controls
+   are rejected so the preview cannot be visually reordered. The UI
+   previews exact input and destinations, then asks for final approval. Results
+   remain independent by terminal; there are no retries or target substitutions.
+   TIMEOUT and UNAVAILABLE writes are marked uncertain because delivery may
+   have occurred. Cancellation prevents queued writes from starting and waits
+   for in-flight writes to settle. The app captures no terminal output and
+   persists or logs neither command text nor destinations.
 
 ## Consequences
 
@@ -75,6 +85,19 @@ terminal input; the editor warns against passwords, tokens and private-key
 content, while static secret detection is not promised. No macro command or
 terminal transcript is logged by the app.
 
+WP-06C adds confirmed MultiExec to active local, SSH and Telnet terminals. The
+renderer shows the exact line and selected endpoints, then requires a second,
+final approval action. The application runner caps the request at 256 distinct
+targets and four concurrent writes. A per-target TIMEOUT or UNAVAILABLE result
+is uncertain, because the terminal may already have accepted the input; this
+status is never retried. Result status takes focus as the run starts and
+finishes. Cancellation stops only queued writes; it cannot
+retract writes already submitted to a provider. MultiExec captures no output,
+stores no target/command data, and blocks manual input to selected terminals
+during preview and delivery. P-19/F-008 is verified by Windows local-terminal
+and three-independent-SSH-host E2E coverage plus focused unit tests. The full
+WP-06 gate stays open until the remaining macro acceptance passes.
+
 ## Verification
 
 WP-06A covers exact schema validation, persistence, update/delete behavior,
@@ -84,6 +107,11 @@ resume, pause-without-partial-line behavior, ANSI control-string stripping,
 total text limits and paste omission on Windows. WP-06B2 unit and Windows
 Electron E2E coverage verifies exact preview, literal waits, progress,
 confirmation, cancellation, disconnect and no later sends. Windows replay of
-100 definitions and broader adapter interoperability remain open. WP-06C must
-deliver input to three independent active terminals only after confirmation
-and preserve per-target outcomes.
+100 definitions and broader adapter interoperability remain open. WP-06C unit
+tests cover exact line/target validation, including hidden bidi/control
+characters, approval-before-send, bounded
+concurrency, isolated failures, no retries, uncertain timeouts and queued
+cancellation. Windows E2E covers local PowerShell sessions and three distinct
+SSH loopback hosts: each host has its own port and key, receives the exact
+reviewed line once after approval, and returns a host-specific marker. Broader
+adapter interoperability remains open.

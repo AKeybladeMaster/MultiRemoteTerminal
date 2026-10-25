@@ -430,6 +430,50 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .macro-review-run { min-height: 36px; padding: 7px 10px; border: 1px solid var(--accent); border-radius: 3px; background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 650; cursor: pointer; }
 .macro-review-run:disabled { opacity: .55; cursor: default; }
 .macro-review-run:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.multi-exec-backdrop { z-index: 10; }
+.multi-exec-dialog { width: min(760px, 100%); max-height: min(90vh, 820px); }
+.multi-exec-body { display: grid; gap: 10px; min-height: 0; padding: 0 22px 18px; overflow: auto; }
+.multi-exec-line-label, .multi-exec-target-fieldset legend { color: var(--muted); font-size: 11px; font-weight: 650; }
+.multi-exec-body > input { width: 100%; min-width: 0; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: var(--terminal-background); color: var(--text); font: 13px "Cascadia Mono", Consolas, monospace; }
+.multi-exec-body > input:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.multi-exec-help { margin: -4px 0 2px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.multi-exec-target-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.multi-exec-target-fieldset legend { display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 0 0 7px; }
+.multi-exec-target-fieldset legend span { color: var(--accent); font-size: 10px; font-weight: 500; }
+.multi-exec-target-list, .multi-exec-result-list { max-height: 292px; overflow: auto; margin: 0; padding: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); list-style: none; overscroll-behavior: contain; }
+.multi-exec-target-row { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 53px; padding: 7px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.multi-exec-target-list li:last-child .multi-exec-target-row, .multi-exec-review-list li:last-child { border-bottom: 0; }
+.multi-exec-target-row:hover { background: color-mix(in srgb, var(--surface-raised) 62%, transparent); }
+.multi-exec-target-row.selected { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.multi-exec-target-row input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.multi-exec-target-row > span { display: grid; min-width: 0; gap: 3px; }
+.multi-exec-target-row strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
+.multi-exec-target-row small { color: var(--muted); font-size: 10px; }
+.multi-exec-empty { margin: 0; padding: 12px 10px; border: 1px dashed var(--line); color: var(--muted); font-size: 12px; }
+.multi-exec-caution { margin: 0; padding: 10px 12px; border-left: 3px solid #e59d32; background: color-mix(in srgb, #e59d32 10%, var(--surface)); font-size: 12px; line-height: 1.5; }
+.multi-exec-caution strong { margin-right: 4px; }
+.multi-exec-preview { display: grid; gap: 6px; min-width: 0; }
+.multi-exec-preview > span { display: flex; align-items: baseline; gap: 8px; color: var(--muted); font-size: 11px; font-weight: 650; }
+.multi-exec-preview > span small { font-size: 10px; font-weight: 400; }
+.multi-exec-preview pre { min-width: 0; margin: 0; overflow: auto; padding: 11px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 2px; background: var(--terminal-background); color: var(--text); font: 13px/1.55 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.multi-exec-review-list li { min-height: 39px; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+.multi-exec-destination { overflow-wrap: anywhere; font-size: 12px; }
+.multi-exec-feedback { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.multi-exec-feedback.error { color: var(--error); }
+.multi-exec-footer { display: flex; align-items: center; justify-content: end; flex-wrap: wrap; gap: 8px; margin-top: 4px; padding-top: 11px; border-top: 1px solid var(--line); }
+.multi-exec-footer button { min-height: 37px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); cursor: pointer; }
+.multi-exec-footer button:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, var(--surface-raised)); }
+.multi-exec-footer button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.multi-exec-footer .ssh-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 650; }
+.multi-exec-footer .multi-exec-stop { border-color: color-mix(in srgb, var(--error) 65%, var(--line)); color: var(--error); }
+.multi-exec-footer button:disabled { opacity: .55; cursor: default; }
+.multi-exec-result-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 44px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.multi-exec-result-row:last-child { border-bottom: 0; }
+.multi-exec-result-target { min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
+.multi-exec-result-status { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
+.multi-exec-result-row.sent .multi-exec-result-status { color: var(--accent); }
+.multi-exec-result-row.uncertain .multi-exec-result-status, .multi-exec-result-row.failed .multi-exec-result-status { color: var(--error); }
+.multi-exec-result-row.sending .multi-exec-result-status { color: var(--focus); }
 .ssh-trust-dialog.changed { border-top: 3px solid var(--error); }
 .ssh-trust-dialog.changed .dialog-eyebrow { color: var(--error); }
 .ssh-host-facts { display: grid; gap: 11px; margin: 18px 0 0; }
@@ -458,6 +502,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 @media (max-width: 720px) {
   .tunnel-manager-body { grid-template-columns: minmax(0, 1fr); overflow: auto; overscroll-behavior: contain; }
   .macro-manager-playback { height: 92vh; max-height: 92vh; }
+  .multi-exec-body { padding-right: 15px; padding-left: 15px; }
   .macro-playback-body { overflow: auto; padding-right: 15px; padding-left: 15px; }
   .macro-playback-targets { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .macro-playback-steps { max-height: 40vh; }
