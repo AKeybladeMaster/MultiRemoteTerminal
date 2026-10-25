@@ -6,12 +6,9 @@ import type { CredentialPrompt, CredentialPromptCancellation, CredentialPromptPu
 
 const MAX_HELPER_OUTPUT_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 120_000;
-const PURPOSE_MESSAGE: Readonly<Record<CredentialPromptPurpose, string>> = Object.freeze({
-  'ssh-password': 'Enter the SSH account credential.',
-  'ssh-key-passphrase': 'Unlock the selected SSH private key.',
-  'ftp-account': 'Enter the FTP account credential.',
-  'master-password': 'Enter the vault master password.'
-});
+const PROMPT_PURPOSES: ReadonlySet<string> = new Set([
+  'ssh-password', 'ssh-key-passphrase', 'ftp-account', 'master-password'
+]);
 const CANCELLED: CredentialPromptResult = Object.freeze({ kind: 'cancelled' });
 const UNAVAILABLE: CredentialPromptResult = Object.freeze({ kind: 'unavailable' });
 const TIMED_OUT: CredentialPromptResult = Object.freeze({ kind: 'timeout' });
@@ -54,7 +51,7 @@ export function resolveWindowsPowerShellPath(systemDirectory: string, pathExists
 }
 
 function isPurpose(value: unknown): value is CredentialPromptPurpose {
-  return typeof value === 'string' && Object.hasOwn(PURPOSE_MESSAGE, value);
+  return typeof value === 'string' && PROMPT_PURPOSES.has(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -98,8 +95,8 @@ export function createWindowsCredentialPrompt(options: WindowsCredentialPromptOp
       catch { return Promise.resolve(UNAVAILABLE); }
 
       const promptContext = typeof context === 'string' ? context.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 256).trim() : '';
-      const message = promptContext ? `${PURPOSE_MESSAGE[purpose]}\n\n${promptContext}` : PURPOSE_MESSAGE[purpose];
-      const args = ['-NoLogo', '-NoProfile', '-WindowStyle', 'Hidden', '-File', options.helperPath, '-Message', message];
+      const args = ['-NoLogo', '-NoProfile', '-WindowStyle', 'Hidden', '-File', options.helperPath, '-Purpose', purpose];
+      if (promptContext) args.push('-Context', promptContext);
       return new Promise(resolve => {
         let child: PromptProcess;
         try {
