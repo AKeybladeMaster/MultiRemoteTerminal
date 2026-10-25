@@ -20,8 +20,12 @@ On Windows x64 with Node 24.14.1 and Electron 45:
 
 ## Status and limits
 
-The test verifies a copied master-password vault under the same Windows account and a new Electron `userData` path. It does not verify another Windows account, DPAPI-mode copy/migration, reinstall/backup tooling, packaged native credential prompts or physical Windows lock/resume. F-010/P-29 remain PARTIAL.
+The test verifies a copied master-password vault under the same Windows account and a new Electron `userData` path. It does not verify another Windows account, DPAPI-mode copy/migration, reinstall/backup tooling, packaged native credential prompts or physical Windows lock/resume. This E2E does not try a wrong password against the copied file; WP-07S's unit suite separately verifies wrong-password rejection for the same versioned vault format. F-010/P-29 remain PARTIAL.
 
 ## Review
 
-Pending independent Spec and Standards review before promotion.
+Independent Spec and Standards reviews covered `git diff origin/main...HEAD`, fixed point `539a1a4ce6652785e12da71dbd60f5d4b34aedbc`, candidate `4039341ac9069a880b6c5544081b7a33e57db4e5`.
+
+- The Spec reviewer found no scope creep or incorrect behavior. It confirmed WP-07T proves only a copied `credentials.json` in a distinct `userData` directory under the same Windows account. Full-profile restore, reinstall, cross-account DPAPI failure and a wrong-password attempt on this copied profile remain outside this slice. The test prompt is a fixed test password and exercises the unlock/KDF path, not the native credential dialog.
+- The Standards reviewer found no documented-standard violations. Two non-blocking baseline judgements are tracked: the test variable `reference` could be named more specifically, and vault-probe lookup/guards repeat across separate `app.evaluate` callbacks. The callbacks execute in distinct serialized app contexts, so the small local repetition remains; rename the variable if this test is next edited.
+- Reviewers did not run tests or modify files. Root validation passed typecheck, lint/import boundaries, and the two focused Windows master-vault E2Es (2/2).
