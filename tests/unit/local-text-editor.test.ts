@@ -10,6 +10,8 @@ const source: LocalTextFilePayload = { fileName: 'local-settings.txt', content: 
 test('local editor keeps the selected path in main and gates operations on its opaque selection id', async () => {
   const calls: unknown[] = [];
   let current = source;
+  let releaseShutdown!: () => void;
+  const shutdownGate = new Promise<void>(resolve => { releaseShutdown = resolve; });
   const provider: LocalTextFileProvider = {
     async read(path) { calls.push({ kind: 'read', path }); return current; },
     async save(path, content, expectedRevision) {
@@ -17,7 +19,7 @@ test('local editor keeps the selected path in main and gates operations on its o
       current = { ...source, content, revision: 'b'.repeat(64), bytes: Buffer.byteLength(content) };
       return { revision: current.revision, bytesSaved: current.bytes };
     },
-    async shutdown() { calls.push({ kind: 'shutdown' }); }
+    async shutdown() { calls.push({ kind: 'shutdown' }); await shutdownGate; }
   };
   const controller = createLocalTextEditorController(provider, async () => ({ absolutePath: selectedPath, fileName: 'local-settings.txt' }), () => selectionId);
 
@@ -37,7 +39,11 @@ test('local editor keeps the selected path in main and gates operations on its o
   ]);
   assert.equal((await controller.close(selectionId)).ok, true);
   assert.equal((await controller.save(selectionId, 'later', 'b'.repeat(64))).ok, false);
-  await controller.closeAll();
+  const firstShutdown = controller.closeAll();
+  const secondShutdown = controller.closeAll();
+  assert.equal(calls.filter(call => (call as { readonly kind?: string }).kind === 'shutdown').length, 1);
+  releaseShutdown();
+  await Promise.all([firstShutdown, secondShutdown]);
   assert.deepEqual(calls.at(-1), { kind: 'shutdown' });
 });
 

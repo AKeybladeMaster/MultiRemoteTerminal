@@ -53,6 +53,7 @@ export function createLocalTextEditorController(
   let activeSelection: { readonly id: string; readonly absolutePath: string; readonly fileName: string; revision: string } | undefined;
   let operating = false;
   let disposed = false;
+  let shutdownPromise: Promise<void> | undefined;
 
   async function run<T>(operation: () => Promise<Outcome<T>>): Promise<Outcome<T>> {
     if (disposed) return failure('CANCELLED');
@@ -129,11 +130,12 @@ export function createLocalTextEditorController(
       activeSelection = undefined;
       return { ok: true, result: EMPTY_RESULT };
     },
-    async closeAll() {
-      if (disposed) return;
+    closeAll() {
+      if (shutdownPromise) return shutdownPromise;
       disposed = true;
       activeSelection = undefined;
-      await provider.shutdown();
+      shutdownPromise = provider.shutdown();
+      return shutdownPromise;
     }
   };
 }
