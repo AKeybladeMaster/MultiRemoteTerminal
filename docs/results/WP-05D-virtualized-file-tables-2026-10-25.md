@@ -18,7 +18,7 @@ On Windows x64:
 - `corepack pnpm typecheck` passed.
 - `corepack pnpm lint` passed, including import-boundary checks.
 - `corepack pnpm build` passed, including the native module build and Vite renderer.
-- Focused Playwright E2E passed 2/2: the SFTP workflow opened a nested directory with 100 files, checked bounded rendering, forward/reverse keyboard traversal and both scroll ends; the 1,000 saved-session scale workflow also passed.
+- Focused Playwright E2E passed 3/3: the SFTP workflow opened a nested directory with 100 files and checked bounded rendering, forward/reverse keyboard traversal and both scroll ends; the FTP workflow checked a 100-file listing, bounded rendering and both scroll ends; the 1,000 saved-session scale workflow also passed.
 
 The production renderer build still reports Vite's non-blocking chunk-size advisory (907.46 kB minified).
 

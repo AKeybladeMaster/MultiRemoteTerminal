@@ -1435,7 +1435,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   await mkdir(downloadRoot);
   const remoteFiles = new Map<string, Buffer>([
     ['readme.txt', Buffer.from('hello remote')],
-    ['documents/nested.txt', Buffer.from('nested content abc')]
+    ['documents/nested.txt', Buffer.from('nested content abc')],
+    ...Array.from({ length: 100 }, (_, index) =>
+      [`scale-file-${String(index).padStart(3, '0')}.txt`, Buffer.from('scale fixture')] as const)
   ]);
   const controlSockets = new Set<Socket>();
   let connectionCount = 0;
@@ -1646,6 +1648,12 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect(browser, `FTP fixture saw ${connectionCount} control connections, USER=${acceptedUsername}, PASS=${acceptedPassword}, commands=${ftpCommandVerbs.join(',')}, LIST arguments=${ftpListArguments.join('|')}`)
       .toBeVisible({ timeout: 20_000 });
     await expect(browser.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    const ftpFileList = browser.locator('.remote-file-list');
+    await expect(ftpFileList).toHaveClass(/is-virtualized/u);
+    await expect.poll(() => ftpFileList.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
+    expect(await ftpFileList.locator('li[data-virtual-index]').count()).toBeLessThan(102);
+    await ftpFileList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(ftpFileList.locator('li[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '101');
     await expect(browser.getByRole('button', { name: 'Open folder documents', exact: true })).toBeVisible();
     await browser.getByRole('button', { name: 'Open folder documents', exact: true }).click();
     await expect(browser.getByText('nested.txt', { exact: true }), `FTP LIST arguments=${ftpListArguments.join('|')}`).toBeVisible({ timeout: 10_000 });
