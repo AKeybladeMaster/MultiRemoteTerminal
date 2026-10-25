@@ -29,6 +29,8 @@ The settings screenshot from the E2E is `test-results/auto-save-session-settings
 
 Review follow-up: local terminals are auto-saved only after the open reply reports `running`. The renderer no longer gates the remember request on its asynchronously loaded preference; the main broker's persisted setting is authoritative. This avoids skipping a saved profile when a user opens a connection before renderer preferences finish loading, while disabled settings still return `FORBIDDEN` before catalog dispatch.
 
+Independent standards and spec reviews of `origin/main...HEAD` found no documented-standard breach, missing WP-03E behavior, or scope creep. The spec review confirmed the local running-state and preference-load fixes. The standards review noted repeated protocol-specific running checks as a possible duplication smell; payloads differ by protocol and no blocking cleanup was identified. F-004/P-38 remain open pending the 1,000-definition Windows acceptance.
+
 ## Security and remaining work
 
 Automatic saving is off until the user enables it. The catalog remains local profile data; this application has no separate account logout flow. FTP and Telnet definitions can reveal endpoint metadata, and plaintext protocols retain their existing consent warnings. P-13 sidebar workflows now have Windows acceptance evidence. F-004/P-38 still require the full 1,000-definition Windows workflow; this slice does not close that acceptance gate. Real-world interoperability checks for physical serial hardware, FTPS, and SSH gateway routes remain outside this slice.
