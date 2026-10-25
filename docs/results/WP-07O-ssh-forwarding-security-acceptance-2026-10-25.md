@@ -6,7 +6,7 @@
 
 Focused SSH tunnel and provider unit suites:
 
-- `node --test tests/unit/ssh-tunnels.test.ts tests/unit/ssh-transport-provider.test.ts` - passed, 31/31. Coverage includes loopback-only local binding and relay, TCP half-close and long-lived channels, SOCKS5 no-auth TCP CONNECT plus rejected unsupported commands, IPv6 destinations, remote loopback bind request and unbind, 64-channel limits, open/handshake deadlines, cancellation, bind conflict, profile removal protection, and application shutdown cleanup.
+- `node --test tests/unit/ssh-tunnels.test.ts tests/unit/ssh-transport-provider.test.ts` - passed, 31/31. Coverage includes loopback-only local binding and relay, TCP half-close and long-lived channels, SOCKS5 no-auth TCP CONNECT plus rejected unsupported commands, IPv6 destinations, remote loopback bind request and unbind, 64-channel limits, open/handshake deadlines, cancellation, bind conflict, profile removal protection, 20 concurrently active saved tunnels without an application cap, and application shutdown cleanup.
 
 Windows loopback application E2E:
 
