@@ -106,7 +106,7 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 - [x] Focused changed-host-key blocking unit coverage and one-/two-gateway Windows verification E2E pass ([WP-07M evidence](results/WP-07M-host-trust-acceptance-2026-10-25.md)); the host-key-rotation E2E described in the threat table above remains open.
 - [x] Windows safeStorage vault survives an app process restart under the same user profile, with no plaintext in `credentials.json` ([WP-07L evidence](results/WP-07L-vault-restart-2026-10-25.md)).
 - [ ] No plaintext secret in DB/log/export/IPC; those channels are not covered by WP-07K/WP-07L ([WP-07K](results/WP-07K-vault-lock-recovery-2026-10-25.md), [WP-07L](results/WP-07L-vault-restart-2026-10-25.md)).
-- [ ] SFTP traversal, cancel, symlink and overwrite tests pass.
+- [x] SFTP path traversal, cancellation, symlink and overwrite unit tests pass; Windows loopback E2E verifies actual upload/download bytes. 100 MB transfers and network-loss cleanup remain open ([WP-07N evidence](results/WP-07N-sftp-security-acceptance-2026-10-25.md)).
 - [ ] Local/remote/dynamic SSH forwarding policy tests pass.
 - [ ] Network daemons/X11, when implemented, not exposed publicly by default.
 - [ ] Build dependencies audited, SBOM created, installer hash published.

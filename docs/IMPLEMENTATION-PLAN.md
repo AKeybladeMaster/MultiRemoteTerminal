@@ -170,6 +170,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07M — SSH trust gate evidence:** Re-ran the focused host-trust and SSH-controller unit suites: 22/22 pass, including changed-key detection and the controller blocking a changed key with a non-secret warning. Re-ran the Windows saved-profile gateway E2E: 1/1 passes, verifying independent trust at the destination and each gateway in one-hop and two-hop routes plus cleanup. This satisfies the narrow `docs/SECURITY.md` checklist item for unit-level changed-key blocking and jump-host verification; it does not meet the threat table's separate host-key-rotation E2E acceptance. F-003/P-03 remain partial for key/agent authentication, packaged native credential prompting and disposable OpenSSH interoperability; F-011/P-22 remain partial for SFTP-only routes, gateway-routed tunnels, longer chains and public-server interoperability. See [WP-07M results](results/WP-07M-host-trust-acceptance-2026-10-25.md).
 
+**WP-07N — SFTP path and transfer security evidence:** Re-ran focused path and transfer unit suites: 15/15 pass, covering traversal validation, cancellation cleanup, symlink rejection, collision behavior and explicit overwrite. The Windows loopback SFTP E2E passed 1/1 through the app and verifies uploaded/downloaded bytes. The security gate item is checked; 100 MB throughput, network-loss cleanup and broader SFTP server interoperability remain open, so F-005/P-14 remain partial. See [WP-07N results](results/WP-07N-sftp-security-acceptance-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
