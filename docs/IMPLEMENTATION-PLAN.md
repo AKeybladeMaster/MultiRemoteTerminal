@@ -176,6 +176,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07P — SSH credential boundary acceptance (partial):** Windows loopback SSH E2E authenticates with a test-only password canary, saves and exports the credential-free profile, and confirms the canary is absent from renderer-visible UI, main/renderer console output, the saved SQLite row and files in the temporary app profile. Focused IPC, broker, controller, catalog and bundle tests pass 75/75; they reject credential fields in renderer commands/replies and ensure rejected values are not included in audit events. A separate FTP E2E passes 1/1 and confirms its password is absent from UI and its saved database row. Main-to-utility-worker authentication messages intentionally carry passwords, and the broad all-flow security gate remains unchecked; other credential flows and user-facing vault integration need coverage. See [WP-07P evidence](results/WP-07P-credential-boundary-2026-10-25.md).
 
+**WP-07Q — Security gate wording correction:** Updated the N-002 checklist to credit WP-07I's bounded hostile SSH-output acceptance while keeping unsigned distribution integrity and broader privilege-injection acceptance open. This is a documentation correction only; no feature status or security-gate completion status changed. See [WP-07Q result](results/WP-07Q-security-gate-wording-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  

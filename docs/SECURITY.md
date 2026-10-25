@@ -110,4 +110,4 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 - [x] Local/remote/dynamic SSH forwarding policy unit tests and Windows loopback E2E pass ([WP-07O evidence](results/WP-07O-ssh-forwarding-security-acceptance-2026-10-25.md)); public-bind consent and broad interoperability remain open.
 - [ ] Network daemons/X11, when implemented, not exposed publicly by default.
 - [ ] Build dependencies audited, SBOM created, installer hash published.
-- [x] Independent reviewer has no unresolved critical/high finding; unsigned distribution integrity and missing hostile terminal-output privilege-injection evidence remain release blockers.
+- [x] Independent reviewer has no unresolved critical/high finding; unsigned distribution integrity and privilege-injection acceptance beyond the bounded hostile SSH-output case in [WP-07I](results/WP-07I-hostile-ssh-output-2026-10-25.md) remain release blockers.
