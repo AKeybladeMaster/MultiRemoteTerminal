@@ -149,6 +149,9 @@ export type ForgetSessionCredentialRequest = Request<'session.credential.forget'
 export type GetCredentialVaultStateRequest = Request<'vault.state', Record<string, never>>;
 export type LockCredentialVaultRequest = Request<'vault.lock', Record<string, never>>;
 export type UnlockCredentialVaultRequest = Request<'vault.unlock', Record<string, never>>;
+export type EnableCredentialVaultMasterPasswordRequest = Request<'vault.master.enable', Record<string, never>>;
+export type DisableCredentialVaultMasterPasswordRequest = Request<'vault.master.disable', Record<string, never>>;
+export type ResetCredentialVaultRequest = Request<'vault.reset', Record<string, never>>;
 export type ListSshTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
 export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
   readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number } |
@@ -175,6 +178,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   HasSessionCredentialRequest | SaveSessionCredentialRequest | ForgetSessionCredentialRequest | GetCredentialVaultStateRequest | LockCredentialVaultRequest | UnlockCredentialVaultRequest |
+  EnableCredentialVaultMasterPasswordRequest | DisableCredentialVaultMasterPasswordRequest | ResetCredentialVaultRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
   GetWorkbenchPreferencesRequest | SaveWorkbenchPreferencesRequest;
@@ -216,8 +220,10 @@ export type ListMacroShortcutsReply = CommandReply<readonly MacroShortcutBinding
 export type MacroShortcutReply = CommandReply<MacroShortcutBinding>;
 export type WorkbenchPreferencesReply = CommandReply<WorkbenchPreferences>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
-export type CredentialVaultState = 'uninitialized' | 'available' | 'locked' | 'unavailable';
-export type CredentialVaultStateReply = CommandReply<CredentialVaultState>;
+export type CredentialVaultStatus = 'uninitialized' | 'available' | 'locked' | 'unavailable';
+export type CredentialVaultMode = 'windows-account' | 'master-password';
+export interface CredentialVaultSnapshot { readonly state: CredentialVaultStatus; readonly mode: CredentialVaultMode; }
+export type CredentialVaultStateReply = CommandReply<CredentialVaultSnapshot>;
 export type SessionCredentialPresenceReply = CommandReply<boolean>;
 
 export interface DesktopBridge {
@@ -287,6 +293,9 @@ export interface DesktopBridge {
   getCredentialVaultState(): Promise<CredentialVaultStateReply>;
   lockCredentialVault(): Promise<TerminalActionReply>;
   unlockCredentialVault(): Promise<CredentialVaultStateReply>;
+  enableMasterPasswordVault(): Promise<CredentialVaultStateReply>;
+  disableMasterPasswordVault(): Promise<CredentialVaultStateReply>;
+  resetCredentialVault(): Promise<CredentialVaultStateReply>;
   listSshTunnels(): Promise<ListSshTunnelsReply>;
   saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply>;
   deleteTunnel(id: string): Promise<TerminalActionReply>;
@@ -534,10 +543,14 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'session.credential.forget' && exactKeys(payload, ['id']) && isSessionDefinitionId(payload.id)) {
     return { ok: true, result: value as unknown as ForgetSessionCredentialRequest };
   }
-  if ((value.command === 'vault.state' || value.command === 'vault.lock' || value.command === 'vault.unlock') && exactKeys(payload, [])) {
+  if ((value.command === 'vault.state' || value.command === 'vault.lock' || value.command === 'vault.unlock' ||
+      value.command === 'vault.master.enable' || value.command === 'vault.master.disable' || value.command === 'vault.reset') && exactKeys(payload, [])) {
     if (value.command === 'vault.state') return { ok: true, result: value as unknown as GetCredentialVaultStateRequest };
     if (value.command === 'vault.lock') return { ok: true, result: value as unknown as LockCredentialVaultRequest };
-    return { ok: true, result: value as unknown as UnlockCredentialVaultRequest };
+    if (value.command === 'vault.unlock') return { ok: true, result: value as unknown as UnlockCredentialVaultRequest };
+    if (value.command === 'vault.master.enable') return { ok: true, result: value as unknown as EnableCredentialVaultMasterPasswordRequest };
+    if (value.command === 'vault.master.disable') return { ok: true, result: value as unknown as DisableCredentialVaultMasterPasswordRequest };
+    return { ok: true, result: value as unknown as ResetCredentialVaultRequest };
   }
   if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSshTunnelsRequest };
   if (value.command === 'tunnel.save' && normalizeSshTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveSshTunnelRequest };
@@ -574,6 +587,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
+    'vault.master.enable', 'vault.master.disable', 'vault.reset',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
     'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'preferences.get', 'preferences.save'].includes(value.command)) {
     return failure('INVALID_REQUEST');
@@ -685,7 +699,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'session.folder.export') return isFolderExportResult(value.result);
     if (request.command === 'session.folder.import') return isFolderImportResult(value.result);
     if (request.command === 'session.credential.has') return typeof value.result === 'boolean';
-    if (request.command === 'vault.state' || request.command === 'vault.unlock') return isCredentialVaultState(value.result);
+    if (request.command === 'vault.state' || request.command === 'vault.unlock' || request.command === 'vault.master.enable' ||
+        request.command === 'vault.master.disable' || request.command === 'vault.reset') return isCredentialVaultSnapshot(value.result);
     if (request.command === 'tunnel.list') return Array.isArray(value.result) && value.result.every(isSshTunnelSnapshot);
     if (request.command === 'tunnel.save') return isSshTunnelDefinition(value.result);
     if (request.command === 'tunnel.delete') return record(value.result) && exactKeys(value.result, []);
@@ -705,8 +720,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);
 }
 
-function isCredentialVaultState(value: unknown): value is CredentialVaultState {
-  return value === 'uninitialized' || value === 'available' || value === 'locked' || value === 'unavailable';
+function isCredentialVaultSnapshot(value: unknown): value is CredentialVaultSnapshot {
+  return record(value) && exactKeys(value, ['state', 'mode']) &&
+    (value.state === 'uninitialized' || value.state === 'available' || value.state === 'locked' || value.state === 'unavailable') &&
+    (value.mode === 'windows-account' || value.mode === 'master-password');
 }
 
 function isSshTunnelSnapshot(value: unknown): value is SshTunnelSnapshot {

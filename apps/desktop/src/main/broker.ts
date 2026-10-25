@@ -72,7 +72,8 @@ export interface CommandActions {
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'count' | 'get' | 'create' | 'remember' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
-  readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
+  readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'enableMasterPassword' | 'disableMasterPassword' | 'resetVault' |
+    'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
@@ -363,6 +364,9 @@ export async function dispatchCommand(
         actions.sessionCredentials.lock();
         return { requestId, ok: true, result: EMPTY_RESULT };
       case 'vault.unlock': return { requestId, ...await actions.sessionCredentials.unlock() };
+      case 'vault.master.enable': return { requestId, ...await actions.sessionCredentials.enableMasterPassword() };
+      case 'vault.master.disable': return { requestId, ...await actions.sessionCredentials.disableMasterPassword() };
+      case 'vault.reset': return { requestId, ...await actions.sessionCredentials.resetVault() };
       case 'macro.list': return { requestId, ...await actions.macros.list(actions.cancellation) };
       case 'macro.create': return { requestId, ...await actions.macros.create(parsed.result.payload, actions.cancellation) };
       case 'macro.update': {

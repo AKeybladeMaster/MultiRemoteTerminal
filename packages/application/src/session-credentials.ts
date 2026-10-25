@@ -7,7 +7,7 @@ import type { SavedSessionDefinition } from '../../domain/src/session-definition
 import { isSessionDefinitionId } from '../../domain/src/session-definition.ts';
 import type { CancellationSignal } from './cancellation.ts';
 import type { CredentialPrompt, CredentialPromptCancellation } from './credential-prompt.ts';
-import type { SecretVault, SecretVaultState } from './secret-vault.ts';
+import type { SecretVault, SecretVaultSnapshot } from './secret-vault.ts';
 import { SecretVaultError } from './secret-vault.ts';
 import { storageOperationErrorCode } from './storage-errors.ts';
 import type { SshTerminalCredentials } from './ssh-terminals.ts';
@@ -17,12 +17,16 @@ export interface SessionCredentialStore {
   getSessionCredentialReference(id: string, cancellation?: CancellationSignal): Promise<CredentialReference | undefined>;
   setSessionCredentialReference(id: string, reference: CredentialReference | null, expectedReference: CredentialReference | null,
     cancellation?: CancellationSignal): Promise<boolean>;
+  clearAllSessionCredentialReferences(cancellation?: CancellationSignal): Promise<void>;
 }
 
 export interface SessionCredentialManager {
-  state(): SecretVaultState;
+  state(): SecretVaultSnapshot;
   lock(): void;
-  unlock(): Promise<Outcome<SecretVaultState>>;
+  unlock(): Promise<Outcome<SecretVaultSnapshot>>;
+  enableMasterPassword(): Promise<Outcome<SecretVaultSnapshot>>;
+  disableMasterPassword(): Promise<Outcome<SecretVaultSnapshot>>;
+  resetVault(): Promise<Outcome<SecretVaultSnapshot>>;
   hasSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<boolean>>;
   saveSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   forgetSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
@@ -40,13 +44,53 @@ const NEVER_CANCELLED: CredentialPromptCancellation = Object.freeze({
 export function createSessionCredentialManager(store: SessionCredentialStore, prompt: CredentialPrompt, vault: SecretVault,
   createReference: () => string): SessionCredentialManager {
   return {
-    state: () => vault.state,
+    state: () => ({ state: vault.state, mode: vault.mode }),
     lock: () => vault.lock(),
     async unlock() {
       try {
-        await vault.unlock();
-        return { ok: true, result: vault.state };
+        let password: string | undefined;
+        if (vault.mode === 'master-password' && vault.state !== 'available') {
+          const credential = await prompt.prompt('master-password', NEVER_CANCELLED, 'Unlock the saved SSH credential vault.');
+          if (credential.kind === 'cancelled') return failure('CANCELLED');
+          if (credential.kind !== 'provided') return failure(credential.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
+          password = credential.secret;
+        }
+        await vault.unlock(password);
+        return { ok: true, result: { state: vault.state, mode: vault.mode } };
       } catch (error) { return failure(errorCode(error)); }
+    },
+    async enableMasterPassword() {
+      if (vault.mode !== 'windows-account' || vault.state !== 'available') return failure('LOCKED');
+      const first = await prompt.prompt('master-password', NEVER_CANCELLED, 'Create a long, unique master password. You will need it to unlock saved credentials.');
+      if (first.kind === 'cancelled') return failure('CANCELLED');
+      if (first.kind !== 'provided') return failure(first.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
+      const confirmation = await prompt.prompt('master-password', NEVER_CANCELLED, 'Enter the same master password again to confirm it.');
+      if (confirmation.kind === 'cancelled') return failure('CANCELLED');
+      if (confirmation.kind !== 'provided') return failure(confirmation.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
+      if (first.secret !== confirmation.secret) return failure('CONFLICT');
+      try {
+        await vault.enableMasterPassword(first.secret);
+        return { ok: true, result: { state: vault.state, mode: vault.mode } };
+      } catch (error) { return failure(errorCode(error)); }
+    },
+    async disableMasterPassword() {
+      if (vault.mode !== 'master-password') return failure('INVALID_REQUEST');
+      const credential = await prompt.prompt('master-password', NEVER_CANCELLED, 'Confirm the current master password to switch vault protection.');
+      if (credential.kind === 'cancelled') return failure('CANCELLED');
+      if (credential.kind !== 'provided') return failure(credential.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
+      try {
+        await vault.disableMasterPassword(credential.secret);
+        return { ok: true, result: { state: vault.state, mode: vault.mode } };
+      } catch (error) { return failure(errorCode(error)); }
+    },
+    async resetVault() {
+      let vaultReset = false;
+      try {
+        await vault.reset();
+        vaultReset = true;
+        await store.clearAllSessionCredentialReferences();
+        return { ok: true, result: { state: vault.state, mode: vault.mode } };
+      } catch (error) { return failure(vaultReset ? 'CONFLICT' : errorCode(error)); }
     },
     async hasSshCredential(sessionId: unknown, cancellation?: CancellationSignal) {
       if (!isSessionDefinitionId(sessionId)) return failure('INVALID_REQUEST');
@@ -124,7 +168,14 @@ export function createSessionCredentialManager(store: SessionCredentialStore, pr
             const credentials = parseStoredCredential(serialized);
             return credentials ? { ok: true, result: credentials } : failure('CORRUPT');
           } catch (error) {
-            if (!(error instanceof SecretVaultError) || error.kind !== 'not-found' || retry > 0) throw error;
+            if (!(error instanceof SecretVaultError) || error.kind !== 'not-found') throw error;
+            const currentReference = await store.getSessionCredentialReference(sessionId, cancellation);
+            if (currentReference !== reference) {
+              reference = currentReference;
+              continue;
+            }
+            const detached = await store.setSessionCredentialReference(sessionId, null, reference, cancellation);
+            if (detached) return { ok: true, result: undefined };
             reference = await store.getSessionCredentialReference(sessionId, cancellation);
           }
         }
@@ -161,6 +212,8 @@ function errorCode(error: unknown): ErrorCode {
     if (error.kind === 'corrupt') return 'CORRUPT';
     if (error.kind === 'invalid-input') return 'INVALID_REQUEST';
     if (error.kind === 'not-found') return 'NOT_FOUND';
+    if (error.kind === 'password-rejected') return 'AUTHENTICATION_FAILED';
+    if (error.kind === 'timeout') return 'TIMEOUT';
   }
   return storageOperationErrorCode(error) ?? 'UNAVAILABLE';
 }

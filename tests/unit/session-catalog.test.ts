@@ -158,6 +158,12 @@ test('credential references bind only SSH terminal profiles and remain absent fr
     assert.equal(Object.hasOwn(exposedProfile, 'credential_ref'), false);
     const raw = database.prepare('SELECT credential_ref FROM session_definitions WHERE id = ?').get(ssh.id) as { readonly credential_ref: string };
     assert.equal(raw.credential_ref, reference);
+    const updatedAtBeforeReset = (database.prepare('SELECT updated_at FROM session_definitions WHERE id = ?').get(ssh.id) as { readonly updated_at: string }).updated_at;
+    await catalog.clearAllSessionCredentialReferences();
+    assert.equal((database.prepare('SELECT credential_ref FROM session_definitions WHERE id = ?').get(ssh.id) as { readonly credential_ref: string | null }).credential_ref, null);
+    assert.ok(await catalog.getSessionDefinition(ssh.id), 'vault reset must preserve saved session definitions');
+    assert.equal((database.prepare('SELECT updated_at FROM session_definitions WHERE id = ?').get(ssh.id) as { readonly updated_at: string }).updated_at,
+      updatedAtBeforeReset, 'credential cleanup must not change saved-session recency');
   } finally { database.close(); }
 });
 

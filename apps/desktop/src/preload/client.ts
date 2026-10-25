@@ -548,7 +548,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return send({ command: 'vault.lock', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
     },
     unlockCredentialVault(): Promise<CredentialVaultStateReply> {
-      return send({ command: 'vault.unlock', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 30_000);
+      return send({ command: 'vault.unlock', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 180_000);
+    },
+    enableMasterPasswordVault(): Promise<CredentialVaultStateReply> {
+      return send({ command: 'vault.master.enable', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 300_000);
+    },
+    disableMasterPasswordVault(): Promise<CredentialVaultStateReply> {
+      return send({ command: 'vault.master.disable', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 180_000);
+    },
+    resetCredentialVault(): Promise<CredentialVaultStateReply> {
+      return send({ command: 'vault.reset', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 30_000);
     },
     listSshTunnels(): Promise<ListSshTunnelsReply> {
       return send({ command: 'tunnel.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);

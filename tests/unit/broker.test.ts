@@ -66,7 +66,11 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
     importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
   }, sessionCredentials: {
-    state: () => 'available', lock() {}, async unlock() { return { ok: true, result: 'available' } as const; },
+    state: () => ({ state: 'available', mode: 'windows-account' } as const), lock() {},
+    async unlock() { return { ok: true, result: { state: 'available', mode: 'windows-account' } } as const; },
+    async enableMasterPassword() { return { ok: true, result: { state: 'available', mode: 'master-password' } } as const; },
+    async disableMasterPassword() { return { ok: true, result: { state: 'available', mode: 'windows-account' } } as const; },
+    async resetVault() { return { ok: true, result: { state: 'available', mode: 'windows-account' } } as const; },
     async hasSshCredential() { return { ok: true, result: false } as const; },
     async saveSshCredential() { return { ok: true, result: {} } as const; },
     async forgetSshCredential() { return { ok: true, result: {} } as const; },
