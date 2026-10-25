@@ -623,7 +623,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose()]))
+    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });

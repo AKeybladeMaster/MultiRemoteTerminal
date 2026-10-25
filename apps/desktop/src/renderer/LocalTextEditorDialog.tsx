@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { LocalTextFile } from '../../../../packages/domain/src/local-text-file.ts';
 import { MAX_REMOTE_TEXT_FILE_BYTES, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
+import { fileLineEnding, textareaContent } from './text-editor-format.ts';
 
 interface LocalTextEditorDialogProps {
   readonly open: boolean;
@@ -12,7 +13,7 @@ type CloseIntent = 'close' | 'reload';
 
 function errorMessage(code: string): string {
   if (code === 'CONFLICT') return 'The local file changed since it was opened. Your draft is preserved; reload the latest version before saving again.';
-  if (code === 'NOT_SUPPORTED') return 'This file is not valid UTF-8 text. It was not changed.';
+  if (code === 'NOT_SUPPORTED') return 'This is not a regular UTF-8 text file. It was not changed.';
   if (code === 'OUTPUT_LIMIT') return 'This file exceeds the 512 KB editor limit.';
   if (code === 'NOT_FOUND') return 'The selected file no longer exists. Open it again from its current location.';
   if (code === 'FORBIDDEN') return 'Windows denied access to this file. Check the file permissions.';
@@ -20,9 +21,6 @@ function errorMessage(code: string): string {
   if (code === 'CANCELLED') return 'The local file operation was cancelled.';
   return 'The local text file could not be saved or loaded.';
 }
-
-function textareaContent(content: string): string { return content.replace(/\r\n|\r/g, '\n'); }
-function fileLineEnding(content: string): string { return content.match(/\r\n|\r|\n/)?.[0] ?? '\n'; }
 
 export function LocalTextEditorDialog({ open, file: initialFile, onClose }: LocalTextEditorDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);

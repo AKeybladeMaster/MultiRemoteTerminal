@@ -1192,7 +1192,7 @@ function Workbench() {
       if (!reply.ok) {
         if (reply.error.code !== 'CANCELLED') setAlert(reply.error.code === 'OUTPUT_LIMIT'
           ? 'The selected file exceeds the 512 KB local editor limit.'
-          : reply.error.code === 'NOT_SUPPORTED' ? 'The selected file is not valid UTF-8 text.'
+          : reply.error.code === 'NOT_SUPPORTED' ? 'The selected file is not a supported regular UTF-8 text file.'
             : reply.error.code === 'FORBIDDEN' ? 'Windows denied access to the selected file.'
               : 'The selected local file could not be opened.');
         return;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { RemoteTextFile } from '../../../../packages/domain/src/remote-text-file.ts';
 import { MAX_REMOTE_TEXT_FILE_BYTES, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import { fileLineEnding, textareaContent } from './text-editor-format.ts';
 
 interface RemoteTextEditorDialogProps {
   readonly open: boolean;
@@ -24,14 +25,6 @@ function errorMessage(code: string): string {
   if (code === 'TIMEOUT') return 'The request timed out and may have reached the server. Reload the file to check its current contents before retrying.';
   if (code === 'CANCELLED') return 'The request was cancelled.';
   return 'The remote text file could not be saved or loaded. Check the SFTP connection and permissions.';
-}
-
-function textareaContent(content: string): string {
-  return content.replace(/\r\n|\r/g, '\n');
-}
-
-function fileLineEnding(content: string): string {
-  return content.match(/\r\n|\r|\n/)?.[0] ?? '\n';
 }
 
 export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, onSaved, onActivityChange }: RemoteTextEditorDialogProps) {
