@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createSessionCredentialManager } from '../../packages/application/src/session-credentials.ts';
 import type { SessionCredentialStore } from '../../packages/application/src/session-credentials.ts';
 import { SecretVaultError } from '../../packages/application/src/secret-vault.ts';
-import type { SecretVault, SecretVaultState } from '../../packages/application/src/secret-vault.ts';
+import type { SecretVault, SecretVaultMode, SecretVaultState } from '../../packages/application/src/secret-vault.ts';
 import type { SavedSessionDefinition } from '../../packages/domain/src/session-definition.ts';
 import type { CredentialReference } from '../../packages/domain/src/credentials.ts';
 import { parseCredentialReference } from '../../packages/domain/src/credentials.ts';
@@ -20,9 +20,11 @@ function setup(initialState: SecretVaultState = 'available') {
   let staleNextReference: CredentialReference | undefined;
   let profile: SavedSessionDefinition | undefined = sshProfile;
   let nextReference = 0;
+  let failReferenceClear = false;
   const references = [generatedReference, replacementReference];
   const secrets = new Map<string, string>();
   let state = initialState;
+  let mode: SecretVaultMode = 'windows-account';
   const store: SessionCredentialStore = {
     async getSessionDefinition(id) { return profile?.id === id ? profile : undefined; },
     async getSessionCredentialReference() {
@@ -37,10 +39,15 @@ function setup(initialState: SecretVaultState = 'available') {
       if (profile?.id !== id || (reference ?? null) !== expected) return false;
       reference = next ?? undefined;
       return true;
+    },
+    async clearAllSessionCredentialReferences() {
+      if (failReferenceClear) throw new Error('storage unavailable');
+      reference = undefined;
     }
   };
   const vault: SecretVault = {
     get state() { return state; },
+    get mode() { return mode; },
     async initialize() {},
     async store(key, secret) { if (state !== 'available') throw new SecretVaultError('locked'); secrets.set(key, secret); },
     async resolveForOperation(key) {
@@ -53,15 +60,67 @@ function setup(initialState: SecretVaultState = 'available') {
       if (state !== 'available') throw new SecretVaultError('locked');
       return secrets.delete(key);
     },
-    async reset() { secrets.clear(); },
+    async reset() { secrets.clear(); mode = 'windows-account'; state = 'available'; },
     lock() { state = 'locked'; },
-    async unlock() { state = 'available'; }
+    async unlock() { state = 'available'; },
+    async enableMasterPassword() { mode = 'master-password'; state = 'available'; },
+    async disableMasterPassword() { mode = 'windows-account'; state = 'available'; }
   };
   const prompt = { async prompt() { return { kind: 'provided' as const, username: 'alice', secret: 'saved-password-test' }; } };
   return { manager: createSessionCredentialManager(store, prompt, vault, () => references[nextReference++] ?? replacementReference), secrets,
-    get reference() { return reference; }, set profile(value: SavedSessionDefinition | undefined) { profile = value; },
-    set state(value: SecretVaultState) { state = value; }, set staleNextReference(value: CredentialReference | undefined) { staleNextReference = value; } };
+    get reference() { return reference; }, get profile() { return profile; }, set profile(value: SavedSessionDefinition | undefined) { profile = value; },
+    set failReferenceClear(value: boolean) { failReferenceClear = value; },
+    set state(value: SecretVaultState) { state = value; }, set mode(value: SecretVaultMode) { mode = value; },
+    set staleNextReference(value: CredentialReference | undefined) { staleNextReference = value; } };
 }
+
+test('master-password management uses private prompts and reports only vault mode and status', async () => {
+  const context = setup();
+  assert.deepEqual(await context.manager.enableMasterPassword(), {
+    ok: true, result: { state: 'available', mode: 'master-password' }
+  });
+  context.state = 'locked';
+  assert.deepEqual(await context.manager.unlock(), {
+    ok: true, result: { state: 'available', mode: 'master-password' }
+  });
+  assert.deepEqual(await context.manager.disableMasterPassword(), {
+    ok: true, result: { state: 'available', mode: 'windows-account' }
+  });
+});
+
+test('vault reset clears SSH credential references but leaves saved session definitions intact', async () => {
+  const context = setup();
+  await context.manager.saveSshCredential(sshProfile.id);
+  assert.equal(context.reference, generatedReference);
+  const reset = await context.manager.resetVault();
+  assert.deepEqual(reset, { ok: true, result: { state: 'available', mode: 'windows-account' } });
+  assert.equal(context.reference, undefined);
+  assert.deepEqual(context.profile, sshProfile);
+  assert.deepEqual(await context.manager.hasSshCredential(sshProfile.id), { ok: true, result: false });
+});
+
+test('vault reset reports partial reference cleanup after encrypted passwords are already deleted', async () => {
+  const context = setup();
+  await context.manager.saveSshCredential(sshProfile.id);
+  context.failReferenceClear = true;
+
+  assert.deepEqual(await context.manager.resetVault(), {
+    ok: false, error: { code: 'CONFLICT', target: 'application', retryable: false }
+  });
+  assert.equal(context.secrets.size, 0);
+  assert.equal(context.reference, generatedReference, 'the failed store cleanup is visible for status refresh and stale-reference recovery');
+  assert.deepEqual(context.profile, sshProfile, 'partial reset preserves the saved definition');
+});
+
+test('a stale credential reference is detached when an explicit vault reset removed its entry', async () => {
+  const context = setup();
+  await context.manager.saveSshCredential(sshProfile.id);
+  context.secrets.clear();
+  assert.deepEqual(await context.manager.resolveSshCredential(sshProfile.id, sshProfile.host, sshProfile.port), {
+    ok: true, result: undefined
+  });
+  assert.equal(context.reference, undefined);
+});
 
 test('saved SSH credentials are serialized only into the vault and resolve only for their exact profile endpoint', async () => {
   const context = setup();

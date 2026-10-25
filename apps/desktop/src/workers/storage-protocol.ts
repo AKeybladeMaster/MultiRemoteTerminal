@@ -32,6 +32,7 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.set'; readonly id: string; readonly reference: CredentialReference | null; readonly expectedReference: CredentialReference | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.clear-all' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remember'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.favorite'; readonly id: string; readonly favorite: boolean }
@@ -152,6 +153,7 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.credential.set' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'reference', 'expectedReference']) &&
       isSessionDefinitionId(value.id) && (value.reference === null || parseCredentialReference(value.reference)) &&
       (value.expectedReference === null || parseCredentialReference(value.expectedReference))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.credential.clear-all' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSavedSessionDraft(value.draft)) {
     return value as unknown as StorageWorkerRequest;
   }

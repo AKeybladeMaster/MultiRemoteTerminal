@@ -100,6 +100,9 @@ test('credential and vault commands accept only profile identifiers and safe sta
   const has = { ...save, command: 'session.credential.has' };
   const forget = { ...save, command: 'session.credential.forget' };
   const vault = { command: 'vault.state', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const enableMaster = { ...vault, command: 'vault.master.enable' };
+  const disableMaster = { ...vault, command: 'vault.master.disable' };
+  const resetVault = { ...vault, command: 'vault.reset' };
   const locked = { requestId: request.requestId, ok: false, error: { code: 'LOCKED', target: 'application', retryable: false } };
   const parsedSave = parseRequest(save);
   const parsedHas = parseRequest(has);
@@ -109,7 +112,15 @@ test('credential and vault commands accept only profile identifiers and safe sta
   assert.equal(parseRequest({ ...forget, payload: { id, credentialRef: id } }).ok, false);
   assert.equal(parsedHas.ok && isCommandReply({ requestId: request.requestId, ok: true, result: true }, parsedHas.result), true);
   assert.equal(parsedHas.ok && isCommandReply({ requestId: request.requestId, ok: true, result: { reference: id } }, parsedHas.result), false);
-  assert.equal(parsedVault.ok && isCommandReply({ requestId: request.requestId, ok: true, result: 'locked' }, parsedVault.result), true);
+  assert.equal(parsedVault.ok && isCommandReply({ requestId: request.requestId, ok: true,
+    result: { state: 'locked', mode: 'master-password' } }, parsedVault.result), true);
+  for (const action of [enableMaster, disableMaster, resetVault]) {
+    const parsed = parseRequest(action);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.ok && isCommandReply({ requestId: request.requestId, ok: true,
+      result: { state: 'available', mode: 'windows-account' } }, parsed.result), true);
+    assert.equal(parseRequest({ ...action, payload: { password: 'must-not-cross-renderer-ipc' } }).ok, false);
+  }
   assert.equal(parsedSave.ok && isCommandReply(locked, parsedSave.result), true);
 });
 

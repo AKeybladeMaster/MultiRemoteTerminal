@@ -60,6 +60,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   private readonly findSession: StatementSync;
   private readonly findSessionCredentialReference: StatementSync;
   private readonly updateSessionCredentialReference: StatementSync;
+  private readonly clearAllSessionCredentialReferencesStatement: StatementSync;
   private readonly findSameSession: StatementSync;
   private readonly touchSession: StatementSync;
   private readonly insertImportedSession: StatementSync;
@@ -121,6 +122,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
     this.findSessionCredentialReference = database.prepare("SELECT credential_ref FROM session_definitions WHERE id = ? AND kind = 'ssh' AND options_json = '{}'");
     this.updateSessionCredentialReference = database.prepare("UPDATE session_definitions SET credential_ref = ?, updated_at = ? WHERE id = ? AND kind = 'ssh' AND options_json = '{}' AND credential_ref IS ?");
+    this.clearAllSessionCredentialReferencesStatement = database.prepare("UPDATE session_definitions SET credential_ref = NULL WHERE credential_ref IS NOT NULL");
     this.findSameSession = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
       FROM session_definitions
@@ -176,6 +178,11 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
           !(expectedReference === null || parseCredentialReference(expectedReference))) throw new StorageOperationError('invalid');
       return Number(this.updateSessionCredentialReference.run(reference, new Date().toISOString(), id, expectedReference).changes) > 0;
     } catch (error) { throw mapStorageError(error); }
+  }
+
+  async clearAllSessionCredentialReferences(): Promise<void> {
+    try { this.clearAllSessionCredentialReferencesStatement.run(); }
+    catch (error) { throw mapStorageError(error); }
   }
 
   async createSession(input: SavedSessionDraft): Promise<SavedSessionDefinition> {

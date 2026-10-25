@@ -156,6 +156,12 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value;
   }
 
+  async clearAllSessionCredentialReferences(cancellation?: CancellationSignal): Promise<void> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.credential.clear-all' }, cancellation);
+    if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
+  }
+
   async createSession(input: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition> {
     const draft = normalizeSavedSessionDraft(input);
     if (!draft) throw new HostTrustStoreError('unavailable');

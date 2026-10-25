@@ -22,6 +22,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState('');
   const [credentialVaultState, setCredentialVaultState] = useState<'uninitialized' | 'available' | 'locked' | 'unavailable'>('uninitialized');
+  const [credentialVaultMode, setCredentialVaultMode] = useState<'windows-account' | 'master-password'>('windows-account');
   const [credentialVaultBusy, setCredentialVaultBusy] = useState(false);
   const [credentialVaultError, setCredentialVaultError] = useState<string>();
   const dialog = useRef<HTMLElement>(null);
@@ -64,7 +65,8 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
     void window.multiRemoteTerminal.getCredentialVaultState().then(reply => {
       if (!active) return;
       if (reply.ok) {
-        setCredentialVaultState(reply.result);
+        setCredentialVaultState(reply.result.state);
+        setCredentialVaultMode(reply.result.mode);
         setCredentialVaultError(undefined);
       } else {
         setCredentialVaultState('unavailable');
@@ -131,6 +133,27 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
     } finally { setSaving(false); }
   }
 
+  async function updateVaultFromReply(reply: Awaited<ReturnType<typeof window.multiRemoteTerminal.unlockCredentialVault>>, action: string) {
+    if (reply.ok) {
+      setCredentialVaultState(reply.result.state);
+      setCredentialVaultMode(reply.result.mode);
+      setCredentialVaultError(undefined);
+      return;
+    }
+    try {
+      const current = await window.multiRemoteTerminal.getCredentialVaultState();
+      if (current.ok) {
+        setCredentialVaultState(current.result.state);
+        setCredentialVaultMode(current.result.mode);
+      }
+    } catch { /* Preserve the original operation error if status refresh fails. */ }
+    if (reply.error.code === 'AUTHENTICATION_FAILED') setCredentialVaultError('That master password was not accepted.');
+    else if (reply.error.code === 'CONFLICT' && action === 'enable') setCredentialVaultError('The two master passwords did not match. Try again.');
+    else if (reply.error.code === 'CONFLICT' && action === 'reset') setCredentialVaultError('Saved passwords were deleted, but session references could not be cleared. Saved sessions remain; opening one will ask for its password again.');
+    else if (reply.error.code === 'LOCKED') setCredentialVaultError('The vault is locked. Wait before trying again, then unlock it.');
+    else setCredentialVaultError(`Credential vault could not be ${action} (${reply.error.code}).`);
+  }
+
   async function changeCredentialVaultLock() {
     if (credentialVaultBusy) return;
     setCredentialVaultBusy(true);
@@ -142,12 +165,33 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         else setCredentialVaultError(`Credential vault could not be locked (${reply.error.code}).`);
       } else {
         const reply = await window.multiRemoteTerminal.unlockCredentialVault();
-        if (reply.ok) setCredentialVaultState(reply.result);
-        else setCredentialVaultError(reply.error.code === 'LOCKED'
-          ? 'The vault changed state while unlocking. Refresh its status and try again.'
-          : `Credential vault could not be unlocked (${reply.error.code}).`);
+        await updateVaultFromReply(reply, 'unlocked');
       }
     } catch { setCredentialVaultError('Credential vault could not be updated.'); }
+    finally { setCredentialVaultBusy(false); }
+  }
+
+  async function changeCredentialVaultMode() {
+    if (credentialVaultBusy) return;
+    setCredentialVaultBusy(true);
+    setCredentialVaultError(undefined);
+    try {
+      const reply = credentialVaultMode === 'windows-account'
+        ? await window.multiRemoteTerminal.enableMasterPasswordVault()
+        : await window.multiRemoteTerminal.disableMasterPasswordVault();
+      await updateVaultFromReply(reply, credentialVaultMode === 'windows-account' ? 'enable' : 'change protection');
+    } catch { setCredentialVaultError('Credential protection could not be changed.'); }
+    finally { setCredentialVaultBusy(false); }
+  }
+
+  async function resetCredentialVault() {
+    if (credentialVaultBusy || !window.confirm('Delete every saved password? Your saved sessions will remain, but their passwords must be entered again.')) return;
+    setCredentialVaultBusy(true);
+    setCredentialVaultError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.resetCredentialVault();
+      await updateVaultFromReply(reply, 'reset');
+    } catch { setCredentialVaultError('Saved passwords could not be reset.'); }
     finally { setCredentialVaultBusy(false); }
   }
 
@@ -167,14 +211,25 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         <div className="settings-highlights">
           <h3>Credential vault</h3>
           <p className="settings-highlight-help">
-            Saved SSH passwords use Windows account protection, which does not protect them from malware running as your Windows user. Locking the vault blocks saved-password connections until you unlock it. This is a local privacy control, not a separate master password.
+            {credentialVaultMode === 'windows-account'
+              ? 'Saved SSH passwords use Windows account protection. It does not protect them from malware running as your Windows user. You can switch to a master password for portable, encrypted vault data.'
+              : 'Saved SSH passwords use a master password and stay locked after each app restart. The password cannot be recovered. Malware running as your Windows user may still access data while the app is unlocked.'}
           </p>
+          <p>Protection: {credentialVaultMode === 'windows-account' ? 'Windows account' : 'Master password'}</p>
           <p role="status" aria-live="polite">Status: {credentialVaultState === 'available' ? 'Unlocked'
             : credentialVaultState === 'locked' ? 'Locked' : credentialVaultState === 'uninitialized' ? 'Starting' : 'Unavailable'}</p>
           {credentialVaultError && <p className="dialog-error" role="alert">{credentialVaultError}</p>}
           <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy}
             onClick={() => void changeCredentialVaultLock()}>
             {credentialVaultBusy ? 'Updating…' : credentialVaultState === 'available' ? 'Lock credentials' : 'Unlock credentials'}
+          </button>
+          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy || credentialVaultState === 'unavailable' || credentialVaultState === 'uninitialized'}
+            onClick={() => void changeCredentialVaultMode()}>
+            {credentialVaultBusy ? 'Updating…' : credentialVaultMode === 'windows-account' ? 'Use a master password' : 'Use Windows account protection'}
+          </button>
+          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy}
+            onClick={() => void resetCredentialVault()}>
+            Delete saved passwords
           </button>
         </div>
         <div className="settings-highlights">

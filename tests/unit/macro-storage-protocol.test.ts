@@ -35,3 +35,11 @@ test('storage worker validates macro replies before returning them to main', () 
   assert.ok(parseStorageWorkerMessage(shortcut));
   assert.equal(parseStorageWorkerMessage({ ...shortcut, result: { kind: 'macroShortcuts', value: [{ macroId, code: 'Ctrl+F2' }] } }), undefined);
 });
+
+test('storage worker exposes a payload-free bulk credential-reference reset', () => {
+  const request = { version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'request', requestId, command: 'session.credential.clear-all' };
+  assert.ok(parseStorageWorkerRequest(request));
+  assert.equal(parseStorageWorkerRequest({ ...request, references: [] }), undefined);
+  assert.ok(parseStorageWorkerMessage({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+    result: { kind: 'changed', value: true } }));
+});

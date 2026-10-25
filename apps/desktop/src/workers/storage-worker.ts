@@ -83,6 +83,10 @@ parent.on('message', async event => {
     } else if (request.command === 'session.credential.set') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: await sessionCatalogRepository.setSessionCredentialReference(request.id, request.reference, request.expectedReference) } });
+    } else if (request.command === 'session.credential.clear-all') {
+      await sessionCatalogRepository.clearAllSessionCredentialReferences();
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: true } });
     } else if (request.command === 'session.create') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'session', value: await sessionCatalogRepository.createSession(request.draft) } });

@@ -29,6 +29,7 @@ import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
+import { MasterPasswordKeyDeriverAdapter } from '../adapters/master-password-key-deriver.ts';
 import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
 import type { CredentialPrompt } from '../../../../packages/application/src/credential-prompt.ts';
@@ -179,7 +180,11 @@ function trackCatalogCommand(senderId: number, requestId: string, cancellation: 
 
 function boot(): void {
   const userData = app.getPath('userData');
-  const credentialVault = new SafeStorageSecretVault(join(userData, 'credentials.json'), safeStorage);
+  const masterPasswordKeyDeriver = new MasterPasswordKeyDeriverAdapter(
+    join(dist, 'host/apps/desktop/src/workers/master-password-kdf-worker.js'), app.getAppPath(),
+    (workerPath, options) => utilityProcess.fork(workerPath, [], options)
+  );
+  const credentialVault = new SafeStorageSecretVault(join(userData, 'credentials.json'), safeStorage, masterPasswordKeyDeriver);
   const idleLock = new VaultIdleLock(() => credentialVault.lock(), scheduleTimeout);
   const lockVaultForSystemEvent = () => credentialVault.lock();
   powerMonitor.on('lock-screen', lockVaultForSystemEvent);
@@ -270,12 +275,14 @@ function boot(): void {
   const vncViewer = createVncViewerController(e2eVncViewer ? { async launch() {} } : new WindowsVncViewer(systemDirectory));
   const e2eSshCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-credentials');
   const e2eFtpCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ftp-credentials');
+  const e2eMasterPassword = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-master-password');
   let e2eSshCredentialPromptCount = 0;
   if (e2eSshCredentials) Object.defineProperty(globalThis, '__mrtE2ESshCredentialPromptCount', {
     configurable: false, enumerable: false, get: () => e2eSshCredentialPromptCount
   });
-  const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eFtpCredentials
+  const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eFtpCredentials || e2eMasterPassword
     ? { async prompt(purpose) {
+      if (purpose === 'master-password' && e2eMasterPassword) return { kind: 'provided', username: 'MRT test vault', secret: 'mrt-e2e-master-password-v1' };
       if (purpose === 'ssh-password' && e2eSshCredentials) {
         e2eSshCredentialPromptCount += 1;
         return { kind: 'provided', username: 'mrt-e2e-user', secret: 'sftp-e2e-secret' };
