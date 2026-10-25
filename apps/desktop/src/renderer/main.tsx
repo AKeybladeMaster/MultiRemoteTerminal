@@ -208,6 +208,7 @@ function macroRecordingWarningText(warning: MacroRecordingWarning): string {
   if (warning === 'secret-prompt') return 'A recognized secret prompt was detected. Recording is paused; resume after it closes.';
   if (warning === 'input-skipped') return 'Input with control keys was skipped through the next submitted line.';
   if (warning === 'line-limit') return 'An overlong input line was skipped.';
+  if (warning === 'text-limit') return 'The macro text limit was reached; this line was not recorded.';
   return 'The 64-step recording limit was reached.';
 }
 
@@ -546,7 +547,7 @@ function Workbench() {
       setMacroError('Choose a valid name and a running terminal tab.');
       return false;
     }
-    if (macroRecordingView.current || !macroRecorder.start(targetSessionId)) {
+    if (macroRecordingView.current || !macroRecorder.start(targetSessionId, draft.name.length)) {
       setMacroError('Stop or discard the current recording before starting another.');
       return false;
     }
@@ -555,6 +556,7 @@ function Workbench() {
     setActiveId(targetSessionId);
     publishMacroRecording({ sessionId: targetSessionId, name: draft.name, targetTitle: target.title,
       status: 'recording', steps: [], stepCount: 0 });
+    macroManagerReturnFocus.current = null;
     closeMacroManager();
     return true;
   }, [closeMacroManager, macroRecorder, publishMacroRecording, sessions]);
@@ -580,7 +582,9 @@ function Workbench() {
     pendingMacroTerminalFocus.current = current.sessionId;
     setActiveId(current.sessionId);
     macroRecorder.resume();
-    publishMacroRecording({ ...current, status: 'recording', warning: undefined });
+    const snapshot = macroRecorder.snapshot();
+    publishMacroRecording({ ...current, status: snapshot.status === 'idle' ? 'paused' : snapshot.status,
+      stepCount: snapshot.stepCount, warning: snapshot.warning });
   }, [macroRecorder, publishMacroRecording]);
 
   const discardMacroRecording = useCallback(() => {
@@ -1169,7 +1173,15 @@ function Workbench() {
 
   useEffect(() => {
     if (!activeId) return;
-    if (focusTerminalOnActiveChange.current) requestAnimationFrame(() => handles.current.get(activeId)?.focus());
+    if (focusTerminalOnActiveChange.current) {
+      const targetSessionId = activeId;
+      const focusFrame = requestAnimationFrame(() => {
+        if (!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]')) {
+          handles.current.get(targetSessionId)?.focus();
+        }
+      });
+      return () => cancelAnimationFrame(focusFrame);
+    }
     focusTerminalOnActiveChange.current = true;
   }, [activeId, sessions]);
 

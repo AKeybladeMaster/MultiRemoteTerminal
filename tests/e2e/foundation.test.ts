@@ -1392,6 +1392,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect(browser.getByText('nested.txt', { exact: true }), `FTP LIST arguments=${ftpListArguments.join('|')}`).toBeVisible({ timeout: 10_000 });
     await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
     await expect.poll(() => ftpStouCommands.length).toBe(1);
+    await expect.poll(() => ftpCwdArguments.length).toBe(2);
     expect(ftpStouCommands).toEqual(['STOU']);
     expect(ftpCwdArguments).toEqual(['documents', '/']);
     await expect.poll(() => remoteFiles.get('documents/mrt-server-generated.txt')?.length).toBe(uploadContents.length);
@@ -1618,11 +1619,15 @@ test('macro recorder captures completed terminal lines and suppresses a recogniz
     await expect(banner).toBeVisible();
 
     const title = 'PowerShell session 1';
+    const tab = page.getByRole('tab', { name: new RegExp(title) });
+    const panelId = await tab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The default recording target has no terminal panel.');
+    const panel = page.locator(`#${panelId}`);
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+
     const secret = 'never-store-this-secret';
     const promptCommand = "$mrtSecret = Read-Host -Prompt 'Password' -AsSecureString; Write-Output 'MRT-RECORDER-READY'";
-    const panel = await selectTerminal(page, title);
-    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
-    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
     const pastedCommand = "Write-Output 'MRT-RECORDER-PASTE-OMITTED'";
     await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pastedCommand);
     await page.keyboard.press('Control+V');
@@ -1638,8 +1643,23 @@ test('macro recorder captures completed terminal lines and suppresses a recogniz
     await page.keyboard.press('Enter');
     await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-READY', { timeout: 15_000 });
     await expect(banner).toContainText('Recording paused');
+
+    const verificationCommand = "$mrtCode = Read-Host -Prompt 'Verification code'; Write-Output 'MRT-RECORDER-CODE-READY'";
+    const verificationCode = 'never-store-this-code';
+    await page.keyboard.type(verificationCommand);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('Verification code:', { timeout: 15_000 });
+    await expect(banner.getByRole('status')).toContainText('recognized secret prompt');
+    await banner.getByRole('button', { name: 'Resume recording', exact: true }).click();
+    await expect(banner.getByRole('status')).toContainText('recognized secret prompt');
+    await expect(banner).toContainText('Recording paused');
+    await page.keyboard.type(verificationCode);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-CODE-READY', { timeout: 15_000 });
+    await expect(banner).toContainText('Recording paused');
     await banner.getByRole('button', { name: 'Resume recording', exact: true }).click();
     await expect(banner.locator('[role="status"]')).toHaveCount(0);
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.type("Write-Output 'MRT-RECORDER-SAFE'");
     await page.keyboard.press('Enter');
     await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-SAFE', { timeout: 15_000 });
@@ -1658,6 +1678,9 @@ test('macro recorder captures completed terminal lines and suppresses a recogniz
     await expect(second).toHaveValue("Write-Output 'MRT-RECORDER-SAFE'");
     await expect(first).not.toHaveValue(new RegExp(secret));
     await expect(second).not.toHaveValue(new RegExp(secret));
+    await expect(first).not.toHaveValue(new RegExp(verificationCode));
+    await expect(second).not.toHaveValue(new RegExp(verificationCode));
+    await expect(second).not.toHaveValue(verificationCommand);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -1697,8 +1720,12 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await expect(tab).toBeFocused();
 
     const outputMarker = rows.getByText(marker, { exact: true });
-    await expect.poll(() => outputMarker.boundingBox(), { timeout: 5_000 }).not.toBeNull();
-    const markerBounds = await outputMarker.boundingBox();
+    const markerBoundsRef: { current: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null } = { current: null };
+    await expect.poll(async () => {
+      markerBoundsRef.current = await outputMarker.boundingBox();
+      return markerBoundsRef.current;
+    }, { timeout: 5_000 }).not.toBeNull();
+    const markerBounds = markerBoundsRef.current;
     if (!markerBounds) throw new Error('The terminal output marker is not visible for clipboard selection.');
     await page.mouse.move(markerBounds.x + 1, markerBounds.y + markerBounds.height / 2);
     await page.mouse.down();

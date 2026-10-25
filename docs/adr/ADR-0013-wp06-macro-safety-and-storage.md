@@ -42,11 +42,18 @@ The initial SQLite schema already contains `macro_definitions` and
    The app never invokes a shell to interpret macro definitions; the connected
    terminal's shell receives a line only after the user confirms playback.
 8. WP-06B1 records only complete lines from one explicitly selected terminal
-   into bounded in-memory state. Clipboard paste is omitted. Terminal output is
-   inspected transiently for recognized secret prompts and is never stored.
+   into bounded in-memory state, respecting the 64-step cap, per-line cap and
+   total macro-text limit after reserving characters for the macro name.
+   Clipboard paste is omitted. Terminal output is inspected transiently after
+   stripping CSI, OSC, DCS, SOS, PM and APC controls in 7-bit and C1 forms, and
+   is never stored. While recording is paused, only a bounded transient prompt
+   line is tracked to detect whether a recognized secret prompt remains open;
+   resuming in that state keeps recording paused and input suppressed through
+   submission. For recognizable full-screen redraws, only the current active
+   line is checked so prior visible rows are not processed as new prompts.
    After input is suppressed for a detected prompt and the line is submitted,
    recording pauses and requires an explicit user resume. Detection is
-   heuristic and does not promise to recognize arbitrary secrets.
+   heuristic and arbitrary secret prompts may go unrecognized.
 
 ## Consequences
 
@@ -63,8 +70,10 @@ command is logged by the app.
 
 WP-06A covers exact schema validation, persistence, update/delete behavior,
 100 definitions and restart persistence on Windows. WP-06B1 covers complete
-line recording, a recognized PowerShell password prompt, explicit resume and
-paste omission on Windows. WP-06B2 must exercise exact preview, literal waits,
-progress, cancellation, disconnect and no automatic reconnect. WP-06C must
+line recording, recognized password and verification-code prompts, explicit
+resume, pause-without-partial-line behavior, ANSI control-string stripping,
+total text limits and paste omission on Windows. WP-06B2 must exercise exact
+preview, literal waits, progress, cancellation, disconnect and no automatic
+reconnect. WP-06C must
 deliver input to three independent active terminals only after confirmation
 and preserve per-target outcomes.

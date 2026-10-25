@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
 import { MAX_MACRO_STEPS, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft, MacroStep } from '../../../../packages/domain/src/macro.ts';
@@ -50,8 +50,10 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   const nameInput = useRef<HTMLInputElement>(null);
   const selected = macros.find(macro => macro.id === selectedId);
 
-  useLayoutEffect(() => {
-    if (creating) nameInput.current?.focus();
+  useEffect(() => {
+    if (!creating) return;
+    const focusFrame = requestAnimationFrame(() => nameInput.current?.focus());
+    return () => cancelAnimationFrame(focusFrame);
   }, [creating]);
 
   useEffect(() => {
