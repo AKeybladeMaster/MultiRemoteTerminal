@@ -1,7 +1,7 @@
 # WP-08A — External Windows RDP launch
 
-**Date:** 2026-10-25  
-**Requirements:** F-015, P-07; saved-session persistence and credential-free folder bundles  
+**Date:** 2026-10-25
+**Requirements:** F-015, P-07; saved-session persistence and credential-free folder bundles
 **Status:** P-07 PARTIAL
 
 ## Delivered
