@@ -14,4 +14,7 @@ Corrected the `docs/SECURITY.md` release gate to credit the bounded hostile SSH 
 
 ## Review
 
-Pending independent Spec and Standards review.
+Independent review of `1f2cc1304f5f9f42bfd8c03a8f12870e12e3a0bd..c0886eb1be983a9a2205cdf2153c63a40ce31c12`:
+
+- **Spec:** No findings. WP-07I evidence is credited while N-002 remains open.
+- **Standards:** No documented-standard violations, unsupported claims or applicable baseline smells found.
