@@ -26,6 +26,10 @@ On Windows 11 x64 with Node.js 24.14.1 and pnpm 12.15.0:
 - `corepack pnpm lint` passed, including import-boundary checks.
 - `corepack pnpm package:win:smoke` passed on Windows x64: the native module and both distributable targets built, the generator emitted both CycloneDX SBOMs, and all 3 packaged E2E cases passed. The NSIS case includes the 2× scale, permission denial, offline help/settings/terminal, profile persistence and uninstall checks; the portable and SBOM checks passed unchanged.
 
+## Independent review
+
+The Spec review found no scope creep or incorrect behavior and confirmed that N-006/N-011 remain partial beyond the forced 2× scale and renderer-only offline emulation. The Standards review found no documented-standard violations or baseline smells.
+
 ## Limits
 
 `--force-device-scale-factor=2` exercises the renderer at a 2× device scale but does not replace human acceptance with Windows display scaling at 200%. Playwright's offline emulation affects Chromium's regular renderer network stack only. The application starts before offline emulation is enabled; no OS-level network isolation was applied. The verified help, SQLite settings and local PowerShell workflow use local resources. Windows 10 acceptance, signed release, packaged SSH credential prompt, and broader startup/crash/recovery/shutdown acceptance remain open, so P-32 and the M4 release gate remain partial.
