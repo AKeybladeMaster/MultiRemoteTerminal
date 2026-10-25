@@ -154,6 +154,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07E — Packaged offline and 200% device-scale smoke:** The installed NSIS app launches with Electron's 2× device scale and is checked for horizontal overflow. Playwright then emulates an offline renderer network while the app opens local help, saves a greeting through SQLite, launches PowerShell and reopens the greeting after restart. The packaged renderer's geolocation permission remains denied. This is Windows 11 packaged acceptance; it does not emulate an OS-wide network outage or add Windows 10 evidence. See [WP-07E results](results/WP-07E-packaged-offline-and-dpi-2026-10-25.md).
 
+**WP-07F — Windows credential prompt context contract (partial):** SSH endpoint context previously made the helper's fixed `ValidateSet` reject the prompt before it could open or emit JSON. The adapter now sends the typed purpose and sanitized, bounded context as separate arguments; the helper constructs the display message. A Windows PowerShell contract test stubs only `Get-Credential` and verifies the helper protocol, and the packaged NSIS smoke confirms the helper is present in `process.resourcesPath`. The native dialog and live SSH password authentication remain unverified; see [WP-07F evidence](results/WP-07F-credential-prompt-context-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
