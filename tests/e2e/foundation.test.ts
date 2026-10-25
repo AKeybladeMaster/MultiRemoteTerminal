@@ -1795,7 +1795,49 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     const search = page.locator('#saved-session-search');
     await expect(page.locator('.saved-session-row').first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
+    const catalogList = page.locator('.saved-session-list');
+    await expect(catalogList.locator('.saved-session-row').first().locator('.saved-actions-panel')).toBeHidden();
+    const initiallyRenderedRows = await catalogList.locator('.saved-session-row').count();
+    expect(initiallyRenderedRows).toBeGreaterThan(0);
+    expect(initiallyRenderedRows).toBeLessThan(1_000);
 
+    await catalogList.evaluate(element => { element.scrollTop = 0; });
+    await expect.poll(() => catalogList.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
+    const keyboardProbe = await catalogList.evaluate(element => {
+      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
+        .filter(control => control.getClientRects().length > 0);
+      const boundary = controls.at(-1);
+      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
+      if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
+      boundary.focus();
+      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
+    });
+    expect(keyboardProbe.focused).toBe(true);
+    await page.keyboard.press('Tab');
+    await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
+      .toBe(keyboardProbe.index + 1);
+
+    await catalogList.evaluate(element => { element.scrollTop = 1_500; });
+    await expect.poll(() => catalogList.locator('[data-virtual-index]').first().getAttribute('data-virtual-index'))
+      .not.toBe('0');
+    const reverseKeyboardProbe = await catalogList.evaluate(element => {
+      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
+        .filter(control => control.getClientRects().length > 0);
+      const boundary = controls[0];
+      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
+      if (!boundary || !row) throw new Error('The virtualized list boundary had no reverse keyboard control.');
+      boundary.focus();
+      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
+    });
+    expect(reverseKeyboardProbe.focused).toBe(true);
+    await page.keyboard.press('Shift+Tab');
+    await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
+      .toBe(reverseKeyboardProbe.index - 1);
+
+    await catalogList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(catalogList.locator('[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '1000');
+    await catalogList.evaluate(element => { element.scrollTop = 0; });
+    await expect(catalogList.locator('[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
     const searchSamples: number[] = [];
     type P38SearchProbe = { readonly targetName: string; startedAt?: number; elapsedMs?: number };
     for (let index = 0; index < 20; index += 1) {

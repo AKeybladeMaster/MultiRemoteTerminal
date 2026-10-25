@@ -88,7 +88,10 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .saved-folder-create:disabled { cursor: wait; opacity: .65; }
 .saved-session-search { flex: 0 0 auto; width: 100%; min-width: 0; min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: var(--terminal-background); color: var(--text); }
 .saved-session-search:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
-.saved-session-list { display: grid; gap: 4px; min-height: 0; overflow: auto; margin: 0; padding: 0 2px 0 0; list-style: none; }
+.saved-session-list { display: grid; flex: 1 1 0; gap: 4px; min-height: 0; overflow: auto; margin: 0; padding: 0 2px 0 0; list-style: none; }
+.saved-session-list.is-virtualized { position: relative; display: block; }
+.saved-session-virtual-space { visibility: hidden; margin: 0; padding: 0; border: 0; list-style: none; }
+.saved-session-list.is-virtualized > .saved-session-row, .saved-session-list.is-virtualized > .saved-folder-node { margin: 0; }
 .saved-folder-node { min-width: 0; }
 .saved-folder-entry { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .saved-folder-toggle, .saved-folder-static { display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; min-height: 32px; padding: 3px 5px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--text); text-align: left; }
@@ -106,6 +109,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .saved-actions-menu > summary::-webkit-details-marker { display: none; }
 .saved-actions-menu > summary:hover, .saved-actions-menu[open] > summary { border-color: var(--line); background: var(--surface-raised); color: var(--text); }
 .saved-actions-panel { position: absolute; z-index: 4; top: calc(100% + 2px); right: 0; display: grid; gap: 2px; min-width: 172px; padding: 5px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); box-shadow: 0 6px 20px #0007; }
+.saved-actions-menu:not([open]) > .saved-actions-panel { display: none; }
 @supports (position-anchor: --saved-actions-anchor) and (anchor-scope: --saved-actions-anchor) {
   .saved-actions-panel { position: fixed; position-anchor: --saved-actions-anchor; top: anchor(bottom); right: auto; left: anchor(left); margin-top: 2px; position-try-fallbacks: flip-block; }
 }

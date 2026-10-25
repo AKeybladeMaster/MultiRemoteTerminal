@@ -73,8 +73,13 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       INSERT INTO session_definitions (id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
     `);
-    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\', \'serial\')');
-    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\', \'serial\')');
+    this.setSessionFavorite = database.prepare(`
+      UPDATE session_definitions SET favorite = ?, updated_at = ?
+      WHERE id = ? AND kind IN (${SESSION_CATALOG_KINDS_SQL})
+    `);
+    this.deleteSession = database.prepare(`
+      DELETE FROM session_definitions WHERE id = ? AND kind IN (${SESSION_CATALOG_KINDS_SQL})
+    `);
     this.listFoldersStatement = database.prepare('SELECT id, parent_id, name FROM folders ORDER BY parent_id, name COLLATE NOCASE, id');
     this.findFolder = database.prepare('SELECT id, parent_id, name FROM folders WHERE id = ?');
     this.findFolderName = database.prepare(`
