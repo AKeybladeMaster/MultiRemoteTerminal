@@ -18,6 +18,10 @@ an internet connection.
   unencrypted and requires a warning acknowledgement for each connection.
 - **Telnet:** connect only when the server requires it. Telnet is unencrypted
   and requires a warning acknowledgement for each connection.
+- **RDP desktop:** choose **Connect to RDP desktop**, enter the host and port,
+  then open Windows Remote Desktop. The viewer runs outside the workbench;
+  Windows handles authentication, and the app cannot confirm connection state.
+  Save a credential-free RDP profile to reopen the same target later.
 
 ## Work with tabs
 

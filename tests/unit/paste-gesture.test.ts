@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
-import { installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+import { installFtpConsentGestureStore, installRdpLaunchGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -23,6 +23,11 @@ test('main renderer gesture gate is one-shot, short-lived, sender-scoped, purpos
   gate.issue(11, firstSession, 'clipboard-paste');
   assert.equal(gate.consume(11, firstSession, 'telnet-plaintext-consent'), false, 'gesture purposes are isolated');
   assert.equal(gate.consume(11, firstSession, 'clipboard-paste'), true);
+  gate.issueRdpLaunch(11, 'DESK.EXAMPLE.COM', 3389);
+  assert.equal(gate.consumeRdpLaunch(12, 'desk.example.com', 3389), false, 'RDP gesture is sender-scoped');
+  assert.equal(gate.consumeRdpLaunch(11, 'other.example.com', 3389), false, 'RDP gesture is endpoint-scoped');
+  assert.equal(gate.consumeRdpLaunch(11, 'desk.example.com', 3389), true, 'RDP endpoint is canonicalized');
+  assert.equal(gate.consumeRdpLaunch(11, 'desk.example.com', 3389), false, 'RDP gesture is one-shot');
 });
 
 test('preload authorizes only trusted paste keys from a terminal and binds them to that session', async () => {
@@ -59,6 +64,45 @@ test('preload authorizes only trusted paste keys from a terminal and binds them 
   assert.equal(await gestures.consume(firstSession), false);
   gestures.dispose();
   assert.equal(keydown, undefined);
+});
+
+test('preload authorizes RDP only after a trusted click on the matching launch button', async () => {
+  let now = 70;
+  let click: ((event: Event) => void) | undefined;
+  const authorized: Array<{ host: string; port: number }> = [];
+  const inputs = new Map<string, { readonly value: string }>([
+    ['input[name="host"]', { value: 'DESK.EXAMPLE.COM' }], ['input[name="port"]', { value: '3389' }]
+  ]);
+  const form = {
+    getAttribute() { return null; },
+    querySelector(selector: string) {
+      return inputs.get(selector) ?? null;
+    }
+  };
+  const button = { getAttribute() { return null; }, closest(selector: string) { return selector === 'form' ? form : null; } };
+  const documentTarget = {
+    addEventListener(_type: 'click', listener: (event: Event) => void) { click = listener; },
+    removeEventListener(_type: 'click', listener: (event: Event) => void) { if (click === listener) click = undefined; }
+  };
+  const gestures = installRdpLaunchGestureStore(documentTarget, async (host, port) => {
+    authorized.push({ host, port });
+    return true;
+  }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'click', isTrusted, target: { closest: (selector: string) => selector === 'button[data-mrt-rdp-launch-trigger]' ? button : null } }) as unknown as Event;
+  click?.(event(false));
+  assert.equal(await gestures.consume('desk.example.com', 3389), false, 'scripted clicks cannot authorize launch');
+  click?.({ type: 'submit', isTrusted: true, target: button } as unknown as Event);
+  assert.equal(await gestures.consume('desk.example.com', 3389), false, 'programmatic form submission cannot authorize launch');
+  click?.(event(true));
+  assert.equal(await gestures.consume('other.example.com', 3389), false, 'gesture cannot authorize another target');
+  assert.equal(await gestures.consume('desk.example.com', 3389), false, 'target mismatch consumes the gesture');
+  click?.(event(true));
+  assert.equal(await gestures.consume('desk.example.com', 3389), true);
+  assert.deepEqual(authorized, [{ host: 'desk.example.com', port: 3389 }]);
+  click?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume('desk.example.com', 3389), false, 'expired gesture is rejected');
+  gestures.dispose();
 });
 
 test('preload Telnet consent requires a trusted submit for the same endpoint and a one-shot main authorization', async () => {

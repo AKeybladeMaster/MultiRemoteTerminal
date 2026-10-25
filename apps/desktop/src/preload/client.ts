@@ -2,6 +2,7 @@ import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEven
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
 import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
@@ -27,6 +28,7 @@ type CancelCatalogRequest = (requestId: string) => void | Promise<unknown>;
 type ConsumePasteGesture = (sessionId: string) => boolean | Promise<boolean>;
 type ConsumeTelnetConsent = (sessionId: string, host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeFtpConsent = (sessionId: string, host: string, port: number, secure: boolean) => boolean | Promise<boolean>;
+type ConsumeRdpLaunch = (host: string, port: number) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
@@ -55,7 +57,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   cancelCatalogRequest: CancelCatalogRequest = () => {}, consumePasteGesture: ConsumePasteGesture = () => false,
   consumeTelnetConsent: ConsumeTelnetConsent = () => false, consumeFtpConsent: ConsumeFtpConsent = () => false,
   listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {},
-  listenTunnelStatus: ListenTunnelStatus = () => () => {}): DesktopBridge {
+  listenTunnelStatus: ListenTunnelStatus = () => () => {}, consumeRdpLaunch: ConsumeRdpLaunch = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -388,6 +390,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     closeFtpFiles(sessionId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ftp.close', { sessionId }), 8_000);
+    },
+    launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumeRdpLaunch(host, port)).then(authorized => authorized
+        ? send({ command: 'rdp.launch', requestId: id, contractVersion: CONTRACT_VERSION, payload: { host, port } }, 8_000)
+        : { requestId: id, ...failure('FORBIDDEN') }, () => ({ requestId: id, ...failure('FORBIDDEN') }));
     },
     listSavedSessions(query: string): Promise<ListSessionsReply> {
       return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);

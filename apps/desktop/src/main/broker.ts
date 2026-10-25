@@ -5,6 +5,7 @@ import type { LocalTerminalController } from '../../../../packages/application/s
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
+import type { RdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
@@ -44,6 +45,7 @@ export interface CommandActions {
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
+  readonly authorizeRdpLaunch: (host: string, port: number) => boolean;
   readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly selectFtpUploadFile: () => Promise<FtpUploadSelection | undefined>;
   readonly selectFtpDownloadPath: (fileName: string) => Promise<string | undefined>;
@@ -59,6 +61,7 @@ export interface CommandActions {
     'downloadRemoteFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
+  readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
@@ -106,7 +109,8 @@ export async function dispatchCommand(
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
-        parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
+        parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' ||
+        parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
@@ -262,6 +266,11 @@ export async function dispatchCommand(
         return { requestId, ...await actions.ftpFiles.cancelTransfer(sessionId, operationId) };
       }
       case 'ftp.close': return { requestId, ...await actions.ftpFiles.close(parsed.result.payload.sessionId) };
+      case 'rdp.launch': {
+        const { host, port } = parsed.result.payload;
+        if (!actions.authorizeRdpLaunch(host, port)) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.rdpViewer.launch(host, port, actions.cancellation) };
+      }
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
       case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite, actions.cancellation) };

@@ -98,7 +98,7 @@ test('SQLite host trust schema migrates once and preserves strict insert, match,
   try {
     repository.migrate();
     repository.migrate();
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
     assert.equal((database.prepare('PRAGMA table_info(tunnel_definitions)').all() as Array<{ name: string }>).some(column => column.name === 'name'), true);
     const insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, options_version, created_at, updated_at)
@@ -142,11 +142,11 @@ test('SQLite schema v1 upgrades existing saved profiles, tunnel definitions, and
     const trusted = hostKey('gateway.example', 22, 7);
     initial.trustIfAbsent(trusted);
 
-    database.exec('ALTER TABLE tunnel_definitions DROP COLUMN name; PRAGMA user_version = 1;');
+    database.exec('ALTER TABLE tunnel_definitions DROP COLUMN name; DROP TABLE macro_shortcuts; PRAGMA user_version = 1;');
     const upgraded = new SqliteHostTrustRepository(database);
     upgraded.migrate();
 
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
     assert.equal((database.prepare('SELECT name FROM tunnel_definitions WHERE id = ?').get(tunnelId) as { name: string }).name, 'Local forward');
     assert.equal((database.prepare('SELECT name FROM session_definitions WHERE id = ?').get(sessionId) as { name: string }).name, 'Existing gateway');
     const tunnels = new SqliteTunnelRepository(database);
@@ -194,9 +194,9 @@ test('unsupported SQLite versions fail closed without changing the database', ()
   const database = new DatabaseSync(':memory:');
   const repository = new SqliteHostTrustRepository(database);
   try {
-    database.exec('PRAGMA user_version = 3');
+    database.exec('PRAGMA user_version = 4');
     assert.throws(() => repository.migrate(), (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'corrupt');
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 4);
   } finally {
     database.close();
   }

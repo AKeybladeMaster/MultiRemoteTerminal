@@ -151,6 +151,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 **Tests:** real RDP/VNC fixture or test server; fallback without viewer; remote edit conflict.  
 **Gate:** provider classification (`external`, not `embedded`) visible to users.
 
+**WP-08A — External Windows RDP launch (partial):** A typed `rdp.launch` command resolves the fixed System32 `mstsc.exe` and invokes it with validated host/port arguments and no shell. The RDP dialog identifies Windows Remote Desktop as external, explains that Windows handles authentication, and says connection state is not tracked. RDP profiles persist without credentials and round-trip through version-4 saved-folder JSON bundles; bundle versions 1–3 remain importable under their prior type limits. Unit/contract/SQLite tests and Windows UI E2E cover the app path; the actual remote desktop connection is not verified without an RDP fixture. P-07 remains PARTIAL. See [WP-08A results](results/WP-08A-external-rdp-2026-10-25.md) and [ADR-0015](adr/ADR-0015-wp08a-external-rdp.md).
+
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
 **Requires:** MVP/provider registry.  

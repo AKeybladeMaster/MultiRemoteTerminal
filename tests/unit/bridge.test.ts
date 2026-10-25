@@ -15,7 +15,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
-    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer',
     'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
     'getWorkbenchPreferences', 'saveWorkbenchPreferences',
     'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
@@ -312,6 +312,28 @@ test('preload routes saved-session commands through fixed validated requests', a
   }, id);
   const reply = await bridge.createSavedSession({ kind: 'local', name: 'Work shell', shell: 'powershell' });
   assert.equal(reply.ok, true);
+});
+
+test('preload routes RDP launches through a fixed validated viewer command', async () => {
+  const bridge = createBridge(async request => {
+    assert.deepEqual(request, { command: 'rdp.launch', requestId: id(), contractVersion: 1,
+      payload: { host: 'desk.example.com', port: 3389 } });
+    return { requestId: id(), ok: true, result: {
+      provider: 'external', endpoint: { host: 'desk.example.com', port: 3389 }, state: 'launch-requested'
+    } };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => true);
+  assert.deepEqual(await bridge.launchRdpViewer('desk.example.com', 3389), { requestId: id(), ok: true, result: {
+    provider: 'external', endpoint: { host: 'desk.example.com', port: 3389 }, state: 'launch-requested'
+  } });
+});
+
+test('preload blocks direct RDP bridge calls without a fresh trusted submit gesture', async () => {
+  let invoked = false;
+  const bridge = createBridge(async () => { invoked = true; return {}; }, id);
+  const reply = await bridge.launchRdpViewer('desk.example.com', 3389);
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(invoked, false);
 });
 
 test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
