@@ -10,7 +10,7 @@ Focused IPC, broker, session, bundle and SSH controller suites:
 
 Windows SSH credential E2E:
 
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH credentials stay out of renderer" --reporter=line` - passed, 1/1. A loopback SSH fixture accepts the test-only password canary through the guarded credential prompt path. The test verifies successful authentication and terminal output, then saves a session, moves it into a folder and exports the folder. It checks the canary is absent from the renderer-visible page, renderer console, main-process console, exported JSON, saved SQLite row and every file under the temporary app profile after shutdown.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH credentials stay out of renderer" --reporter=line` - passed, 1/1. A loopback SSH fixture accepts the test-only password canary through the guarded credential prompt path. The test verifies successful authentication and terminal output, then saves a session, moves it into a folder and exports the folder. It checks the canary is absent from the renderer-visible page and renderer console during the flow, the main-process console through shutdown, the exported JSON, the saved SQLite row and every file under the temporary app profile after shutdown.
 
 FTP credential E2E:
 

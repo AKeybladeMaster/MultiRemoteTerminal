@@ -827,12 +827,12 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     expect(bundleText).not.toContain(secret);
     expect(bundleText).not.toMatch(/password|credential|privateKey/i);
     expect(await page.locator('body').innerText()).not.toContain(secret);
-    expect(mainConsoleMessages.join('\n')).not.toContain(secret);
     expect(rendererConsoleMessages.join('\n')).not.toContain(secret);
     expect(pageErrors).toEqual([]);
 
     await app.close();
     app = undefined;
+    expect(mainConsoleMessages.join('\n')).not.toContain(secret);
     const database = new DatabaseSync(join(profile, 'multiremote-terminal.sqlite'), { readOnly: true });
     try {
       const saved = database.prepare('SELECT id, kind, name, host, port, username, credential_ref, options_json FROM session_definitions WHERE name = ?')
