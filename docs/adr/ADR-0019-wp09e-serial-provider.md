@@ -17,7 +17,7 @@ F-016 requires COM-port enumeration and serial terminal settings. Windows serial
 
 ## Consequences
 
-The provider depends on the installed Windows COM driver and the native binding's packaged prebuild. A Windows mock verifies that the native module loads inside the pinned Electron utility process, but it does not verify a physical UART/USB adapter, serial-number redaction in every driver, device-specific encoding, hot-unplug recovery, or driver-signature policy. Device bytes are potentially sensitive and may be commands; neither input nor output is logged. Utility process isolation limits the location of native state but is not a security sandbox.
+The provider depends on the installed Windows COM driver and the native binding's packaged prebuild. A Windows mock verifies that the native module loads inside the pinned Electron utility process. A provider/controller regression injects a binding-level read error after open and verifies retryable session failure and a later explicit reconnect, but neither simulation verifies a physical UART/USB adapter, driver-specific unplug timing/error sequencing, serial-number redaction in every driver, device-specific encoding, or driver-signature policy. Device bytes are potentially sensitive and may be commands; neither input nor output is logged. Utility process isolation limits the location of native state but is not a security sandbox.
 
 ## Verification
 
