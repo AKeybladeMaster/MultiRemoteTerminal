@@ -35,6 +35,7 @@ import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
 import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import { MultiExecDialog } from './MultiExecDialog.tsx';
+import { HelpDialog } from './HelpDialog.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -85,7 +86,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'multi-exec' | 'close-active' | 'toggle-theme';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -245,6 +246,7 @@ function Workbench() {
   const [status, setStatus] = useState('Starting');
   const [alert, setAlert] = useState<string>();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -384,6 +386,7 @@ function Workbench() {
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
+  const helpReturnFocus = useRef<HTMLElement | null>(null);
   const sshConnectDialog = useRef<HTMLElement>(null);
   const sshHostInput = useRef<HTMLInputElement>(null);
   const sshPortInput = useRef<HTMLInputElement>(null);
@@ -1050,6 +1053,15 @@ function Workbench() {
     setPaletteOpen(true);
   }, []);
 
+  const openHelp = useCallback(() => {
+    helpReturnFocus.current = paletteOpen && paletteReturnFocus.current
+      ? paletteReturnFocus.current
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setHelpOpen(true);
+  }, [paletteOpen]);
+
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
+
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSshConnectMode(mode);
@@ -1539,6 +1551,7 @@ function Workbench() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (helpOpen) return;
       const currentTrust = sshTrustEvents[0];
       if (currentTrust) {
         if (event.key === 'Escape') {
@@ -1749,7 +1762,7 @@ function Workbench() {
   }, [activeId, cancelMacroPlayback, cancelMultiExec, catalogBusy, closeMacroManager, closeMacroPlayback, closeMultiExec, confirmMultiExec,
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
-    saveMacroShortcut, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+    helpOpen, saveMacroShortcut, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -1761,6 +1774,13 @@ function Workbench() {
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
     }
   }, [paletteOpen]);
+
+  useEffect(() => {
+    if (helpOpen || !helpReturnFocus.current) return;
+    const target = helpReturnFocus.current;
+    helpReturnFocus.current = null;
+    requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+  }, [helpOpen]);
 
   useLayoutEffect(() => {
     if (sshConnectOpen) {
@@ -1898,7 +1918,8 @@ function Workbench() {
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
-    { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme }
+    { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
+    { id: 'open-help', label: 'Help and keyboard shortcuts', run: openHelp }
   ];
   const filteredCommands = commands.filter(command => command.label.toLowerCase().includes(query.toLowerCase()));
   const active = sessions.find(session => session.sessionId === activeId);
@@ -2300,7 +2321,8 @@ function Workbench() {
     <header className="app-header">
       <span className="wordmark" translate="no">MultiRemoteTerminal</span>
       <div className="header-actions">
-      <span className="build-label">Local and remote sessions</span>
+        <span className="build-label">Local and remote sessions</span>
+        <button className="quiet-button" type="button" aria-haspopup="dialog" onClick={openHelp}>Help</button>
         <button className="quiet-button" type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={toggleTheme}>
           {theme === 'dark' ? 'Light theme' : 'Dark theme'}
         </button>
@@ -2460,6 +2482,7 @@ function Workbench() {
       </main>
     </div>
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
+    {helpOpen && <HelpDialog onClose={closeHelp} />}
     <footer className="status-bar">
       <div className="terminal-status">
         <span className={`state-dot ${active?.state ?? 'idle'}`} />
