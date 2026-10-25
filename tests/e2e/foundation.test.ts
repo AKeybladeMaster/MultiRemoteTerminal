@@ -1772,9 +1772,9 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     rootFolderId,
     exportedAt: timestamp,
     folders: [{ id: rootFolderId, parentId: null, name: 'P38 Scale' }],
-    sessions: Array.from({ length: 1_000 }, (_, index) => ({
+    sessions: Array.from({ length: 999 }, (_, index) => ({
       id: randomUUID(), folderId: rootFolderId, kind: 'local' as const,
-      name: `P38 Profile ${String(index).padStart(4, '0')}`, shell: 'powershell' as const,
+      name: `P38 Profile ${String(index + 1).padStart(4, '0')}`, shell: 'powershell' as const,
       favorite: false, createdAt: timestamp, updatedAt: timestamp
     }))
   });
@@ -1790,28 +1790,33 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
         value: async () => ({ canceled: false, filePaths: [filePath] }) });
     }, bundlePath);
     await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
-    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1000 saved sessions', { timeout: 30_000 });
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 999 saved sessions', { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('P38 Profile 0000');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
 
     const search = page.locator('#saved-session-search');
     await expect(page.locator('.saved-session-row').first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
     const catalogList = page.locator('.saved-session-list');
     await expect(catalogList.locator('.saved-session-row').first().locator('.saved-actions-panel')).toBeHidden();
+    const focusCatalogBoundary = (edge: 'first' | 'last') => catalogList.evaluate((element, direction) => {
+      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
+        .filter(control => control.getClientRects().length > 0);
+      const boundary = direction === 'first' ? controls[0] : controls.at(-1);
+      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
+      if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
+      boundary.focus();
+      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
+    }, edge);
     const initiallyRenderedRows = await catalogList.locator('.saved-session-row').count();
     expect(initiallyRenderedRows).toBeGreaterThan(0);
     expect(initiallyRenderedRows).toBeLessThan(1_000);
 
     await catalogList.evaluate(element => { element.scrollTop = 0; });
     await expect.poll(() => catalogList.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
-    const keyboardProbe = await catalogList.evaluate(element => {
-      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
-        .filter(control => control.getClientRects().length > 0);
-      const boundary = controls.at(-1);
-      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
-      if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
-      boundary.focus();
-      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
-    });
+    const keyboardProbe = await focusCatalogBoundary('last');
     expect(keyboardProbe.focused).toBe(true);
     await page.keyboard.press('Tab');
     await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
@@ -1820,24 +1825,21 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     await catalogList.evaluate(element => { element.scrollTop = 1_500; });
     await expect.poll(() => catalogList.locator('[data-virtual-index]').first().getAttribute('data-virtual-index'))
       .not.toBe('0');
-    const reverseKeyboardProbe = await catalogList.evaluate(element => {
-      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
-        .filter(control => control.getClientRects().length > 0);
-      const boundary = controls[0];
-      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
-      if (!boundary || !row) throw new Error('The virtualized list boundary had no reverse keyboard control.');
-      boundary.focus();
-      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
-    });
+    const reverseKeyboardProbe = await focusCatalogBoundary('first');
     expect(reverseKeyboardProbe.focused).toBe(true);
     await page.keyboard.press('Shift+Tab');
     await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
       .toBe(reverseKeyboardProbe.index - 1);
 
     await catalogList.evaluate(element => { element.scrollTop = element.scrollHeight; });
-    await expect(catalogList.locator('[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '1000');
+    await expect(catalogList.locator('[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '1001');
     await catalogList.evaluate(element => { element.scrollTop = 0; });
     await expect(catalogList.locator('[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
+    const firstFocusableRow = await focusCatalogBoundary('first');
+    expect(firstFocusableRow.index).toBe(1);
+    expect(firstFocusableRow.focused).toBe(true);
+    await page.keyboard.press('Shift+Tab');
+    await expect(search).toBeFocused();
     const searchSamples: number[] = [];
     type P38SearchProbe = { readonly targetName: string; startedAt?: number; elapsedMs?: number };
     for (let index = 0; index < 20; index += 1) {

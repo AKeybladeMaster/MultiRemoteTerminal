@@ -1,7 +1,7 @@
 import { cloneElement, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, LiHTMLAttributes, ReactElement, ReactNode } from 'react';
 
-const VIRTUALIZATION_THRESHOLD = 80;
+export const SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD = 80;
 const VIRTUAL_ROW_HEIGHT = 52;
 const VIRTUAL_OVERSCAN = 8;
 const FOCUSABLE_ROW_CONTROL = 'button:not(:disabled), summary[role="button"]';
@@ -13,7 +13,16 @@ function visibleFocusableControls(container: ParentNode): HTMLElement[] {
 
 type VirtualRowProps = LiHTMLAttributes<HTMLLIElement> & {
   readonly 'data-virtual-index'?: number;
+  readonly 'data-virtual-focusable'?: boolean;
 };
+
+function findFocusableVirtualRowIndex(rows: readonly ReactElement[], startIndex: number, step: -1 | 1): number | undefined {
+  for (let index = startIndex; index >= 0 && index < rows.length; index += step) {
+    const props = rows[index]?.props as VirtualRowProps | undefined;
+    if (props?.['data-virtual-focusable'] !== false) return index;
+  }
+  return undefined;
+}
 
 interface PendingFocus {
   readonly index: number;
@@ -29,7 +38,7 @@ export function SavedSessionCatalogList({ virtualRows, renderNestedRows }: Saved
   const list = useRef<HTMLUListElement>(null);
   const pendingFocus = useRef<PendingFocus | null>(null);
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 320 });
-  const virtualized = virtualRows.length > VIRTUALIZATION_THRESHOLD;
+  const virtualized = virtualRows.length > SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD;
   const firstIndex = virtualized ? Math.max(0, Math.floor(viewport.scrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN) : 0;
   const endIndex = virtualized
     ? Math.min(virtualRows.length, Math.ceil((viewport.scrollTop + viewport.height) / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN)
@@ -81,8 +90,10 @@ export function SavedSessionCatalogList({ virtualRows, renderNestedRows }: Saved
     if (!boundary || document.activeElement !== boundary) return;
     const row = boundary.closest<HTMLElement>('[data-virtual-index]');
     const rowIndex = Number(row?.dataset.virtualIndex);
-    const nextIndex = rowIndex + (event.shiftKey ? -1 : 1);
-    if (!Number.isInteger(rowIndex) || nextIndex < 0 || nextIndex >= virtualRows.length) return;
+    const step = event.shiftKey ? -1 : 1;
+    if (!Number.isInteger(rowIndex)) return;
+    const nextIndex = findFocusableVirtualRowIndex(virtualRows, rowIndex + step, step);
+    if (nextIndex === undefined) return;
 
     event.preventDefault();
     pendingFocus.current = { index: nextIndex, edge: event.shiftKey ? 'last' : 'first' };

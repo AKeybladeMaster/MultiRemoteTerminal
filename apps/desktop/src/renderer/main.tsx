@@ -37,7 +37,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
 import type { SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { TerminalPane } from './TerminalPane.tsx';
-import { SavedSessionCatalogList } from './SavedSessionCatalogList.tsx';
+import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, SavedSessionCatalogList } from './SavedSessionCatalogList.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
@@ -2406,9 +2406,9 @@ function Workbench() {
   }
 
   const savedCatalogVirtualRows: ReactElement[] = [];
-  if (savedSessions.length + savedFolders.length > 80) {
+  if (savedSessions.length + savedFolders.length > SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD) {
     if (unfiledSessions.length > 0) {
-      savedCatalogVirtualRows.push(<li className="saved-folder-node" key="unfiled">{renderUnfiledFolderHeader()}</li>);
+      savedCatalogVirtualRows.push(<li className="saved-folder-node" key="unfiled" data-virtual-focusable={false}>{renderUnfiledFolderHeader()}</li>);
       unfiledSessions.forEach(session => savedCatalogVirtualRows.push(renderSavedSession(session, 1)));
     }
     const appendFolderRows = (folder: SavedSessionFolder, depth: number): void => {
