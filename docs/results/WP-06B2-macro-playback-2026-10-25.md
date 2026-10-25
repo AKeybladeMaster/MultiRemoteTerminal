@@ -4,8 +4,9 @@
 
 **Branch:** `dev-1`
 
-**Requirements:** F-007 (partial), P-28 (partial), P-40 (partial). Playback of
-100 stored definitions and WP-06C MultiExec remain open.
+**Requirements:** F-007/P-28 were partial, and P-40 was partial at this
+WP-06B2 stage. Windows replay of 100 stored definitions and WP-06C MultiExec
+were still open then; see WP-06C/D for later evidence.
 
 ## Delivered
 
@@ -63,9 +64,11 @@ The wait matcher sees terminal output after ANSI/control-string stripping but
 does not persist it. Macro text remains user-authored local database content;
 the editor warns against passwords, tokens and private-key content, but manual
 secret detection is not promised. The recorder's secret-prompt detection also
-remains heuristic. The Windows playback E2E uses the local PowerShell target;
-SSH/Telnet playback interoperability and Windows replay acceptance for 100
-definitions remain open. MultiExec is a separate, unimplemented WP-06C slice.
+remains heuristic. At the WP-06B2 stage, the Windows playback E2E used the local
+PowerShell target; SSH/Telnet playback interoperability, 100-definition replay
+acceptance and MultiExec remained open. WP-06C/D later address MultiExec and
+100-definition replay, while SSH/Telnet macro playback interoperability stays
+open and macro-specific keyboard bindings remain unimplemented.
 
 See [ADR-0013](../adr/ADR-0013-wp06-macro-safety-and-storage.md) for macro
 safety decisions and [WP-06B1 evidence](WP-06B1-macro-recording-2026-10-25.md)

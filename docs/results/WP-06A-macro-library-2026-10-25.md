@@ -4,7 +4,7 @@
 
 **Branch:** `dev-1`
 
-**Requirements:** F-007 (partial), P-40 (partial); P-28 recording/replay and P-19 MultiExec remain open.
+**Requirements:** F-007/P-40 were partial at this WP-06A stage; P-28 recording/replay and P-19 MultiExec were not covered here. WP-06D later verifies P-40.
 
 ## Delivered
 
@@ -44,9 +44,12 @@ The schema rejects credential-shaped properties and stores no connection
 target. User-authored names, descriptions and step text remain ordinary local
 database content; the editor warns against secrets but does not detect every
 secret pattern. Macro text is not logged. Playback must show an exact preview
-before this data is sent to any terminal. F-007/P-40 stay partial until
-recording, playback, secret suppression, cancellation and Windows acceptance
-for 100 macros are complete. MultiExec remains planned.
+before this data is sent to any terminal. At the WP-06A stage, F-007/P-40 were
+partial while recording, playback, secret suppression, cancellation and
+Windows replay acceptance remained open. WP-06B/C/D later address those
+slices; P-40 is now verified by WP-06D, and P-28 remains partial because
+macro-specific keyboard bindings are not implemented, prompt detection is
+heuristic, and SSH/Telnet playback interoperability remains open.
 
 See [ADR-0013](../adr/ADR-0013-wp06-macro-safety-and-storage.md) for the
 architecture and safety decisions.
