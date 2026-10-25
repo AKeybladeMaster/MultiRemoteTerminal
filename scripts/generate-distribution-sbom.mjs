@@ -9,7 +9,7 @@ const artifactsRoot = resolve(projectRoot, 'artifacts/windows');
 const productName = 'MultiRemoteTerminal';
 const requireSignedRelease = process.env.MRT_SIGNED_RELEASE === '1';
 
-function runPnpmJson(args) {
+function runPnpm(args) {
   const cli = process.env.npm_execpath;
   if (!cli) throw new Error('Run this script through the pinned pnpm command.');
   const isJavaScriptCli = /\.[cm]?js$/iu.test(cli);
@@ -21,7 +21,11 @@ function runPnpmJson(args) {
     });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Pinned pnpm command failed: ${args[0]}`);
-  return JSON.parse(result.stdout);
+  return result.stdout;
+}
+
+function runPnpmJson(args) {
+  return JSON.parse(runPnpm(args));
 }
 
 function packageUrl(name, version) {
@@ -159,6 +163,12 @@ async function main() {
   if (process.versions.node !== rootPackage.engines.node) {
     throw new Error(`Use pinned Node ${rootPackage.engines.node} to create the Windows distribution SBOM.`);
   }
+  const expectedPnpm = rootPackage.packageManager?.match(/^pnpm@(.+)$/u)?.[1];
+  if (!expectedPnpm) throw new Error('The repository must declare its pinned pnpm version in packageManager.');
+  const actualPnpm = runPnpm(['--version']).trim();
+  if (actualPnpm !== expectedPnpm) {
+    throw new Error(`Use pinned pnpm ${expectedPnpm} to create the Windows distribution SBOM; found ${actualPnpm}.`);
+  }
 
   const pnpmGraph = runPnpmJson(['ls', '--filter', '@mrt/desktop', '--prod', '--depth', 'Infinity', '--json']);
   const licenseIndex = readLicenseIndex(runPnpmJson(['licenses', 'list', '--prod', '--filter', '@mrt/desktop', '--json']));
@@ -196,7 +206,7 @@ async function main() {
   const appArchiveHash = sha256(await readFile(appArchivePath));
   const toolchain = {
     node: rootPackage.engines.node,
-    pnpm: rootPackage.packageManager.replace(/^pnpm@/u, ''),
+    pnpm: actualPnpm,
     electronBuilder: rootPackage.devDependencies['electron-builder']
   };
 

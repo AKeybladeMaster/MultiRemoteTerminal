@@ -7,6 +7,7 @@
 - Build on Windows x64 with Node.js `24.14.1` and pnpm `12.15.0`, both pinned by the repository.
 - Start from a clean checkout of the reviewed `dev-1` commit. Install with `corepack pnpm install --frozen-lockfile` and run `corepack pnpm check`.
 - Run `corepack pnpm package:win:smoke`. The packaging script builds x64 NSIS and portable artifacts, then generates one CycloneDX 1.6 SBOM per executable and a `SHA256SUMS.txt` manifest.
+- The SBOM generator checks the executing pnpm CLI version against the repository's `packageManager` pin and records the verified version in each BOM.
 - Keep the SBOMs and checksum manifest beside the two distributable executables. The manifest covers each executable and its SBOM; it does not hash itself.
 - The SBOM includes the resolved production dependency graph for `@mrt/desktop` and the pinned Electron runtime. Development tools are excluded. The Electron package's bundled Chromium/Node components are represented by the Electron runtime component; Electron's bundled `LICENSE.electron.txt` and `LICENSES.chromium.html` remain in the packaged directory.
 
