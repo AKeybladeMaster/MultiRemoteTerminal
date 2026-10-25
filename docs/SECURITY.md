@@ -107,7 +107,7 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 - [x] Windows safeStorage vault survives an app process restart under the same user profile, with no plaintext in `credentials.json` ([WP-07L evidence](results/WP-07L-vault-restart-2026-10-25.md)).
 - [ ] No plaintext secret in DB/log/export/IPC; those channels are not covered by WP-07K/WP-07L ([WP-07K](results/WP-07K-vault-lock-recovery-2026-10-25.md), [WP-07L](results/WP-07L-vault-restart-2026-10-25.md)).
 - [x] SFTP path traversal, cancellation, symlink and overwrite unit tests pass; Windows loopback E2E verifies actual upload/download bytes. 100 MB transfers and network-loss cleanup remain open ([WP-07N evidence](results/WP-07N-sftp-security-acceptance-2026-10-25.md)).
-- [ ] Local/remote/dynamic SSH forwarding policy tests pass.
+- [x] Local/remote/dynamic SSH forwarding policy unit tests and Windows loopback E2E pass ([WP-07O evidence](results/WP-07O-ssh-forwarding-security-acceptance-2026-10-25.md)); public-bind consent and broad interoperability remain open.
 - [ ] Network daemons/X11, when implemented, not exposed publicly by default.
 - [ ] Build dependencies audited, SBOM created, installer hash published.
 - [x] Independent reviewer has no unresolved critical/high finding; unsigned distribution integrity and missing hostile terminal-output privilege-injection evidence remain release blockers.
