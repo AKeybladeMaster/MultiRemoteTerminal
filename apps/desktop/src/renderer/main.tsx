@@ -1054,9 +1054,9 @@ function Workbench() {
   }, []);
 
   const openHelp = useCallback(() => {
-    helpReturnFocus.current = paletteOpen && paletteReturnFocus.current
-      ? paletteReturnFocus.current
-      : document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    helpReturnFocus.current = paletteOpen ? paletteReturnFocus.current ?? activeElement : activeElement;
+    if (paletteOpen) paletteReturnFocus.current = null;
     setHelpOpen(true);
   }, [paletteOpen]);
 

@@ -3101,7 +3101,13 @@ test('offline help opens from the workbench and command palette, filters topics,
     await expect(help).toBeVisible();
     await expect(help.getByRole('heading', { name: 'Open a connection' })).toBeVisible();
     await expect(help.getByRole('heading', { name: 'Troubleshooting' })).toBeVisible();
-    await expect(help.getByRole('row', { name: /Ctrl\+Shift\+P/ })).toBeVisible();
+    const shortcutRows = help.getByRole('row');
+    await expect(shortcutRows).toHaveCount(11);
+    for (const shortcut of ['Ctrl+Shift+P', 'Ctrl+W / Ctrl+Shift+W', 'Ctrl+Tab', 'Ctrl+Shift+Tab',
+      'Ctrl+Alt+Shift, then assigned key', 'Ctrl+V / Shift+Insert', '← / →, Home / End (tab focused)',
+      '↑ / ↓, Home / End (tab menu focused)', '↑ / ↓, Enter, Esc (palette)', 'Esc (help open)']) {
+      await expect(help.getByRole('row', { name: new RegExp(shortcut.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })).toBeVisible();
+    }
     await expect(help.locator('#help-search')).toBeFocused();
     await page.screenshot({ path: 'test-results/offline-help-dark.png' });
 
@@ -3109,6 +3115,11 @@ test('offline help opens from the workbench and command palette, filters topics,
     await expect(help.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(help.locator('#help-search')).toBeFocused();
+    const helpTopics = help.getByRole('region', { name: 'Help topics' });
+    await page.keyboard.press('Tab');
+    await expect(helpTopics).toBeFocused();
+    await page.keyboard.press('End');
+    await expect.poll(() => helpTopics.evaluate(element => element.scrollTop + element.clientHeight >= element.scrollHeight - 2)).toBe(true);
     await help.locator('#help-search').fill('Ctrl+Shift+Tab');
     await expect(help.getByRole('row', { name: /Ctrl\+Shift\+Tab/ })).toBeVisible();
     await expect(help.getByRole('heading', { name: 'Open a connection' })).toHaveCount(0);
@@ -3137,7 +3148,10 @@ test('offline help opens from the workbench and command palette, filters topics,
     await expect(palette).toBeVisible();
     await palette.getByRole('button', { name: 'Help and keyboard shortcuts', exact: true }).click();
     await expect(help).toBeVisible();
-    await help.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(help.locator('#help-search')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(helpTopics).toBeFocused();
+    await page.keyboard.press('Escape');
     await expect(help).toHaveCount(0);
     await expect(helpButton).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

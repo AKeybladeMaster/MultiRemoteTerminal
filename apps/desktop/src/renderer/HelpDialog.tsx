@@ -33,7 +33,7 @@ const HELP_SECTIONS: readonly HelpSection[] = [
     id: 'sessions',
     title: 'Saved sessions and folders',
     topics: [
-      { title: 'Save and reopen', body: 'Use Save active session, then give the connection a name. Saved definitions stay in the app data profile across restarts and Windows sign-outs. An installed build stores data in this Windows user profile; a portable build stores it in MultiRemoteTerminal-data beside the executable. There is no separate account sign-in, and closing a connection or the app does not remove a saved definition. They store connection settings, not credentials or terminal history.', keywords: ['save', 'reopen', 'persist', 'profile', 'logout', 'sign out', 'history', 'portable'] },
+      { title: 'Save and reopen', body: 'Use Save active session, then give the connection a name. Select its entry in Saved sessions to reopen it. Saved definitions stay in the app data profile across restarts and Windows sign-outs. An installed build stores data in this Windows user profile; a portable build stores it in MultiRemoteTerminal-data beside the executable. There is no separate account sign-in, and closing a connection or the app does not remove a saved definition. They store connection settings, not credentials or terminal history.', keywords: ['save', 'reopen', 'persist', 'profile', 'logout', 'sign out', 'history', 'portable'] },
       { title: 'Organize folders', body: 'Search the Saved sessions list and use the star to favorite a saved session. Use session actions to move or delete it. Folder actions let you create a subfolder, export, rename, move, or delete a folder. Deletions ask for confirmation.', keywords: ['folder', 'organize', 'move', 'favorite', 'rename', 'delete', 'search'] },
       { title: 'Import and export', body: 'Import or export a folder as a JSON bundle from Saved sessions. Bundles are not encrypted and include connection metadata such as host names, ports, and folder names. They do not include credentials, private keys, or terminal history. Store exported files carefully.', keywords: ['json', 'bundle', 'import', 'export', 'backup', 'credential', 'secret'] }
     ]
@@ -42,9 +42,9 @@ const HELP_SECTIONS: readonly HelpSection[] = [
     id: 'terminal',
     title: 'Terminal controls',
     topics: [
-      { title: 'Switch or close tabs', body: 'Select a tab, use the keyboard shortcuts below, or focus the tab strip and move with the arrow keys. Middle-click a terminal tab to begin closing it. Closing a running terminal asks for confirmation.', keywords: ['tab', 'switch', 'close', 'middle click', 'mousewheel'] },
+      { title: 'Switch or close tabs', body: 'Select a tab, use the keyboard shortcuts below, or focus the tab strip and move with the arrow and Home/End keys. Middle-click a terminal tab to begin closing it. Closing a running terminal asks for confirmation.', keywords: ['tab', 'switch', 'close', 'middle click', 'mousewheel'] },
       { title: 'Terminal tab menu', body: 'Right-click a terminal tab for Copy selection, Clear terminal, and Close terminal. This menu is available on terminal tabs; file-only tabs do not show it.', keywords: ['right click', 'context menu', 'copy', 'clear', 'selection'] },
-      { title: 'Paste and font size', body: 'Paste into a terminal with Ctrl+V after focusing it. Multi-line paste asks you to confirm before sending. Use the font-size controls in the status bar to adjust terminal text.', keywords: ['clipboard', 'paste', 'multiline', 'font', 'zoom'] },
+      { title: 'Paste and font size', body: 'Paste into a terminal with Ctrl+V or Shift+Insert after focusing it. Multi-line paste asks you to confirm before sending. Use the font-size controls in the status bar to adjust terminal text.', keywords: ['clipboard', 'paste', 'shift insert', 'multiline', 'font', 'zoom'] },
       { title: 'Theme', body: 'Use the header button or command palette to switch between the light and dark workbench themes.', keywords: ['theme', 'light', 'dark', 'appearance', 'color'] }
     ]
   },
@@ -80,11 +80,15 @@ const HELP_SECTIONS: readonly HelpSection[] = [
 
 const KEYBOARD_SHORTCUTS: readonly KeyboardShortcut[] = [
   { keys: 'Ctrl+Shift+P', action: 'Open or close the command palette' },
-  { keys: 'Ctrl+W', action: 'Start closing the active terminal tab' },
+  { keys: 'Ctrl+W / Ctrl+Shift+W', action: 'Start closing the active session tab' },
   { keys: 'Ctrl+Tab', action: 'Select the next open session tab' },
   { keys: 'Ctrl+Shift+Tab', action: 'Select the previous open session tab' },
-  { keys: 'Ctrl+Alt+Shift, then assigned key', action: 'Open review for a macro with that saved shortcut' },
-  { keys: '↑ / ↓, Enter, Esc', action: 'Move through, run, and close the command palette' }
+  { keys: 'Ctrl+Alt+Shift, then assigned key', action: 'Open review for a macro with that saved shortcut; choose Run to start it' },
+  { keys: 'Ctrl+V / Shift+Insert', action: 'Paste clipboard text into the focused terminal' },
+  { keys: '← / →, Home / End (tab focused)', action: 'Select the previous or next tab, or the first or last tab' },
+  { keys: '↑ / ↓, Home / End (tab menu focused)', action: 'Move through terminal tab actions' },
+  { keys: '↑ / ↓, Enter, Esc (palette)', action: 'Move through, run, and close the command palette' },
+  { keys: 'Esc (help open)', action: 'Close this guide and return focus to the workbench' }
 ];
 
 function matchesHelpText(text: string, filter: string): boolean {
@@ -144,7 +148,7 @@ export function HelpDialog({ onClose }: { readonly onClose: () => void }) {
       <label className="visually-hidden" htmlFor="help-search">Search help</label>
       <input ref={search} id="help-search" className="help-search" name="help" type="search" autoComplete="off"
         placeholder="Search help…" value={filter} onChange={event => setFilter(event.target.value)} />
-      <div className="help-content">
+      <div className="help-content" role="region" aria-label="Help topics" tabIndex={0}>
         {!hasMatches && <p className="help-no-results" role="status">No help topics match “{filter}”. Try a connection type, action, or shortcut.</p>}
         {visibleSections.map(section => <section className="help-section" key={section.id} aria-labelledby={`help-section-${section.id}`}>
           <h3 id={`help-section-${section.id}`}>{section.title}</h3>

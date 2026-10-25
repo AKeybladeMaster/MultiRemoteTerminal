@@ -20,8 +20,8 @@
   private keys, or terminal history.
 - Added keyboard dismissal and focus trapping, initial search focus, focus
   restoration, a no-results message, and one-column article layout at the
-  workbench's existing narrow breakpoint. The help follows the existing light
-  and dark theme tokens.
+  workbench's existing narrow breakpoint. The scrollable article region is
+  keyboard-focusable. The help follows the existing light and dark theme tokens.
 
 ## Verification
 
@@ -32,9 +32,10 @@ On Windows x64, current working tree:
 - `corepack pnpm build` — passed. Vite reported the existing large renderer
   chunk advisory (718.26 kB minified); there were no build errors.
 - `corepack pnpm exec playwright test -g "offline help opens" --reporter=list`
-  — 1 passed. It exercised header and command-palette entry points, shortcut
-  search, keyboard focus cycling, Escape dismissal, return focus, light theme,
-  and a narrow window with a single article column and no horizontal overflow.
+  — 1 passed. It exercised header and command-palette entry points, all shortcut
+  rows, keyboard scrolling, filtering, focus cycling and restoration, Escape
+  dismissal from both entry points, light theme, and a narrow window with a
+  single article column and no horizontal overflow.
 - `git diff --check` — passed.
 
 Screenshots were captured at the default test window size and after resizing the
@@ -47,3 +48,9 @@ This verifies the help flow on the current Windows x64 test host. It is not a
 screen-reader certification, physical touch-device test, or completion of the
 separate MVP installer, security, and compatibility release gates. P-32 and the
 M4 release gate remain open.
+
+The first review pass found omitted shortcuts, ambiguous FTP warning frequency,
+an inaccessible scroll region, a focus handoff issue from the command palette,
+and missing instructions for reopening saved sessions. These findings were
+corrected; the focused Windows E2E now covers keyboard scrolling, the complete
+shortcut table, and focus behavior for both help entry points.

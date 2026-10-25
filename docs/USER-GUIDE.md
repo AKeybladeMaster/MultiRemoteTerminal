@@ -15,7 +15,7 @@ an internet connection.
 - **SFTP:** connect to a files-only SFTP session or open the remote file pane
   alongside an SSH terminal.
 - **FTP or FTPS:** connect to a files-only session. FTPS uses TLS. Plain FTP is
-  unencrypted and requires a one-time warning acknowledgement.
+  unencrypted and requires a warning acknowledgement for each connection.
 - **Telnet:** connect only when the server requires it. Telnet is unencrypted
   and requires a warning acknowledgement for each connection.
 
@@ -32,7 +32,8 @@ font-size controls in the status bar to make terminal text larger or smaller.
 
 ## Save and move session folders
 
-Choose **Save active session** and enter a name. Saved definitions stay in the
+Choose **Save active session** and enter a name. Select the saved-session entry
+to reopen it. Saved definitions stay in the
 app's local data profile across restarts and Windows sign-outs. An installed
 build stores data in this Windows user profile; a portable build stores it in
 `MultiRemoteTerminal-data` beside the executable. The app has no separate
@@ -61,11 +62,15 @@ permissions, server policy, and network interruption can prevent a transfer.
 | Keys | Action |
 |---|---|
 | `Ctrl+Shift+P` | Open or close the command palette |
-| `Ctrl+W` | Start closing the active session |
+| `Ctrl+W` or `Ctrl+Shift+W` | Start closing the active session |
 | `Ctrl+Tab` | Select the next session tab |
 | `Ctrl+Shift+Tab` | Select the previous session tab |
-| Up / Down, `Enter`, `Esc` | Navigate, run, and close the command palette |
-| `Ctrl+Alt+Shift`, then an assigned key | Open review for a macro with that saved shortcut |
+| `Ctrl+V` or `Shift+Insert` | Paste clipboard text into the focused terminal |
+| Left / Right, `Home` / `End` with a tab focused | Select previous/next or first/last session tab |
+| Up / Down, `Home` / `End` with the tab menu focused | Move through terminal tab actions |
+| Up / Down, `Enter`, `Esc` in the palette | Navigate, run, and close the command palette |
+| `Ctrl+Alt+Shift`, then an assigned key | Open macro review; choose Run to start it |
+| `Esc` with Help open | Close the guide and return focus to the workbench |
 
 Macro shortcuts open a review; they do not run a macro without your explicit
 approval. MultiExec likewise shows the exact line and destinations before it
