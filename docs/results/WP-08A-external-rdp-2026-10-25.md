@@ -29,4 +29,4 @@ No new package dependency was added. Saved profiles and JSON bundles contain no 
 
 ## Review
 
-Pending independent spec and standards review before promotion.
+Independent spec review found no blocking issue and confirmed that P-07 and F-018 remain correctly tracked as partial. The standards review initially found a missing main-broker gesture check; this was fixed in the follow-up commit by requiring a fresh trusted launch-button click, binding it to the canonical endpoint, and consuming a sender-scoped one-shot authorization in the main broker. The standards follow-up found no remaining bypass and ran the four relevant unit files (75 passed, 0 failed). The final Windows E2E, including its direct bridge-bypass assertion and trusted UI launch flow, passed locally. Both reviewers recommended merge for WP-08A only; this does not pass the M4 release gate or verify a live RDP connection.
