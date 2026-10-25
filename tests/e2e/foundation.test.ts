@@ -3087,3 +3087,77 @@ test('100% scale themes render and CSP/Electron policy deny injected capabilitie
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('offline help opens from the workbench and command palette, filters topics, and restores focus', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-help-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    const helpButton = page.getByRole('button', { name: 'Help', exact: true });
+    await helpButton.click();
+    const help = page.getByRole('dialog', { name: 'Help & keyboard shortcuts' });
+    await expect(help).toBeVisible();
+    await expect(help.getByRole('heading', { name: 'Open a connection' })).toBeVisible();
+    await expect(help.getByRole('heading', { name: 'Troubleshooting' })).toBeVisible();
+    const shortcutRows = help.getByRole('row');
+    await expect(shortcutRows).toHaveCount(14);
+    for (const shortcut of ['Ctrl+Shift+P', 'Ctrl+W / Ctrl+Shift+W', 'Ctrl+Tab', 'Ctrl+Shift+Tab',
+      'Ctrl+Alt+Shift, then assigned key', 'Ctrl+V / Ctrl+Shift+V / Shift+Insert', '← / →, Home / End (tab focused)',
+      '↑ / ↓, Home / End (tab menu focused)', 'Esc / Tab (terminal tab menu)', '↑ / ↓, Enter, Esc, Tab (palette)',
+      'Tab / Shift+Tab (dialog open)', 'Esc (SSH host prompt)', 'Tab / Shift+Tab / Esc (help open)']) {
+      await expect(help.getByRole('row', { name: new RegExp(shortcut.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })).toBeVisible();
+    }
+    await expect(help.locator('#help-search')).toBeFocused();
+    await page.screenshot({ path: 'test-results/offline-help-dark.png' });
+
+    await page.keyboard.press('Shift+Tab');
+    await expect(help.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(help.locator('#help-search')).toBeFocused();
+    const helpTopics = help.getByRole('region', { name: 'Help topics' });
+    await page.keyboard.press('Tab');
+    await expect(helpTopics).toBeFocused();
+    await page.keyboard.press('End');
+    await expect.poll(() => helpTopics.evaluate(element => element.scrollTop + element.clientHeight >= element.scrollHeight - 2)).toBe(true);
+    await help.locator('#help-search').fill('Ctrl+Shift+Tab');
+    await expect(help.getByRole('row', { name: /Ctrl\+Shift\+Tab/ })).toBeVisible();
+    await expect(help.getByRole('heading', { name: 'Open a connection' })).toHaveCount(0);
+
+    await page.keyboard.press('Escape');
+    await expect(help).toHaveCount(0);
+    await expect(helpButton).toBeFocused();
+
+    await page.getByRole('button', { name: 'Switch to light theme' }).click();
+    await expect(page.locator('.workbench')).toHaveAttribute('data-theme', 'light');
+    await helpButton.click();
+    await expect(help).toBeVisible();
+    await page.screenshot({ path: 'test-results/offline-help-light.png' });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(620, 760));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(700);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await help.locator('.help-topics').first().evaluate(element =>
+      getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length)).toBe(1);
+    await page.screenshot({ path: 'test-results/offline-help-narrow.png' });
+    await help.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(help).toHaveCount(0);
+    await expect(helpButton).toBeFocused();
+
+    await page.keyboard.press('Control+Shift+P');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(palette).toBeVisible();
+    await palette.getByRole('button', { name: 'Help and keyboard shortcuts', exact: true }).click();
+    await expect(help).toBeVisible();
+    await expect(help.locator('#help-search')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(helpTopics).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(help).toHaveCount(0);
+    await expect(helpButton).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});

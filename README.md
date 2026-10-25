@@ -2,7 +2,7 @@
 
 An independent Windows remote terminal workbench, developed incrementally on `dev-1`.
 
-**Current state: WP-07A Windows package foundation (partial), with earlier terminal, saved-session, SFTP, SSH forwarding, Telnet, FTP/FTPS and macro slices recorded in the [feature matrix](docs/FEATURE-MATRIX.md).** Windows 11 x64 smoke tests install and uninstall the NSIS package, open a local PowerShell terminal, and verify that the portable executable creates its SQLite profile beside itself. The generated `0.0.0` artifacts are unsigned previews, not a release. Saved definitions persist in the local SQLite profile across app exits and restarts; there is no separate account sign-in/logout flow. Bash requires a separate Git for Windows installation and is not bundled. SFTP, FTP/FTPS and Telnet have explicit documented interoperability and security limits. The requirements matrix and linked evidence describe what is verified and what remains open.
+**Current state: WP-07A Windows package foundation (partial), with earlier terminal, saved-session, SFTP, SSH forwarding, Telnet, FTP/FTPS, macro, and offline-help slices recorded in the [feature matrix](docs/FEATURE-MATRIX.md).** Windows 11 x64 smoke tests install and uninstall the NSIS package, open a local PowerShell terminal, and verify that the portable executable creates its SQLite profile beside itself. The generated `0.0.0` artifacts are unsigned previews, not a release. Saved definitions persist in the local SQLite profile across app exits and restarts; there is no separate account sign-in/logout flow. Bash requires a separate Git for Windows installation and is not bundled. SFTP, FTP/FTPS and Telnet have explicit documented interoperability and security limits. The requirements matrix and linked evidence describe what is verified and what remains open.
 
 ## Run the development preview
 
@@ -40,6 +40,8 @@ npm exec --yes --package=pnpm@12.15.0 -- pnpm dependencies:inventory
 `check` runs strict project type checks, lint, import boundaries, unit/adapter tests, production build and Electron end-to-end tests. The optional disposable OpenSSH acceptance fixture runs with `pnpm test:ssh-fixture` when `MRT_TEST_SSH_HOST`, `MRT_TEST_SSH_PORT`, `MRT_TEST_SSH_USERNAME`, `MRT_TEST_SSH_PASSWORD` and `MRT_TEST_SSH_FINGERPRINT` point to a test server. Screenshots and failure traces go under ignored `test-results/` and `playwright-report/`.
 
 ## Architecture and evidence
+
+- [Offline user guide](docs/USER-GUIDE.md); open Help in the app for the searchable guide and keyboard reference.
 
 - [Start here](docs/CODEX-START-HERE.md), [mandatory rules](AGENTS.md), [canonical specification](docs/SPEC-001-MultiRemoteTerminal.md)
 - [Architecture](docs/ARCHITECTURE.md), [security](docs/SECURITY.md), [feature matrix](docs/FEATURE-MATRIX.md), [implementation plan](docs/IMPLEMENTATION-PLAN.md)
