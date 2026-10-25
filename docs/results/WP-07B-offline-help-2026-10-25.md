@@ -30,7 +30,7 @@ On Windows x64, current working tree:
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed; import boundaries passed.
 - `corepack pnpm build` — passed. Vite reported the existing large renderer
-  chunk advisory (718.26 kB minified); there were no build errors.
+  chunk advisory (719.64 kB minified); there were no build errors.
 - `corepack pnpm exec playwright test -g "offline help opens" --reporter=list`
   — 1 passed. It exercised header and command-palette entry points, all shortcut
   rows, keyboard scrolling, filtering, focus cycling and restoration, Escape
