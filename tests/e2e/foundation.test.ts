@@ -628,6 +628,99 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   }
 });
 
+test('a lost SSH transport fails its tab cleanly and allows explicit saved-profile reconnect', async () => {
+  test.skip(process.platform !== 'win32', 'Run the SSH credential and recovery acceptance on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-recovery-e2e-'));
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  let terminalClient: Ssh2FixtureClient | undefined;
+  let shellCount = 0;
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        terminalClient = client;
+        shellCount += 1;
+        acceptShell().write(`MRT-SSH-RECOVERY-${shellCount}\r\n`);
+      });
+    }));
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH recovery fixture did not bind a loopback port');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connectDialog.getByLabel('Port').fill(String(address.port));
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog, `Fixture errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing SSH recovery terminal panel');
+    const sshPanel = page.locator(`#${panelId}`);
+    await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-SSH-RECOVERY-1', { timeout: 15_000 });
+
+    const savedName = 'Recoverable SSH profile';
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill(savedName);
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const reopenButton = page.getByRole('button', { name: `Open ${savedName}`, exact: true });
+    await expect(reopenButton).toBeVisible();
+
+    const liveClient = terminalClient;
+    // The pinned ssh2 fixture exposes the accepted TCP socket internally; resetAndDestroy models a link failure, while client.end() is a graceful SSH disconnect.
+    const transportSocket = (liveClient as unknown as { readonly _sock?: Socket } | undefined)?._sock;
+    if (!transportSocket || transportSocket.destroyed) throw new Error('The SSH fixture has no live socket to reset');
+    transportSocket.resetAndDestroy();
+    await expect(sshTab.locator('.state-dot')).toHaveClass(/(?:^|\s)failed(?:\s|$)/u, { timeout: 15_000 });
+    await expect(page.getByRole('alert')).toContainText('UNAVAILABLE');
+
+    await reopenButton.click();
+    const reopenedTab = page.getByRole('tab', { name: savedName, exact: true });
+    await expect(reopenedTab).toBeVisible({ timeout: 20_000 });
+    const reopenedPanelId = await reopenedTab.getAttribute('aria-controls');
+    if (!reopenedPanelId) throw new Error('The reopened SSH profile has no terminal panel');
+    const reopenedPanel = page.locator(`#${reopenedPanelId}`);
+    await expect(reopenedPanel.locator('.xterm-rows')).toContainText('MRT-SSH-RECOVERY-2', { timeout: 15_000 });
+    await expect(reopenedTab.locator('.state-dot')).toHaveClass(/(?:^|\s)running(?:\s|$)/u);
+    expect(shellCount).toBe(2);
+  } finally {
+    for (const client of clients) client.end();
+    await app?.close();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SSH saved-profile jump routes verify every hop and clean up one- and two-gateway chains', async () => {
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));
