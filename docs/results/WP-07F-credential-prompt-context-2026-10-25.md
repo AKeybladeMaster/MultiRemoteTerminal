@@ -27,6 +27,10 @@ On Windows 11 x64 with Node.js 24.14.1 and pnpm 12.15.0:
 - `corepack pnpm lint` passed, including import-boundary checks.
 - `corepack pnpm package:win:smoke` passed: installer, portable executable and SBOM checks all passed (3 packaged E2E cases). The installed app's credential helper resource was present; both release executables remain unsigned previews.
 
+## Independent review
+
+The Spec review found no mismatch or scope creep and confirmed the fix preserves the ADR's credential isolation requirements. The Standards review found no documented-standard violations or baseline smells. Both reviews confirm that native-dialog, live SSH and independent security acceptance remain open.
+
 ## Limits
 
 The test stubs `Get-Credential`; it does not display or automate the native dialog. This phase does not establish password entry, live SSH authentication, host-key behavior against a real SSH server, Windows 10 compatibility, or a signed release. N-001/N-002 and M4 remain open.
