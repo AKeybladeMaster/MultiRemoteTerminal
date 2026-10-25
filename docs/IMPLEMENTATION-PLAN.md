@@ -114,6 +114,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-05C — standalone SFTP-only sessions (partial):** The connection flow reuses SSH host verification and interactive credentials, then authenticates without requesting a shell or PTY. The files-only session supports remote browsing and transfers, can be saved/reopened, and uses credential-free saved-folder bundles (format v3); imports of v1/v2 remain supported. The Windows loopback E2E exercises first-use host trust, download bytes, save/reopen and no shell request; focused tests cover files-only lifecycle, storage, bundle compatibility and bridge validation. Drag/drop, large-file throughput, disconnect/recovery, configurable browser behavior and broader server interoperability remain acceptance work. See [WP-05C results](results/WP-05C-sftp-only-sessions-2026-10-24.md) and [ADR-0008](adr/ADR-0008-sftp-only-sessions.md). Keep the WP-05 gate open.
 
+**WP-05D — virtualized remote file tables (partial):** SFTP and FTP directory tables now window rows after 50 entries, with keyboard traversal across mounted windows and correct scroll positioning. Windows loopback E2E opens an SFTP nested directory containing 100 files and an FTP listing with 100 root files; it checks bounded row rendering, SFTP forward/reverse focus traversal and both protocols' scroll ends. The standalone file pane also fills its tab panel so the virtual list has a real viewport. WP-05 remains partial: drag/drop, large-file throughput, disconnect/recovery and broader server interoperability remain acceptance work. See [WP-05D results](results/WP-05D-virtualized-file-tables-2026-10-25.md).
+
 ### WP-06 — Macros and MultiExec
 
 **Requires:** WP-01/02/03.  

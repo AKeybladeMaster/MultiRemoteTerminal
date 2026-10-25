@@ -37,7 +37,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
 import type { SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { TerminalPane } from './TerminalPane.tsx';
-import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, SavedSessionCatalogList } from './SavedSessionCatalogList.tsx';
+import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, VirtualizedList } from './VirtualizedList.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
@@ -82,6 +82,11 @@ type SavedFolderDialogState =
   | { readonly mode: 'rename'; readonly folder: SavedSessionFolder }
   | { readonly mode: 'move-folder'; readonly folder: SavedSessionFolder }
   | { readonly mode: 'move-session'; readonly session: SavedSessionDefinition };
+
+type SavedCatalogItem =
+  | { readonly kind: 'unfiled-header' }
+  | { readonly kind: 'folder'; readonly folder: SavedSessionFolder; readonly depth: number }
+  | { readonly kind: 'session'; readonly session: SavedSessionDefinition; readonly depth: number };
 
 interface MacroRecordingView {
   readonly sessionId: string;
@@ -2405,20 +2410,20 @@ function Workbench() {
     </li>;
   }
 
-  const savedCatalogVirtualRows: ReactElement[] = [];
+  const savedCatalogVirtualItems: SavedCatalogItem[] = [];
   if (savedSessions.length + savedFolders.length > SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD) {
     if (unfiledSessions.length > 0) {
-      savedCatalogVirtualRows.push(<li className="saved-folder-node" key="unfiled" data-virtual-focusable={false}>{renderUnfiledFolderHeader()}</li>);
-      unfiledSessions.forEach(session => savedCatalogVirtualRows.push(renderSavedSession(session, 1)));
+      savedCatalogVirtualItems.push({ kind: 'unfiled-header' });
+      unfiledSessions.forEach(session => savedCatalogVirtualItems.push({ kind: 'session', session, depth: 1 }));
     }
     const appendFolderRows = (folder: SavedSessionFolder, depth: number): void => {
       const sessionsHere = sessionsByFolder.get(folder.id) ?? [];
       const children = (folderChildren.get(folder.id) ?? []).filter(child => visibleFolderIds.has(child.id));
       const expanded = expandedFolderIds.has(folder.id) || (Boolean(savedSearch) && (sessionsHere.length > 0 || children.length > 0));
-      savedCatalogVirtualRows.push(renderSavedFolder(folder, depth, false));
+      savedCatalogVirtualItems.push({ kind: 'folder', folder, depth });
       if (!expanded) return;
       children.forEach(child => appendFolderRows(child, depth + 1));
-      sessionsHere.forEach(session => savedCatalogVirtualRows.push(renderSavedSession(session, depth + 1)));
+      sessionsHere.forEach(session => savedCatalogVirtualItems.push({ kind: 'session', session, depth: depth + 1 }));
     };
     rootFolders.filter(folder => visibleFolderIds.has(folder.id)).forEach(folder => appendFolderRows(folder, 0));
   }
@@ -2760,9 +2765,18 @@ function Workbench() {
           {savedSessionsLoading && <p className="saved-session-empty" role="status">Loading saved sessions…</p>}
           {!savedSessionsLoading && savedSearch && savedSessions.length === 0 && <p className="saved-session-empty">No saved sessions match this search.</p>}
           {!savedSessionsLoading && !savedSearch && savedSessions.length === 0 && savedFolders.length === 0 && <p className="saved-session-empty">No saved sessions yet.</p>}
-          {(!savedSessionsLoading && (savedSessions.length > 0 || savedFolders.length > 0)) && <SavedSessionCatalogList
-            virtualRows={savedCatalogVirtualRows}
-            renderNestedRows={() => [
+          {(!savedSessionsLoading && (savedSessions.length > 0 || savedFolders.length > 0)) && <VirtualizedList
+            items={savedCatalogVirtualItems}
+            label="Saved sessions and folders"
+            className="saved-session-list"
+            rowHeight={52}
+            threshold={SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD}
+            renderItem={item => item.kind === 'unfiled-header'
+              ? <li className="saved-folder-node" key="unfiled">{renderUnfiledFolderHeader()}</li>
+              : item.kind === 'folder' ? renderSavedFolder(item.folder, item.depth, false)
+                : renderSavedSession(item.session, item.depth)}
+            isItemFocusable={item => item.kind !== 'unfiled-header'}
+            renderNonVirtualizedRows={() => [
               ...(unfiledSessions.length > 0 ? [renderNestedUnfiledFolder()] : []),
               ...rootFolders.filter(folder => visibleFolderIds.has(folder.id)).map(folder => renderSavedFolder(folder, 0))
             ]} />}

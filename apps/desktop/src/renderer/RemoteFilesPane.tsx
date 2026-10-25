@@ -3,6 +3,7 @@ import { remoteParentPath } from '../../../../packages/domain/src/remote-files.t
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import { RemoteTextEditorDialog } from './RemoteTextEditorDialog.tsx';
+import { VirtualizedList } from './VirtualizedList.tsx';
 
 interface RemoteFilesPaneProps {
   readonly sessionId: string;
@@ -12,6 +13,8 @@ interface RemoteFilesPaneProps {
 }
 
 const FILE_SIZE_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+const REMOTE_FILE_LIST_VIRTUALIZATION_THRESHOLD = 50;
+const REMOTE_FILE_ROW_HEIGHT = 38;
 
 interface ActiveFileTransfer extends Pick<FileTransferProgress, 'operationId' | 'direction' | 'fileName' | 'bytesTransferred' | 'totalBytes'> {
   readonly phase: 'preparing' | 'transferring' | 'committing';
@@ -183,6 +186,30 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
 
   const parentPath = listing ? remoteParentPath(listing.path) : undefined;
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
+  const renderRemoteFileEntry = (entry: RemoteFileEntry) => <li key={entry.path}>
+    {entry.kind === 'directory'
+      ? <button className="remote-file-row remote-file-folder" type="button" disabled={loading} aria-label={`Open folder ${entry.name}`}
+        onClick={() => void load(entry.path, true)}>
+        <span className="remote-file-name"><span className="remote-file-icon folder" aria-hidden="true">▰</span>
+          <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
+        <span className="remote-file-meta">Folder</span>
+      </button>
+      : <div className={`remote-file-row remote-file-static ${entry.kind === 'symlink' ? 'is-link' : ''}`}>
+        <span className="remote-file-name"><span className={`remote-file-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'symlink' ? '↗' : '·'}</span>
+          <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
+        <span className="remote-file-file-actions"><span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
+          {entry.kind === 'file' && <>
+            {transport === 'sftp' && <button type="button" className="remote-file-download"
+              aria-label={`Edit ${entry.name}`} disabled={loading || Boolean(transfer) || editorBusy} onClick={event => {
+                editorTrigger.current = event.currentTarget;
+                setTransferNotice(undefined);
+                setEditorPath(entry.path);
+              }}>Edit</button>}
+            <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
+              disabled={loading || Boolean(transfer) || editorBusy} onClick={() => void transferFile('download', entry.path)}>Download</button>
+          </>}</span>
+      </div>}
+  </li>;
   return <aside className="remote-file-panel" aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser">
     <div className="remote-file-heading">
       <h2>{transport === 'ftp' ? 'FTP files' : transport === 'sftp' ? 'SFTP files' : 'Remote files'}</h2>
@@ -226,32 +253,17 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
     {!loading && !error && listing && listing.entries.length > 0 && <p className="remote-file-status" role="status">
       {listing.entries.length} {listing.entries.length === 1 ? 'item' : 'items'} in this folder.
     </p>}
-    {!loading && !error && listing && listing.entries.length > 0 && <ul className="remote-file-list" aria-label={`Items in ${listing.path}`}>
-      {listing.entries.map(entry => <li key={entry.path}>
-        {entry.kind === 'directory'
-          ? <button className="remote-file-row remote-file-folder" type="button" disabled={loading} aria-label={`Open folder ${entry.name}`}
-            onClick={() => void load(entry.path, true)}>
-            <span className="remote-file-name"><span className="remote-file-icon folder" aria-hidden="true">▰</span>
-              <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
-            <span className="remote-file-meta">Folder</span>
-          </button>
-          : <div className={`remote-file-row remote-file-static ${entry.kind === 'symlink' ? 'is-link' : ''}`}>
-            <span className="remote-file-name"><span className={`remote-file-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'symlink' ? '↗' : '·'}</span>
-              <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
-            <span className="remote-file-file-actions"><span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
-              {entry.kind === 'file' && <>
-                {transport === 'sftp' && <button type="button" className="remote-file-download"
-                  aria-label={`Edit ${entry.name}`} disabled={loading || Boolean(transfer) || editorBusy} onClick={event => {
-                    editorTrigger.current = event.currentTarget;
-                    setTransferNotice(undefined);
-                    setEditorPath(entry.path);
-                  }}>Edit</button>}
-                <button type="button" className="remote-file-download" aria-label={`Download ${entry.name}`}
-                  disabled={loading || Boolean(transfer) || editorBusy} onClick={() => void transferFile('download', entry.path)}>Download</button>
-              </>}</span>
-          </div>}
-      </li>)}
-    </ul>}
+    {!loading && !error && listing && listing.entries.length > 0 && <VirtualizedList
+      items={listing.entries}
+      label={`Items in ${listing.path}`}
+      className="remote-file-list"
+      rowHeight={REMOTE_FILE_ROW_HEIGHT}
+      threshold={REMOTE_FILE_LIST_VIRTUALIZATION_THRESHOLD}
+      ariaSetSize={listing.truncated ? -1 : listing.entries.length}
+      renderItem={entry => renderRemoteFileEntry(entry)}
+      isItemFocusable={entry => !loading && (entry.kind === 'directory' ||
+        (entry.kind === 'file' && !transfer && !editorBusy))}
+      renderNonVirtualizedRows={() => listing.entries.map(renderRemoteFileEntry)} />}
     {!loading && !error && listing?.truncated && <p className="remote-file-status remote-file-limit" role="status">Showing the first 500 items.</p>}
     <RemoteTextEditorDialog open={transport === 'sftp' && editorPath !== undefined} sessionId={sessionId} remotePath={editorPath}
       onClose={closeEditor} onSaved={refreshAfterEdit} onActivityChange={setEditorBusy} />
