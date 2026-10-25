@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { SqliteSessionCatalogRepository } from '../../apps/desktop/src/adapters/sqlite-session-catalog-repository.ts';
-import { parseStorageWorkerRequest, storageWorkerErrorCode } from '../../apps/desktop/src/workers/storage-protocol.ts';
+import { parseStorageWorkerMessage, parseStorageWorkerRequest, storageWorkerErrorCode } from '../../apps/desktop/src/workers/storage-protocol.ts';
 import { createSessionCatalog } from '../../packages/application/src/session-catalog.ts';
 import type { SessionCatalogStore } from '../../packages/application/src/session-catalog.ts';
 import type { CancellationSignal } from '../../packages/application/src/cancellation.ts';
@@ -65,6 +65,8 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
     assert.equal((await catalog.listSessions('')).length, 1_009);
+    assert.equal(await catalog.countSessions(), 1_009);
+    assert.deepEqual(await applicationCatalog.count(), { ok: true, result: 1_009 });
     assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
     assert.equal(await catalog.setFavorite(telnet.id, true), true);
@@ -206,6 +208,7 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
   let forwarded: unknown;
   const catalog = createSessionCatalog({
     async listSessions(_query, cancellation) { forwarded = cancellation; throw new StorageOperationError('cancelled'); },
+    async countSessions(cancellation) { forwarded = cancellation; throw new StorageOperationError('cancelled'); },
     async getSessionDefinition() { throw new Error('not called'); },
     async createSession() { throw new Error('not called'); },
     async rememberSession() { throw new Error('not called'); },
@@ -224,6 +227,19 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
   const result = await catalog.list('prod', cancellation);
   assert.equal(forwarded, cancellation);
   assert.deepEqual(result, { ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false } });
+  assert.deepEqual(await catalog.count(cancellation), { ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false } });
+  assert.equal(forwarded, cancellation);
+});
+
+test('storage worker validates exact session-count requests and non-negative integer replies', () => {
+  const requestId = '8cc8c44e-8660-4232-961b-ff7760afc745';
+  const request = { version: 1, type: 'request', requestId, command: 'session.count' };
+  assert.deepEqual(parseStorageWorkerRequest(request), request);
+  assert.equal(parseStorageWorkerRequest({ ...request, extra: true }), undefined);
+  const reply = { version: 1, type: 'reply', requestId, ok: true, result: { kind: 'sessionCount', value: 1_000 } };
+  assert.deepEqual(parseStorageWorkerMessage(reply), reply);
+  assert.equal(parseStorageWorkerMessage({ ...reply, result: { kind: 'sessionCount', value: -1 } }), undefined);
+  assert.equal(parseStorageWorkerMessage({ ...reply, result: { kind: 'sessionCount', value: 1.5 } }), undefined);
 });
 
 test('session removal respects the tunnel guard and always releases its deletion reservation', async () => {

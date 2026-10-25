@@ -2,7 +2,7 @@ import { test, expect, _electron as electron } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import type { EventEmitter } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
@@ -12,6 +12,7 @@ import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
+import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
 interface Ssh2FixtureClient extends EventEmitter {
@@ -1755,6 +1756,137 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     page.once('dialog', dialog => { void dialog.accept(); });
     await deleteSavedSession.click({ timeout: 5_000 });
     await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('1,000 saved sessions remain searchable, reopenable and deletable in the Windows workbench', async () => {
+  test.setTimeout(120_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-session-scale-e2e-'));
+  const bundlePath = join(profile, 'one-thousand-sessions.json');
+  const rootFolderId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const bundle = createSessionFolderBundle({
+    rootFolderId,
+    exportedAt: timestamp,
+    folders: [{ id: rootFolderId, parentId: null, name: 'P38 Scale' }],
+    sessions: Array.from({ length: 999 }, (_, index) => ({
+      id: randomUUID(), folderId: rootFolderId, kind: 'local' as const,
+      name: `P38 Profile ${String(index + 1).padStart(4, '0')}`, shell: 'powershell' as const,
+      favorite: false, createdAt: timestamp, updatedAt: timestamp
+    }))
+  });
+  if (!bundle) throw new Error('Could not create the scale-test folder bundle.');
+  await writeFile(bundlePath, JSON.stringify(bundle), 'utf8');
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('searchbox', { name: 'Search saved sessions' })).toBeVisible();
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, bundlePath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 999 saved sessions', { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('P38 Profile 0000');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+
+    const search = page.locator('#saved-session-search');
+    await expect(page.locator('.saved-session-row').first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
+    const catalogList = page.locator('.saved-session-list');
+    await expect(catalogList.locator('.saved-session-row').first().locator('.saved-actions-panel')).toBeHidden();
+    const focusCatalogBoundary = (edge: 'first' | 'last') => catalogList.evaluate((element, direction) => {
+      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
+        .filter(control => control.getClientRects().length > 0);
+      const boundary = direction === 'first' ? controls[0] : controls.at(-1);
+      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
+      if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
+      boundary.focus();
+      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
+    }, edge);
+    const initiallyRenderedRows = await catalogList.locator('.saved-session-row').count();
+    expect(initiallyRenderedRows).toBeGreaterThan(0);
+    expect(initiallyRenderedRows).toBeLessThan(1_000);
+
+    await catalogList.evaluate(element => { element.scrollTop = 0; });
+    await expect.poll(() => catalogList.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
+    const keyboardProbe = await focusCatalogBoundary('last');
+    expect(keyboardProbe.focused).toBe(true);
+    await page.keyboard.press('Tab');
+    await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
+      .toBe(keyboardProbe.index + 1);
+
+    await catalogList.evaluate(element => { element.scrollTop = 1_500; });
+    await expect.poll(() => catalogList.locator('[data-virtual-index]').first().getAttribute('data-virtual-index'))
+      .not.toBe('0');
+    const reverseKeyboardProbe = await focusCatalogBoundary('first');
+    expect(reverseKeyboardProbe.focused).toBe(true);
+    await page.keyboard.press('Shift+Tab');
+    await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
+      .toBe(reverseKeyboardProbe.index - 1);
+
+    await catalogList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(catalogList.locator('[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '1001');
+    await catalogList.evaluate(element => { element.scrollTop = 0; });
+    await expect(catalogList.locator('[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
+    const firstFocusableRow = await focusCatalogBoundary('first');
+    expect(firstFocusableRow.index).toBe(1);
+    expect(firstFocusableRow.focused).toBe(true);
+    await page.keyboard.press('Shift+Tab');
+    await expect(search).toBeFocused();
+    const searchSamples: number[] = [];
+    type P38SearchProbe = { readonly targetName: string; startedAt?: number; elapsedMs?: number };
+    for (let index = 0; index < 20; index += 1) {
+      const name = `P38 Profile ${index % 2 === 0 ? '0999' : '0998'}`;
+      await page.evaluate(targetName => {
+        const input = document.querySelector<HTMLInputElement>('#saved-session-search');
+        if (!input) throw new Error('Saved-session search input was missing.');
+        const probe: P38SearchProbe = { targetName };
+        (window as Window & { __p38SearchProbe?: P38SearchProbe }).__p38SearchProbe = probe;
+        input.addEventListener('input', () => {
+          probe.startedAt = performance.now();
+          const observer = new MutationObserver(() => {
+            const matchingRow = Array.from(document.querySelectorAll<HTMLButtonElement>('.saved-session-open'))
+              .some(button => button.getAttribute('aria-label') === `Open ${probe.targetName}`);
+            if (!matchingRow || probe.startedAt === undefined) return;
+            probe.elapsedMs = performance.now() - probe.startedAt;
+            observer.disconnect();
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+        }, { once: true });
+      }, name);
+      await search.fill(name);
+      await expect(page.locator('.saved-session-row')).toHaveCount(1, { timeout: 5_000 });
+      await expect(page.locator('.saved-session-open')).toHaveAttribute('aria-label', `Open ${name}`, { timeout: 5_000 });
+      const elapsedMs = await page.evaluate(() => (window as Window & { __p38SearchProbe?: P38SearchProbe }).__p38SearchProbe?.elapsedMs);
+      expect(elapsedMs).toBeGreaterThan(0);
+      searchSamples.push(elapsedMs ?? Number.POSITIVE_INFINITY);
+    }
+    searchSamples.sort((left, right) => left - right);
+    const searchP95Ms = searchSamples[Math.ceil(searchSamples.length * 0.95) - 1] ?? Number.POSITIVE_INFINITY;
+    console.log(`[P-38] Saved-session search p95: ${searchP95Ms.toFixed(1)} ms (n=${searchSamples.length}).`);
+    expect(searchP95Ms).toBeLessThan(150);
+
+    await search.fill('P38 Profile 0999');
+    await expect(page.locator('.saved-session-row')).toHaveCount(1);
+    await expect(page.locator('.saved-session-open')).toHaveAttribute('aria-label', 'Open P38 Profile 0999');
+    const openProfile = page.getByRole('button', { name: 'Open P38 Profile 0999', exact: true });
+    await expect(openProfile).toBeVisible();
+    await openProfile.click();
+    await expect(page.getByRole('tab').filter({ hasText: 'P38 Profile 0999' })).toHaveCount(1);
+
+    await page.getByRole('button', { name: 'Actions for saved session P38 Profile 0999', exact: true }).click();
+    const deleteProfile = page.getByRole('button', { name: 'Delete saved session P38 Profile 0999', exact: true });
+    page.once('dialog', dialog => { void dialog.accept(); });
+    await deleteProfile.click();
+    await expect(page.getByText('No saved sessions match this search.')).toBeVisible();
+    await expect(page.getByLabel('999 saved sessions')).toBeVisible();
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

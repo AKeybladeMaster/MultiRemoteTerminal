@@ -130,6 +130,7 @@ export type CloseFtpFilesRequest = Request<'ftp.close', { readonly sessionId: st
 export type LaunchRdpViewerRequest = Request<'rdp.launch', { readonly host: string; readonly port: number }>;
 export type LaunchVncViewerRequest = Request<'vnc.launch', { readonly host: string; readonly port: number }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
+export type CountSessionsRequest = Request<'session.count', Record<string, never>>;
 export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
 export type RememberSessionRequest = Request<'session.remember', SavedSessionDraft>;
 export type SetSessionFavoriteRequest = Request<'session.favorite', { readonly id: string; readonly favorite: boolean }>;
@@ -165,7 +166,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   ListSerialPortsRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   LaunchRdpViewerRequest | LaunchVncViewerRequest |
-  ListSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
+  ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
@@ -193,6 +194,7 @@ export type FtpTransferReply = CommandReply<FtpTransferResult>;
 export type LaunchRdpViewerReply = CommandReply<RdpLaunchResult>;
 export type LaunchVncViewerReply = CommandReply<VncLaunchResult>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
+export type CountSessionsReply = CommandReply<number>;
 export type CreateSessionReply = CommandReply<SavedSessionDefinition>;
 export type ListSessionFoldersReply = CommandReply<readonly SavedSessionFolder[]>;
 export type CreateSessionFolderReply = CommandReply<SavedSessionFolder>;
@@ -256,6 +258,7 @@ export interface DesktopBridge {
   launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply>;
   launchVncViewer(host: string, port: number): Promise<LaunchVncViewerReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
+  countSavedSessions(): Promise<CountSessionsReply>;
   createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
   rememberSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
   setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply>;
@@ -471,6 +474,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'session.list' && exactKeys(payload, ['query']) && normalizeSessionSearch(payload.query) !== undefined) {
     return { ok: true, result: value as unknown as ListSessionsRequest };
   }
+  if (value.command === 'session.count' && exactKeys(payload, [])) return { ok: true, result: value as unknown as CountSessionsRequest };
   if (value.command === 'session.create' && normalizeSavedSessionDraft(payload)) return { ok: true, result: value as unknown as CreateSessionRequest };
   if (value.command === 'session.remember' && normalizeSavedSessionDraft(payload)) return { ok: true, result: value as unknown as RememberSessionRequest };
   if (value.command === 'session.favorite' && exactKeys(payload, ['id', 'favorite']) && isSessionDefinitionId(payload.id) && typeof payload.favorite === 'boolean') {
@@ -528,7 +532,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'serial.ports.list', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
-    'session.list', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
+    'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
     'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'preferences.get', 'preferences.save'].includes(value.command)) {
@@ -620,6 +624,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ftp.files.upload') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ftp.files.download') return isFtpTransferResult(value.result) && value.result.direction === 'download';
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
+    if (request.command === 'session.count') return isCount(value.result);
     if (request.command === 'session.create' || request.command === 'session.remember') return isSavedSessionDefinition(value.result);
     if (request.command === 'rdp.launch') {
       if (!record(value.result) || !exactKeys(value.result, ['provider', 'endpoint', 'state'])) return false;

@@ -71,6 +71,9 @@ parent.on('message', async event => {
     } else if (request.command === 'session.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'sessions', value: await sessionCatalogRepository.listSessions(request.query) } });
+    } else if (request.command === 'session.count') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'sessionCount', value: await sessionCatalogRepository.countSessions() } });
     } else if (request.command === 'session.get') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'sessionLookup', value: await sessionCatalogRepository.getSessionDefinition(request.id) ?? null } });

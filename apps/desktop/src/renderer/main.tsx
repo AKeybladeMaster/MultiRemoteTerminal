@@ -37,6 +37,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../pack
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
 import type { SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { TerminalPane } from './TerminalPane.tsx';
+import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, SavedSessionCatalogList } from './SavedSessionCatalogList.tsx';
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
@@ -112,6 +113,7 @@ const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly b
   cmd: { name: 'cmd', badge: 'CMD', mark: 'C:\\' },
   bash: { name: 'Bash', badge: 'BASH', mark: '$' }
 };
+const SAVED_SESSION_SEARCH_DEBOUNCE_MS = 50;
 
 function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell].name; }
 function autoSavedProfileName(protocol: string, host: string, port: number): string {
@@ -517,25 +519,25 @@ function Workbench() {
   }, [openSavedActionsMenuId]);
 
   const showTerminalError = useCallback((message: string) => setAlert(message), []);
-  const loadSavedSessions = useCallback(async (search: string): Promise<readonly SavedSessionDefinition[] | undefined> => {
+  const loadSavedSessions = useCallback(async (search: string, refreshCount = true): Promise<readonly SavedSessionDefinition[] | undefined> => {
     const request = ++savedSessionsRequest.current;
     setSavedSessionsLoading(true);
     try {
-      const [reply, totalReply] = await Promise.all([
+      const [reply, countReply] = await Promise.all([
         window.multiRemoteTerminal.listSavedSessions(search),
-        search ? window.multiRemoteTerminal.listSavedSessions('') : undefined
+        refreshCount ? window.multiRemoteTerminal.countSavedSessions() : Promise.resolve(undefined)
       ]);
       if (request !== savedSessionsRequest.current) return undefined;
       if (!reply.ok) {
         setAlert(`Saved sessions could not be loaded (${reply.error.code}).`);
         return undefined;
       }
-      if (totalReply && !totalReply.ok) {
-        setAlert(`Saved-session count could not be loaded (${totalReply.error.code}).`);
+      if (countReply && !countReply.ok) {
+        setAlert(`Saved-session count could not be loaded (${countReply.error.code}).`);
         return undefined;
       }
       setSavedSessions(reply.result);
-      setSavedSessionCount(totalReply?.result.length ?? reply.result.length);
+      if (countReply?.ok) setSavedSessionCount(countReply.result);
       return reply.result;
     } catch {
       if (request === savedSessionsRequest.current) setAlert('Saved sessions could not be loaded.');
@@ -1118,7 +1120,7 @@ function Workbench() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadSavedSessions(savedSearch); }, 160);
+    const timer = window.setTimeout(() => { void loadSavedSessions(savedSearch, savedSearch.length === 0); }, SAVED_SESSION_SEARCH_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
       savedSessionsRequest.current++;
@@ -2343,7 +2345,7 @@ function Workbench() {
     </li>;
   }
 
-  function renderSavedFolder(folder: SavedSessionFolder, depth: number): ReactElement {
+  function renderSavedFolder(folder: SavedSessionFolder, depth: number, includeChildren = true): ReactElement {
     const menuId = `folder:${folder.id}`;
     const menuOpen = openSavedActionsMenuId === menuId;
     const sessionsHere = sessionsByFolder.get(folder.id) ?? [];
@@ -2381,11 +2383,44 @@ function Workbench() {
           </div>
         </details>
       </div>
-      {expanded && <ul className="saved-folder-children">
+      {includeChildren && expanded && <ul className="saved-folder-children">
         {children.map(child => renderSavedFolder(child, depth + 1))}
         {sessionsHere.map(session => renderSavedSession(session, depth + 1))}
       </ul>}
     </li>;
+  }
+
+  function renderUnfiledFolderHeader(): ReactElement {
+    return <div className="saved-folder-entry unfiled-folder-entry">
+      <span className="saved-folder-static"><span className="saved-folder-icon" aria-hidden="true" />
+        <span className="saved-folder-name">Unfiled</span>
+        <span className="saved-folder-count">{unfiledSessions.length}</span></span>
+    </div>;
+  }
+
+  function renderNestedUnfiledFolder(): ReactElement {
+    return <li className="saved-folder-node" key="unfiled">
+      {renderUnfiledFolderHeader()}
+      <ul className="saved-folder-children">{unfiledSessions.map(session => renderSavedSession(session, 1))}</ul>
+    </li>;
+  }
+
+  const savedCatalogVirtualRows: ReactElement[] = [];
+  if (savedSessions.length + savedFolders.length > SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD) {
+    if (unfiledSessions.length > 0) {
+      savedCatalogVirtualRows.push(<li className="saved-folder-node" key="unfiled" data-virtual-focusable={false}>{renderUnfiledFolderHeader()}</li>);
+      unfiledSessions.forEach(session => savedCatalogVirtualRows.push(renderSavedSession(session, 1)));
+    }
+    const appendFolderRows = (folder: SavedSessionFolder, depth: number): void => {
+      const sessionsHere = sessionsByFolder.get(folder.id) ?? [];
+      const children = (folderChildren.get(folder.id) ?? []).filter(child => visibleFolderIds.has(child.id));
+      const expanded = expandedFolderIds.has(folder.id) || (Boolean(savedSearch) && (sessionsHere.length > 0 || children.length > 0));
+      savedCatalogVirtualRows.push(renderSavedFolder(folder, depth, false));
+      if (!expanded) return;
+      children.forEach(child => appendFolderRows(child, depth + 1));
+      sessionsHere.forEach(session => savedCatalogVirtualRows.push(renderSavedSession(session, depth + 1)));
+    };
+    rootFolders.filter(folder => visibleFolderIds.has(folder.id)).forEach(folder => appendFolderRows(folder, 0));
   }
 
   function openSavedSession(session: SavedSessionDefinition) {
@@ -2718,21 +2753,19 @@ function Workbench() {
           </div>
           <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>
           <input className="saved-session-search" id="saved-session-search" type="search" autoComplete="off" maxLength={256}
-            placeholder="Search saved sessions…" value={savedSearch} onChange={event => setSavedSearch(event.target.value)} />
+            placeholder="Search saved sessions…" value={savedSearch} onChange={event => {
+              setSavedSessionsLoading(true);
+              setSavedSearch(event.target.value);
+            }} />
           {savedSessionsLoading && <p className="saved-session-empty" role="status">Loading saved sessions…</p>}
           {!savedSessionsLoading && savedSearch && savedSessions.length === 0 && <p className="saved-session-empty">No saved sessions match this search.</p>}
           {!savedSessionsLoading && !savedSearch && savedSessions.length === 0 && savedFolders.length === 0 && <p className="saved-session-empty">No saved sessions yet.</p>}
-          {(!savedSessionsLoading && (savedSessions.length > 0 || savedFolders.length > 0)) && <ul className="saved-session-list" aria-label="Saved sessions and folders">
-            {unfiledSessions.length > 0 && <li className="saved-folder-node">
-              <div className="saved-folder-entry unfiled-folder-entry">
-                <span className="saved-folder-static"><span className="saved-folder-chevron" aria-hidden="true">⌄</span>
-                  <span className="saved-folder-icon" aria-hidden="true" /><span className="saved-folder-name">Unfiled</span>
-                  <span className="saved-folder-count">{unfiledSessions.length}</span></span>
-              </div>
-              <ul className="saved-folder-children">{unfiledSessions.map(session => renderSavedSession(session, 1))}</ul>
-            </li>}
-            {rootFolders.filter(folder => visibleFolderIds.has(folder.id)).map(folder => renderSavedFolder(folder, 0))}
-          </ul>}
+          {(!savedSessionsLoading && (savedSessions.length > 0 || savedFolders.length > 0)) && <SavedSessionCatalogList
+            virtualRows={savedCatalogVirtualRows}
+            renderNestedRows={() => [
+              ...(unfiledSessions.length > 0 ? [renderNestedUnfiledFolder()] : []),
+              ...rootFolders.filter(folder => visibleFolderIds.has(folder.id)).map(folder => renderSavedFolder(folder, 0))
+            ]} />}
         </section>
         <button className="palette-hint" type="button" onClick={openPalette}>
           <span>Command palette</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>
