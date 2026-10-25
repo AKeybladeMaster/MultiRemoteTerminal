@@ -138,6 +138,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 **Skills:** web-design-guidelines, code-review, requesting-code-review.  
 **Gate:** M4 in spec remains the MVP release gate; phase promotion follows the reviewed branch workflow above.
 
+**WP-07A — Windows package foundation (partial):** The pinned `electron-builder` tool produces an ASAR-based x64 NSIS installer and portable executable with a generated original icon. A Windows 11 smoke installs the per-user build, opens a local PowerShell terminal and verifies output, then uninstalls. A second smoke launches the portable executable, connects to its loopback-only debugging port, runs a PowerShell command and verifies its SQLite profile is beside the executable. The user selects the portable data location by placing the executable in the desired writable folder; no in-app path picker is provided. Teardown terminates the process tree and retries transient Windows file locks. The package and both smoke cases passed. F-001/P-32 remain PARTIAL: Windows 10, code signing, high-DPI, offline, permissions and broader startup/crash/shutdown checks are outstanding. N-007's distribution SBOM and signed release decision are not complete. See [WP-07A results](results/WP-07A-windows-package-2026-10-25.md) and [electron-builder dependency review](dependencies/WP-07-electron-builder.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  

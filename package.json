@@ -12,12 +12,14 @@
     "lint": "eslint . && node scripts/check-boundaries.mjs",
     "test": "node --test tests/unit/*.test.ts",
     "build": "node scripts/build.mjs",
+    "package:win": "node scripts/package-win.mjs",
     "dependencies:inventory": "node scripts/dependency-inventory.mjs",
     "test:ssh-fixture": "node --test tests/integration/*.test.ts",
     "start": "node scripts/start-electron.mjs",
     "setup:electron": "install-electron --no",
-    "test:e2e": "corepack pnpm setup:electron && corepack pnpm exec playwright test",
-    "check": "corepack pnpm typecheck && corepack pnpm lint && corepack pnpm test && corepack pnpm build && corepack pnpm test:e2e"
+    "package:win:smoke": "node scripts/package-win-smoke.mjs",
+    "test:e2e": "corepack pnpm build && corepack pnpm setup:electron && corepack pnpm exec playwright test",
+    "check": "corepack pnpm typecheck && corepack pnpm lint && corepack pnpm test && corepack pnpm test:e2e"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",
@@ -25,6 +27,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "electron": "45.0.0",
+    "electron-builder": "26.18.0",
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
     "node-gyp": "12.4.0",

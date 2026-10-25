@@ -250,7 +250,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
   private ensureWorker(): UtilityProcess {
     if (this.worker) return this.worker;
     const worker = this.launchWorker(this.workerPath, [], {
-      cwd: this.appRoot,
+      cwd: process.resourcesPath ?? this.appRoot,
       env: { MRT_APP_ROOT: this.appRoot },
       serviceName: 'MultiRemoteTerminal SSH network provider',
       stdio: 'ignore'

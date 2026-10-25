@@ -140,7 +140,7 @@ export class TelnetTerminalWorkerHost implements TelnetTerminalProvider {
     let resolveExit!: () => void;
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
     const worker = this.launchWorker(this.workerPath, [], {
-      cwd: this.appRoot,
+      cwd: process.resourcesPath ?? this.appRoot,
       env: { MRT_APP_ROOT: this.appRoot },
       serviceName: 'MultiRemoteTerminal Telnet terminal provider',
       stdio: 'ignore'

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -34,6 +35,7 @@ import { FtpFilesWorkerHost } from '../adapters/ftp-files-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
+import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
 import { createNetworkWorkerEnvironment } from './network-worker-environment.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
@@ -42,6 +44,24 @@ app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
 app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{ scheme: 'mrt', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+
+let portableProfileInitializationFailed = false;
+try {
+  const portableUserData = resolvePortableUserDataDirectory(app.isPackaged, process.env);
+  if (portableUserData) {
+    const sessionData = join(portableUserData, 'session-data');
+    mkdirSync(sessionData, { recursive: true });
+    app.setPath('userData', portableUserData);
+    app.setPath('sessionData', sessionData);
+  }
+} catch {
+  console.error(JSON.stringify({
+    component: 'main',
+    event: 'portable_profile_initialization_failed',
+    code: 'PORTABLE_PROFILE_INIT_FAILED'
+  }));
+  portableProfileInitializationFailed = true;
+}
 
 // Compiled location: dist/host/apps/desktop/src/main; assets remain immutable build outputs.
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -220,7 +240,9 @@ function boot(): void {
     } }
     : createWindowsCredentialPrompt({
       systemDirectory,
-      helperPath: join(dist, 'host/apps/desktop/src/adapters/credential-prompt.ps1')
+      helperPath: app.isPackaged
+        ? join(process.resourcesPath, 'credential-prompt.ps1')
+        : join(dist, 'host/apps/desktop/src/adapters/credential-prompt.ps1')
     });
   const sshProvider = new SshTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/ssh-worker.js'), app.getAppPath(),
@@ -529,4 +551,11 @@ function e2eTransferPath(prefix: string, testModeFlag: string): string | undefin
 }
 
 // Do not await readiness at ESM top level: Electron 45 delays ready until module evaluation completes.
-if (ownsSingleInstance) void app.whenReady().then(boot).catch(() => app.exit(1));
+if (ownsSingleInstance) void app.whenReady().then(() => {
+  if (portableProfileInitializationFailed) {
+    dialog.showErrorBox('Portable data folder unavailable', 'MultiRemoteTerminal could not prepare its portable data folder beside the portable executable. Move the executable to a writable folder and try again.');
+    app.quit();
+    return;
+  }
+  boot();
+}).catch(() => app.exit(1));

@@ -1,5 +1,8 @@
 node_modules/
 dist/
+apps/desktop/dist/
+apps/desktop/resources/multiremote-terminal.ico
+artifacts/
 apps/desktop/native/build/
 .cache/
 test-results/

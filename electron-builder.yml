@@ -1,0 +1,36 @@
+appId: io.github.akeyblademaster.multiremote-terminal
+productName: MultiRemoteTerminal
+directories:
+  app: apps/desktop
+  buildResources: apps/desktop/resources
+  output: artifacts/windows
+files:
+  - "**/*"
+  - "!src/**"
+  - "!native/**"
+  - "!resources/**"
+  - "!tests/**"
+  - "!**/*.map"
+  - "!**/*.pdb"
+extraResources:
+  - from: apps/desktop/resources/credential-prompt.ps1
+    to: credential-prompt.ps1
+asar: true
+asarUnpack:
+  - "**/*.node"
+  - "**/*.exe"
+  - "**/*.dll"
+npmRebuild: false
+win:
+  icon: apps/desktop/resources/multiremote-terminal.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true

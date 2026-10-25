@@ -137,7 +137,7 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
     let resolveExit!: () => void;
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
     const worker = utilityProcess.fork(this.workerPath, [], {
-      cwd: this.appRoot,
+      cwd: process.resourcesPath ?? this.appRoot,
       env: { ...process.env, MRT_APP_ROOT: this.appRoot },
       serviceName: 'MultiRemoteTerminal local terminal provider',
       stdio: 'ignore'
