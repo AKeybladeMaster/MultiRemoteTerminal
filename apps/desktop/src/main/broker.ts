@@ -4,6 +4,7 @@ import type { CommandReply } from '../../../../packages/contracts/src/commands.t
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
+import type { SerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import type { RdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import type { VncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
@@ -20,6 +21,7 @@ import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-ro
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { Outcome } from '../../../../packages/domain/src/errors.ts';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
+import { MAX_SERIAL_INPUT_CHARS } from '../../../../packages/domain/src/serial.ts';
 
 export interface CommandSender {
   readonly owned: boolean;
@@ -62,6 +64,7 @@ export interface CommandActions {
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
     'downloadRemoteFile' | 'readRemoteTextFile' | 'saveRemoteTextFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly serialTerminals: Pick<SerialTerminalController, 'listPorts' | 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
@@ -76,11 +79,12 @@ async function pasteFromClipboard(
   sessionId: string,
   actions: Pick<CommandActions, 'readClipboardText' | 'confirmMultilinePaste' | 'cancellation'>,
   write: (sessionId: string, data: string) => Promise<Outcome<Record<string, never>>>,
+  maxChars = MAX_TERMINAL_INPUT_CHARS,
 ): Promise<CommandReply<Record<string, never>>> {
   if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
   const data = await actions.readClipboardText();
   if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
-  if (data.length > MAX_TERMINAL_INPUT_CHARS) return { requestId, ...failure('OUTPUT_LIMIT', 'terminal') };
+  if (data.length > maxChars) return { requestId, ...failure('OUTPUT_LIMIT', 'terminal') };
   if (data.includes('\0')) return { requestId, ...failure('INVALID_REQUEST') };
   if (/[\r\n]/u.test(data) && !await actions.confirmMultilinePaste()) return { requestId, ...failure('CANCELLED', 'terminal') };
   if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED', 'terminal') };
@@ -111,6 +115,7 @@ export async function dispatchCommand(
         parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' || parsed.result.command === 'ssh.files.read-text' ||
         parsed.result.command === 'ssh.files.write-text' || parsed.result.command === 'ssh.files.cancel' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
+        parsed.result.command === 'serial.open' || parsed.result.command === 'serial.write' || parsed.result.command === 'serial.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
@@ -247,6 +252,29 @@ export async function dispatchCommand(
         return { requestId, ...await actions.telnetTerminals.acknowledgeOutput(sessionId, sequence) };
       }
       case 'telnet.close': return { requestId, ...await actions.telnetTerminals.close(parsed.result.payload.sessionId) };
+      case 'serial.ports.list': return { requestId, ...await actions.serialTerminals.listPorts() };
+      case 'serial.open': {
+        const { sessionId, configuration, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.serialTerminals.open(sessionId, configuration, { columns, rows }) };
+      }
+      case 'serial.write': {
+        const { sessionId, data } = parsed.result.payload;
+        return { requestId, ...await actions.serialTerminals.write(sessionId, data) };
+      }
+      case 'serial.paste': {
+        if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.serialTerminals.write, MAX_SERIAL_INPUT_CHARS);
+      }
+      case 'serial.resize': {
+        const { sessionId, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.serialTerminals.resize(sessionId, { columns, rows }) };
+      }
+      case 'serial.ack': {
+        const { sessionId, sequence } = parsed.result.payload;
+        return { requestId, ...await actions.serialTerminals.acknowledgeOutput(sessionId, sequence) };
+      }
+      case 'serial.close': return { requestId, ...await actions.serialTerminals.close(parsed.result.payload.sessionId) };
       case 'ftp.open': {
         const { sessionId, host, port, secure } = parsed.result.payload;
         if (!secure && !actions.authorizeFtpConsent(sessionId)) return { requestId, ...failure('FORBIDDEN') };

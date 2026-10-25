@@ -21,7 +21,7 @@ export interface TerminalUiHandle {
 interface Props {
   readonly sessionId: string;
   readonly title: string;
-  readonly transport: 'local' | 'ssh' | 'telnet';
+  readonly transport: 'local' | 'ssh' | 'telnet' | 'serial';
   readonly active: boolean;
   readonly canWrite: boolean;
   readonly theme: TerminalTheme;
@@ -60,6 +60,12 @@ function createTransportCommands(bridge: DesktopBridge, transport: Props['transp
       paste: sessionId => bridge.pasteTelnetTerminal(sessionId),
       resize: (sessionId, columns, rows) => bridge.resizeTelnetTerminal(sessionId, columns, rows),
       acknowledge: (sessionId, sequence) => bridge.acknowledgeTelnetTerminalOutput(sessionId, sequence)
+    },
+    serial: {
+      write: (sessionId, data) => bridge.writeSerialTerminal(sessionId, data),
+      paste: sessionId => bridge.pasteSerialTerminal(sessionId),
+      resize: (sessionId, columns, rows) => bridge.resizeSerialTerminal(sessionId, columns, rows),
+      acknowledge: (sessionId, sequence) => bridge.acknowledgeSerialTerminalOutput(sessionId, sequence)
     }
   };
   return commands[transport];

@@ -53,6 +53,9 @@ async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userDa
   const metadata = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() }));
   expect(metadata.packaged).toBe(true);
   await expectLocalPowerShellTerminal(page);
+  const serialPorts = await page.evaluate(() => window.multiRemoteTerminal.listSerialPorts());
+  expect(serialPorts.ok).toBe(true);
+  if (serialPorts.ok) expect(Array.isArray(serialPorts.result)).toBe(true);
   const profile = await stat(metadata.userData);
   expect(profile.isDirectory()).toBe(true);
   expect(metadata.appPath.toLowerCase()).toContain('resources');

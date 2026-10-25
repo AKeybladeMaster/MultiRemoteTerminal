@@ -18,6 +18,7 @@ import type { SshTerminalController } from '../../../../packages/application/src
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
+import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
   SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
   parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRequest,
@@ -31,6 +32,7 @@ import { createWindowsCredentialPrompt } from '../adapters/windows-credential-pr
 import type { CredentialPrompt } from '../../../../packages/application/src/credential-prompt.ts';
 import { SshTerminalWorkerHost } from '../adapters/ssh-terminal-worker-host.ts';
 import { TelnetTerminalWorkerHost } from '../adapters/telnet-terminal-worker-host.ts';
+import { SerialTerminalWorkerHost } from '../adapters/serial-terminal-worker-host.ts';
 import { createFtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import { createRdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
@@ -274,6 +276,15 @@ function boot(): void {
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })
   ));
+  const useSerialMockForE2e = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-serial-mock');
+  const serialTerminals = createSerialTerminalController(new SerialTerminalWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/serial-worker.js'), app.getAppPath(),
+    (workerPath, args, options) => utilityProcess.fork(workerPath, args, {
+      ...options,
+      env: { MRT_APP_ROOT: options.env.MRT_APP_ROOT, ...(options.env.MRT_SERIAL_MOCK_MODE ? { MRT_SERIAL_MOCK_MODE: options.env.MRT_SERIAL_MOCK_MODE } : {}) }
+    }),
+    useSerialMockForE2e
+  ));
   const ftpFiles: FtpFilesController = createFtpFilesController(new FtpFilesWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/ftp-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, {
@@ -285,7 +296,7 @@ function boot(): void {
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = tunnels.closeAll().then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), ftpFiles.closeAll()]))
+      shutdownPromise = tunnels.closeAll().then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll()]))
         .then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
@@ -320,6 +331,10 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
   });
+  serialTerminals.subscribe(event => {
+    const current = window;
+    if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
+  });
   sshTerminals.subscribeTrust(event => {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRUST_EVENT_CHANNEL, event);
@@ -342,7 +357,7 @@ function boot(): void {
     const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' ||
       parsed.result.command === 'ssh.files.read-text' || parsed.result.command === 'ssh.files.write-text') &&
       owned && mainFrame && isAppDocument(frameUrl);
-    const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste') &&
+    const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste' || parsed.result.command === 'serial.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const fileListRequest = parsed.ok && (parsed.result.command === 'ssh.files.list' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
@@ -472,7 +487,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, ftpFiles, rdpViewer, vncViewer, sessionCatalog, macros, preferences, tunnels, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, sessionCatalog, macros, preferences, tunnels, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
@@ -550,7 +565,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), ftpFiles.dispose()]))
+    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });

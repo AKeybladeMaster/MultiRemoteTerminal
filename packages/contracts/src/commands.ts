@@ -2,11 +2,14 @@ import type { AppError, ErrorCode, Outcome } from '../../domain/src/errors.ts';
 import { failure } from '../../domain/src/errors.ts';
 import { isLocalShell, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT_CHARS, MAX_TERMINAL_ROWS } from '../../domain/src/local-terminal.ts';
 import type { LocalShell } from '../../domain/src/local-terminal.ts';
+import { MAX_SERIAL_INPUT_CHARS, isSerialConfiguration, normalizeSerialConfiguration, normalizeSerialPortList } from '../../domain/src/serial.ts';
+import type { SerialConfiguration, SerialPortInfo } from '../../domain/src/serial.ts';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../application/src/local-terminals.ts';
 import type { RdpLaunchResult } from '../../application/src/rdp-viewer.ts';
 import type { VncLaunchResult } from '../../application/src/vnc-viewer.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
+import type { SerialTerminalSession } from '../../application/src/serial-terminals.ts';
 import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
 import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
@@ -102,6 +105,13 @@ export type PasteTelnetTerminalRequest = Request<'telnet.paste', { readonly sess
 export type ResizeTelnetTerminalRequest = Request<'telnet.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeTelnetTerminalRequest = Request<'telnet.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTelnetTerminalRequest = Request<'telnet.close', { readonly sessionId: string }>;
+export type ListSerialPortsRequest = Request<'serial.ports.list', Record<string, never>>;
+export type OpenSerialTerminalRequest = Request<'serial.open', { readonly sessionId: string; readonly configuration: SerialConfiguration; readonly columns: number; readonly rows: number }>;
+export type WriteSerialTerminalRequest = Request<'serial.write', { readonly sessionId: string; readonly data: string }>;
+export type PasteSerialTerminalRequest = Request<'serial.paste', { readonly sessionId: string }>;
+export type ResizeSerialTerminalRequest = Request<'serial.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
+export type AcknowledgeSerialTerminalRequest = Request<'serial.ack', { readonly sessionId: string; readonly sequence: number }>;
+export type CloseSerialTerminalRequest = Request<'serial.close', { readonly sessionId: string }>;
 export type DecideSshHostRequest = Request<'ssh.host.approve' | 'ssh.host.reject', { readonly token: string }>;
 export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: string; readonly port: number }>;
 export type ListSshDirectoryRequest = Request<'ssh.files.list', { readonly sessionId: string; readonly path: string }>;
@@ -151,6 +161,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
+  ListSerialPortsRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   LaunchRdpViewerRequest | LaunchVncViewerRequest |
   ListSessionsRequest | CreateSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
@@ -164,10 +175,13 @@ export type DescribeReply = CommandReply<WorkbenchSnapshot>;
 export type OpenTerminalResult = Pick<LocalTerminalSession, 'sessionId' | 'shell' | 'state'>;
 export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
+export type OpenSerialTerminalResult = Pick<SerialTerminalSession, 'sessionId' | 'configuration' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
 export type OpenSftpFilesReply = CommandReply<OpenSshTerminalResult>;
 export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
+export type ListSerialPortsReply = CommandReply<readonly SerialPortInfo[]>;
+export type OpenSerialTerminalReply = CommandReply<OpenSerialTerminalResult>;
 export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type SshTransferReply = CommandReply<FileTransferResult>;
 export type SshTextFileReply = CommandReply<RemoteTextFile>;
@@ -216,6 +230,13 @@ export interface DesktopBridge {
   resizeTelnetTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeTelnetTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTelnetTerminal(sessionId: string): Promise<TerminalActionReply>;
+  listSerialPorts(): Promise<ListSerialPortsReply>;
+  openSerialTerminal(sessionId: string, configuration: SerialConfiguration, columns: number, rows: number): Promise<OpenSerialTerminalReply>;
+  writeSerialTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
+  pasteSerialTerminal(sessionId: string): Promise<TerminalActionReply>;
+  resizeSerialTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
+  acknowledgeSerialTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
+  closeSerialTerminal(sessionId: string): Promise<TerminalActionReply>;
   approveSshHost(token: string): Promise<TerminalActionReply>;
   rejectSshHost(token: string): Promise<TerminalActionReply>;
   revokeSshHost(host: string, port: number): Promise<TerminalActionReply>;
@@ -370,6 +391,23 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'telnet.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseTelnetTerminalRequest };
   }
+  if (value.command === 'serial.ports.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSerialPortsRequest };
+  if (value.command === 'serial.open' && exactKeys(payload, ['sessionId', 'configuration', 'columns', 'rows']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && isSerialConfiguration(payload.configuration) && validSize(payload.columns, payload.rows)) {
+    return { ok: true, result: value as unknown as OpenSerialTerminalRequest };
+  }
+  if (value.command === 'serial.write' && exactKeys(payload, ['sessionId', 'data']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      typeof payload.data === 'string' && payload.data.length <= MAX_SERIAL_INPUT_CHARS) return { ok: true, result: value as unknown as WriteSerialTerminalRequest };
+  if (value.command === 'serial.paste' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as PasteSerialTerminalRequest };
+  }
+  if (value.command === 'serial.resize' && exactKeys(payload, ['sessionId', 'columns', 'rows']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      validSize(payload.columns, payload.rows)) return { ok: true, result: value as unknown as ResizeSerialTerminalRequest };
+  if (value.command === 'serial.ack' && exactKeys(payload, ['sessionId', 'sequence']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      Number.isSafeInteger(payload.sequence) && (payload.sequence as number) > 0) return { ok: true, result: value as unknown as AcknowledgeSerialTerminalRequest };
+  if (value.command === 'serial.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as CloseSerialTerminalRequest };
+  }
   if (value.command === 'ftp.open' && exactKeys(payload, ['sessionId', 'host', 'port', 'secure']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
       typeof payload.host === 'string' && Number.isInteger(payload.port) && typeof payload.secure === 'boolean' &&
       canonicalizeFtpEndpoint({ host: payload.host, port: payload.port, secure: payload.secure }) !== undefined) {
@@ -485,6 +523,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
+    'serial.ports.list', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
     'session.list', 'session.create', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
@@ -528,6 +567,26 @@ function validTelnetOpenResult(value: unknown, request: OpenTelnetTerminalReques
     endpoint.port === requested.port && ['running', 'exited', 'failed'].includes(value.state as string);
 }
 
+function validSerialOpenResult(value: unknown, request: OpenSerialTerminalRequest): value is OpenSerialTerminalResult {
+  if (!record(value) || !exactKeys(value, ['sessionId', 'configuration', 'state'])) return false;
+  if (!isSerialConfiguration(value.configuration)) return false;
+  const configuration = normalizeSerialConfiguration(value.configuration);
+  const requested = normalizeSerialConfiguration(request.payload.configuration);
+  return value.sessionId === request.payload.sessionId && configuration !== undefined && requested !== undefined &&
+    Object.keys(configuration).every(key => configuration[key as keyof typeof configuration] === requested[key as keyof typeof requested]) &&
+    ['running', 'exited', 'failed'].includes(value.state as string);
+}
+
+function isCanonicalSerialPortList(value: unknown): boolean {
+  const normalized = normalizeSerialPortList(value);
+  if (!normalized || !Array.isArray(value) || normalized.length !== value.length) return false;
+  return normalized.every((port, index) => {
+    const candidate = value[index];
+    return record(candidate) && candidate.path === port.path &&
+      (Object.hasOwn(candidate, 'manufacturer') === Object.hasOwn(port, 'manufacturer')) && candidate.manufacturer === port.manufacturer;
+  });
+}
+
 function validFtpOpenResult(value: unknown, request: OpenFtpFilesRequest): value is FtpFilesSession {
   if (!record(value) || !exactKeys(value, ['sessionId', 'endpoint', 'state']) || value.sessionId !== request.payload.sessionId || value.state !== 'running') return false;
   if (!isCanonicalFtpEndpoint(value.endpoint)) return false;
@@ -545,6 +604,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
     if (request.command === 'sftp.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
+    if (request.command === 'serial.ports.list') return isCanonicalSerialPortList(value.result);
+    if (request.command === 'serial.open') return validSerialOpenResult(value.result, request);
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'ssh.files.upload') return isFileTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ssh.files.download') return isFileTransferResult(value.result) && value.result.direction === 'download';
