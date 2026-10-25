@@ -142,6 +142,15 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value;
   }
 
+  async rememberSession(input: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition> {
+    const draft = normalizeSavedSessionDraft(input);
+    if (!draft) throw new HostTrustStoreError('unavailable');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.remember', draft }, cancellation);
+    if (result.kind !== 'session') throw new HostTrustStoreError('corrupt');
+    return result.value;
+  }
+
   async setFavorite(id: string, favorite: boolean, cancellation?: CancellationSignal): Promise<boolean> {
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'session.favorite', id, favorite }, cancellation);

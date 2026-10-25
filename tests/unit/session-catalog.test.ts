@@ -132,6 +132,28 @@ test('SQLite catalog rejects secret-bearing or malformed definitions without wri
   }
 });
 
+test('remembering a connection reuses its normalized profile and updates its last-used time', async () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(database).migrate();
+    const catalog = new SqliteSessionCatalogRepository(database);
+    const saved = await catalog.createSession({ kind: 'ssh', name: 'Production', host: 'SSH.Example.com.', port: 2222 });
+    database.prepare('UPDATE session_definitions SET updated_at = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', saved.id);
+
+    const remembered = await catalog.rememberSession({ kind: 'ssh', name: 'ssh.example.com:2222 - SSH', host: 'ssh.example.com', port: 2222 });
+    assert.equal(remembered.id, saved.id);
+    assert.equal(remembered.name, 'Production', 'a user-named saved profile keeps its name');
+    assert.ok(Date.parse(remembered.updatedAt) > Date.parse('2020-01-01T00:00:00.000Z'));
+
+    const files = await catalog.rememberSession({ kind: 'sftp', name: 'Files', host: 'ssh.example.com', port: 2222 });
+    assert.notEqual(files.id, saved.id, 'SSH terminal and SFTP-only profiles remain distinct');
+    assert.equal((database.prepare('SELECT credential_ref FROM session_definitions WHERE id = ?').get(files.id) as { credential_ref: string | null }).credential_ref, null);
+    assert.equal((await catalog.listSessions('')).length, 2);
+  } finally {
+    database.close();
+  }
+});
+
 test('folder moves reject cycles and folder deletion preserves children and sessions transactionally', async () => {
   const database = new DatabaseSync(':memory:');
   try {
@@ -186,6 +208,7 @@ test('session catalog forwards cancellation and preserves the cancelled outcome'
     async listSessions(_query, cancellation) { forwarded = cancellation; throw new StorageOperationError('cancelled'); },
     async getSessionDefinition() { throw new Error('not called'); },
     async createSession() { throw new Error('not called'); },
+    async rememberSession() { throw new Error('not called'); },
     async setFavorite() { throw new Error('not called'); },
     async removeSession() { throw new Error('not called'); },
     async listFolders() { throw new Error('not called'); },

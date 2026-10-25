@@ -3572,6 +3572,50 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
   }
 });
 
+test('opt-in automatically remembers opened terminal sessions and deduplicates them after restart', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-auto-save-sessions-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByText('No saved sessions yet.')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Automatically save connections I open' }).check();
+    await page.screenshot({ path: 'test-results/auto-save-session-settings.png' });
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await page.keyboard.press('Control+Shift+P');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await palette.getByRole('button', { name: 'New PowerShell terminal', exact: true }).click();
+    const openSavedPowerShell = page.getByRole('button', { name: 'Open PowerShell', exact: true });
+    await expect(openSavedPowerShell).toBeVisible();
+    await expect(page.getByLabel('1 saved session')).toBeVisible();
+
+    await page.keyboard.press('Control+Shift+P');
+    await page.getByRole('dialog', { name: 'Command palette' }).getByRole('button', { name: 'New PowerShell terminal', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open PowerShell', exact: true })).toHaveCount(1);
+    await expect(page.getByLabel('1 saved session')).toBeVisible();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Open PowerShell', exact: true })).toBeVisible();
+    await expect(page.getByLabel('1 saved session')).toBeVisible();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('checkbox', { name: 'Automatically save connections I open' })).toBeChecked();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('terminal keyword highlighting saves rules, preserves ANSI colors, and restores settings after restart', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-highlights-e2e-'));

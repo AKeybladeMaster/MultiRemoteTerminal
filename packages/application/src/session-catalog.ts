@@ -12,6 +12,7 @@ export interface SessionCatalogStore {
   listSessions(query: string, cancellation?: CancellationSignal): Promise<readonly SavedSessionDefinition[]>;
   getSessionDefinition(id: string, cancellation?: CancellationSignal): Promise<SavedSessionDefinition | undefined>;
   createSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
+  rememberSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
   setFavorite(id: string, favorite: boolean, cancellation?: CancellationSignal): Promise<boolean>;
   removeSession(id: string, cancellation?: CancellationSignal): Promise<boolean>;
   listFolders(cancellation?: CancellationSignal): Promise<readonly SavedSessionFolder[]>;
@@ -39,6 +40,7 @@ export interface SessionCatalog {
   list(query: unknown, cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionDefinition[]>>;
   get(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
   create(draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
+  remember(draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
   setFavorite(id: unknown, favorite: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   remove(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   listFolders(cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionFolder[]>>;
@@ -87,6 +89,13 @@ export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: S
         const result = await store.createSession(draft, cancellation);
         return { ok: true, result };
       }
+      catch (error) { return failure(errorCode(error)); }
+    },
+    async remember(input: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>> {
+      const draft = normalizeSavedSessionDraft(input);
+      if (!draft) return failure('INVALID_REQUEST');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try { return { ok: true, result: await store.rememberSession(draft, cancellation) }; }
       catch (error) { return failure(errorCode(error)); }
     },
     async setFavorite(id: unknown, favorite: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>> {

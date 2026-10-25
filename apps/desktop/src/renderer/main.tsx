@@ -114,6 +114,10 @@ const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly b
 };
 
 function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell].name; }
+function autoSavedProfileName(protocol: string, host: string, port: number): string {
+  const suffix = `:${port} - ${protocol}`;
+  return `${Array.from(host).slice(0, 256 - suffix.length).join('')}${suffix}`;
+}
 function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell].badge; }
 function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
@@ -352,6 +356,8 @@ function Workbench() {
   const [macroPlaybackMacroId, setMacroPlaybackMacroId] = useState<string>();
   const [macroPlayback, setMacroPlayback] = useState<MacroPlaybackView>();
   const [savedSearch, setSavedSearch] = useState('');
+  const savedSearchRef = useRef(savedSearch);
+  savedSearchRef.current = savedSearch;
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [openSavedActionsMenuId, setOpenSavedActionsMenuId] = useState<string>();
@@ -556,6 +562,21 @@ function Workbench() {
       return undefined;
     }
   }, []);
+
+  const rememberOpenedSession = useCallback(async (draft: SavedSessionDraft): Promise<void> => {
+    try {
+      const reply = await window.multiRemoteTerminal.rememberSavedSession(draft);
+      if (!reply.ok) {
+        if (reply.error.code !== 'FORBIDDEN') {
+          setAlert(`The connection opened, but its profile could not be saved (${reply.error.code}).`);
+        }
+        return;
+      }
+      await loadSavedSessions(savedSearchRef.current);
+    } catch {
+      setAlert('The connection opened, but its profile could not be saved. Check Saved sessions before retrying.');
+    }
+  }, [loadSavedSessions]);
 
   const loadTunnelManager = useCallback(async (): Promise<void> => {
     const request = ++tunnelManagerRequest.current;
@@ -1403,7 +1424,7 @@ function Workbench() {
     if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
   }), []);
 
-  const openTerminal = useCallback(async (shell: LocalShell, savedTitle?: string) => {
+  const openTerminal = useCallback(async (shell: LocalShell, savedTitle?: string, rememberWhenOpened = true) => {
     setPaletteOpen(false);
     setQuery('');
     setAlert(undefined);
@@ -1423,9 +1444,12 @@ function Workbench() {
     }
     const ordinal = ++nextOrdinal.current[shell];
     const title = shellName(shell);
+    if (rememberWhenOpened && reply.result.state === 'running') {
+      void rememberOpenedSession({ kind: 'local', name: savedTitle ?? title, shell });
+    }
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
-  }, []);
+  }, [rememberOpenedSession]);
 
   const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = []) => {
     const host = hostInput.trim();
@@ -1462,9 +1486,12 @@ function Workbench() {
     }
     const ordinal = ++nextSshOrdinal.current;
     const endpoint = reply.result.endpoint;
+    if (reply.result.state === 'running' && gatewayProfileIds.length === 0) {
+      void rememberOpenedSession({ kind: 'ssh', name: savedTitle ?? autoSavedProfileName('SSH', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
+    }
     setSessions(current => [...current, { ...reply.result, transport: 'ssh', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SSH ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
-  }, []);
+  }, [rememberOpenedSession]);
 
   const openSftpFiles = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
     const host = hostInput.trim();
@@ -1512,10 +1539,13 @@ function Workbench() {
     const state = queuedEvents.reduce<typeof reply.result.state>((current, event) => event.kind === 'exit' ? 'exited'
       : event.kind === 'failure' ? 'failed' : current, reply.result.state);
     if (queuedEvents.some(event => event.kind === 'failure')) setAlert('The SFTP connection failed while opening. Reconnect to continue.');
+    if (state === 'running') {
+      void rememberOpenedSession({ kind: 'sftp', name: savedTitle ?? autoSavedProfileName('SFTP', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
+    }
     visibleFileOnlySshSessionIds.current.add(sessionId);
     setSessions(current => [...current, { ...reply.result, state, transport: 'sftp', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SFTP ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
-  }, []);
+  }, [rememberOpenedSession]);
 
   const openTelnetTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
     const host = hostInput.trim();
@@ -1548,11 +1578,14 @@ function Workbench() {
     }
     const endpoint = reply.result.endpoint;
     const ordinal = ++nextTelnetOrdinal.current;
+    if (reply.result.state === 'running') {
+      void rememberOpenedSession({ kind: 'telnet', name: savedTitle ?? autoSavedProfileName('Telnet', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
+    }
     setSessions(current => [...current, {
       ...reply.result, transport: 'telnet', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - Telnet (plaintext) ${ordinal}`
     }]);
     setActiveId(reply.result.sessionId);
-  }, []);
+  }, [rememberOpenedSession]);
 
   const openSerialTerminal = useCallback(async (input: SerialConfiguration, savedTitle?: string) => {
     const configuration = normalizeSerialConfiguration(input);
@@ -1578,11 +1611,14 @@ function Workbench() {
       return;
     }
     const ordinal = ++nextSerialOrdinal.current;
+    if (reply.result.state === 'running') {
+      void rememberOpenedSession({ kind: 'serial', name: savedTitle ?? `${configuration.path} - ${configuration.baudRate} baud`, configuration });
+    }
     setSessions(current => [...current, {
       ...reply.result, transport: 'serial', title: savedTitle ?? `${configuration.path} · ${configuration.baudRate} baud · Serial ${ordinal}`
     }]);
     setActiveId(reply.result.sessionId);
-  }, [serialPorts]);
+  }, [rememberOpenedSession, serialPorts]);
 
   async function openFtpFiles(hostInput: string, portInput: string, secure: boolean, savedTitle?: string) {
     if (ftpConnecting) return;
@@ -1606,6 +1642,10 @@ function Workbench() {
       const ordinal = ++nextFtpOrdinal.current;
       const protocol = endpoint.secure ? 'FTPS' : 'FTP (plaintext)';
       const title = savedTitle ?? `${endpoint.host}:${endpoint.port} - ${protocol} ${ordinal}`;
+      if (reply.result.state === 'running') {
+        void rememberOpenedSession({ kind: 'ftp', name: savedTitle ?? autoSavedProfileName(endpoint.secure ? 'FTPS' : 'FTP', endpoint.host, endpoint.port),
+          host: endpoint.host, port: endpoint.port, secure: endpoint.secure });
+      }
       setSessions(current => [...current, { ...reply.result, transport: 'ftp', title }]);
       setActiveId(reply.result.sessionId);
       setFtpConnectOpen(false);
@@ -1730,7 +1770,7 @@ function Workbench() {
       if (!active) return;
       setStatus(reply.ok ? `Ready · ${reply.result.platform} · version ${reply.result.version}` : `Unavailable (${reply.error.code})`);
     });
-    void openTerminal('powershell');
+    void openTerminal('powershell', undefined, false);
     return () => { active = false; };
   }, [openTerminal]);
 

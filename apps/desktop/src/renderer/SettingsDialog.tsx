@@ -14,6 +14,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const [greeting, setGreeting] = useState('');
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
+  const [autoSaveSessions, setAutoSaveSessions] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
@@ -27,7 +28,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const normalizedRules = normalizeTerminalHighlightRules(terminalHighlightRules);
   const greetingIsValid = Boolean(normalizeWorkbenchPreferences({ startupGreeting: greeting }));
   const validatedPreferences = normalizeWorkbenchPreferences({
-    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules
+    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions
   });
   const characterCount = Array.from(greeting).length;
 
@@ -43,6 +44,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setGreeting(reply.result.startupGreeting);
         setTerminalHighlightEnabled(reply.result.terminalHighlightEnabled);
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
+        setAutoSaveSessions(reply.result.autoSaveSessions);
       }
       else {
         setLoadFailed(true);
@@ -101,6 +103,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setGreeting(reply.result.startupGreeting);
         setTerminalHighlightEnabled(reply.result.terminalHighlightEnabled);
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
+        setAutoSaveSessions(reply.result.autoSaveSessions);
         onPreferencesSaved(reply.result);
         setStatus('Settings saved.');
       }
@@ -118,11 +121,22 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
       <header className="settings-header">
         <div>
           <h2 id="settings-heading">Workbench settings</h2>
-          <p id="settings-description">Set an optional startup greeting and colors for terminal text that matches your rules.</p>
+          <p id="settings-description">Choose which connections to remember, set a startup greeting, and color matching terminal text.</p>
         </div>
         <button ref={closeButton} type="button" className="quiet-button" disabled={saving} onClick={onClose}>Close</button>
       </header>
       <form className="settings-form" onSubmit={event => { void save(event); }}>
+        <div className="settings-highlights">
+          <label className="settings-highlight-toggle" htmlFor="auto-save-sessions">
+            <input id="auto-save-sessions" type="checkbox" checked={autoSaveSessions}
+              disabled={loading || loadFailed || saving}
+              onChange={event => { setAutoSaveSessions(event.target.checked); setError(undefined); setStatus(''); }} />
+            <span>Automatically save connections I open</span>
+          </label>
+          <p className="settings-highlight-help">
+            Successful terminal and file connections appear in Saved sessions and move to the top when reopened. Passwords, keys, and terminal contents are never saved.
+          </p>
+        </div>
         <label htmlFor="startup-greeting">Startup greeting</label>
         <textarea ref={greetingInput} id="startup-greeting" name="startupGreeting" rows={5} maxLength={MAX_STARTUP_GREETING_CODE_POINTS * 2}
           disabled={loading || loadFailed || saving} value={greeting} onChange={event => { setGreeting(event.target.value); setError(undefined); setStatus(''); }} />

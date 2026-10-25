@@ -68,7 +68,7 @@ export interface CommandActions {
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
-  readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
+  readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'get' | 'create' | 'remember' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
@@ -114,6 +114,7 @@ export async function dispatchCommand(
         parsed.result.command === 'sftp.open' || parsed.result.command === 'sftp.close' ||
         parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' || parsed.result.command === 'ssh.files.read-text' ||
         parsed.result.command === 'ssh.files.write-text' || parsed.result.command === 'ssh.files.cancel' ||
+        parsed.result.command === 'session.remember' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
         parsed.result.command === 'serial.open' || parsed.result.command === 'serial.write' || parsed.result.command === 'serial.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
@@ -320,6 +321,12 @@ export async function dispatchCommand(
       }
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
+      case 'session.remember': {
+        const preferences = await actions.preferences.read(actions.cancellation);
+        if (!preferences.ok) return { requestId, ...preferences };
+        if (!preferences.result.autoSaveSessions) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.sessionCatalog.remember(parsed.result.payload, actions.cancellation) };
+      }
       case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite, actions.cancellation) };
       case 'session.delete': return { requestId, ...await actions.sessionCatalog.remove(parsed.result.payload.id, actions.cancellation) };
       case 'session.folder.list': return { requestId, ...await actions.sessionCatalog.listFolders(actions.cancellation) };
