@@ -28,7 +28,7 @@ import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts'
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
-import { normalizeSerialConfiguration } from '../../../../packages/domain/src/serial.ts';
+import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
@@ -307,6 +307,8 @@ function Workbench() {
   const [serialPorts, setSerialPorts] = useState<readonly SerialPortInfo[]>([]);
   const [serialPortsLoading, setSerialPortsLoading] = useState(false);
   const [serialPortsError, setSerialPortsError] = useState<string>();
+  const [serialSavedTitle, setSerialSavedTitle] = useState<string>();
+  const [serialSavedProfilePath, setSerialSavedProfilePath] = useState<string>();
   const [serialConfigurationDraft, setSerialConfigurationDraft] = useState<SerialConfiguration>({
     path: 'COM1', baudRate: 9600, dataBits: 8, parity: 'none', stopBits: 1, flowControl: 'none'
   });
@@ -1161,7 +1163,7 @@ function Workbench() {
     setTelnetConnectOpen(true);
   }, []);
 
-  const refreshSerialPorts = useCallback(async () => {
+  const refreshSerialPorts = useCallback(async (preserveCurrentSelection = false) => {
     setSerialPortsLoading(true);
     setSerialPortsError(undefined);
     try {
@@ -1171,7 +1173,7 @@ function Workbench() {
         return;
       }
       setSerialPorts(reply.result);
-      setSerialConfigurationDraft(current => reply.result.some(port => port.path === current.path)
+      setSerialConfigurationDraft(current => preserveCurrentSelection || reply.result.some(port => port.path === current.path)
         ? current : { ...current, path: reply.result[0]?.path ?? current.path });
     } catch {
       setSerialPortsError('Serial ports could not be listed. Check that the device driver is installed and try again.');
@@ -1180,11 +1182,14 @@ function Workbench() {
     }
   }, []);
 
-  const openSerialConnect = useCallback(() => {
+  const openSerialConnect = useCallback((configuration?: SerialConfiguration, savedTitle?: string) => {
     serialConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (configuration) setSerialConfigurationDraft(configuration);
+    setSerialSavedTitle(savedTitle);
+    setSerialSavedProfilePath(configuration?.path);
     setSerialPortsError(undefined);
     setSerialConnectOpen(true);
-    void refreshSerialPorts();
+    void refreshSerialPorts(Boolean(savedTitle));
   }, [refreshSerialPorts]);
 
   const openFtpConnect = useCallback((host = '', port = 21, secure = true, savedTitle?: string) => {
@@ -1549,13 +1554,15 @@ function Workbench() {
     setActiveId(reply.result.sessionId);
   }, []);
 
-  const openSerialTerminal = useCallback(async (input: SerialConfiguration) => {
+  const openSerialTerminal = useCallback(async (input: SerialConfiguration, savedTitle?: string) => {
     const configuration = normalizeSerialConfiguration(input);
     if (!configuration || !serialPorts.some(port => port.path === configuration.path)) {
       setSerialPortsError('Choose a serial port that is currently listed. Refresh the list if the device changed.');
       return;
     }
     setSerialConnectOpen(false);
+    setSerialSavedTitle(undefined);
+    setSerialSavedProfilePath(undefined);
     setSerialPortsError(undefined);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
@@ -1572,7 +1579,7 @@ function Workbench() {
     }
     const ordinal = ++nextSerialOrdinal.current;
     setSessions(current => [...current, {
-      ...reply.result, transport: 'serial', title: `${configuration.path} · ${configuration.baudRate} baud · Serial ${ordinal}`
+      ...reply.result, transport: 'serial', title: savedTitle ?? `${configuration.path} · ${configuration.baudRate} baud · Serial ${ordinal}`
     }]);
     setActiveId(reply.result.sessionId);
   }, [serialPorts]);
@@ -2269,11 +2276,13 @@ function Workbench() {
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : session.kind}`} aria-hidden="true">
           {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : session.kind === 'sftp' ? 'SFTP'
-            : session.kind === 'telnet' ? 'TELNET' : session.kind === 'rdp' ? 'RDP' : session.kind === 'vnc' ? 'VNC' : session.secure ? 'FTPS' : 'FTP'}
+            : session.kind === 'telnet' ? 'TELNET' : session.kind === 'rdp' ? 'RDP' : session.kind === 'vnc' ? 'VNC'
+              : session.kind === 'serial' ? 'COM' : session.secure ? 'FTPS' : 'FTP'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
         <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell
-          : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind === 'rdp' ? 'RDP · external viewer' : session.kind === 'vnc' ? 'VNC · external viewer' : session.kind.toUpperCase()}`}</span>
+          : session.kind === 'serial' ? `${session.configuration.path} · ${session.configuration.baudRate} baud`
+            : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind === 'rdp' ? 'RDP · external viewer' : session.kind === 'vnc' ? 'VNC · external viewer' : session.kind.toUpperCase()}`}</span>
       </button>
       <div className="saved-session-actions">
         <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
@@ -2345,8 +2354,9 @@ function Workbench() {
     else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
     else if (session.kind === 'ftp') openFtpConnect(session.host, session.port, session.secure, session.name);
+    else if (session.kind === 'serial') openSerialConnect(session.configuration, session.name);
     else if (session.kind === 'rdp') openRdpConnect(session.host, session.port, session.name);
-    else openVncConnect(session.host, session.port, session.name);
+    else if (session.kind === 'vnc') openVncConnect(session.host, session.port, session.name);
   }
 
   async function openSavedSshThroughGateways(session: Extract<SavedSessionDefinition, { kind: 'ssh' }>) {
@@ -2390,7 +2400,7 @@ function Workbench() {
   }
 
   function beginSaveActiveSession() {
-    if (!active || active.transport === 'serial') return;
+    if (!active) return;
     saveSessionReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSaveSessionName(uncertainSaveDraft?.name ?? active.title);
     setSaveSessionError(uncertainSaveDraft
@@ -2400,9 +2410,11 @@ function Workbench() {
   }
 
   async function saveActiveSession() {
-    if (!active || active.transport === 'serial' || catalogBusy || uncertainSaveDraft) return;
+    if (!active || catalogBusy || uncertainSaveDraft) return;
     const draft: SavedSessionDraft = active.transport === 'local'
       ? { kind: 'local', name: saveSessionName, shell: active.shell }
+      : active.transport === 'serial'
+        ? { kind: 'serial', name: saveSessionName, configuration: active.configuration }
       : active.transport === 'ssh'
         ? { kind: 'ssh', name: saveSessionName, host: active.endpoint.host, port: active.endpoint.port }
         : active.transport === 'sftp'
@@ -2444,7 +2456,9 @@ function Workbench() {
     const alreadySaved = definitions.some(definition => {
       if (definition.kind !== draft.kind || definition.name !== draft.name) return false;
       if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell;
-      return definition.kind !== 'local' && definition.host === draft.host && definition.port === draft.port;
+      if (draft.kind === 'serial') return definition.kind === 'serial' && serialConfigurationsEqual(definition.configuration, draft.configuration);
+      if (definition.kind === 'local' || definition.kind === 'serial') return false;
+      return definition.host === draft.host && definition.port === draft.port;
     });
     setAlert(alreadySaved
       ? 'This session is already saved. Open it from Saved sessions instead of saving it again.'
@@ -2630,7 +2644,7 @@ function Workbench() {
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect()}><span aria-hidden="true">↗</span> Connect to SSH</button>
-        <button className="connect-ssh-button" type="button" onClick={openSerialConnect}>Connect to serial port</button>
+        <button className="connect-ssh-button" type="button" onClick={() => openSerialConnect()}>Connect to serial port</button>
         <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
         <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>
@@ -2639,7 +2653,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="multi-exec-open" onClick={openMultiExec}>MultiExec</button>
-        <button className="save-session-button" type="button" disabled={!active || active.transport === 'serial' || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
+        <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Open sessions</h3>
           <ul>
@@ -2780,7 +2794,7 @@ function Workbench() {
             <p>Open a local terminal, connect to a terminal server, or browse files over FTP or FTPS.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect()}>Connect to SSH</button>
-            <button type="button" className="connect-ssh-button" onClick={openSerialConnect}>Connect to serial port</button>
+            <button type="button" className="connect-ssh-button" onClick={() => openSerialConnect()}>Connect to serial port</button>
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
             <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>
             <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>
@@ -2985,15 +2999,22 @@ function Workbench() {
         aria-labelledby="serial-connect-heading" aria-describedby="serial-connect-description" aria-busy={serialPortsLoading}>
         <h2 id="serial-connect-heading">Connect to a serial port</h2>
         <p id="serial-connect-description">Choose a listed Windows COM port and match its settings to the attached device. Data is displayed as UTF-8 text.</p>
-        <form onSubmit={event => { event.preventDefault(); void openSerialTerminal(serialConfigurationDraft); }}>
+        <form onSubmit={event => { event.preventDefault(); void openSerialTerminal(serialConfigurationDraft, serialSavedTitle); }}>
           <div className="serial-port-toolbar">
             <label htmlFor="serial-port">Port</label>
-            <button type="button" onClick={() => void refreshSerialPorts()} disabled={serialPortsLoading}>
+            <button type="button" onClick={() => void refreshSerialPorts(Boolean(serialSavedTitle))} disabled={serialPortsLoading}>
               {serialPortsLoading ? 'Refreshing…' : 'Refresh ports'}
             </button>
           </div>
           <select id="serial-port" value={serialPorts.some(port => port.path === serialConfigurationDraft.path) ? serialConfigurationDraft.path : ''}
-            onChange={event => setSerialConfigurationDraft(current => ({ ...current, path: event.target.value }))}>
+            onChange={event => {
+              const path = event.target.value;
+              if (path !== serialSavedProfilePath) {
+                setSerialSavedTitle(undefined);
+                setSerialSavedProfilePath(undefined);
+              }
+              setSerialConfigurationDraft(current => ({ ...current, path }));
+            }}>
             <option value="">{serialPorts.length === 0 ? 'No serial ports found' : 'Choose a serial port'}</option>
             {serialPorts.map(port => <option key={port.path} value={port.path}>
               {port.path}{port.manufacturer ? ` · ${port.manufacturer}` : ''}
@@ -3001,6 +3022,8 @@ function Workbench() {
           </select>
           {serialPortsLoading && <p className="serial-port-status" role="status">Looking for serial ports…</p>}
           {!serialPortsLoading && serialPorts.length === 0 && <p className="serial-port-status" role="status">Connect a device, then refresh the port list.</p>}
+          {serialSavedTitle && !serialPortsLoading && !serialPorts.some(port => port.path === serialConfigurationDraft.path) &&
+            <p className="serial-port-status" role="status">The saved profile uses {serialConfigurationDraft.path}, which is not currently listed. Choose a listed port to connect with these settings.</p>}
           {serialPortsError && <p className="dialog-error" role="alert">{serialPortsError}</p>}
           <div className="serial-options">
             <label htmlFor="serial-baud">Baud rate</label>

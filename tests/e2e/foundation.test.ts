@@ -1189,6 +1189,120 @@ test('Windows serial terminal uses the utility worker mock and supports terminal
   }
 });
 
+test('serial profiles persist across restart and round-trip through saved-folder JSON', async () => {
+  test.skip(process.platform !== 'win32', 'Electron serial addon acceptance evidence is required on Windows');
+  test.setTimeout(120_000);
+  const sourceProfile = await mkdtemp(join(tmpdir(), 'mrt-serial-profile-source-'));
+  const targetProfile = await mkdtemp(join(tmpdir(), 'mrt-serial-profile-target-'));
+  const bundleDirectory = await mkdtemp(join(tmpdir(), 'mrt-serial-profile-bundle-'));
+  const bundlePath = join(bundleDirectory, 'serial.mrt-session-folder.json');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${sourceProfile}`, '--mrt-e2e-serial-mock'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to serial port', exact: true }).first().click();
+    let dialog = page.getByRole('dialog', { name: 'Connect to a serial port' });
+    await expect(dialog.getByLabel('Port').locator('option[value="COM4095"]')).toHaveCount(1, { timeout: 15_000 });
+    await dialog.getByLabel('Port').selectOption('COM4095');
+    await dialog.getByLabel('Baud rate').fill('115200');
+    await dialog.getByLabel('Data bits').selectOption('7');
+    await dialog.getByLabel('Parity').selectOption('even');
+    await dialog.getByLabel('Stop bits').selectOption('1.5');
+    await dialog.getByLabel('Flow control').selectOption('rtscts');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const serialTab = page.getByRole('tab').filter({ hasText: 'COM4095 · 115200 baud · Serial' });
+    await expect(serialTab).toBeVisible({ timeout: 15_000 });
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Save active session' });
+    await dialog.getByLabel('Session name').fill('Serial controller');
+    await dialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open Serial controller', exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Create folder' });
+    await dialog.getByLabel('Folder name').fill('Hardware');
+    await dialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for saved session Serial controller' }).click();
+    await page.getByRole('button', { name: 'Move saved session Serial controller', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Move Serial controller' });
+    await dialog.getByLabel('Move to').selectOption({ label: 'Hardware' });
+    await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePath }) });
+    }, bundlePath);
+    await page.getByRole('button', { name: 'Actions for folder Hardware' }).click();
+    await page.getByRole('button', { name: 'Export folder Hardware', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
+    const bundle = JSON.parse(await readFile(bundlePath, 'utf8')) as { version?: unknown; sessions?: readonly { kind?: unknown; configuration?: unknown }[] };
+    expect(bundle.version).toBe(6);
+    expect(bundle.sessions).toHaveLength(1);
+    expect(bundle.sessions?.[0]).toMatchObject({ kind: 'serial', configuration: {
+      path: 'COM4095', baudRate: 115200, dataBits: 7, parity: 'even', stopBits: 1.5, flowControl: 'rtscts'
+    } });
+    expect(JSON.stringify(bundle)).not.toMatch(/password|credential|privateKey/i);
+    await app.close();
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`, '--mrt-e2e-serial-mock'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, bundlePath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1 saved session (1 folders and 1 sessions added).');
+    const unavailableProfile = await page.evaluate(() => window.multiRemoteTerminal.createSavedSession({
+      kind: 'serial', name: 'Unavailable serial', configuration: {
+        path: 'COM4094', baudRate: 9_600, dataBits: 8, parity: 'none', stopBits: 1, flowControl: 'none'
+      }
+    }));
+    expect(unavailableProfile.ok).toBe(true);
+    await app.close();
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`, '--mrt-e2e-serial-mock'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Collapse folder Hardware', exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+    await page.getByRole('button', { name: 'Open Unavailable serial', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Connect to a serial port' });
+    await expect(dialog.getByLabel('Port')).toHaveValue('');
+    await expect(dialog.getByText(/The saved profile uses COM4094, which is not currently listed/)).toBeVisible();
+    const serialConnectButton = dialog.getByRole('button', { name: 'Connect', exact: true });
+    await expect(serialConnectButton).toBeDisabled();
+    await dialog.getByLabel('Port').selectOption('COM4095');
+    await expect(dialog.getByLabel('Port')).toHaveValue('COM4095');
+    await expect(serialConnectButton).toBeEnabled();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Open Serial controller', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Connect to a serial port' });
+    await expect(dialog.getByLabel('Port')).toHaveValue('COM4095');
+    await expect(dialog.getByLabel('Baud rate')).toHaveValue('115200');
+    await expect(dialog.getByLabel('Data bits')).toHaveValue('7');
+    await expect(dialog.getByLabel('Parity')).toHaveValue('even');
+    await expect(dialog.getByLabel('Stop bits')).toHaveValue('1.5');
+    await expect(dialog.getByLabel('Flow control')).toHaveValue('rtscts');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const reopenedTab = page.getByRole('tab', { name: /Serial controller/ });
+    await expect(reopenedTab).toBeVisible({ timeout: 15_000 });
+    const panelId = await reopenedTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing reopened serial terminal panel');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT serial mock ready', { timeout: 10_000 });
+  } finally {
+    await app?.close();
+    await rm(sourceProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(targetProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(bundleDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('Telnet requires plaintext consent and carries terminal input through the worker to a saved-profile reconnect', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-telnet-e2e-'));

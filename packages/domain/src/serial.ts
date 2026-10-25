@@ -58,6 +58,11 @@ export function isSerialConfiguration(value: unknown): value is SerialConfigurat
     Object.keys(normalized).every(key => (value as Record<string, unknown>)[key] === normalized[key as keyof SerialConfiguration]);
 }
 
+export function serialConfigurationsEqual(left: SerialConfiguration, right: SerialConfiguration): boolean {
+  return left.path === right.path && left.baudRate === right.baudRate && left.dataBits === right.dataBits &&
+    left.parity === right.parity && left.stopBits === right.stopBits && left.flowControl === right.flowControl;
+}
+
 export function normalizeSerialPortList(value: unknown): readonly SerialPortInfo[] | undefined {
   if (!Array.isArray(value) || value.length > SERIAL_PORT_LIST_LIMIT) return undefined;
   const ports: SerialPortInfo[] = [];

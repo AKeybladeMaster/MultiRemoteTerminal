@@ -46,7 +46,7 @@ test('session-folder bundles include standalone SFTP profiles without credential
   assert.equal(normalizeSessionFolderBundle({ ...value, sessions: [...value.sessions.slice(0, 1), { ...sftpSession, privateKey: 'secret' }] }), undefined);
 });
 
-test('version-5 session-folder bundles include RDP and VNC profiles without credentials', () => {
+test('version-6 session-folder bundles include RDP, VNC, and serial profiles without credentials', () => {
   const bundle = validBundle();
   const rdpSession = { id: '88888888-8888-4888-8888-888888888888', folderId: childId, kind: 'rdp', name: 'Windows desktop',
     host: 'desktop.example.net', port: 3390, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
@@ -60,20 +60,33 @@ test('version-5 session-folder bundles include RDP and VNC profiles without cred
   assert.deepEqual(normalizeSessionFolderBundle(withVnc), withVnc);
   assert.equal(normalizeSessionFolderBundle({ ...withVnc, sessions: [...withVnc.sessions.slice(0, -1), { ...vncSession, password: 'secret' }] }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...withVnc, version: 4 }), undefined, 'version 4 predates VNC profile support');
+
+  const serialSession = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', folderId: childId, kind: 'serial', name: 'Controller COM7',
+    configuration: { path: 'COM7', baudRate: 115_200, dataBits: 8, parity: 'even', stopBits: 1, flowControl: 'rtscts' },
+    favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  const withSerial = { ...withVnc, sessions: [...withVnc.sessions, serialSession] };
+  assert.deepEqual(normalizeSessionFolderBundle(withSerial), withSerial);
+  assert.equal(normalizeSessionFolderBundle({ ...withSerial, sessions: [...withSerial.sessions.slice(0, -1),
+    { ...serialSession, configuration: { ...serialSession.configuration, path: 'COM4096' } }] }), undefined);
+  assert.equal(normalizeSessionFolderBundle({ ...withSerial, sessions: [...withSerial.sessions.slice(0, -1),
+    { ...serialSession, password: 'must-not-import' }] }), undefined);
+  assert.equal(normalizeSessionFolderBundle({ ...withSerial, version: 5 }), undefined, 'version 5 predates serial profile support');
 });
 
-test('version-5 bundles import versions 1 through 4 with their existing kind limits', () => {
+test('version-6 bundles import versions 1 through 5 with their existing kind limits', () => {
   const bundle = validBundle();
   const legacyV1 = { ...bundle, version: 1 };
   const legacyV2 = { ...bundle, version: 2 };
   const legacyV3 = { ...bundle, version: 3 };
   const legacyV4 = { ...bundle, version: 4 };
+  const legacyV5 = { ...bundle, version: 5 };
   assert.equal(isSessionFolderBundle(legacyV1), false, 'the type guard narrows only current-version bundle objects');
   assert.equal(isSessionFolderBundle(bundle), true);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV1), bundle);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV2), bundle);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV3), bundle);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV4), bundle);
+  assert.deepEqual(normalizeSessionFolderBundle(legacyV5), bundle);
   const ftpSession = { id: '66666666-6666-4666-8666-666666666666', folderId: childId, kind: 'ftp', name: 'Archive server',
     host: 'files.example.net', port: 2121, secure: true, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
   assert.equal(normalizeSessionFolderBundle({ ...legacyV1, sessions: [...bundle.sessions, ftpSession] }), undefined);
@@ -86,12 +99,16 @@ test('version-5 bundles import versions 1 through 4 with their existing kind lim
   const vncSession = { id: '99999999-9999-4999-8999-999999999999', folderId: childId, kind: 'vnc', name: 'Linux desktop',
     host: 'desktop.example.net', port: 5901, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
   assert.equal(normalizeSessionFolderBundle({ ...legacyV4, sessions: [...bundle.sessions, vncSession] }), undefined);
+  const serialSession = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', folderId: childId, kind: 'serial', name: 'Controller COM7',
+    configuration: { path: 'COM7', baudRate: 115_200, dataBits: 8, parity: 'even', stopBits: 1, flowControl: 'rtscts' },
+    favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  assert.equal(normalizeSessionFolderBundle({ ...legacyV5, sessions: [...bundle.sessions, serialSession] }), undefined);
 });
 
 test('session-folder bundles reject unsupported shape, secret-bearing records and unknown fields', () => {
   const bundle = validBundle();
   assert.equal(normalizeSessionFolderBundle({ ...bundle, extra: 'value' }), undefined);
-  assert.equal(normalizeSessionFolderBundle({ ...bundle, version: 6 }), undefined);
+  assert.equal(normalizeSessionFolderBundle({ ...bundle, version: 7 }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, sessions: [{ ...bundle.sessions[0], password: 'must-not-import' }] }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, exportedAt: 'yesterday' }), undefined);
 });

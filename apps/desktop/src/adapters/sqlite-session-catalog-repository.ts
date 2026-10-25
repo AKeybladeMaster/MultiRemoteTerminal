@@ -14,6 +14,7 @@ import { isLocalShell } from '../../../../packages/domain/src/local-terminal.ts'
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
+import { isSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 
 interface SavedSessionRow {
   readonly id: unknown;
@@ -59,15 +60,15 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     this.listByQuery = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
       FROM session_definitions
-      WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
       ORDER BY favorite DESC, updated_at DESC, id ASC
     `);
     this.insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
     `);
-    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\')');
-    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\')');
+    this.setSessionFavorite = database.prepare('UPDATE session_definitions SET favorite = ?, updated_at = ? WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\', \'serial\')');
+    this.deleteSession = database.prepare('DELETE FROM session_definitions WHERE id = ? AND kind IN (\'local\', \'ssh\', \'telnet\', \'ftp\', \'rdp\', \'vnc\', \'serial\')');
     this.listFoldersStatement = database.prepare('SELECT id, parent_id, name FROM folders ORDER BY parent_id, name COLLATE NOCASE, id');
     this.findFolder = database.prepare('SELECT id, parent_id, name FROM folders WHERE id = ?');
     this.findFolderName = database.prepare(`
@@ -100,7 +101,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       ) SELECT session.id, session.folder_id, session.kind, session.name, session.host, session.port,
         session.options_json, session.favorite, session.created_at, session.updated_at
       FROM session_definitions session JOIN subtree ON subtree.id = session.folder_id
-      WHERE session.kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc') ORDER BY session.id LIMIT ?
+      WHERE session.kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial') ORDER BY session.id LIMIT ?
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
     this.insertImportedSession = database.prepare(`
@@ -133,16 +134,20 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       const id = randomUUID();
       const timestamp = new Date().toISOString();
       const local = draft.kind === 'local';
+      const serial = draft.kind === 'serial';
       const storedKind = draft.kind === 'sftp' ? 'ssh' : draft.kind;
-      const options = local ? JSON.stringify({ shell: draft.shell }) : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure })
+      const options = local ? JSON.stringify({ shell: draft.shell }) : serial ? JSON.stringify(draft.configuration)
+        : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure })
         : draft.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}';
-      this.insertSession.run(id, storedKind, draft.name, local ? null : draft.host, local ? null : draft.port, options, timestamp, timestamp);
+      this.insertSession.run(id, storedKind, draft.name, local || serial ? null : draft.host, local || serial ? null : draft.port, options, timestamp, timestamp);
       if (draft.kind === 'local') return { id, folderId: null, kind: 'local', name: draft.name, shell: draft.shell, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'ssh') return { id, folderId: null, kind: 'ssh', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'sftp') return { id, folderId: null, kind: 'sftp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'telnet') return { id, folderId: null, kind: 'telnet', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'ftp') return { id, folderId: null, kind: 'ftp', name: draft.name, host: draft.host, port: draft.port, secure: draft.secure, favorite: false, createdAt: timestamp, updatedAt: timestamp };
       if (draft.kind === 'rdp') return { id, folderId: null, kind: 'rdp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      if (draft.kind === 'serial') return { id, folderId: null, kind: 'serial', name: draft.name, configuration: draft.configuration,
+        favorite: false, createdAt: timestamp, updatedAt: timestamp };
       return { id, folderId: null, kind: 'vnc', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
     } catch (error) { throw mapStorageError(error); }
   }
@@ -300,10 +305,12 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
         continue;
       }
       const local = session.kind === 'local';
+      const serial = session.kind === 'serial';
       const storedKind = session.kind === 'sftp' ? 'ssh' : session.kind;
       this.insertImportedSession.run(session.id, session.folderId, storedKind, session.name,
-        local ? null : session.host, local ? null : session.port,
-        local ? JSON.stringify({ shell: session.shell }) : session.kind === 'ftp' ? JSON.stringify({ secure: session.secure })
+        local || serial ? null : session.host, local || serial ? null : session.port,
+        local ? JSON.stringify({ shell: session.shell }) : serial ? JSON.stringify(session.configuration)
+          : session.kind === 'ftp' ? JSON.stringify({ secure: session.secure })
           : session.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}',
         session.favorite ? 1 : 0, session.createdAt, session.updatedAt);
       createdSessionCount += 1;
@@ -374,6 +381,7 @@ function sameSessionDefinition(left: SavedSessionDefinition, right: SavedSession
   if (left.kind === 'ftp' && right.kind === 'ftp') return left.host === right.host && left.port === right.port && left.secure === right.secure;
   if (left.kind === 'rdp' && right.kind === 'rdp') return left.host === right.host && left.port === right.port;
   if (left.kind === 'vnc' && right.kind === 'vnc') return left.host === right.host && left.port === right.port;
+  if (left.kind === 'serial' && right.kind === 'serial') return serialConfigurationsEqual(left.configuration, right.configuration);
   return false;
 }
 
@@ -467,6 +475,11 @@ function decodeSessionRow(row: SavedSessionRow): SavedSessionDefinition {
     if (row.host !== null || row.port !== null || !exactKeys(options, ['shell']) || !isLocalShell(shell)) throw new StorageOperationError('corrupt');
     return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'local', name: row.name, shell, favorite: row.favorite === 1,
       createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  if (row.kind === 'serial') {
+    if (row.host !== null || row.port !== null || !isSerialConfiguration(options)) throw new StorageOperationError('corrupt');
+    return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'serial', name: row.name, configuration: options,
+      favorite: row.favorite === 1, createdAt: row.created_at, updatedAt: row.updated_at };
   }
   if (row.kind === 'ssh') {
     const endpoint = canonicalizeSshHostEndpoint({ host: row.host, port: row.port });

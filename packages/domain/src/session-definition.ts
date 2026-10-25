@@ -5,6 +5,8 @@ import { canonicalizeRdpEndpoint } from './rdp.ts';
 import { canonicalizeVncEndpoint } from './vnc.ts';
 import { isLocalShell } from './local-terminal.ts';
 import type { LocalShell } from './local-terminal.ts';
+import { isSerialConfiguration, normalizeSerialConfiguration } from './serial.ts';
+import type { SerialConfiguration } from './serial.ts';
 
 export interface SavedSessionBase {
   readonly id: string;
@@ -22,7 +24,8 @@ export type SavedSessionDefinition =
   | (SavedSessionBase & { readonly kind: 'telnet'; readonly host: string; readonly port: number })
   | (SavedSessionBase & { readonly kind: 'ftp'; readonly host: string; readonly port: number; readonly secure: boolean })
   | (SavedSessionBase & { readonly kind: 'rdp'; readonly host: string; readonly port: number })
-  | (SavedSessionBase & { readonly kind: 'vnc'; readonly host: string; readonly port: number });
+  | (SavedSessionBase & { readonly kind: 'vnc'; readonly host: string; readonly port: number })
+  | (SavedSessionBase & { readonly kind: 'serial'; readonly configuration: SerialConfiguration });
 
 export type SavedSessionDraft =
   | { readonly kind: 'local'; readonly name: string; readonly shell: LocalShell }
@@ -31,7 +34,8 @@ export type SavedSessionDraft =
   | { readonly kind: 'telnet'; readonly name: string; readonly host: string; readonly port: number }
   | { readonly kind: 'ftp'; readonly name: string; readonly host: string; readonly port: number; readonly secure: boolean }
   | { readonly kind: 'rdp'; readonly name: string; readonly host: string; readonly port: number }
-  | { readonly kind: 'vnc'; readonly name: string; readonly host: string; readonly port: number };
+  | { readonly kind: 'vnc'; readonly name: string; readonly host: string; readonly port: number }
+  | { readonly kind: 'serial'; readonly name: string; readonly configuration: SerialConfiguration };
 
 export function normalizeSavedSessionDraft(value: unknown): SavedSessionDraft | undefined {
   if (!isPlainRecord(value) || typeof value.kind !== 'string') return undefined;
@@ -40,6 +44,11 @@ export function normalizeSavedSessionDraft(value: unknown): SavedSessionDraft | 
   if (value.kind === 'local') {
     if (!hasExactKeys(value, ['kind', 'name', 'shell']) || !isLocalShell(value.shell)) return undefined;
     return { kind: 'local', name, shell: value.shell };
+  }
+  if (value.kind === 'serial') {
+    if (!hasExactKeys(value, ['kind', 'name', 'configuration'])) return undefined;
+    const configuration = normalizeSerialConfiguration(value.configuration);
+    return configuration ? { kind: 'serial', name, configuration } : undefined;
   }
   if (value.kind === 'ssh') {
     if (!hasExactKeys(value, ['kind', 'name', 'host', 'port'])) return undefined;
@@ -90,6 +99,8 @@ export function isSavedSessionDefinition(value: unknown): value is SavedSessionD
       !(value.folderId === null || (typeof value.folderId === 'string' && UUID.test(value.folderId))) ||
       normalizeName(value.name) !== value.name || typeof value.favorite !== 'boolean' || !isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt)) return false;
   if (value.kind === 'local') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'shell', 'favorite', 'createdAt', 'updatedAt']) && isLocalShell(value.shell);
+  if (value.kind === 'serial') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'configuration', 'favorite', 'createdAt', 'updatedAt']) &&
+    isSerialConfiguration(value.configuration);
   if (value.kind === 'ssh') {
     if (!hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'host', 'port', 'favorite', 'createdAt', 'updatedAt'])) return false;
     const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
