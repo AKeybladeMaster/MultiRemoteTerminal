@@ -13,6 +13,7 @@
     "test": "node --test tests/unit/*.test.ts",
     "build": "node scripts/build.mjs",
     "package:win": "node scripts/package-win.mjs",
+    "sbom:win": "node scripts/generate-distribution-sbom.mjs",
     "dependencies:inventory": "node scripts/dependency-inventory.mjs",
     "test:ssh-fixture": "node --test tests/integration/*.test.ts",
     "start": "node scripts/start-electron.mjs",
