@@ -14,6 +14,9 @@ import { createMacroRunner } from '../../../../packages/application/src/macro-ru
 import type { MacroPlaybackView } from './MacroManagerDialog.tsx';
 import { createMacroRecorder } from '../../../../packages/application/src/macro-recording.ts';
 import type { MacroRecordingSnapshot, MacroRecordingWarning } from '../../../../packages/application/src/macro-recording.ts';
+import { createMultiExecRunner } from '../../../../packages/application/src/multi-exec.ts';
+import type { MultiExecRequest } from '../../../../packages/domain/src/multi-exec.ts';
+import type { MultiExecDisplayTarget, MultiExecView } from './MultiExecDialog.tsx';
 import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -29,6 +32,7 @@ import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
 import { MacroManagerDialog } from './MacroManagerDialog.tsx';
+import { MultiExecDialog } from './MultiExecDialog.tsx';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
@@ -79,7 +83,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'close-active' | 'toggle-theme';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'multi-exec' | 'close-active' | 'toggle-theme';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -271,6 +275,8 @@ function Workbench() {
   const [tunnelsLoading, setTunnelsLoading] = useState(false);
   const [tunnelBusyId, setTunnelBusyId] = useState<string>();
   const [tunnelError, setTunnelError] = useState<string>();
+  const [multiExecOpen, setMultiExecOpen] = useState(false);
+  const [multiExecView, setMultiExecView] = useState<MultiExecView>();
   const [macroManagerOpen, setMacroManagerOpen] = useState(false);
   const [macros, setMacros] = useState<readonly MacroDefinition[]>([]);
   const [macrosLoading, setMacrosLoading] = useState(false);
@@ -310,6 +316,10 @@ function Workbench() {
   const macroManagerRequest = useRef(0);
   const macroRecorder = useState(createMacroRecorder)[0];
   const macroPlaybackRun = useRef(false);
+  const multiExecRun = useRef(false);
+  const pendingMultiExecConfirmation = useRef<((approved: boolean) => void) | undefined>(undefined);
+  const multiExecBackToSelection = useRef(false);
+  const multiExecCloseAfterRun = useRef(false);
   const pendingMacroConfirmation = useRef<((accepted: boolean) => void) | undefined>(undefined);
   const macroRunner = useState(() => createMacroRunner({
     isTargetReady: sessionId => {
@@ -339,6 +349,26 @@ function Workbench() {
   }))[0];
   const macroSaveErrorCode = useRef('UNAVAILABLE');
   const macroRecordingView = useRef<MacroRecordingView | undefined>(undefined);
+  const multiExecRunner = useState(() => createMultiExecRunner({
+    isTargetReady: sessionId => {
+      const session = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
+      return isMacroTerminal(session) && session.state === 'running' && handles.current.has(sessionId);
+    },
+    sendLine: async (sessionId, line) => {
+      const session = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
+      if (!isMacroTerminal(session) || session.state !== 'running' || !handles.current.has(sessionId)) return failure('UNAVAILABLE', 'terminal');
+      try {
+        const reply = session.transport === 'local'
+          ? await window.multiRemoteTerminal.writeTerminal(sessionId, line)
+          : session.transport === 'ssh'
+            ? await window.multiRemoteTerminal.writeSshTerminal(sessionId, line)
+            : await window.multiRemoteTerminal.writeTelnetTerminal(sessionId, line);
+        return reply.ok ? { ok: true, result: undefined } : { ok: false, error: reply.error };
+      } catch {
+        return failure('UNAVAILABLE', 'terminal');
+      }
+    }
+  }))[0];
   const pendingMacroTerminalFocus = useRef<string | undefined>(undefined);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
@@ -367,6 +397,8 @@ function Workbench() {
   const tunnelManagerReturnFocus = useRef<HTMLElement | null>(null);
   const macroManagerDialog = useRef<HTMLElement>(null);
   const macroManagerReturnFocus = useRef<HTMLElement | null>(null);
+  const multiExecDialog = useRef<HTMLElement>(null);
+  const multiExecReturnFocus = useRef<HTMLElement | null>(null);
   const sshTrustDialog = useRef<HTMLElement>(null);
   const rejectSshHostButton = useRef<HTMLButtonElement>(null);
   const changedSshHostButton = useRef<HTMLButtonElement>(null);
@@ -526,6 +558,96 @@ function Workbench() {
     void loadMacroManager();
   }, [loadMacroManager]);
 
+  const openMultiExec = useCallback(() => {
+    if (multiExecRun.current) return;
+    multiExecReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMultiExecView(undefined);
+    setMultiExecOpen(true);
+  }, []);
+
+  const closeMultiExec = useCallback(() => {
+    if (multiExecRun.current) {
+      multiExecCloseAfterRun.current = true;
+      if (pendingMultiExecConfirmation.current) pendingMultiExecConfirmation.current(false);
+      else multiExecRunner.cancel();
+      return;
+    }
+    setMultiExecView(undefined);
+    setMultiExecOpen(false);
+  }, [multiExecRunner]);
+
+  const confirmMultiExec = useCallback((approved: boolean) => {
+    const finish = pendingMultiExecConfirmation.current;
+    if (!finish) return;
+    if (!approved) multiExecBackToSelection.current = true;
+    else setMultiExecView(current => current?.phase === 'review'
+      ? { ...current, phase: 'sending', targetResults: current.targets.map(target => ({ targetSessionId: target.sessionId, status: 'queued' })) }
+      : current);
+    finish(approved);
+  }, []);
+
+  const cancelMultiExec = useCallback(() => {
+    if (!multiExecRun.current) return;
+    setMultiExecView(current => current?.phase === 'sending' ? { ...current, cancelRequested: true } : current);
+    multiExecRunner.cancel();
+  }, [multiExecRunner]);
+
+  const reviewMultiExec = useCallback((request: MultiExecRequest) => {
+    if (multiExecRun.current || macroPlaybackRun.current || macroRecordingView.current) return;
+    multiExecRun.current = true;
+    multiExecBackToSelection.current = false;
+    multiExecCloseAfterRun.current = false;
+    const targets: MultiExecDisplayTarget[] = request.targetSessionIds.map(sessionId => {
+      const session = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
+      return { sessionId, title: isMacroTerminal(session) ? macroTargetTitle(session) : 'Terminal no longer available' };
+    });
+    void multiExecRunner.run(request, {
+      confirm: (review, cancellation) => new Promise<boolean>(resolve => {
+        let settled = false;
+        const finish = (approved: boolean) => {
+          if (settled) return;
+          settled = true;
+          cancellation.removeEventListener('abort', onAbort);
+          if (pendingMultiExecConfirmation.current === finish) pendingMultiExecConfirmation.current = undefined;
+          resolve(approved);
+        };
+        const onAbort = () => finish(false);
+        pendingMultiExecConfirmation.current = finish;
+        cancellation.addEventListener('abort', onAbort, { once: true });
+        setMultiExecView({ phase: 'review', line: review.line, targets, targetResults: [] });
+        if (cancellation.aborted) onAbort();
+      }),
+      onTargetsChanged: targetResults => setMultiExecView(current => current && current.phase !== 'finished'
+        ? { ...current, phase: 'sending', targetResults }
+        : current)
+    }).then(result => {
+      if (multiExecBackToSelection.current) {
+        setMultiExecView(undefined);
+        return;
+      }
+      if (multiExecCloseAfterRun.current) {
+        setMultiExecView(undefined);
+        setMultiExecOpen(false);
+        return;
+      }
+      setMultiExecView(current => ({
+        phase: 'finished',
+        line: current?.line ?? request.line,
+        targets: current?.targets ?? targets,
+        targetResults: result.targets,
+        ...(result.status === 'cancelled' ? { cancelled: true } : {}),
+        ...(result.status === 'failed' ? { error: result.error } : {})
+      }));
+    }).catch(() => setMultiExecView({
+      phase: 'finished', line: request.line, targets, targetResults: [], error: failure('UNAVAILABLE').error
+    })).finally(() => {
+      multiExecRun.current = false;
+      pendingMultiExecConfirmation.current = undefined;
+      multiExecBackToSelection.current = false;
+      multiExecCloseAfterRun.current = false;
+    });
+  }, [multiExecRunner]);
+
   const closeMacroPlayback = useCallback(() => {
     if (macroPlaybackRun.current) return;
     setMacroPlayback(undefined);
@@ -551,7 +673,8 @@ function Workbench() {
     const macro = macros.find(candidate => candidate.id === macroId);
     const target = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
     const targetTitle = isMacroTerminal(target) ? macroTargetTitle(target) : 'selected terminal';
-    if (!macro || macro.steps.length === 0 || !isMacroTerminal(target) || target.state !== 'running' || !handles.current.has(sessionId) || macroRecordingView.current) {
+    if (!macro || macro.steps.length === 0 || !isMacroTerminal(target) || target.state !== 'running' || !handles.current.has(sessionId) ||
+        macroRecordingView.current || multiExecRun.current) {
       setMacroPlayback({ macroId, sessionId, targetTitle, status: 'failed', error: failure('UNAVAILABLE', 'terminal').error });
       return;
     }
@@ -672,7 +795,7 @@ function Workbench() {
       setMacroError(`Recording could not start for ${targetLabel} (UNAVAILABLE). Wait for the terminal to be ready, then retry.`);
       return false;
     }
-    if (macroRecordingView.current || !macroRecorder.start(targetSessionId, draft.name.length)) {
+    if (macroRecordingView.current || multiExecRun.current || !macroRecorder.start(targetSessionId, draft.name.length)) {
       setMacroError(`Recording could not start for ${targetLabel} (BUSY). Stop or discard the active recording, then retry.`);
       return false;
     }
@@ -1337,6 +1460,26 @@ function Workbench() {
         }
         return;
       }
+      if (multiExecOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          if (multiExecView?.phase === 'sending') cancelMultiExec();
+          else if (multiExecView?.phase === 'review') confirmMultiExec(false);
+          else closeMultiExec();
+        } else if (event.key === 'Tab') {
+          const focusable = [...(multiExecDialog.current?.querySelectorAll<HTMLElement>(
+            'input:not(:disabled), button:not(:disabled), [tabindex="-1"]'
+          ) ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            event.stopPropagation();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (macroManagerOpen) {
         if (event.key === 'Escape' && !macroBusy) {
           event.preventDefault();
@@ -1472,9 +1615,10 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, cancelMacroPlayback, catalogBusy, closeMacroManager, closeMacroPlayback, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy,
-    macroManagerOpen, macroPlaybackMacroId, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen,
-    sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+  }, [activeId, cancelMacroPlayback, cancelMultiExec, catalogBusy, closeMacroManager, closeMacroPlayback, closeMultiExec, confirmMultiExec,
+    decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, multiExecOpen, multiExecView,
+    openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents,
+    tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -1501,6 +1645,13 @@ function Workbench() {
   useLayoutEffect(() => {
     if (macroManagerOpen) macroManagerDialog.current?.querySelector<HTMLElement>('#macro-recording-name')?.focus();
   }, [macroManagerOpen]);
+
+  useLayoutEffect(() => {
+    if (multiExecOpen || !multiExecReturnFocus.current) return;
+    const target = multiExecReturnFocus.current;
+    multiExecReturnFocus.current = null;
+    requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+  }, [multiExecOpen]);
 
   useLayoutEffect(() => {
     const targetSessionId = pendingMacroTerminalFocus.current;
@@ -1614,11 +1765,20 @@ function Workbench() {
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
     { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
+    { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme }
   ];
   const filteredCommands = commands.filter(command => command.label.toLowerCase().includes(query.toLowerCase()));
   const active = sessions.find(session => session.sessionId === activeId);
+  const multiExecTargets: MultiExecDisplayTarget[] = sessions.filter(isMacroTerminal)
+    .filter(session => session.state === 'running' && handles.current.has(session.sessionId))
+    .map(session => ({ sessionId: session.sessionId, title: macroTargetTitle(session) }));
+  const multiExecBlockedReason = macroRecording !== undefined
+    ? 'Stop or discard the active macro recording before sending to multiple terminals.'
+    : macroPlayback?.status === 'running'
+      ? 'Wait for or cancel macro playback before sending to multiple terminals.'
+      : undefined;
   const pendingClose = sessions.find(session => session.sessionId === pendingCloseId);
   const currentSshTrust = sshTrustEvents[0];
   const savedFolderById = new Map(savedFolders.map(folder => [folder.id, folder]));
@@ -2025,6 +2185,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
+        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="multi-exec-open" onClick={openMultiExec}>MultiExec</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Open sessions</h3>
@@ -2145,7 +2306,9 @@ function Workbench() {
                 <div className="terminal-pane-stage">
                   <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
                     transport={session.transport}
-                    canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId)} theme={theme} fontSize={fontSize} onReady={terminalReady}
+                    canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId) &&
+                      !(multiExecView && multiExecView.phase !== 'finished' && multiExecView.targets.some(target => target.sessionId === session.sessionId))}
+                    theme={theme} fontSize={fontSize} onReady={terminalReady}
                     onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
                 </div>
                 {session.transport === 'ssh' && session.state === 'running' &&
@@ -2396,6 +2559,9 @@ function Workbench() {
       onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} onStartRecording={startMacroRecording}
       onReviewPlayback={reviewMacroPlayback} onClosePlayback={closeMacroPlayback} onStartPlayback={startMacroPlayback}
       onCancelPlayback={cancelMacroPlayback} onConfirmPlayback={confirmMacroPlayback} />}
+    {multiExecOpen && <MultiExecDialog dialogRef={multiExecDialog} targets={multiExecTargets} view={multiExecView}
+      blockedReason={multiExecBlockedReason} onClose={closeMultiExec} onReview={reviewMultiExec}
+      onConfirm={confirmMultiExec} onCancel={cancelMultiExec} />}
     {currentSshTrust && <div className="ssh-backdrop ssh-trust-backdrop" onMouseDown={event => {
       if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
     }}>

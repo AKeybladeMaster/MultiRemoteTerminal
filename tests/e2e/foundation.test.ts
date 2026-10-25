@@ -1743,6 +1743,170 @@ test('macro playback previews exact steps, confirms explicitly, cancels, and req
   }
 });
 
+test('MultiExec reviews the exact line and sends only after confirmation to three running terminals', async () => {
+  test.skip(process.platform !== 'win32', 'MultiExec terminal acceptance evidence is required on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-multiexec-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible({ timeout: 15_000 });
+    for (const title of ['PowerShell session 2', 'PowerShell session 3']) {
+      await runPaletteCommand(page, 'New PowerShell terminal');
+      await expect(page.getByRole('tab', { name: new RegExp(title) })).toBeVisible({ timeout: 15_000 });
+    }
+
+    const line = "Write-Output ([string][char]77 + 'RT-MULTIEXEC-OK')";
+    const output = 'MRT-MULTIEXEC-OK';
+    const outputRows = await page.locator('.terminal-panel .xterm-rows').all();
+    expect(outputRows).toHaveLength(3);
+
+    await page.getByRole('button', { name: 'MultiExec', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Send to terminals' });
+    await expect(dialog.getByLabel('One-line input')).toBeFocused();
+    await dialog.getByLabel('One-line input').fill(line);
+    for (const title of ['PowerShell session 1', 'PowerShell session 2', 'PowerShell session 3']) {
+      await dialog.getByRole('checkbox', { name: new RegExp(title) }).check();
+    }
+    await dialog.getByRole('button', { name: 'Review send', exact: true }).click();
+    await expect(dialog.getByText(line, { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Send line to 3 terminals', exact: true })).toBeFocused();
+    for (const rows of outputRows) await expect(rows).not.toContainText(output);
+
+    await dialog.getByRole('button', { name: 'Send line to 3 terminals', exact: true }).click();
+    await expect(dialog.getByRole('list', { name: 'Per-terminal send results' }).locator('.multi-exec-result-status'))
+      .toHaveText(['Input sent', 'Input sent', 'Input sent']);
+    await expect(dialog.getByRole('status')).toContainText('3 sent, 0 uncertain, 0 failed.');
+    await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    for (const title of ['PowerShell session 1', 'PowerShell session 2', 'PowerShell session 3']) {
+      const panel = await selectTerminal(page, title);
+      await expect(panel.locator('.xterm-rows')).toContainText(output, { timeout: 20_000 });
+    }
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('MultiExec sends the reviewed line to three independent SSH hosts', async () => {
+  test.skip(process.platform !== 'win32', 'MultiExec terminal acceptance evidence is required on Windows');
+  test.setTimeout(120_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-multiexec-ssh-e2e-'));
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const line = "echo MRT-MULTIEXEC-SSH-EXACT";
+  const fixtureErrors: string[] = [];
+  let shuttingDown = false;
+  const hosts = ['one', 'two', 'three'].map(name => {
+    const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+    const receivedLines: string[] = [];
+    const clients = new Set<Ssh2FixtureClient>();
+    const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+      const client = rawClient as Ssh2FixtureClient;
+      clients.add(client);
+      client.once('close', () => clients.delete(client));
+      client.on('error', error => { if (!shuttingDown) fixtureErrors.push(`${name}: ${error.message}`); });
+      client.on('authentication', (rawContext: unknown) => {
+        const context = rawContext as Ssh2AuthenticationContext;
+        if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+        else context.reject();
+      });
+      client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          const stream = acceptShell();
+          stream.write(`MRT-MULTIEXEC-SSH-${name}-READY\r\n`);
+          let pending = '';
+          stream.on('data', (raw: unknown) => {
+            pending += Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+            const lines = pending.split(/\r\n|\r|\n/u);
+            pending = lines.pop() ?? '';
+            for (const received of lines) {
+              if (!received) continue;
+              receivedLines.push(received);
+              if (received === line) stream.write(`MRT-MULTIEXEC-SSH-${name}-OK\r\n`);
+            }
+          });
+        });
+      }));
+    });
+    server.on('error', error => { if (!shuttingDown) fixtureErrors.push(`${name} server: ${error.message}`); });
+    return { name, server, clients, receivedLines, port: 0 as number };
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const listening: typeof hosts = [];
+  try {
+    for (const host of hosts) {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        host.server.once('error', rejectListen);
+        host.server.listen(0, '127.0.0.1', () => {
+          const address = host.server.address();
+          if (!address || typeof address === 'string') { rejectListen(new Error(`SSH fixture ${host.name} did not bind a TCP address`)); return; }
+          host.port = address.port;
+          listening.push(host);
+          resolveListen();
+        });
+      });
+    }
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    for (const host of hosts) {
+      await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+      const connect = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+      await connect.getByLabel('Host name or IP address').fill('127.0.0.1');
+      await connect.getByLabel('Port').fill(String(host.port));
+      await connect.getByRole('button', { name: 'Connect', exact: true }).click();
+      const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+      await expect(trust).toBeVisible({ timeout: 15_000 });
+      await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${host.port}`);
+      await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+      const tab = page.getByRole('tab').filter({ hasText: `127.0.0.1:${host.port} - SSH` }).first();
+      await expect(tab).toBeVisible({ timeout: 20_000 });
+      const panelId = await tab.getAttribute('aria-controls');
+      if (!panelId) throw new Error(`Missing SSH terminal panel for fixture ${host.name}`);
+      await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText(`MRT-MULTIEXEC-SSH-${host.name}-READY`, { timeout: 10_000 });
+    }
+
+    await page.getByRole('button', { name: 'MultiExec', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Send to terminals' });
+    await dialog.getByLabel('One-line input').fill(line);
+    for (const host of hosts) await dialog.getByRole('checkbox', { name: new RegExp(`127\\.0\\.0\\.1:${host.port}`) }).check();
+    await dialog.getByRole('button', { name: 'Review send', exact: true }).click();
+    await expect(dialog.getByText(line, { exact: true })).toBeVisible();
+    const reviewedDestinations = dialog.getByRole('list', { name: 'Reviewed terminal destinations' });
+    await expect(reviewedDestinations.getByText('SSH', { exact: false })).toHaveCount(3);
+    for (const host of hosts) await expect(reviewedDestinations).toContainText(`127.0.0.1:${host.port}`);
+    for (const host of hosts) expect(host.receivedLines).toEqual([]);
+
+    await dialog.getByRole('button', { name: 'Send line to 3 terminals', exact: true }).click();
+    await expect(dialog.getByRole('list', { name: 'Per-terminal send results' }).locator('.multi-exec-result-status'))
+      .toHaveText(['Input sent', 'Input sent', 'Input sent']);
+    await expect(dialog.getByRole('status')).toContainText('3 sent, 0 uncertain, 0 failed.');
+    await expect(dialog.getByRole('status')).toBeFocused();
+    await expect.poll(() => hosts.map(host => host.receivedLines.filter(received => received === line).length)).toEqual([1, 1, 1]);
+    for (const host of hosts) expect(host.receivedLines).toEqual([line]);
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeFocused();
+    await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+    for (const host of hosts) {
+      const panel = await selectTerminal(page, `127.0.0.1:${host.port} - SSH`);
+      await expect(panel.locator('.xterm-rows')).toContainText(`MRT-MULTIEXEC-SSH-${host.name}-OK`, { timeout: 15_000 });
+    }
+    expect(fixtureErrors).toEqual([]);
+  } finally {
+    shuttingDown = true;
+    await app?.close();
+    for (const host of hosts) for (const client of host.clients) client.end();
+    for (const host of listening) await new Promise<void>(resolveClose => host.server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('macro recorder captures completed terminal lines and suppresses a recognized password prompt', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-recording-e2e-'));
