@@ -9,7 +9,7 @@ Workbench Settings adds an off-by-default **Automatically save connections I ope
 
 Automatic definitions include only validated connection metadata. Credentials, private keys, terminal contents, and command text are not saved. The default startup PowerShell tab is excluded because it was not explicitly opened by the user. Gateway-routed SSH is excluded because its route is not represented in saved definitions. RDP/VNC external launches are excluded because the workbench cannot observe whether the external viewer connected.
 
-The renderer sends a typed `session.remember` request only when its loaded preference is enabled. The main-process broker independently checks the persisted preference before dispatch, so stale or modified renderer state cannot bypass opt-in. The storage worker performs match-and-update or insert through a transaction-safe SQLite operation. Existing settings rows at versions 1 and 2 migrate to version 3 with automatic saving disabled.
+When a terminal or file connection reaches `running`, the renderer sends a typed `session.remember` request. The main-process broker independently checks the persisted preference before dispatch, so renderer startup order cannot skip an enabled save and stale or modified renderer state cannot bypass opt-in. The storage worker performs match-and-update or insert through a transaction-safe SQLite operation. Existing settings rows at versions 1 and 2 migrate to version 3 with automatic saving disabled.
 
 ## Verification
 
@@ -26,6 +26,8 @@ Commands ran on Windows x64 from the repository root on 2026-10-25:
 | `git diff --check` | Passed |
 
 The settings screenshot from the E2E is `test-results/auto-save-session-settings.png` (local test output only).
+
+Review follow-up: local terminals are auto-saved only after the open reply reports `running`. The renderer no longer gates the remember request on its asynchronously loaded preference; the main broker's persisted setting is authoritative. This avoids skipping a saved profile when a user opens a connection before renderer preferences finish loading, while disabled settings still return `FORBIDDEN` before catalog dispatch.
 
 ## Security and remaining work
 

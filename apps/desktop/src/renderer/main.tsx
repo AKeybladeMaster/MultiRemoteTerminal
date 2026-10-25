@@ -358,7 +358,6 @@ function Workbench() {
   const [savedSearch, setSavedSearch] = useState('');
   const savedSearchRef = useRef(savedSearch);
   savedSearchRef.current = savedSearch;
-  const autoSaveSessionsPreference = useRef(false);
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [openSavedActionsMenuId, setOpenSavedActionsMenuId] = useState<string>();
@@ -565,7 +564,6 @@ function Workbench() {
   }, []);
 
   const rememberOpenedSession = useCallback(async (draft: SavedSessionDraft): Promise<void> => {
-    if (!autoSaveSessionsPreference.current) return;
     try {
       const reply = await window.multiRemoteTerminal.rememberSavedSession(draft);
       if (!reply.ok) {
@@ -1161,7 +1159,6 @@ function Workbench() {
     setStartupGreetingVisible(preferences.startupGreeting.length > 0);
     setTerminalHighlightEnabled(preferences.terminalHighlightEnabled);
     setTerminalHighlightRules(preferences.terminalHighlightRules);
-    autoSaveSessionsPreference.current = preferences.autoSaveSessions;
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
@@ -1447,7 +1444,9 @@ function Workbench() {
     }
     const ordinal = ++nextOrdinal.current[shell];
     const title = shellName(shell);
-    if (rememberWhenOpened) void rememberOpenedSession({ kind: 'local', name: savedTitle ?? title, shell });
+    if (rememberWhenOpened && reply.result.state === 'running') {
+      void rememberOpenedSession({ kind: 'local', name: savedTitle ?? title, shell });
+    }
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, [rememberOpenedSession]);
