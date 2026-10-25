@@ -168,6 +168,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07L — Windows vault restart persistence:** A second Windows E2E stores a random credential through the guarded main-process probe, closes the Electron app, reopens it with the same temporary user profile, and verifies the real `safeStorage` vault resolves the credential after initialization. It checks that the secret is absent from `credentials.json` both before and after restart. This confirms persistence for a process restart under the same Windows user and profile; it does not test profile migration, OS-account changes, reinstall/restore, or user-facing saved-credential flows. P-29 and the broader security gate remain partial. See [WP-07L results](results/WP-07L-vault-restart-2026-10-25.md).
 
+**WP-07M — SSH trust gate evidence:** Re-ran the focused host-trust and SSH-controller unit suites: 22/22 pass, including changed-key detection and the controller blocking a changed key with a non-secret warning. Re-ran the Windows saved-profile gateway E2E: 1/1 passes, verifying independent trust at the destination and each gateway in one-hop and two-hop routes plus cleanup. This satisfies the narrow `docs/SECURITY.md` checklist item for host-key mismatch blocking and jump-host verification. F-011/P-22 remain partial for SFTP-only routes, gateway-routed tunnels, longer chains and public-server interoperability. See [WP-07M results](results/WP-07M-host-trust-acceptance-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
