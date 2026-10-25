@@ -49,8 +49,9 @@ screen-reader certification, physical touch-device test, or completion of the
 separate MVP installer, security, and compatibility release gates. P-32 and the
 M4 release gate remain open.
 
-The first review pass found omitted shortcuts, ambiguous FTP warning frequency,
-an inaccessible scroll region, a focus handoff issue from the command palette,
-and missing instructions for reopening saved sessions. These findings were
-corrected; the focused Windows E2E now covers keyboard scrolling, the complete
-shortcut table, and focus behavior for both help entry points.
+Review passes found omitted shortcut aliases and menu actions, ambiguous FTP
+warning frequency, an inaccessible scroll region, a focus handoff issue from the
+command palette, missing instructions for reopening saved sessions, and an
+ambiguous privacy sentence. These findings were corrected. The focused Windows
+E2E covers keyboard scrolling, all 13 shortcut rows, and focus behavior for both
+help entry points.

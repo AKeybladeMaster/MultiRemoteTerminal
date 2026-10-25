@@ -3102,10 +3102,11 @@ test('offline help opens from the workbench and command palette, filters topics,
     await expect(help.getByRole('heading', { name: 'Open a connection' })).toBeVisible();
     await expect(help.getByRole('heading', { name: 'Troubleshooting' })).toBeVisible();
     const shortcutRows = help.getByRole('row');
-    await expect(shortcutRows).toHaveCount(11);
+    await expect(shortcutRows).toHaveCount(14);
     for (const shortcut of ['Ctrl+Shift+P', 'Ctrl+W / Ctrl+Shift+W', 'Ctrl+Tab', 'Ctrl+Shift+Tab',
-      'Ctrl+Alt+Shift, then assigned key', 'Ctrl+V / Shift+Insert', '← / →, Home / End (tab focused)',
-      '↑ / ↓, Home / End (tab menu focused)', '↑ / ↓, Enter, Esc (palette)', 'Esc (help open)']) {
+      'Ctrl+Alt+Shift, then assigned key', 'Ctrl+V / Ctrl+Shift+V / Shift+Insert', '← / →, Home / End (tab focused)',
+      '↑ / ↓, Home / End (tab menu focused)', 'Esc / Tab (terminal tab menu)', '↑ / ↓, Enter, Esc, Tab (palette)',
+      'Tab / Shift+Tab (dialog open)', 'Esc (SSH host prompt)', 'Tab / Shift+Tab / Esc (help open)']) {
       await expect(help.getByRole('row', { name: new RegExp(shortcut.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })).toBeVisible();
     }
     await expect(help.locator('#help-search')).toBeFocused();

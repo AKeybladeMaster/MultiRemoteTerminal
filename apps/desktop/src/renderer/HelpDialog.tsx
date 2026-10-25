@@ -44,7 +44,8 @@ const HELP_SECTIONS: readonly HelpSection[] = [
     topics: [
       { title: 'Switch or close tabs', body: 'Select a tab, use the keyboard shortcuts below, or focus the tab strip and move with the arrow and Home/End keys. Middle-click a terminal tab to begin closing it. Closing a running terminal asks for confirmation.', keywords: ['tab', 'switch', 'close', 'middle click', 'mousewheel'] },
       { title: 'Terminal tab menu', body: 'Right-click a terminal tab for Copy selection, Clear terminal, and Close terminal. This menu is available on terminal tabs; file-only tabs do not show it.', keywords: ['right click', 'context menu', 'copy', 'clear', 'selection'] },
-      { title: 'Paste and font size', body: 'Paste into a terminal with Ctrl+V or Shift+Insert after focusing it. Multi-line paste asks you to confirm before sending. Use the font-size controls in the status bar to adjust terminal text.', keywords: ['clipboard', 'paste', 'shift insert', 'multiline', 'font', 'zoom'] },
+      { title: 'Paste and font size', body: 'Paste into a terminal with Ctrl+V, Ctrl+Shift+V, or Shift+Insert after focusing it. Multi-line paste asks you to confirm before sending. Use the font-size controls in the status bar to adjust terminal text.', keywords: ['clipboard', 'paste', 'shift insert', 'multiline', 'font', 'zoom'] },
+      { title: 'Keyboard use in dialogs', body: 'Use Tab and Shift+Tab to move through controls in an open dialog. Escape closes or cancels the current dialog when allowed. In SSH host verification, Escape rejects the pending host key and connection.', keywords: ['keyboard', 'dialog', 'tab', 'shift tab', 'escape', 'host trust', 'reject'] },
       { title: 'Theme', body: 'Use the header button or command palette to switch between the light and dark workbench themes.', keywords: ['theme', 'light', 'dark', 'appearance', 'color'] }
     ]
   },
@@ -60,7 +61,7 @@ const HELP_SECTIONS: readonly HelpSection[] = [
     id: 'tools',
     title: 'Macros and port forwarding',
     topics: [
-      { title: 'Macros', body: 'Create or record a macro, review its steps and target, then choose Run to send it. A macro-specific keyboard shortcut opens the review; it never runs the macro without your approval. Recording omits clipboard paste and pauses on recognized secret prompts.', keywords: ['macro', 'record', 'playback', 'shortcut', 'run', 'secret'] },
+      { title: 'Macros', body: 'Create or record a macro, review its steps and target, then choose Run to send it. To assign a shortcut, press Ctrl+Alt+Shift with a supported key; press Escape to cancel capture. A saved shortcut opens review and never runs the macro without your approval. Recording omits clipboard paste and pauses on recognized secret prompts.', keywords: ['macro', 'record', 'playback', 'shortcut', 'run', 'secret', 'escape', 'cancel'] },
       { title: 'MultiExec', body: 'Select active terminals, enter one line, review the exact text and destinations, then confirm once to send. Delivery can be uncertain if a connection drops during the write; inspect each terminal before retrying.', keywords: ['multiexec', 'multi-exec', 'broadcast', 'send', 'review', 'commands'] },
       { title: 'SSH port forwarding', body: 'Open Port forwarding to define and manage local, remote, or SOCKS forwarding through a saved SSH profile. Current SOCKS support is TCP CONNECT. Review bind addresses and the SSH server policy before starting a forward.', keywords: ['tunnel', 'port', 'forwarding', 'socks', 'gateway', 'ssh'] }
     ]
@@ -84,11 +85,14 @@ const KEYBOARD_SHORTCUTS: readonly KeyboardShortcut[] = [
   { keys: 'Ctrl+Tab', action: 'Select the next open session tab' },
   { keys: 'Ctrl+Shift+Tab', action: 'Select the previous open session tab' },
   { keys: 'Ctrl+Alt+Shift, then assigned key', action: 'Open review for a macro with that saved shortcut; choose Run to start it' },
-  { keys: 'Ctrl+V / Shift+Insert', action: 'Paste clipboard text into the focused terminal' },
+  { keys: 'Ctrl+V / Ctrl+Shift+V / Shift+Insert', action: 'Paste clipboard text into the focused terminal' },
   { keys: '← / →, Home / End (tab focused)', action: 'Select the previous or next tab, or the first or last tab' },
   { keys: '↑ / ↓, Home / End (tab menu focused)', action: 'Move through terminal tab actions' },
-  { keys: '↑ / ↓, Enter, Esc (palette)', action: 'Move through, run, and close the command palette' },
-  { keys: 'Esc (help open)', action: 'Close this guide and return focus to the workbench' }
+  { keys: 'Esc / Tab (terminal tab menu)', action: 'Close the menu and return focus to its tab' },
+  { keys: '↑ / ↓, Enter, Esc, Tab (palette)', action: 'Move through, run, close, and move focus between palette controls' },
+  { keys: 'Tab / Shift+Tab (dialog open)', action: 'Move through controls while focus stays inside the dialog' },
+  { keys: 'Esc (SSH host prompt)', action: 'Reject the pending host key and stop the connection' },
+  { keys: 'Tab / Shift+Tab / Esc (help open)', action: 'Move through help controls or close this guide' }
 ];
 
 function matchesHelpText(text: string, filter: string): boolean {
@@ -171,7 +175,7 @@ export function HelpDialog({ onClose }: { readonly onClose: () => void }) {
           </div>
         </section>}
       </div>
-      <footer className="help-footer"><span>Help is available offline and does not send data anywhere.</span></footer>
+      <footer className="help-footer"><span>Help searches stay on this device and are not sent to an online help service.</span></footer>
     </section>
   </div>;
 }

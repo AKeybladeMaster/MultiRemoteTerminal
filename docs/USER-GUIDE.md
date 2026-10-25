@@ -65,17 +65,23 @@ permissions, server policy, and network interruption can prevent a transfer.
 | `Ctrl+W` or `Ctrl+Shift+W` | Start closing the active session |
 | `Ctrl+Tab` | Select the next session tab |
 | `Ctrl+Shift+Tab` | Select the previous session tab |
-| `Ctrl+V` or `Shift+Insert` | Paste clipboard text into the focused terminal |
+| `Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert` | Paste clipboard text into the focused terminal |
 | Left / Right, `Home` / `End` with a tab focused | Select previous/next or first/last session tab |
 | Up / Down, `Home` / `End` with the tab menu focused | Move through terminal tab actions |
-| Up / Down, `Enter`, `Esc` in the palette | Navigate, run, and close the command palette |
+| `Esc` or `Tab` with a terminal tab menu open | Close the menu and return focus to its tab |
+| Up / Down, `Enter`, `Esc`, `Tab` in the palette | Navigate and run commands, close the palette, or move focus between its controls |
 | `Ctrl+Alt+Shift`, then an assigned key | Open macro review; choose Run to start it |
-| `Esc` with Help open | Close the guide and return focus to the workbench |
+| `Tab` / `Shift+Tab` with a dialog open | Move between controls while focus stays in the dialog |
+| `Esc` at an SSH host prompt | Reject the pending host key and stop the connection |
+| `Tab` / `Shift+Tab` / `Esc` with Help open | Move through help controls or close the guide |
 
-Macro shortcuts open a review; they do not run a macro without your explicit
-approval. MultiExec likewise shows the exact line and destinations before it
-sends anything. If delivery is interrupted, check each terminal before trying
-again.
+To assign a macro shortcut, press `Ctrl+Alt+Shift` with a supported key while
+capturing it in the macro manager; press `Esc` to cancel capture. Macro
+shortcuts open a review and do not run a macro without your explicit approval.
+MultiExec likewise shows the exact line and destinations before it sends
+anything. If delivery is interrupted, check each terminal before trying again.
+In dialogs, `Esc` closes or cancels the current step when the flow allows it;
+for an SSH host fingerprint prompt, `Esc` rejects the host and stops connecting.
 
 Open **Port forwarding** to create or manage SSH local, remote, and SOCKS TCP
 forwards. Review bind addresses and server policy before starting a forward.
@@ -99,5 +105,6 @@ Use the header button or command palette to switch between light and dark themes
   `Ctrl+C` sends the terminal interrupt key. If the connection ended, open a new
   session and check whether the previous operation completed before repeating it.
 
-Help content is local to the application. The application does not send help
-searches or terminal content to an online service.
+Help content and searches stay on this device; the application does not send
+them to an online help service. The app has no external analytics. Terminal
+input goes to the local shell or remote endpoint selected for that session.
