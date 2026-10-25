@@ -40,4 +40,5 @@ Remote file contents are returned only after explicit user action and are not lo
 - Spec review against `docs/SPEC-001-MultiRemoteTerminal.md`: zero actionable findings. F-014 and P-27 remain partial as documented.
 - General review found an important close-during-operation lifecycle issue and a line-ending normalization issue. The original UI regression test failed before the fix: after canceling a delayed read, the SFTP Edit action remained disabled.
 - Fixed by keeping the dialog open until an operation settles, offering pre-commit cancellation, preventing close/discard while busy or committing, clearing activity on effect cleanup, and preserving the original file's first line-ending style. The Windows E2E regression passes after these changes; it also checks the first-style policy with a CRLF fixture.
-- Follow-up independent reviews and `main` promotion are pending.
+- Final independent review: **Ready to merge.** Standards review found no documented-standard breaches; the repeated SFTP wrapper and string revision observations remain judgment calls. Spec review found zero actionable findings. The general reviewer confirmed that the lifecycle and line-ending issues are fixed and found no remaining actionable issues.
+- Promotion to `main` is pending remote verification.
