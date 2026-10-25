@@ -547,17 +547,18 @@ function Workbench() {
   const startMacroRecording = useCallback((name: string, targetSessionId: string): boolean => {
     const draft = normalizeMacroDraft({ name, steps: [] });
     const target = sessions.find(session => session.sessionId === targetSessionId);
+    const targetLabel = target?.title ?? (targetSessionId || 'selected terminal');
     if (!draft || !target || target.transport === 'ftp' || target.transport === 'sftp' || target.state !== 'running') {
-      setMacroError('Choose a valid name and a running terminal tab.');
+      setMacroError(`Recording could not start for ${targetLabel} (INVALID_REQUEST). Choose a valid running terminal and retry.`);
       return false;
     }
     const terminal = handles.current.get(targetSessionId);
     if (!terminal) {
-      setMacroError('The selected terminal is not ready for recording.');
+      setMacroError(`Recording could not start for ${targetLabel} (UNAVAILABLE). Wait for the terminal to be ready, then retry.`);
       return false;
     }
     if (macroRecordingView.current || !macroRecorder.start(targetSessionId, draft.name.length)) {
-      setMacroError('Stop or discard the current recording before starting another.');
+      setMacroError(`Recording could not start for ${targetLabel} (BUSY). Stop or discard the active recording, then retry.`);
       return false;
     }
     const initialSnapshot = macroRecorder.observeOutput(targetSessionId, terminal.currentLineText());
