@@ -10,6 +10,7 @@ export type { TerminalTheme } from './terminal-theme.ts';
 export interface TerminalUiHandle {
   readonly write: (data: string, onParsed: () => void) => void;
   readonly focus: () => void;
+  readonly currentLineText: () => string;
   readonly clear: () => void;
   readonly copySelection: () => Promise<boolean>;
   readonly acknowledgeOutput: (sequence: number) => Promise<void>;
@@ -23,6 +24,8 @@ interface Props {
   readonly canWrite: boolean;
   readonly theme: TerminalTheme;
   readonly fontSize: number;
+  readonly onInput: (sessionId: string, data: string) => void;
+  readonly onOutput: (sessionId: string, data: string) => void;
   readonly onReady: (sessionId: string, handle: TerminalUiHandle | undefined) => void;
   readonly onError: (message: string) => void;
 }
@@ -58,7 +61,7 @@ function createTransportCommands(bridge: DesktopBridge, transport: Props['transp
   return commands[transport];
 }
 
-export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize, onReady, onError }: Props) {
+export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize, onInput, onOutput, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | undefined>(undefined);
   const fit = useRef<FitAddon | undefined>(undefined);
@@ -79,20 +82,29 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     instance.loadAddon(fitAddon);
     instance.onData(data => {
       if (!canWriteRef.current) return;
+      onInput(sessionId, data);
       const sent = commands.write(sessionId, data);
       void sent.then(reply => {
         if (!reply.ok) onError(`Terminal input could not be sent (${reply.error.code}).`);
       });
     });
-    instance.attachCustomKeyEventHandler(event => {
-      if (event.type !== 'keydown' || !event.ctrlKey || event.altKey || event.key.toLowerCase() !== 'v') return true;
-      event.preventDefault();
+    const pasteFromClipboard = () => {
+      if (!canWriteRef.current) return;
       const pasted = commands.paste(sessionId);
       void pasted.then(reply => {
         if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
       });
+    };
+    instance.attachCustomKeyEventHandler(event => {
+      if (event.type !== 'keydown') return true;
+      const pasteShortcut = (event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'v') || (event.shiftKey && event.key === 'Insert');
+      if (!pasteShortcut) return true;
+      event.preventDefault();
+      pasteFromClipboard();
       return false;
     });
+    const onPaste = (event: ClipboardEvent) => { event.preventDefault(); pasteFromClipboard(); };
+    host.current.addEventListener('paste', onPaste);
     instance.onResize(({ cols, rows }) => {
       if (!canWriteRef.current) return;
       const resized = commands.resize(sessionId, cols, rows);
@@ -106,8 +118,15 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     const observer = new ResizeObserver(() => { if (activeRef.current) fitAddon.fit(); });
     observer.observe(host.current);
     const handle: TerminalUiHandle = Object.freeze({
-      write: (data: string, onParsed: () => void) => instance.write(data, onParsed),
+      write: (data: string, onParsed: () => void) => {
+        onOutput(sessionId, data);
+        instance.write(data, onParsed);
+      },
       focus: () => instance.focus(),
+      currentLineText: () => {
+        const buffer = instance.buffer.active;
+        return buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true, 0, buffer.cursorX) ?? '';
+      },
       clear: () => instance.clear(),
       copySelection: async () => {
         const selection = instance.getSelection();
@@ -124,12 +143,13 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     requestAnimationFrame(() => { if (activeRef.current) fitAddon.fit(); });
     return () => {
       observer.disconnect();
+      host.current?.removeEventListener('paste', onPaste);
       onReady(sessionId, undefined);
       instance.dispose();
       terminal.current = undefined;
       fit.current = undefined;
     };
-  }, [sessionId, title, transport, onReady, onError]);
+  }, [sessionId, title, transport, onInput, onOutput, onReady, onError]);
 
   useLayoutEffect(() => {
     const instance = terminal.current;

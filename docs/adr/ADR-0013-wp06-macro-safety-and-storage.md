@@ -41,12 +41,29 @@ The initial SQLite schema already contains `macro_definitions` and
    worker. Renderer access remains through exact, typed commands in preload.
    The app never invokes a shell to interpret macro definitions; the connected
    terminal's shell receives a line only after the user confirms playback.
+8. WP-06B1 records only complete lines from one explicitly selected terminal
+   into bounded in-memory state, respecting the 64-step cap, per-line cap and
+   total macro-text limit after reserving characters for the macro name.
+   Clipboard paste is omitted. Terminal output is inspected transiently after
+   stripping CSI, OSC, DCS, SOS, PM and APC controls in 7-bit and C1 forms, and
+   is never stored. At recording start, the selected terminal's current xterm
+   cursor line is inspected transiently for a prompt already in progress.
+   While paused, only a bounded transient prompt line is tracked; recognized
+   secret-prompt state remains latched until Enter or Ctrl+C so echoed text or
+   a line break cannot clear suppression. Resume while the prompt remains
+   open keeps recording paused and input suppressed. For recognizable
+   full-screen redraws, a bounded row map follows common CSI cursor movement
+   and erase controls and checks only the cursor row. After input is suppressed
+   for a detected prompt and the line is submitted, recording pauses and
+   requires an explicit user resume. Prompt and redraw detection are heuristic;
+   arbitrary secrets and unsupported redraw styles may go unrecognized.
 
 ## Consequences
 
 WP-06A does not claim playback, recording, secret suppression or MultiExec.
-Those requirements remain partial/planned until their separate implementation
-and Windows evidence are available. `send` steps are user-authored terminal
+WP-06B1 implements explicit recording and heuristic secret-prompt suppression;
+playback and MultiExec remain planned until their separate implementations and
+Windows evidence are available. `send` steps are user-authored terminal
 input and must be reviewed in the playback preview. Because these fields are
 user-authored text, static secret detection is not promised; the WP-06A editor
 warns users not to enter passwords, tokens or private-key content. No macro
@@ -54,8 +71,12 @@ command is logged by the app.
 
 ## Verification
 
-WP-06A must cover exact schema validation, persistence, update/delete behavior,
-100 definitions and restart persistence on Windows. WP-06B must exercise secret
-suppression, literal waits, progress, cancellation, disconnect and no automatic
-reconnect. WP-06C must deliver input to three independent active terminals only
-after confirmation and preserve per-target outcomes.
+WP-06A covers exact schema validation, persistence, update/delete behavior,
+100 definitions and restart persistence on Windows. WP-06B1 covers complete
+line recording, recognized password and verification-code prompts, explicit
+resume, pause-without-partial-line behavior, ANSI control-string stripping,
+total text limits and paste omission on Windows. WP-06B2 must exercise exact
+preview, literal waits, progress, cancellation, disconnect and no automatic
+reconnect. WP-06C must
+deliver input to three independent active terminals only after confirmation
+and preserve per-target outcomes.

@@ -6,7 +6,11 @@ import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/app
 import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { FtpFilesSession } from '../../../../packages/application/src/ftp-files.ts';
 import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
+import { normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
+import type { MacroStep } from '../../../../packages/domain/src/macro.ts';
+import { createMacroRecorder } from '../../../../packages/application/src/macro-recording.ts';
+import type { MacroRecordingSnapshot, MacroRecordingWarning } from '../../../../packages/application/src/macro-recording.ts';
 import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -49,6 +53,18 @@ type SavedFolderDialogState =
   | { readonly mode: 'rename'; readonly folder: SavedSessionFolder }
   | { readonly mode: 'move-folder'; readonly folder: SavedSessionFolder }
   | { readonly mode: 'move-session'; readonly session: SavedSessionDefinition };
+
+interface MacroRecordingView {
+  readonly sessionId: string;
+  readonly name: string;
+  readonly targetTitle: string;
+  readonly status: 'recording' | 'paused' | 'saving' | 'stopped';
+  readonly steps: readonly MacroStep[];
+  readonly stepCount: number;
+  readonly warning?: MacroRecordingWarning | undefined;
+  readonly stopReason?: 'stopped' | 'disconnected';
+  readonly saveError?: string | undefined;
+}
 
 interface TerminalTabContextMenu {
   readonly sessionId: string;
@@ -188,6 +204,14 @@ function messageForError(error: AppError): string {
   return `The terminal operation failed (${error.code}). ${error.retryable ? 'Try again or open a new terminal.' : 'Open a new terminal to continue.'}`;
 }
 
+function macroRecordingWarningText(warning: MacroRecordingWarning): string {
+  if (warning === 'secret-prompt') return 'A recognized secret prompt was detected. Recording is paused; resume after it closes.';
+  if (warning === 'input-skipped') return 'Input with control keys was skipped through the next submitted line.';
+  if (warning === 'line-limit') return 'An overlong input line was skipped.';
+  if (warning === 'text-limit') return 'The macro text limit was reached; this line was not recorded.';
+  return 'The 64-step recording limit was reached.';
+}
+
 function Workbench() {
   const [theme, setTheme] = useState<TerminalTheme>('dark');
   const [fontSize, setFontSize] = useState(14);
@@ -239,6 +263,7 @@ function Workbench() {
   const [macrosLoading, setMacrosLoading] = useState(false);
   const [macroBusy, setMacroBusy] = useState(false);
   const [macroError, setMacroError] = useState<string>();
+  const [macroRecording, setMacroRecording] = useState<MacroRecordingView>();
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -266,6 +291,10 @@ function Workbench() {
   const tunnelManagerRequest = useRef(0);
   const tunnelOperationRequest = useRef(0);
   const macroManagerRequest = useRef(0);
+  const macroRecorder = useState(createMacroRecorder)[0];
+  const macroSaveErrorCode = useRef('UNAVAILABLE');
+  const macroRecordingView = useRef<MacroRecordingView | undefined>(undefined);
+  const pendingMacroTerminalFocus = useRef<string | undefined>(undefined);
   const paletteInput = useRef<HTMLInputElement>(null);
   const palette = useRef<HTMLElement>(null);
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
@@ -410,6 +439,23 @@ function Workbench() {
 
   const closeTunnelManager = useCallback(() => setTunnelManagerOpen(false), []);
 
+  const publishMacroRecording = useCallback((next: MacroRecordingView | undefined) => {
+    macroRecordingView.current = next;
+    setMacroRecording(next);
+  }, []);
+
+  const syncMacroRecordingSnapshot = useCallback((snapshot: MacroRecordingSnapshot) => {
+    const current = macroRecordingView.current;
+    if (!current || current.status === 'saving' || current.status === 'stopped' || snapshot.status === 'idle') return;
+    const next: MacroRecordingView = {
+      ...current,
+      status: snapshot.status,
+      stepCount: snapshot.stepCount,
+      warning: snapshot.warning
+    };
+    if (current.status !== next.status || current.stepCount !== next.stepCount || current.warning !== next.warning) publishMacroRecording(next);
+  }, [publishMacroRecording]);
+
   const loadMacroManager = useCallback(async (): Promise<void> => {
     const request = ++macroManagerRequest.current;
     setMacrosLoading(true);
@@ -442,6 +488,7 @@ function Workbench() {
   }, []);
 
   const saveMacro = useCallback(async (id: string | undefined, draft: MacroDraft): Promise<string | undefined> => {
+    macroSaveErrorCode.current = 'UNAVAILABLE';
     setMacroBusy(true);
     setMacroError(undefined);
     try {
@@ -449,6 +496,7 @@ function Workbench() {
         ? await window.multiRemoteTerminal.updateMacro(id, draft)
         : await window.multiRemoteTerminal.createMacro(draft);
       if (!reply.ok) {
+        macroSaveErrorCode.current = reply.error.code;
         setMacroError(`The macro could not be saved (${reply.error.code}).`);
         return undefined;
       }
@@ -461,6 +509,107 @@ function Workbench() {
       setMacroBusy(false);
     }
   }, [loadMacroManager]);
+
+  const persistMacroRecording = useCallback(async (recording: MacroRecordingView): Promise<void> => {
+    publishMacroRecording({ ...recording, status: 'saving', saveError: undefined });
+    const id = await saveMacro(undefined, { name: recording.name, steps: recording.steps });
+    if (id) {
+      publishMacroRecording(undefined);
+      setAlert(recording.stopReason === 'disconnected'
+        ? `Recording saved after ${recording.targetTitle} disconnected.`
+        : `Recording saved as "${recording.name}".`);
+      return;
+    }
+    publishMacroRecording({ ...recording, status: 'stopped',
+      saveError: `The recording for ${recording.targetTitle} could not be saved (${macroSaveErrorCode.current}). Retry or discard it.` });
+  }, [publishMacroRecording, saveMacro]);
+
+  const stopMacroRecording = useCallback((targetSessionId: string, reason: 'stopped' | 'disconnected') => {
+    const completed = macroRecorder.stop(targetSessionId);
+    const current = macroRecordingView.current;
+    if (!completed || !current || current.sessionId !== targetSessionId) return;
+    const recording: MacroRecordingView = {
+      ...current,
+      status: 'stopped',
+      steps: completed.steps,
+      stepCount: completed.steps.length,
+      stopReason: reason,
+      warning: undefined
+    };
+    if (recording.steps.length === 0) {
+      publishMacroRecording(undefined);
+      setAlert('No complete command lines were recorded.');
+      return;
+    }
+    void persistMacroRecording(recording);
+  }, [macroRecorder, persistMacroRecording, publishMacroRecording]);
+
+  const startMacroRecording = useCallback((name: string, targetSessionId: string): boolean => {
+    const draft = normalizeMacroDraft({ name, steps: [] });
+    const target = sessions.find(session => session.sessionId === targetSessionId);
+    const targetLabel = target?.title ?? (targetSessionId || 'selected terminal');
+    if (!draft || !target || target.transport === 'ftp' || target.transport === 'sftp' || target.state !== 'running') {
+      setMacroError(`Recording could not start for ${targetLabel} (INVALID_REQUEST). Choose a valid running terminal and retry.`);
+      return false;
+    }
+    const terminal = handles.current.get(targetSessionId);
+    if (!terminal) {
+      setMacroError(`Recording could not start for ${targetLabel} (UNAVAILABLE). Wait for the terminal to be ready, then retry.`);
+      return false;
+    }
+    if (macroRecordingView.current || !macroRecorder.start(targetSessionId, draft.name.length)) {
+      setMacroError(`Recording could not start for ${targetLabel} (BUSY). Stop or discard the active recording, then retry.`);
+      return false;
+    }
+    const initialSnapshot = macroRecorder.observeOutput(targetSessionId, terminal.currentLineText());
+    setMacroError(undefined);
+    pendingMacroTerminalFocus.current = targetSessionId;
+    setActiveId(targetSessionId);
+    publishMacroRecording({ sessionId: targetSessionId, name: draft.name, targetTitle: target.title,
+      status: initialSnapshot.status === 'idle' ? 'recording' : initialSnapshot.status,
+      steps: [], stepCount: initialSnapshot.stepCount, warning: initialSnapshot.warning });
+    macroManagerReturnFocus.current = null;
+    closeMacroManager();
+    return true;
+  }, [closeMacroManager, macroRecorder, publishMacroRecording, sessions]);
+
+  const recordMacroInput = useCallback((sessionId: string, data: string) => {
+    syncMacroRecordingSnapshot(macroRecorder.recordInput(sessionId, data));
+  }, [macroRecorder, syncMacroRecordingSnapshot]);
+
+  const observeMacroOutput = useCallback((sessionId: string, data: string) => {
+    syncMacroRecordingSnapshot(macroRecorder.observeOutput(sessionId, data));
+  }, [macroRecorder, syncMacroRecordingSnapshot]);
+
+  const pauseMacroRecording = useCallback(() => {
+    const current = macroRecordingView.current;
+    if (!current || current.status !== 'recording') return;
+    macroRecorder.pause();
+    publishMacroRecording({ ...current, status: 'paused', warning: undefined });
+  }, [macroRecorder, publishMacroRecording]);
+
+  const resumeMacroRecording = useCallback(() => {
+    const current = macroRecordingView.current;
+    if (!current || current.status !== 'paused') return;
+    pendingMacroTerminalFocus.current = current.sessionId;
+    setActiveId(current.sessionId);
+    macroRecorder.resume();
+    const snapshot = macroRecorder.snapshot();
+    publishMacroRecording({ ...current, status: snapshot.status === 'idle' ? 'paused' : snapshot.status,
+      stepCount: snapshot.stepCount, warning: snapshot.warning });
+  }, [macroRecorder, publishMacroRecording]);
+
+  const discardMacroRecording = useCallback(() => {
+    const current = macroRecordingView.current;
+    if (!current) return;
+    macroRecorder.stop(current.sessionId);
+    publishMacroRecording(undefined);
+  }, [macroRecorder, publishMacroRecording]);
+
+  const retrySaveMacroRecording = useCallback(() => {
+    const current = macroRecordingView.current;
+    if (current?.status === 'stopped') void persistMacroRecording(current);
+  }, [persistMacroRecording]);
 
   const deleteMacro = useCallback(async (id: string): Promise<boolean> => {
     setMacroBusy(true);
@@ -683,12 +832,14 @@ function Workbench() {
         });
       });
     } else if (event.kind === 'exit') {
+      stopMacroRecording(event.sessionId, 'disconnected');
       setSessions(current => current.map(session => session.sessionId === event.sessionId && session.transport !== 'ftp' ? { ...session, state: 'exited' } : session));
     } else {
+      stopMacroRecording(event.sessionId, 'disconnected');
       setSessions(current => current.map(session => session.sessionId === event.sessionId && session.transport !== 'ftp' ? { ...session, state: 'failed' } : session));
       setAlert(messageForError(event.error));
     }
-  }, []);
+  }, [stopMacroRecording]);
 
   const terminalReady = useCallback((sessionId: string, handle: TerminalUiHandle | undefined) => {
     if (!handle) { handles.current.delete(sessionId); return; }
@@ -991,6 +1142,7 @@ function Workbench() {
   const closeTerminal = useCallback(async (sessionId: string, transport: WorkbenchSession['transport']) => {
     const reply = await closeTerminalConnection(sessionId, transport);
     if (!reply.ok && reply.error.code !== 'NOT_FOUND') setAlert(messageForError(reply.error));
+    stopMacroRecording(sessionId, 'stopped');
     handles.current.delete(sessionId);
     pendingEvents.current.delete(sessionId);
     if (transport === 'sftp') {
@@ -999,7 +1151,7 @@ function Workbench() {
     }
     focusTerminalOnActiveChange.current = true;
     setSessions(current => current.filter(session => session.sessionId !== sessionId));
-  }, []);
+  }, [stopMacroRecording]);
 
   const reconnectFtp = useCallback((session: WorkbenchFtpSession) => {
     void (async () => {
@@ -1033,7 +1185,15 @@ function Workbench() {
 
   useEffect(() => {
     if (!activeId) return;
-    if (focusTerminalOnActiveChange.current) requestAnimationFrame(() => handles.current.get(activeId)?.focus());
+    if (focusTerminalOnActiveChange.current) {
+      const targetSessionId = activeId;
+      const focusFrame = requestAnimationFrame(() => {
+        if (!document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]')) {
+          handles.current.get(targetSessionId)?.focus();
+        }
+      });
+      return () => cancelAnimationFrame(focusFrame);
+    }
     focusTerminalOnActiveChange.current = true;
   }, [activeId, sessions]);
 
@@ -1213,8 +1373,15 @@ function Workbench() {
   }, [tunnelManagerOpen]);
 
   useLayoutEffect(() => {
-    if (macroManagerOpen) requestAnimationFrame(() => macroManagerDialog.current?.querySelector<HTMLElement>('#macro-name')?.focus());
+    if (macroManagerOpen) macroManagerDialog.current?.querySelector<HTMLElement>('#macro-recording-name')?.focus();
   }, [macroManagerOpen]);
+
+  useLayoutEffect(() => {
+    const targetSessionId = pendingMacroTerminalFocus.current;
+    if (!targetSessionId || macroManagerOpen || activeId !== targetSessionId || !macroRecording) return;
+    pendingMacroTerminalFocus.current = undefined;
+    handles.current.get(targetSessionId)?.focus();
+  }, [activeId, macroManagerOpen, macroRecording]);
 
   useEffect(() => {
     if (!macroManagerOpen && macroManagerReturnFocus.current) {
@@ -1771,7 +1938,7 @@ function Workbench() {
           <span>Command palette</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>
         </button>
       </aside>
-      <main className="terminal-workspace" id="workspace" tabIndex={-1} data-opening={openingSessions.length > 0}>
+      <main className="terminal-workspace" id="workspace" tabIndex={-1} data-opening={openingSessions.length > 0} data-recording={macroRecording !== undefined}>
         <div className="tab-strip">
           <div className="tab-list" role="tablist" aria-label="Sessions">
             {sessions.map((session, index) => <button className={`tab-item ${session.sessionId === activeId ? 'selected' : ''}`} key={session.sessionId}
@@ -1820,6 +1987,22 @@ function Workbench() {
               onClick={() => cancelOpening(opening.sessionId)}>{opening.cancelling ? 'Cancelling...' : 'Cancel'}</button>
           </div>)}
         </div>}
+        {macroRecording && <section className="macro-recording-banner" aria-label="Macro recording controls">
+          <div className="macro-recording-copy">
+            <strong>{macroRecording.status === 'saving' ? 'Saving recording' : macroRecording.status === 'stopped' ? `Recording stopped: ${macroRecording.name}` : `${macroRecording.status === 'paused' ? 'Recording paused' : 'Recording'}: ${macroRecording.name}`}</strong>
+            <span>{macroRecording.targetTitle} · {macroRecording.stepCount} complete {macroRecording.stepCount === 1 ? 'line' : 'lines'}</span>
+            <span>Clipboard paste is omitted. Pausing discards the current line. Only recognized secret prompts are suppressed; review commands for sensitive text.</span>
+            {macroRecording.warning && <span className="macro-recording-warning" role="status" aria-live="polite">{macroRecordingWarningText(macroRecording.warning)}</span>}
+            {macroRecording.saveError && <span className="macro-recording-warning" role="alert">{macroRecording.saveError}</span>}
+          </div>
+          <div className="macro-recording-actions">
+            {macroRecording.status === 'recording' && <button type="button" onClick={pauseMacroRecording}>Pause recording</button>}
+            {macroRecording.status === 'paused' && <button type="button" onClick={resumeMacroRecording}>Resume recording</button>}
+            {(macroRecording.status === 'recording' || macroRecording.status === 'paused') && <button className="macro-recording-stop" type="button" onClick={() => stopMacroRecording(macroRecording.sessionId, 'stopped')}>Stop and save</button>}
+            {macroRecording.status === 'stopped' && <button className="macro-recording-stop" type="button" onClick={retrySaveMacroRecording}>Retry save</button>}
+            {macroRecording.status !== 'saving' && <button type="button" onClick={discardMacroRecording}>Discard</button>}
+          </div>
+        </section>}
         <div className="terminal-stack">
           {sessions.map(session => <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
             aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
@@ -1831,7 +2014,7 @@ function Workbench() {
                   <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
                     transport={session.transport}
                     canWrite={session.state === 'running'} theme={theme} fontSize={fontSize} onReady={terminalReady}
-                    onError={showTerminalError} />
+                    onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
                 </div>
                 {session.transport === 'ssh' && session.state === 'running' &&
                   <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport="sftp" />}
@@ -2076,7 +2259,8 @@ function Workbench() {
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
     {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} loading={macrosLoading} busy={macroBusy} error={macroError}
-      onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} />}
+      recordingTargets={sessions.filter((session): session is WorkbenchTerminal => session.transport === 'local' || session.transport === 'ssh' || session.transport === 'telnet').filter(session => session.state === 'running').map(session => ({ sessionId: session.sessionId, title: session.title }))}
+      recordingActive={macroRecording !== undefined} onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} onStartRecording={startMacroRecording} />}
     {currentSshTrust && <div className="ssh-backdrop ssh-trust-backdrop" onMouseDown={event => {
       if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
     }}>
