@@ -25,3 +25,7 @@ The production renderer build still reports Vite's non-blocking chunk-size advis
 ## Remaining acceptance
 
 This change does not complete F-005/P-14 or WP-05. Drag/drop, 1 KB/100 MB transfer acceptance, sustained throughput, disconnect/recovery behavior, configurable browser behavior and broader server interoperability remain open. The listing is still capped at 500 entries. Windows tests use a loopback fixture and do not establish interoperability against public SFTP/FTP servers.
+
+## Independent review
+
+The Spec review found no remaining mismatch for WP-05D and confirmed that the FTP evidence covers the shared file-table implementation. It also confirmed the wider F-005/P-14 and WP-05 gaps remain accurately marked partial. The Standards review found no documented-standard violation. It recorded two non-blocking judgement calls for future cleanup: the SFTP and FTP tests each generate a numbered scale fixture, and `SavedCatalogItem.kind` is checked in both its render and focusability callbacks. Revisit these only if more fixture variants or catalog item policies are added.
