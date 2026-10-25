@@ -56,24 +56,20 @@ function updateStep(steps: readonly MacroStep[], index: number, next: MacroStep)
   return steps.map((step, current) => current === index ? next : step);
 }
 
-function playbackStepName(step: MacroStep): string {
-  if (step.kind === 'send') return 'Send command';
-  if (step.kind === 'waitForText') return 'Wait for text';
-  if (step.kind === 'delay') return 'Delay';
-  return 'Confirmation';
+interface PlaybackStepPresentation {
+  readonly name: string;
+  readonly description: string;
+  readonly content: string;
+  readonly command: boolean;
 }
 
-function playbackStepDescription(step: MacroStep): string {
-  if (step.kind === 'send') return 'Send this one-line command, followed by Enter.';
-  if (step.kind === 'waitForText') return `Wait for this literal text in terminal output. Timeout after ${step.timeoutMs / 1_000} seconds.`;
-  if (step.kind === 'delay') return `Wait ${step.durationMs.toLocaleString()} milliseconds before continuing.`;
-  return 'Pause here until you approve or stop playback.';
-}
-
-function playbackStepContent(step: MacroStep): string {
-  if (step.kind === 'send' || step.kind === 'waitForText') return step.text;
-  if (step.kind === 'delay') return `${step.durationMs.toLocaleString()} ms`;
-  return step.message;
+function playbackStepPresentation(step: MacroStep): PlaybackStepPresentation {
+  switch (step.kind) {
+    case 'send': return { name: 'Send command', description: 'Send this one-line command, followed by Enter.', content: step.text, command: true };
+    case 'waitForText': return { name: 'Wait for text', description: `Wait for this literal text in terminal output. Timeout after ${step.timeoutMs / 1_000} seconds.`, content: step.text, command: false };
+    case 'delay': return { name: 'Delay', description: `Wait ${step.durationMs.toLocaleString()} milliseconds before continuing.`, content: `${step.durationMs.toLocaleString()} ms`, command: false };
+    case 'confirm': return { name: 'Confirmation', description: 'Pause here until you approve or stop playback.', content: step.message, command: false };
+  }
 }
 
 function playbackStatusText(playback: MacroPlaybackView, macro: MacroDefinition): string {
@@ -112,6 +108,7 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   const continuePlaybackButton = useRef<HTMLButtonElement>(null);
   const playbackDoneButton = useRef<HTMLButtonElement>(null);
   const [playbackTargetId, setPlaybackTargetId] = useState('');
+  const [playbackTargetTitle, setPlaybackTargetTitle] = useState('');
   const selected = macros.find(macro => macro.id === selectedId);
   const reviewedMacro = macros.find(macro => macro.id === playbackMacroId);
   const isReviewingPlayback = playbackMacroId !== undefined;
@@ -149,13 +146,6 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
     }
     if (!playback) requestAnimationFrame(() => playbackTarget.current?.focus());
   }, [isReviewingPlayback, playback]);
-
-  useEffect(() => {
-    if (!isReviewingPlayback) return;
-    if (!recordingTargets.some(target => target.sessionId === playbackTargetId)) {
-      setPlaybackTargetId(recordingTargets[0]?.sessionId ?? '');
-    }
-  }, [isReviewingPlayback, playbackTargetId, recordingTargets]);
 
   function startNew(): void {
     if (playbackMacroId) onClosePlayback();
@@ -222,6 +212,7 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   const playbackRunning = playback?.status === 'running';
   const confirmationPending = playbackRunning && playback?.progress?.phase === 'confirming' && playback.progress.step.kind === 'confirm';
   const selectedPlaybackTarget = recordingTargets.find(item => item.sessionId === playbackTargetId);
+  const playbackTargetUnavailable = playbackTargetId.length > 0 && !selectedPlaybackTarget;
   const canStartPlayback = Boolean(reviewedMacro && reviewedMacro.steps.length > 0 && selectedPlaybackTarget && !recordingActive && !playbackRunning);
 
   return <div className="ssh-backdrop tunnel-backdrop macro-backdrop" onMouseDown={event => {
@@ -253,10 +244,15 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
           <div className="macro-playback-target-field">
             <label htmlFor="macro-playback-target">Run on target</label>
             <select ref={playbackTarget} id="macro-playback-target" value={playback?.sessionId ?? playbackTargetId}
-              onChange={event => setPlaybackTargetId(event.target.value)} disabled={playback !== undefined || recordingTargets.length === 0}>
+              onChange={event => {
+                const target = recordingTargets.find(item => item.sessionId === event.target.value);
+                setPlaybackTargetId(event.target.value);
+                if (target) setPlaybackTargetTitle(target.title);
+              }} disabled={playback !== undefined || recordingTargets.length === 0}>
               {playback && !recordingTargets.some(item => item.sessionId === playback.sessionId) &&
                 <option value={playback.sessionId}>{playback.targetTitle} · no longer running</option>}
-              {!playback && recordingTargets.length === 0 && <option value="">No running terminals</option>}
+              {!playback && playbackTargetUnavailable && <option value={playbackTargetId}>{playbackTargetTitle || 'Selected terminal'} · no longer running</option>}
+              {!playback && !playbackTargetUnavailable && recordingTargets.length === 0 && <option value="">No running terminals</option>}
               {recordingTargets.map(item => <option key={item.sessionId} value={item.sessionId}>{item.title} · running</option>)}
             </select>
           </div>
@@ -265,25 +261,27 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
         {reviewedMacro.steps.length === 0 ? <p className="macro-no-steps">This macro has no steps to run. Add a step before starting playback.</p> :
           <ol className="macro-playback-steps" aria-label="Exact macro steps">
             {reviewedMacro.steps.map((step, index) => {
+              const presentation = playbackStepPresentation(step);
               const progress = playback?.progress;
               const current = playbackRunning && progress?.stepNumber === index + 1 && progress.phase !== 'step-complete';
               const complete = playback?.status === 'completed' || Boolean(progress && (progress.stepNumber > index + 1 ||
                 (progress.stepNumber === index + 1 && progress.phase === 'step-complete')));
               return <li key={index} className={`macro-playback-step${current ? ' current' : ''}${complete ? ' complete' : ''}`} aria-current={current ? 'step' : undefined}>
                 <span className="macro-playback-number" aria-hidden="true">{index + 1}</span>
-                <div className="macro-playback-step-copy"><strong>{playbackStepName(step)}</strong><p>{playbackStepDescription(step)}</p>
+                <div className="macro-playback-step-copy"><strong>{presentation.name}</strong><p>{presentation.description}</p>
                   {current && <small>In progress</small>}
                 </div>
-                <div className={`macro-playback-step-value${step.kind === 'send' ? ' command' : ''}`}>
-                  {step.kind === 'send' ? <code translate="no">{playbackStepContent(step)}</code> : <span>{playbackStepContent(step)}</span>}
+                <div className={`macro-playback-step-value${presentation.command ? ' command' : ''}`}>
+                  {presentation.command ? <code translate="no">{presentation.content}</code> : <span>{presentation.content}</span>}
                 </div>
               </li>;
             })}
           </ol>}
-        {!playback && (recordingActive || recordingTargets.length === 0) && <p className="macro-playback-feedback" role="status">
+        {!playback && (recordingActive || recordingTargets.length === 0 || playbackTargetUnavailable) && <p className="macro-playback-feedback" role="status">
           {recordingActive && recordingTargets.length === 0 ? 'Stop or discard the active recording, then open a running local, SSH or Telnet terminal before playback.'
             : recordingActive ? 'Stop or discard the active recording before running a macro.'
-              : 'Open a running local, SSH or Telnet terminal before running this macro.'}
+              : playbackTargetUnavailable ? 'The selected terminal is no longer running. Choose another target before playback.'
+                : 'Open a running local, SSH or Telnet terminal before running this macro.'}
         </p>}
         {playback && <p className={`macro-playback-feedback${playback.status === 'failed' ? ' error' : ''}`} role="status" aria-live="polite">{playbackStatusText(playback, reviewedMacro)}</p>}
         {confirmationPending && playback?.progress?.step.kind === 'confirm' && <div className="macro-playback-confirmation" role="group" aria-label="Confirm macro step">
@@ -366,7 +364,9 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
                 {!creating && selected && <button type="button" className="tunnel-delete" onClick={() => setDeleteConfirmation(true)} disabled={busy}>Delete</button>}
                 <button type="button" onClick={onClose} disabled={busy}>Close</button>
                 {!creating && selected && <button ref={reviewRunButton} type="button" className="macro-review-run" onClick={() => {
-                  setPlaybackTargetId(recordingTargets[0]?.sessionId ?? '');
+                  const target = recordingTargets[0];
+                  setPlaybackTargetId(target?.sessionId ?? '');
+                  setPlaybackTargetTitle(target?.title ?? '');
                   onReviewPlayback(selected.id);
                 }} disabled={busy || recordingActive || selected.steps.length === 0 || recordingTargets.length === 0}>Review &amp; run</button>}
                 <button type="submit" className="ssh-primary" disabled={busy || !canSave}>{creating ? 'Create macro' : 'Save changes'}</button>

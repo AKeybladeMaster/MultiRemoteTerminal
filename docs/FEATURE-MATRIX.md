@@ -73,7 +73,7 @@ WP-06A adds a persistent, credential-free typed macro library and editor. Its Wi
 - No persisted password/private key in SQLite session definition.
 - Remote forwarding, public listeners and XDMCP require an informed explicit opt-in.
 - Plugin/tool enablement has allowlisted paths and provenance checks.
-- Macro recording omits app credential dialogs and paste, and pauses after recognized secret prompts. Detection is heuristic; never enter secrets while recording. Playback is not implemented and no replay occurs automatically.
+- Macro recording omits app credential dialogs and paste, and pauses after recognized secret prompts. Detection is heuristic; never enter secrets while recording. Single-terminal playback sends input only after exact step/target review and explicit Run, and stops on failure, cancellation or disconnect; it never reconnects, resumes or replays automatically. MultiExec remains planned and must require explicit confirmation with independent per-target results.
 - Daemons can run indefinitely but display bind address, listening ports and status.
 
 ## Integration quality grades

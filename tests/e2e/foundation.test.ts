@@ -1604,7 +1604,7 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
   }
 });
 
-test('macro playback previews exact steps, confirms explicitly, cancels and stops on disconnect', async () => {
+test('macro playback previews exact steps, confirms explicitly, cancels, and requires deliberate target selection after disconnect', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-playback-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
@@ -1629,12 +1629,12 @@ test('macro playback previews exact steps, confirms explicitly, cancels and stop
       await dialog.getByLabel('Step type to add').selectOption(kind);
       await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
     }
-    async function reviewSelectedMacro(): Promise<Locator> {
+    async function reviewSelectedMacro(expectedTargetPanel: Locator = panel): Promise<Locator> {
       const reviewButton = dialog.getByRole('button', { name: 'Review & run', exact: true });
       await expect(reviewButton).toBeEnabled({ timeout: 15_000 });
       await reviewButton.click();
       const review = page.getByRole('dialog', { name: 'Review macro run' });
-      await expect(review.getByLabel('Run on target')).toHaveValue(await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id') ?? '');
+      await expect(review.getByLabel('Run on target')).toHaveValue(await expectedTargetPanel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id') ?? '');
       return review;
     }
 
@@ -1682,6 +1682,44 @@ test('macro playback previews exact steps, confirms explicitly, cancels and stop
     await review.getByRole('button', { name: 'Done', exact: true }).click();
 
     dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const secondPanel = await selectTerminal(page, 'PowerShell session 2');
+    const secondRows = secondPanel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: 'PowerShell session 2 running' })).toBeVisible({ timeout: 15_000 });
+    const firstSessionId = await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    const secondSessionId = await secondPanel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    expect(firstSessionId).toBeTruthy();
+    expect(secondSessionId).toBeTruthy();
+
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: 'Macros' });
+    await newMacro('Playback target safety');
+    await addStep('send');
+    await dialog.locator('#macro-step-0-text').fill("Write-Output 'MRT-EXPLICIT-ALTERNATE'");
+    await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
+    review = await reviewSelectedMacro();
+    await expect(review.getByLabel('Run on target')).toHaveValue(firstSessionId!);
+    const exitFirstTarget = await page.evaluate(async sessionId => {
+      const terminalBridge = (window as unknown as { multiRemoteTerminal?: {
+        writeTerminal?: (id: string, data: string) => Promise<{ ok: boolean; error?: { code: string } }>;
+      } }).multiRemoteTerminal;
+      if (!terminalBridge?.writeTerminal) throw new Error('Terminal write bridge is unavailable.');
+      return terminalBridge.writeTerminal(sessionId, 'exit\r');
+    }, firstSessionId!);
+    expect(exitFirstTarget.ok).toBe(true);
+    await expect(review.getByRole('status')).toContainText('selected terminal is no longer running', { timeout: 15_000 });
+    await expect(review.getByRole('button', { name: 'Run macro', exact: true })).toBeDisabled();
+    await expect(review.getByLabel('Run on target')).toHaveValue(firstSessionId!);
+    await expect(review.getByLabel('Run on target').locator('option:checked')).toHaveText(/PowerShell session 1.*no longer running/);
+    await review.getByLabel('Run on target').selectOption(secondSessionId!);
+    await expect(review.getByRole('button', { name: 'Run macro', exact: true })).toBeEnabled();
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('Macro completed', { timeout: 15_000 });
+    await expect(secondRows).toContainText('MRT-EXPLICIT-ALTERNATE', { timeout: 15_000 });
+    await review.getByRole('button', { name: 'Done', exact: true }).click();
+
+    dialog = page.getByRole('dialog', { name: 'Macros' });
     await newMacro('Playback disconnect');
     await addStep('send');
     await dialog.locator('#macro-step-0-text').fill('exit');
@@ -1691,10 +1729,10 @@ test('macro playback previews exact steps, confirms explicitly, cancels and stop
     await addStep('send');
     await dialog.locator('#macro-step-2-text').fill("Write-Output 'MRT-DISCONNECT-LATER'");
     await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
-    review = await reviewSelectedMacro();
+    review = await reviewSelectedMacro(secondPanel);
     await review.getByRole('button', { name: 'Run macro', exact: true }).click();
     await expect(review.getByRole('status')).toContainText('UNAVAILABLE', { timeout: 10_000 });
-    await expect(rows).not.toContainText('MRT-DISCONNECT-LATER');
+    await expect(secondRows).not.toContainText('MRT-DISCONNECT-LATER');
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -38,8 +38,12 @@ Windows x64 with Node 24.14.1 and Electron 45.0.0:
   confirmation, disconnect, confirmation decline, invalid/unavailable/busy
   runs and later-step suppression.
 - The Windows Electron E2E reviews exact steps and target, runs a successful
-  send/wait/delay/confirm/send sequence, cancels a waiting run, then exits the
-  target and verifies later steps do not run.
+  send/wait/delay/confirm/send sequence, and cancels a waiting run. It also
+  keeps a second terminal active while the reviewed target exits: playback
+  stays disabled on the unavailable original target until the user
+  deliberately selects the other terminal, where the reviewed command then
+  completes. A separate playback exits its target and verifies later steps do
+  not run.
 - `corepack pnpm check` passed: TypeScript typecheck, ESLint and import
   boundaries, the complete unit suite, native x64 addon and renderer build,
   and all 21 Windows Electron E2E scenarios.
