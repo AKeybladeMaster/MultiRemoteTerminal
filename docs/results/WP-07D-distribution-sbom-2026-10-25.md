@@ -1,8 +1,8 @@
 # WP-07D — Windows distribution SBOM and signing plan
 
-**Date:** 2026-10-25  
-**Branch:** `dev-1`  
-**Requirement:** P-32 distribution attribution and N-007 signed release/SBOM gate.  
+**Date:** 2026-10-25
+**Branch:** `dev-1`
+**Requirement:** P-32 distribution attribution and N-007 signed release/SBOM gate.
 **Status:** Partial; unsigned preview package artifacts were generated and smoke-tested on Windows 11 x64.
 
 ## Behavior
