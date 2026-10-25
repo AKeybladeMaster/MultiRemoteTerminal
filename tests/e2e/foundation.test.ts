@@ -3175,7 +3175,11 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings).toBeVisible();
     const greeting = 'Terminal ready — Добро пожаловать · こんにちは 👋';
-    await settings.getByLabel('Startup greeting').fill(greeting);
+    const greetingInput = settings.getByLabel('Startup greeting');
+    await greetingInput.fill('x'.repeat(513));
+    await expect(settings.getByRole('alert')).toHaveText('Use no more than 512 Unicode characters.');
+    await expect(settings.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    await greetingInput.fill(greeting);
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await expect(settings.getByRole('status')).toHaveText('Greeting saved.');
     const banner = page.getByRole('region', { name: 'Startup greeting' });

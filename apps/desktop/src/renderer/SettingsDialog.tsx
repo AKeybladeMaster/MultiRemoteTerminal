@@ -112,7 +112,9 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
           disabled={loading || loadFailed || saving} value={greeting} onChange={event => { setGreeting(event.target.value); setError(undefined); setStatus(''); }} />
         <div className="settings-form-meta">
           <span>{characterCount} / {MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters</span>
-          {!validatedPreferences && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
+          {characterCount > MAX_STARTUP_GREETING_CODE_POINTS
+            ? <span className="dialog-error" role="alert">Use no more than {MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters.</span>
+            : !validatedPreferences && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
         </div>
         {error && <p className="dialog-error" role="alert">{error}</p>}
         {loadFailed && <button ref={retryButton} type="button" disabled={saving} onClick={() => setLoadGeneration(value => value + 1)}>Try loading settings again</button>}

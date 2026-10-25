@@ -26,11 +26,11 @@ All commands ran on Windows from the repository root on 2026-10-25:
 | `corepack pnpm typecheck` | Passed |
 | `corepack pnpm lint` | Passed; import boundary check passed |
 | `node --test --test-reporter=tap tests/unit/workbench-preference-errors.test.ts tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/workbench-preferences-protocol.test.ts tests/unit/contracts.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` | 74 passed, 0 failed |
-| `corepack pnpm build` | Passed; renderer bundle 725.63 kB minified / 195.03 kB gzip |
+| `corepack pnpm build` | Passed; renderer bundle 725.75 kB minified / 195.06 kB gzip |
 | `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "custom Unicode startup greeting saves"` | 1 Windows Electron E2E passed; verifies edit/save, dismissal, empty-value clearing, keyboard/focus behavior, narrow layout, and both populated and cleared values after relaunch |
 | `git diff --check` | Passed |
 
-A focused regression assertion first reproduced acceptance of U+0085, then passed after domain validation was updated to reject Unicode `Cc` characters while retaining tabs and newlines. Review also caught unbounded work on oversized IPC greeting values; a regression test reproduced normalization before rejection, and the domain now rejects over-limit UTF-16 input before scanning. The contract test confirms IPC rejects that value. Other review-driven fixes map failures to actionable messages in both the settings dialog and startup alert, and preserve corrupt storage as a distinct `CORRUPT` category through application and typed IPC; focused tests cover these paths.
+A focused regression assertion first reproduced acceptance of U+0085, then passed after domain validation was updated to reject Unicode `Cc` characters while retaining tabs and newlines. Review also caught unbounded work on oversized IPC greeting values; a regression test reproduced normalization before rejection, and the domain now rejects over-limit UTF-16 input before scanning. The contract test confirms IPC rejects that value. A Windows E2E assertion first reproduced the inaccurate control-character message for a 513-character greeting; the dialog now shows the size-specific limit message and disables Save. Other review-driven fixes map failures to actionable messages in both the settings dialog and startup alert, and preserve corrupt storage as a distinct `CORRUPT` category through application and typed IPC; focused tests cover these paths.
 
 The production build reports the existing Vite chunk-size advisory (>500 kB). Node also reports that `node:sqlite` is experimental in this runtime. Neither warning failed the checks.
 
@@ -42,4 +42,4 @@ The greeting is ordinary local configuration stored in the app profile, not encr
 
 ## Review status
 
-Final independent spec, standards and merge-readiness reviews are pending after the oversized-input correction. A possible duplication of SQLite error classification is tracked as non-blocking cleanup to revisit when another storage slice touches these adapters; it is a heuristic, not a documented-rule violation.
+Final independent spec, standards and merge-readiness reviews are pending after the validation-message correction. A possible duplication of SQLite error classification is tracked as non-blocking cleanup to revisit when another storage slice touches these adapters; it is a heuristic, not a documented-rule violation.
