@@ -42,4 +42,4 @@ The greeting is ordinary local configuration stored in the app profile, not encr
 
 ## Review status
 
-Final independent spec, standards and merge-readiness reviews are pending after the validation-message correction. A possible duplication of SQLite error classification is tracked as non-blocking cleanup to revisit when another storage slice touches these adapters; it is a heuristic, not a documented-rule violation.
+Final independent spec, standards and merge-readiness reviews are pending after the validation-message correction. Possible duplication of SQLite error classification in the new adapter and application error-code mappers is tracked as non-blocking cleanup to revisit when a storage slice next touches these modules; it is a heuristic, not a documented-rule violation.

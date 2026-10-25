@@ -5,6 +5,16 @@ import type { WorkbenchPreferences } from '../../domain/src/workbench-preference
 import type { CancellationSignal } from './cancellation.ts';
 import { StorageOperationError } from './storage-errors.ts';
 
+/**
+ * Local-profile persistence port for the exact workbench preference schema.
+ *
+ * Success: reads return the stored normalized value or an empty greeting when the row is absent; saves atomically upsert and return the normalized value.
+ * Cancellation: an already-aborted signal rejects without a request. In-flight cancellation is forwarded to the worker and settles after worker termination and cleanup.
+ * Timeout: the SQLite adapter bounds ordinary requests to eight seconds and worker startup to five seconds; a request timeout is reported as `busy` after worker cleanup.
+ * Authentication: these settings require no authentication and accept no credentials.
+ * State: reads do not mutate state; saves change only the `workbench` settings row, not session or terminal state.
+ * Resource ownership: the adapter and storage worker own the database connection; callers own their cancellation signal and receive only the preference value.
+ */
 export interface WorkbenchPreferencesStore {
   readWorkbenchPreferences(cancellation?: CancellationSignal): Promise<WorkbenchPreferences>;
   saveWorkbenchPreferences(preferences: WorkbenchPreferences, cancellation?: CancellationSignal): Promise<WorkbenchPreferences>;
