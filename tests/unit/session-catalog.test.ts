@@ -23,6 +23,8 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     const ftp = await catalog.createSession({ kind: 'ftp', name: 'Secure file host', host: 'Files.Example.com.', port: 2121, secure: true });
     const rdp = await catalog.createSession({ kind: 'rdp', name: 'Windows desktop', host: 'Desk.Example.com.', port: 3390 });
     const vnc = await catalog.createSession({ kind: 'vnc', name: 'Linux desktop', host: 'VNC.Example.com.', port: 5901 });
+    const serialConfiguration = { path: 'COM19', baudRate: 115_200, dataBits: 8, parity: 'even', stopBits: 1.5, flowControl: 'rtscts' } as const;
+    const serial = await catalog.createSession({ kind: 'serial', name: 'Controller', configuration: serialConfiguration });
     const local = await catalog.createSession({ kind: 'local', name: 'Local PowerShell', shell: 'powershell' });
     const bash = await catalog.createSession({ kind: 'local', name: 'Local Bash', shell: 'bash' });
     assert.equal(ssh.kind, 'ssh');
@@ -31,6 +33,7 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.equal(ftp.kind, 'ftp');
     assert.deepEqual(rdp.kind === 'rdp' ? { host: rdp.host, port: rdp.port } : undefined, { host: 'desk.example.com', port: 3390 });
     assert.deepEqual(vnc.kind === 'vnc' ? { host: vnc.host, port: vnc.port } : undefined, { host: 'vnc.example.com', port: 5901 });
+    assert.deepEqual(serial.kind === 'serial' ? serial.configuration : undefined, serialConfiguration);
     if (ftp.kind !== 'ftp') throw new Error('Expected FTP definition');
     assert.deepEqual({ host: ftp.host, port: ftp.port, secure: ftp.secure }, { host: 'files.example.com', port: 2121, secure: true });
     if (telnet.kind !== 'telnet') throw new Error('Expected Telnet definition');
@@ -55,15 +58,17 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.ok((await catalog.listSessions('files.example')).some(item => item.id === ftp.id));
     assert.ok((await catalog.listSessions('desk.example')).some(item => item.id === rdp.id));
     assert.ok((await catalog.listSessions('vnc.example')).some(item => item.id === vnc.id));
+    assert.ok((await catalog.listSessions('Controller')).some(item => item.id === serial.id));
 
     for (let index = 0; index < 1_000; index += 1) {
       await catalog.createSession({ kind: 'local', name: `Connection ${String(index).padStart(4, '0')}`, shell: index % 2 === 0 ? 'powershell' : 'cmd' });
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
-    assert.equal((await catalog.listSessions('')).length, 1_008);
+    assert.equal((await catalog.listSessions('')).length, 1_009);
     assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
     assert.equal(await catalog.setFavorite(telnet.id, true), true);
+    assert.equal(await catalog.setFavorite(serial.id, true), true);
     assert.equal(await catalog.removeSession(local.id), true);
     assert.equal(await catalog.removeSession(local.id), false);
 
@@ -95,9 +100,16 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     };
     assert.equal(persistedVnc.credential_ref, null);
     assert.equal(persistedVnc.options_json, '{}');
+    const persistedSerial = database.prepare('SELECT host, port, credential_ref, options_json FROM session_definitions WHERE id = ?').get(serial.id) as {
+      readonly host: string | null; readonly port: number | null; readonly credential_ref: string | null; readonly options_json: string;
+    };
+    assert.equal(persistedSerial.host, null);
+    assert.equal(persistedSerial.port, null);
+    assert.equal(persistedSerial.credential_ref, null);
+    assert.equal(persistedSerial.options_json, JSON.stringify(serialConfiguration));
     assert.equal((await catalog.listSessions('password')).length, 0);
     const favorites = await catalog.listSessions('');
-    assert.deepEqual(new Set(favorites.slice(0, 2).map(item => item.id)), new Set([ssh.id, telnet.id]));
+    assert.deepEqual(new Set(favorites.slice(0, 3).map(item => item.id)), new Set([ssh.id, telnet.id, serial.id]));
   } finally {
     database.close();
   }
@@ -286,28 +298,31 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const sftp = await source.createSession({ kind: 'sftp', name: 'Build artifacts', host: 'build.example.com', port: 22 });
     const rdp = await source.createSession({ kind: 'rdp', name: 'Windows desktop', host: 'desktop.example.com', port: 3390 });
     const vnc = await source.createSession({ kind: 'vnc', name: 'Linux desktop', host: 'linux.example.com', port: 5901 });
+    const serialConfiguration = { path: 'COM7', baudRate: 115_200, dataBits: 7, parity: 'odd', stopBits: 2, flowControl: 'xonxoff' } as const;
+    const serial = await source.createSession({ kind: 'serial', name: 'Control board', configuration: serialConfiguration });
     await source.moveSession(session.id, child.id);
     await source.moveSession(telnet.id, root.id);
     await source.moveSession(ftp.id, child.id);
     await source.moveSession(sftp.id, child.id);
     await source.moveSession(rdp.id, child.id);
     await source.moveSession(vnc.id, child.id);
+    await source.moveSession(serial.id, child.id);
     await source.setFavorite(session.id, true);
     const path = join(directory, 'project.mrt-session-folder.json');
 
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 6 });
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 6 },
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 7 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 7 },
       'exporting again to the selected file replaces it atomically');
     const text = await readFile(path, 'utf8');
     assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
     assert.doesNotMatch(text, /password|credential|privateKey/i);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 6, createdFolderCount: 4, createdSessionCount: 6
+      folderCount: 4, sessionCount: 7, createdFolderCount: 4, createdSessionCount: 7
     });
     assert.deepEqual(new Set((await destination.listFolders()).map(folder => folder.name)),
       new Set([root.name, child.name, unicodeUpper.name, unicodeLower.name]));
     const importedSessions = await destination.listSessions('');
-    assert.equal(importedSessions.length, 6);
+    assert.equal(importedSessions.length, 7);
     const importedSession = importedSessions.find(item => item.kind === 'ssh');
     assert.ok(importedSession?.kind === 'ssh');
     if (importedSession?.kind !== 'ssh') throw new Error('Expected an imported SSH definition');
@@ -341,8 +356,12 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const sourceVnc = (await source.listSessions('')).find(item => item.kind === 'vnc');
     assert.ok(importedVnc?.kind === 'vnc' && sourceVnc?.kind === 'vnc');
     assert.deepEqual(importedVnc, sourceVnc);
+    const importedSerial = importedSessions.find(item => item.kind === 'serial');
+    const sourceSerial = (await source.listSessions('')).find(item => item.kind === 'serial');
+    assert.ok(importedSerial?.kind === 'serial' && sourceSerial?.kind === 'serial');
+    assert.deepEqual(importedSerial, sourceSerial);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 6, createdFolderCount: 0, createdSessionCount: 0
+      folderCount: 4, sessionCount: 7, createdFolderCount: 0, createdSessionCount: 0
     });
   } finally {
     sourceDatabase.close();

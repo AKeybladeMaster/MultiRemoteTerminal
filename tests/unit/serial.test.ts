@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createSerialTerminalController } from '../../packages/application/src/serial-terminals.ts';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../packages/domain/src/serial.ts';
-import { canonicalizeSerialPortPath, normalizeSerialConfiguration, normalizeSerialPortList, serialWriteTimeoutMs } from '../../packages/domain/src/serial.ts';
+import { canonicalizeSerialPortPath, normalizeSerialConfiguration, normalizeSerialPortList, serialConfigurationsEqual, serialWriteTimeoutMs } from '../../packages/domain/src/serial.ts';
 import { isCommandReply, parseRequest } from '../../packages/contracts/src/commands.ts';
 
 const sessionId = 'a540e2c4-402e-4a33-86fc-60aaea747672';
@@ -15,6 +15,8 @@ test('serial configuration and device listing are canonical and bounded', () => 
   assert.equal(canonicalizeSerialPortPath('COM4096'), undefined);
   assert.equal(canonicalizeSerialPortPath('\\\\.\\COM7'), undefined);
   assert.deepEqual(normalizeSerialConfiguration({ ...configuration, path: 'com19' }), configuration);
+  assert.equal(serialConfigurationsEqual(configuration, { ...configuration }), true);
+  assert.equal(serialConfigurationsEqual(configuration, { ...configuration, baudRate: 9_600 }), false);
   assert.equal(normalizeSerialConfiguration({ ...configuration, baudRate: 2_000_001 }), undefined);
   assert.equal(normalizeSerialConfiguration({ ...configuration, flowControl: 'software' }), undefined);
   assert.equal(normalizeSerialConfiguration({ ...configuration, credential: 'secret' }), undefined);
