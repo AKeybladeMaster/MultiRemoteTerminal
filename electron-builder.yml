@@ -23,6 +23,10 @@ asarUnpack:
 npmRebuild: false
 win:
   icon: apps/desktop/resources/multiremote-terminal.ico
+  signtoolOptions:
+    signingHashAlgorithms:
+      - sha256
+    rfc3161TimeStampServer: http://timestamp.digicert.com
   target:
     - target: nsis
       arch:

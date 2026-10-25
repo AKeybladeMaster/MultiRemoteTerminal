@@ -1,7 +1,8 @@
 import { chromium, test, expect, _electron as electron } from '@playwright/test';
 import type { Browser, Page } from '@playwright/test';
-import { copyFile, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
@@ -61,6 +62,59 @@ async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userDa
   expect(metadata.appPath.toLowerCase()).toContain('resources');
   return { userData: metadata.userData };
 }
+
+function sha256(value: Buffer | string): string {
+  return createHash('sha256').update(value).digest('hex').toUpperCase();
+}
+
+test('Windows x64 artifacts have per-artifact CycloneDX SBOMs and verified SHA-256 manifests', async () => {
+  test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
+    'Run on Windows x64 through package:win:smoke');
+  const artifacts = resolve('artifacts/windows');
+  const outputs = [
+    { artifact: 'MultiRemoteTerminal Setup 0.0.0.exe', kind: 'nsis-installer' },
+    { artifact: 'MultiRemoteTerminal 0.0.0.exe', kind: 'portable-executable' }
+  ];
+  const checksums = (await readFile(join(artifacts, 'SHA256SUMS.txt'), 'utf8')).split(/\r?\n/u);
+
+  for (const output of outputs) {
+    const artifactBytes = await readFile(join(artifacts, output.artifact));
+    const bomName = `${output.artifact}.cdx.json`;
+    const bomContents = await readFile(join(artifacts, bomName), 'utf8');
+    const bom = JSON.parse(bomContents) as {
+      readonly bomFormat: string;
+      readonly specVersion: string;
+      readonly components: readonly { readonly name: string; readonly version: string; readonly 'bom-ref': string }[];
+      readonly dependencies: readonly { readonly ref: string; readonly dependsOn: readonly string[] }[];
+      readonly metadata: { readonly component: {
+        readonly name: string;
+        readonly hashes: readonly { readonly alg: string; readonly content: string }[];
+        readonly properties: readonly { readonly name: string; readonly value: string }[];
+      } };
+    };
+    expect(bom.bomFormat).toBe('CycloneDX');
+    expect(bom.specVersion).toBe('1.6');
+    expect(bom.metadata.component.name).toBe('MultiRemoteTerminal');
+    expect(bom.metadata.component.hashes).toContainEqual({ alg: 'SHA-256', content: sha256(artifactBytes) });
+    expect(bom.components.some(component => component.name === 'electron' && component.version === '45.0.0')).toBe(true);
+    expect(bom.components.some(component => component.name === '@playwright/test' || component.name === 'electron-builder')).toBe(false);
+    expect(bom.metadata.component.properties.find(property => property.name === 'mrt:distribution:kind')?.value).toBe(output.kind);
+    const signatureStatus = bom.metadata.component.properties.find(property => property.name === 'mrt:authenticode:status')?.value;
+    expect(['Valid', 'NotSigned']).toContain(signatureStatus);
+    if (process.env.MRT_SIGNED_RELEASE === '1') expect(signatureStatus).toBe('Valid');
+
+    const knownReferences = new Set([
+      ...bom.components.map(component => component['bom-ref']),
+      ...bom.dependencies.map(dependency => dependency.ref)
+    ]);
+    for (const dependency of bom.dependencies) {
+      expect(knownReferences.has(dependency.ref)).toBe(true);
+      for (const target of dependency.dependsOn) expect(knownReferences.has(target)).toBe(true);
+    }
+    expect(checksums).toContain(`${sha256(artifactBytes)}  ${output.artifact}`);
+    expect(checksums).toContain(`${sha256(bomContents)}  ${bomName}`);
+  }
+});
 
 test('NSIS installs a runnable per-user app and silently uninstalls it', async () => {
   test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
