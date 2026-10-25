@@ -1,13 +1,11 @@
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
-import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts';
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GESTURE_TTL_MS = 750;
 const MAX_PENDING_GESTURES = 64;
 const TERMINAL_HOST_SELECTOR = '[data-mrt-terminal-session-id]';
 const TELNET_SUBMIT_SELECTOR = 'button[data-mrt-telnet-consent-trigger]';
-const RDP_SUBMIT_SELECTOR = 'button[data-mrt-rdp-launch-trigger]';
 
 interface HostElement {
   getAttribute(name: string): string | null;
@@ -61,12 +59,12 @@ export interface FtpConsentGestureStore {
   dispose(): void;
 }
 
-export interface RdpLaunchGestureStore {
+export interface ExternalViewerLaunchGestureStore {
   consume(host: string, port: number): Promise<boolean>;
   dispose(): void;
 }
 
-export interface RdpLaunchGestureDocument {
+export interface ExternalViewerLaunchGestureDocument {
   addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
   removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
 }
@@ -135,18 +133,18 @@ export function installTelnetConsentGestureStore(documentTarget: TelnetConsentGe
   });
 }
 
-export function installRdpLaunchGestureStore(documentTarget: RdpLaunchGestureDocument,
-  authorize: (host: string, port: number) => Promise<boolean>, now: () => number = () => performance.now()): RdpLaunchGestureStore {
+export function installExternalViewerLaunchGestureStore(documentTarget: ExternalViewerLaunchGestureDocument, protocol: 'rdp' | 'vnc',
+  authorize: (host: string, port: number) => Promise<boolean>, now: () => number = () => performance.now()): ExternalViewerLaunchGestureStore {
   let gesture: { readonly host: string; readonly port: number; readonly expiresAt: number } | undefined;
   const observeClick = (event: Event): void => {
     const click = event as unknown as { readonly type: string; readonly isTrusted: boolean; readonly target: EventTargetElement | null };
     if (click.type !== 'click' || !click.isTrusted) return;
-    const button = click.target?.closest(RDP_SUBMIT_SELECTOR) as EventTargetElement | null | undefined;
+    const button = click.target?.closest(`button[data-mrt-${protocol}-launch-trigger]`) as EventTargetElement | null | undefined;
     const form = button?.closest('form') as TelnetConnectForm | null | undefined;
     if (!form) return;
     const hostInput = form.querySelector('input[name="host"]');
     const portInput = form.querySelector('input[name="port"]');
-    const endpoint = canonicalizeRdpEndpoint({ host: hostInput?.value ?? '', port: Number(portInput?.value) });
+    const endpoint = canonicalizeRemoteEndpoint({ host: hostInput?.value ?? '', port: Number(portInput?.value) });
     gesture = endpoint ? { host: endpoint.host, port: endpoint.port, expiresAt: now() + GESTURE_TTL_MS } : undefined;
   };
   documentTarget.addEventListener('click', observeClick, true);
@@ -154,7 +152,7 @@ export function installRdpLaunchGestureStore(documentTarget: RdpLaunchGestureDoc
     async consume(host: string, port: number): Promise<boolean> {
       const current = gesture;
       gesture = undefined;
-      const requested = canonicalizeRdpEndpoint({ host, port });
+      const requested = canonicalizeRemoteEndpoint({ host, port });
       if (!current || current.expiresAt < now() || !requested || requested.host !== current.host || requested.port !== current.port) return false;
       try { return await authorize(requested.host, requested.port) === true; }
       catch { return false; }

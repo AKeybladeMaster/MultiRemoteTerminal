@@ -1593,6 +1593,55 @@ test('RDP profiles persist and launch through the explicitly external viewer han
   }
 });
 
+test('VNC profiles persist and launch through an explicitly trusted external TigerVNC handoff', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-vnc-profile-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-vnc-viewer'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to VNC desktop', exact: true }).first().click();
+    const dialog = page.getByTestId('vnc-connect-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('External TigerVNC viewer');
+    await expect(dialog).toContainText('security and encryption depend on the server configuration');
+    const bypass = await page.evaluate(() => window.multiRemoteTerminal.launchVncViewer('attacker.example.com', 5900));
+    expect(bypass).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    await dialog.getByLabel('Host name or IP address').fill('vnc.example.com');
+    await dialog.getByLabel('Port').fill('5901');
+    await dialog.getByLabel('Saved profile name').fill('Lab VNC');
+    await dialog.getByRole('button', { name: 'Save profile', exact: true }).click();
+    const savedVnc = page.getByRole('button', { name: 'Open Lab VNC', exact: true });
+    await expect(savedVnc).toBeVisible();
+    await expect(page.locator('.saved-session-row').filter({ hasText: 'Lab VNC' })).toContainText('VNC · external viewer');
+
+    await savedVnc.click();
+    const launchDialog = page.getByTestId('vnc-connect-dialog');
+    await expect(launchDialog).toBeVisible();
+    await expect(launchDialog).toHaveAttribute('aria-busy', 'false');
+    await expect(launchDialog.getByLabel('Host name or IP address')).toHaveValue('vnc.example.com');
+    await expect(launchDialog.getByLabel('Port')).toHaveValue('5901');
+    await expect(launchDialog.getByLabel('Host name or IP address')).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(launchDialog).toHaveCount(0);
+    await expect(savedVnc).toBeFocused();
+    await savedVnc.click();
+    await launchDialog.getByTestId('vnc-launch').click();
+    await expect(launchDialog).toHaveCount(0);
+    await expect(page.locator('.alert-strip > span')).toContainText('TigerVNC was opened outside this app');
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Open Lab VNC', exact: true })).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('macro library creates, edits, persists and deletes typed steps', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-library-e2e-'));

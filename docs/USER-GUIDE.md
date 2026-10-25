@@ -22,6 +22,12 @@ an internet connection.
   then open Windows Remote Desktop. The viewer runs outside the workbench;
   Windows handles authentication, and the app cannot confirm connection state.
   Save a credential-free RDP profile to reopen the same target later.
+- **VNC desktop:** choose **Connect to VNC desktop**, enter the host and port,
+  then launch the installed TigerVNC viewer. The viewer runs outside the
+  workbench; the app cannot confirm connection state. Encryption depends on
+  the VNC server configuration. Save a credential-free VNC profile to reopen
+  the same target later. TigerVNC must be installed in a standard Program Files
+  location for the app to find it.
 
 ## Work with tabs
 
@@ -53,6 +59,9 @@ Bundles are not encrypted. They contain connection and folder metadata such as
 host names, ports, shell choices, and folder names. They do not contain
 credentials, private keys, or terminal history. Protect exported files as you
 would other connection configuration.
+
+VNC profiles store only a host and port. TigerVNC handles any authentication;
+the app does not save VNC credentials or report whether the viewer connected.
 
 ## Transfer files
 

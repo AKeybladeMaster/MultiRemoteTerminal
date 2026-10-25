@@ -267,6 +267,26 @@ test('RDP IPC validates the external viewer target and its launch-requested resu
   }
 });
 
+test('VNC IPC validates the external viewer target and rejects credentials in the request', () => {
+  const vnc = { command: 'vnc.launch', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'VNC.Example.com.', port: 5901 } };
+  const parsed = parseRequest(vnc);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...vnc, payload: { ...vnc.payload, port: 0 } }).ok, false);
+  assert.equal(parseRequest({ ...vnc, payload: { ...vnc.payload, password: 'must-not-pass' } }).ok, false);
+  if (parsed.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'external', endpoint: { host: 'vnc.example.com', port: 5901 }, state: 'launch-requested'
+    } }, parsed.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'external', endpoint: { host: 'other.example.com', port: 5901 }, state: 'launch-requested'
+    } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'embedded', endpoint: { host: 'vnc.example.com', port: 5901 }, state: 'connected'
+    } }, parsed.result), false);
+  }
+});
+
 test('RDP launch gesture channel accepts only canonicalizable endpoint fields', () => {
   assert.deepEqual(parseRdpLaunchGestureRequest({ host: 'Desktop.Example.com.', port: 3389 }), { host: 'desktop.example.com', port: 3389 });
   assert.equal(parseRdpLaunchGestureRequest({ host: 'desktop.example.com', port: 70000 }), undefined);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
-import { installFtpConsentGestureStore, installRdpLaunchGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -23,11 +23,13 @@ test('main renderer gesture gate is one-shot, short-lived, sender-scoped, purpos
   gate.issue(11, firstSession, 'clipboard-paste');
   assert.equal(gate.consume(11, firstSession, 'telnet-plaintext-consent'), false, 'gesture purposes are isolated');
   assert.equal(gate.consume(11, firstSession, 'clipboard-paste'), true);
-  gate.issueRdpLaunch(11, 'DESK.EXAMPLE.COM', 3389);
-  assert.equal(gate.consumeRdpLaunch(12, 'desk.example.com', 3389), false, 'RDP gesture is sender-scoped');
-  assert.equal(gate.consumeRdpLaunch(11, 'other.example.com', 3389), false, 'RDP gesture is endpoint-scoped');
-  assert.equal(gate.consumeRdpLaunch(11, 'desk.example.com', 3389), true, 'RDP endpoint is canonicalized');
-  assert.equal(gate.consumeRdpLaunch(11, 'desk.example.com', 3389), false, 'RDP gesture is one-shot');
+  gate.issueExternalViewerLaunch(11, 'rdp', 'DESK.EXAMPLE.COM', 3389);
+  assert.equal(gate.consumeExternalViewerLaunch(12, 'rdp', 'desk.example.com', 3389), false, 'RDP gesture is sender-scoped');
+  assert.equal(gate.consumeExternalViewerLaunch(11, 'vnc', 'desk.example.com', 3389), false, 'viewer types cannot share a launch gesture');
+  assert.equal(gate.consumeExternalViewerLaunch(11, 'rdp', 'other.example.com', 3389), false, 'RDP gesture is endpoint-scoped');
+  gate.issueExternalViewerLaunch(11, 'rdp', 'DESK.EXAMPLE.COM', 3389);
+  assert.equal(gate.consumeExternalViewerLaunch(11, 'rdp', 'desk.example.com', 3389), true, 'RDP endpoint is canonicalized');
+  assert.equal(gate.consumeExternalViewerLaunch(11, 'rdp', 'desk.example.com', 3389), false, 'RDP gesture is one-shot');
 });
 
 test('preload authorizes only trusted paste keys from a terminal and binds them to that session', async () => {
@@ -84,7 +86,7 @@ test('preload authorizes RDP only after a trusted click on the matching launch b
     addEventListener(_type: 'click', listener: (event: Event) => void) { click = listener; },
     removeEventListener(_type: 'click', listener: (event: Event) => void) { if (click === listener) click = undefined; }
   };
-  const gestures = installRdpLaunchGestureStore(documentTarget, async (host, port) => {
+  const gestures = installExternalViewerLaunchGestureStore(documentTarget, 'rdp', async (host, port) => {
     authorized.push({ host, port });
     return true;
   }, () => now);
@@ -102,6 +104,30 @@ test('preload authorizes RDP only after a trusted click on the matching launch b
   click?.(event(true));
   now += 751;
   assert.equal(await gestures.consume('desk.example.com', 3389), false, 'expired gesture is rejected');
+  gestures.dispose();
+});
+
+test('preload binds a VNC launch gesture to its VNC button and canonical endpoint', async () => {
+  let click: ((event: Event) => void) | undefined;
+  const authorized: Array<{ host: string; port: number }> = [];
+  const inputs = new Map<string, { readonly value: string }>([
+    ['input[name="host"]', { value: 'VNC.Example.com.' }], ['input[name="port"]', { value: '5901' }]
+  ]);
+  const form = { querySelector: (selector: string) => inputs.get(selector) ?? null };
+  const button = { closest: (selector: string) => selector === 'form' ? form : null };
+  const documentTarget = {
+    addEventListener(_type: 'click', listener: (event: Event) => void) { click = listener; },
+    removeEventListener(_type: 'click', listener: (event: Event) => void) { if (click === listener) click = undefined; }
+  };
+  const gestures = installExternalViewerLaunchGestureStore(documentTarget, 'vnc', async (host, port) => {
+    authorized.push({ host, port });
+    return true;
+  });
+  click?.({ type: 'click', isTrusted: true, target: { closest: (selector: string) => selector === 'button[data-mrt-vnc-launch-trigger]' ? button : null } } as unknown as Event);
+  assert.equal(await gestures.consume('vnc.example.com', 5901), true);
+  assert.deepEqual(authorized, [{ host: 'vnc.example.com', port: 5901 }]);
+  click?.({ type: 'click', isTrusted: true, target: { closest: (selector: string) => selector === 'button[data-mrt-rdp-launch-trigger]' ? button : null } } as unknown as Event);
+  assert.equal(await gestures.consume('vnc.example.com', 5901), false, 'an RDP button cannot authorize VNC');
   gestures.dispose();
 });
 
