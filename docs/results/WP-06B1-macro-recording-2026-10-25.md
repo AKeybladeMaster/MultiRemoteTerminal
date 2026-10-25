@@ -4,8 +4,9 @@
 
 **Branch:** `dev-1`
 
-**Requirements:** F-007 (partial), P-28 (partial), P-40 (partial). Playback,
-MultiExec and Windows acceptance of 100 definitions remain open.
+**Requirements:** F-007/P-28 were partial, and P-40 was partial at this
+WP-06B1 stage. Playback, MultiExec and Windows acceptance of 100 definitions
+were still open then; see WP-06B2/C/D for later evidence.
 
 ## Delivered
 
@@ -76,6 +77,11 @@ recording as a secret detector and must not enter secrets while it is active.
 User-authored macro text remains local database content. The E2E covers local PowerShell;
 SSH and Telnet recorder flows, playback, cancellation, and the 100-definition
 Windows acceptance remain open. No package was added for this slice.
+
+Subsequent acceptance: WP-06C adds confirmed MultiExec, and WP-06D verifies
+100 stored macro definitions survive restart and each replays on PowerShell.
+Macro-specific keyboard bindings remain unimplemented; SSH/Telnet macro
+playback interoperability also remains open.
 
 See [ADR-0013](../adr/ADR-0013-wp06-macro-safety-and-storage.md) for the safety
 decisions and [WP-06A evidence](WP-06A-macro-library-2026-10-25.md) for macro

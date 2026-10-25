@@ -3,7 +3,7 @@
 **Date:** 2026-10-25
 
 **Requirements:** F-008, P-19
-**Status:** Verified for the covered Windows workflows; the wider WP-06 gate remains open for 100-definition macro replay acceptance.
+**Status:** Verified for the covered Windows workflows; macro-specific keyboard bindings and SSH/Telnet macro playback interoperability remain open for the wider WP-06 gate.
 
 ## Behavior delivered
 
@@ -35,4 +35,4 @@ The build reports Vite's existing advisory that the renderer bundle exceeds 500 
 
 ## Limits
 
-The SSH fixtures prove the desktop UI-to-SSH terminal write path against independent loopback servers. They do not establish broad interoperability with public SSH servers or prove remote shell command completion; a successful terminal write only confirms that the provider accepted the input operation. Macro replay acceptance with 100 definitions remains outstanding under F-007/P-28/P-40, so this evidence does not close WP-06 as a whole.
+The SSH fixtures prove the desktop UI-to-SSH terminal write path against independent loopback servers. They do not establish broad interoperability with public SSH servers or prove remote shell command completion; a successful terminal write only confirms that the provider accepted the input operation. WP-06D later verifies 100 definitions survive restart and each replays on a Windows PowerShell target. Macro-specific keyboard bindings and SSH/Telnet macro playback interoperability remain open, so this evidence does not close WP-06 as a whole.

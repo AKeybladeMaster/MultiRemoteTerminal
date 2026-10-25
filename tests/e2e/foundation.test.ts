@@ -1608,6 +1608,78 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
   }
 });
 
+test('100 saved macro definitions survive restart and each replays through the Windows workbench', async () => {
+  test.skip(process.platform !== 'win32', '100-definition macro acceptance is required on Windows');
+  test.setTimeout(240_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-100-macro-replay-e2e-'));
+  const markerFile = join(profile, 'replayed-macros.txt');
+  let app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const terminalTitle = 'PowerShell session 1';
+
+    const definitions = Array.from({ length: 100 }, (_, index) => {
+      const sequence = String(index + 1).padStart(3, '0');
+      const marker = `MRT-MACRO-REPLAY-${sequence}`;
+      const codes = Array.from(marker, character => character.charCodeAt(0)).join(',');
+      const escapedMarkerFile = markerFile.replaceAll("'", "''");
+      const command = `$mrtMarker = -join ([char[]](${codes})); [System.IO.File]::AppendAllText('${escapedMarkerFile}', $mrtMarker + [Environment]::NewLine); Write-Output $mrtMarker`;
+      return { name: `Replay ${sequence}`, marker, steps: [
+        { kind: 'send' as const, text: command },
+        { kind: 'waitForText' as const, text: marker, timeoutMs: 15_000 }
+      ] };
+    });
+
+    const storedCount = await page.evaluate(async items => {
+      let count = 0;
+      for (const item of items) {
+        const reply = await window.multiRemoteTerminal.createMacro({ name: item.name, steps: item.steps });
+        if (!reply.ok) throw new Error(`Could not store ${item.name} (${reply.error.code}).`);
+        count++;
+      }
+      return count;
+    }, definitions);
+    expect(storedCount).toBe(100);
+
+    await app.close();
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const panel = await selectTerminal(page, terminalTitle);
+    const sessionId = await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    if (!sessionId) throw new Error('The default macro replay terminal has no session id.');
+    const persistedCount = await page.evaluate(async () => {
+      const reply = await window.multiRemoteTerminal.listMacros();
+      if (!reply.ok) throw new Error(`Could not reload macros (${reply.error.code}).`);
+      return reply.result.length;
+    });
+    expect(persistedCount).toBe(100);
+
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'Macros' });
+    const savedMacroList = dialog.getByRole('list', { name: 'Saved macros' });
+    await expect(savedMacroList.getByRole('button')).toHaveCount(100, { timeout: 20_000 });
+    for (const definition of definitions) {
+      await savedMacroList.getByRole('button', { name: new RegExp(`^${definition.name}\\b`) }).click();
+      await dialog.getByRole('button', { name: 'Review & run', exact: true }).click();
+      const review = page.getByRole('dialog', { name: 'Review macro run' });
+      await expect(review.getByLabel('Run on target')).toHaveValue(sessionId);
+      await expect(review.getByRole('list', { name: 'Exact macro steps' })).toContainText(definition.marker);
+      await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+      await expect(review.getByRole('status')).toContainText('Macro completed', { timeout: 20_000 });
+      await review.getByRole('button', { name: 'Done', exact: true }).click();
+      dialog = page.getByRole('dialog', { name: 'Macros' });
+    }
+
+    const replayed = (await readFile(markerFile, 'utf8')).trimEnd().split(/\r?\n/u);
+    expect(replayed).toEqual(definitions.map(definition => definition.marker));
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('macro playback previews exact steps, confirms explicitly, cancels, and requires deliberate target selection after disconnect', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-playback-e2e-'));
