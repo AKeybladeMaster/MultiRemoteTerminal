@@ -16,16 +16,16 @@ This implements keyword coloring and the requested readability improvement. Full
 ## Validation
 
 - `corepack pnpm typecheck` — passed.
-- `node --test tests/unit/assets.test.ts tests/unit/terminal-highlights.test.ts tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` — 69/69 passed.
+- `node --test tests/unit/assets.test.ts tests/unit/terminal-highlights.test.ts tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` — 70/70 passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
-- `corepack pnpm build` — passed on Windows x64. The Vite renderer bundle is 893.24 kB uncompressed / 244.62 kB gzip and triggers the 500 kB advisory warning.
-- Focused Windows Electron E2E: `terminal keyword highlighting` and `100% scale themes render and CSP` — 2/2 passed. The first verifies settings/rules across restart and cyan highlights while preserving independent ANSI-red output; the second confirms inline script and network sources stay blocked.
+- `corepack pnpm build` — passed on Windows x64. The Vite renderer bundle is 893.61 kB uncompressed / 244.77 kB gzip and triggers the 500 kB advisory warning.
+- Focused Windows Electron E2E: `terminal keyword highlighting` and `100% scale themes render and CSP` — 2/2 passed. The first verifies settings/rules across restart, cyan highlights alongside independent ANSI-red output, and highlighting after a resize with no intervening output. The second confirms inline scripts and a live loopback HTTP request are blocked by CSP; the fixture received zero requests.
 - Generated E2E settings screenshot visually reviewed for layout, legibility, color selection and focus indicator.
 - `corepack pnpm audit --prod` — no known vulnerabilities found.
 - `git diff --check` — passed after implementation and documentation updates.
 
 ## Limits and follow-up
 
-Regex safety comes from RE2JS plus application work bounds; it is not a separate security audit of the JavaScript port. Inline CSS broadens style injection capability inside the renderer, so terminal text must stay text and the existing script/network CSP E2E remains a release guard. Syntax-aware shell parsing and high-DPI automated coverage remain open.
+Regex safety comes from RE2JS plus application work bounds; it is not a separate security audit of the JavaScript port. Cell extraction stops before assembling a line over 2,048 code units, and matching enforces a 24-per-line / 96-per-refresh cap. Inline CSS broadens style injection capability inside the renderer, so terminal text must stay text and the script/network CSP E2E remains a release guard. Syntax-aware shell parsing and high-DPI automated coverage remain open.
 
 See [ADR-0018](../adr/ADR-0018-terminal-keyword-highlighting.md) and the [re2js dependency review](../dependencies/WP-01F-re2js.md).

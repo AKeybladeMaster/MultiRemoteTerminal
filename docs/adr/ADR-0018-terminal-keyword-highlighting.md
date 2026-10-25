@@ -9,7 +9,7 @@ F-014 asks for a terminal keyword highlight toggle. P-30 describes syntax highli
 ## Decision
 
 - Add optional user-configured regular-expression keyword rules with a global enable switch. The setting is disabled by default, rules are local workbench preferences, and no terminal transcript or rule match is persisted.
-- Match only text extracted from xterm's parsed normal buffer and visible rows. Render matches using xterm marker/decorations as foreground overlays; do not modify input, output, ANSI sequences, or scrollback contents. Existing ANSI colors remain visible for nonmatching cells.
+- Match only text extracted from xterm's parsed normal buffer and visible rows. Stop cell extraction before assembling a line over 2,048 UTF-16 code units. Render matches using xterm marker/decorations as foreground overlays; do not modify input, output, ANSI sequences, or scrollback contents. Existing ANSI colors remain visible for nonmatching cells. Rebuild decorations after parsing, scrolling, buffer changes and terminal resize.
 - Use pinned `re2js` 2.8.6 instead of JavaScript's backtracking `RegExp` engine. Validate patterns before persistence and matching, and bound rule count, pattern length, compiled program size, groups, line length, rows scanned, matches per line and matches per refresh. Empty and zero-width matches are ignored.
 - Allow only this exact pure-JavaScript policy package as a domain dependency; the import-boundary checker continues to reject other external dependencies from domain, application and contracts.
 - Keep the feature opt-in. Unsupported RE2 syntax and invalid or oversized patterns are rejected with a settings error. This is keyword coloring, not shell parsing, command grammar highlighting or a zsh theme.
@@ -18,7 +18,7 @@ F-014 asks for a terminal keyword highlight toggle. P-30 describes syntax highli
 
 ## Consequences
 
-The screen may be rescanned after parsing and scrolling, but work per refresh is bounded. Decorations are disposable transient renderer state and naturally disappear when the terminal buffer changes or the pane closes. The preference migration is local and does not touch the SQLite table schema. Inline style permission expands CSS injection capability within the renderer, so terminal output must remain text and never be promoted to HTML; the rule does not relax script execution or network access. A future stricter style policy would need to preserve xterm's runtime style mechanism and repeat the ANSI-color security E2E.
+The screen may be rescanned after parsing, scrolling, buffer changes and resize, but work per refresh is bounded. Decorations are disposable transient renderer state and naturally disappear when the terminal buffer changes or the pane closes. The preference migration is local and does not touch the SQLite table schema. Inline style permission expands CSS injection capability within the renderer, so terminal output must remain text and never be promoted to HTML; the rule does not relax script execution or network access. A future stricter style policy would need to preserve xterm's runtime style mechanism and repeat the ANSI-color security E2E.
 
 ## Verification
 

@@ -1,6 +1,8 @@
 import type { Terminal } from '@xterm/xterm';
 import {
   createTerminalHighlightMatcher,
+  MAX_TERMINAL_HIGHLIGHT_LINE_CODE_UNITS,
+  MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE,
   MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_REFRESH,
   normalizeTerminalHighlightRules
 } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -12,6 +14,50 @@ const MAX_TERMINAL_HIGHLIGHT_ROWS = 128;
 
 interface Disposable {
   dispose(): void;
+}
+
+export interface TerminalHighlightCellValue {
+  readonly text: string;
+  readonly width: number;
+}
+
+export interface TerminalHighlightCellSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly column: number;
+  readonly width: number;
+}
+
+export interface BoundedTerminalHighlightLine {
+  readonly text: string;
+  readonly cellSpans: readonly TerminalHighlightCellSpan[];
+}
+
+export function extractBoundedTerminalHighlightLine(
+  columnCount: number,
+  readCell: (column: number) => TerminalHighlightCellValue | undefined
+): BoundedTerminalHighlightLine | undefined {
+  if (!Number.isSafeInteger(columnCount) || columnCount <= 0) return undefined;
+  const cellSpans: TerminalHighlightCellSpan[] = [];
+  let fullText = '';
+  let trimmedTextLength = 0;
+  const scanLimit = Math.min(columnCount, MAX_TERMINAL_HIGHLIGHT_LINE_CODE_UNITS + 1);
+
+  for (let column = 0; column < scanLimit; column += 1) {
+    const cell = readCell(column);
+    if (!cell) break;
+    if (!Number.isSafeInteger(cell.width) || cell.width < 0 || typeof cell.text !== 'string') return undefined;
+    if (cell.width === 0) continue;
+    const chars = cell.text || ' ';
+    if (chars.length > MAX_TERMINAL_HIGHLIGHT_LINE_CODE_UNITS - fullText.length) return undefined;
+    const start = fullText.length;
+    fullText += chars;
+    if (chars !== ' ') trimmedTextLength = fullText.length;
+    cellSpans.push({ start, end: fullText.length, column, width: cell.width });
+  }
+
+  if (trimmedTextLength === 0) return undefined;
+  return { text: fullText.slice(0, trimmedTextLength), cellSpans };
 }
 
 export function attachTerminalHighlights(
@@ -51,22 +97,13 @@ export function attachTerminalHighlights(
     for (let lineNumber = firstLine; lineNumber < lastLineExclusive && remainingMatches > 0; lineNumber += 1) {
       const line = buffer.getLine(lineNumber);
       if (!line) continue;
-      const text = line.translateToString(true, 0, terminal.cols);
-      if (!text) continue;
-      const cellSpans: { readonly start: number; readonly end: number; readonly column: number; readonly width: number }[] = [];
-      let fullText = '';
-      for (let column = 0; column < Math.min(line.length, terminal.cols); column += 1) {
+      const extracted = extractBoundedTerminalHighlightLine(Math.min(line.length, terminal.cols), column => {
         const cell = line.getCell(column, cellScratch);
-        if (!cell) break;
-        const width = cell.getWidth();
-        if (width <= 0) continue;
-        const chars = cell.getChars() || ' ';
-        const start = fullText.length;
-        fullText += chars;
-        cellSpans.push({ start, end: fullText.length, column, width });
-      }
-
-      const matches = matcher.findMatches(text, remainingMatches);
+        return cell ? { text: cell.getChars(), width: cell.getWidth() } : undefined;
+      });
+      if (!extracted) continue;
+      const { text, cellSpans } = extracted;
+      const matches = matcher.findMatches(text, Math.min(remainingMatches, MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE));
       if (matches.length === 0) continue;
       const marker = terminal.registerMarker(lineNumber - cursorLine);
       if (!marker || marker.isDisposed) continue;
@@ -100,6 +137,7 @@ export function attachTerminalHighlights(
 
   const parsed = terminal.onWriteParsed(scheduleRefresh);
   const scrolled = terminal.onScroll(scheduleRefresh);
+  const resized = terminal.onResize(scheduleRefresh);
   const bufferChanged = terminal.buffer.onBufferChange(scheduleRefresh);
   scheduleRefresh();
 
@@ -110,6 +148,7 @@ export function attachTerminalHighlights(
       if (frame !== undefined) cancelAnimationFrame(frame);
       parsed.dispose();
       scrolled.dispose();
+      resized.dispose();
       bufferChanged.dispose();
       clearDecorations();
     }

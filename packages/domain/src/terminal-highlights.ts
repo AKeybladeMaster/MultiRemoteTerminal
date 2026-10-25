@@ -57,7 +57,7 @@ export function createTerminalHighlightMatcher(value: readonly TerminalHighlight
       if (typeof text !== 'string' || text.length > MAX_TERMINAL_HIGHLIGHT_LINE_CODE_UNITS ||
           !Number.isInteger(limit) || limit <= 0) return Object.freeze([]);
       const matches: TerminalHighlightMatch[] = [];
-      const maximum = Math.min(limit, MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_REFRESH);
+      const maximum = Math.min(limit, MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE, MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_REFRESH);
       for (let ruleIndex = 0; ruleIndex < rules.length && matches.length < maximum; ruleIndex += 1) {
         const matcher = compiled[ruleIndex]!.matcher(text);
         let searchFrom = 0;
