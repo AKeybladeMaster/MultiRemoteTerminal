@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, FormEvent } from 'react';
 import { MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 
 export function SettingsDialog({ onClose, onGreetingSaved }: {
   readonly onClose: () => void;
@@ -31,12 +32,12 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
       if (reply.ok) setGreeting(reply.result.startupGreeting);
       else {
         setLoadFailed(true);
-        setError(`Workbench settings could not be loaded (${reply.error.code}).`);
+        setError(workbenchPreferenceFailureMessage('load', reply.error.code));
       }
     }).catch(() => {
       if (active) {
         setLoadFailed(true);
-        setError('Workbench settings could not be loaded.');
+        setError(workbenchPreferenceFailureMessage('load', undefined));
       }
     }).finally(() => {
       if (active) setLoading(false);
@@ -80,7 +81,7 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
       if (!reply.ok) {
         setError(reply.error.code === 'INVALID_REQUEST'
           ? `Use up to ${MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters and omit control characters.`
-          : `The greeting could not be saved (${reply.error.code}).`);
+          : workbenchPreferenceFailureMessage('save', reply.error.code));
         setStatus('');
       } else {
         setGreeting(reply.result.startupGreeting);
@@ -88,7 +89,7 @@ export function SettingsDialog({ onClose, onGreetingSaved }: {
         setStatus('Greeting saved.');
       }
     } catch {
-      setError('The greeting could not be saved.');
+      setError(workbenchPreferenceFailureMessage('save', undefined));
       setStatus('');
     } finally { setSaving(false); }
   }
