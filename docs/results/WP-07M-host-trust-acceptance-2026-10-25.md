@@ -15,3 +15,7 @@ Re-ran the Windows saved-profile gateway E2E:
 ## Status
 
 The specific security checklist item for changed-host-key blocking and jump-host verification is now checked in `docs/SECURITY.md`: the changed-key behavior has unit coverage, and the route fixture verifies one-/two-gateway trust. This is not the host-key-rotation E2E acceptance described separately in the threat table, and it does not verify a public OpenSSH server or general internet-host interoperability. F-003/P-03 remain partial for key/agent authentication, packaged native credential prompting and disposable OpenSSH interoperability. F-011/P-22 remain partial for SFTP-only routes, gateway-routed tunnels, longer chains and broader interoperability.
+
+## Review
+
+The Spec-axis reviewer requested that the checklist and result distinguish unit-level changed-key blocking from the still-open host-key-rotation E2E and retain packaged native credential prompting as an F-003/P-03 gap; the follow-up confirmed those corrections. The Standards-axis reviewer initially asked for independent verification of the recorded commands; the commands were run in this checkout with 22/22 unit tests and 1/1 E2E passing, and the reviewer cleared the finding on follow-up. No hard standards findings remain; both axes assessed the documentation-only slice ready to merge.
