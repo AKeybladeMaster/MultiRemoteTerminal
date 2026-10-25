@@ -350,6 +350,15 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .telnet-plaintext-warning, .tunnel-exposure-warning { margin: 0 0 16px; padding: 11px 12px; border-left: 3px solid #e59d32; background: color-mix(in srgb, #e59d32 14%, var(--surface)); color: var(--text); font-size: 13px; line-height: 1.5; }
 .telnet-plaintext-warning strong, .tunnel-exposure-warning strong { display: block; margin-bottom: 3px; }
 .telnet-connect-dialog .ssh-connect-actions { margin-top: 10px; }
+.serial-port-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 3px; }
+.serial-port-toolbar label { margin: 0; }
+.serial-port-toolbar button { min-height: 34px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); cursor: pointer; }
+.serial-port-toolbar button:hover:not(:disabled) { border-color: var(--accent); }
+.serial-port-toolbar button:disabled { cursor: wait; opacity: .72; }
+.serial-options { display: grid; grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr); align-items: center; gap: 8px 12px; margin-top: 9px; }
+.serial-options label { margin: 0; }
+.serial-port-status { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.serial-connect-dialog .ssh-connect-actions { margin-top: 18px; }
 .ssh-connect-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .ssh-connect-actions button {
   min-height: 38px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 3px;

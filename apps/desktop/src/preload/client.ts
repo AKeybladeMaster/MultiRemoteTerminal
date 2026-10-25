@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
-  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
@@ -9,12 +9,15 @@ import type { SshTextFileReply, SshTextFileSaveReply } from '../../../../package
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
 import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
+import type { OpenSerialTerminalResult } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { SerialConfiguration } from '../../../../packages/domain/src/serial.ts';
+import { MAX_SERIAL_INPUT_CHARS, SERIAL_WRITE_TIMEOUT_MAX_MS, serialWriteTimeoutMs } from '../../../../packages/domain/src/serial.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -44,6 +47,8 @@ const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 const SSH_TEXT_FILE_TIMEOUT_MS = 60_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
+const SERIAL_OPEN_TIMEOUT_MS = 20_000;
+const SERIAL_LIST_TIMEOUT_MS = 10_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
 const FTP_LIST_TIMEOUT_MS = 25_000;
 const FTP_CANCEL_TIMEOUT_MS = 45_000;
@@ -68,6 +73,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
   const activeTerminalWrites = new Map<string, Set<Promise<void>>>();
   const pendingInputChars = new Map<string, number>();
+  const serialConfigurations = new Map<string, SerialConfiguration>();
 
   function send<T>(request: CommandRequest, timeoutMs?: number, onSettled?: () => void): Promise<CommandReply<T>> {
     const requestId = request.requestId;
@@ -175,8 +181,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     return { tail: waitForActiveWrites(sessionId), pendingWrites: new Set(), pendingPaste: false, closing: false };
   }
 
-  function writeTerminalInput(sessionId: string, data: string, command: 'terminal.write' | 'ssh.write' | 'telnet.write'): Promise<TerminalActionReply> {
-    if (typeof data !== 'string' || data.length > MAX_TERMINAL_INPUT_CHARS) return Promise.resolve({ requestId: requestId(), ...failure('INVALID_REQUEST') });
+  function writeTerminalInput(sessionId: string, data: string, command: 'terminal.write' | 'ssh.write' | 'telnet.write' | 'serial.write',
+    timeoutMs = 5_000, maxChars = MAX_TERMINAL_INPUT_CHARS): Promise<TerminalActionReply> {
+    if (typeof data !== 'string' || data.length > maxChars || data.length > MAX_TERMINAL_INPUT_CHARS) return Promise.resolve({ requestId: requestId(), ...failure('INVALID_REQUEST') });
     if (inFlight >= MAX_PENDING_REQUESTS) return Promise.resolve({ requestId: requestId(), ...failure('BUSY') });
     const barrier = terminalInputBarriers.get(sessionId);
     if (barrier?.closing) return Promise.resolve({ requestId: requestId(), ...failure('CANCELLED', 'terminal') });
@@ -185,7 +192,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     const release = reserveRelease(sessionId, data.length);
     if (!barrier) {
       const invocation = createSettlementSignal();
-      const reply = sendReservedInput(request, release, 5_000, invocation.settle);
+      const reply = sendReservedInput(request, release, timeoutMs, invocation.settle);
       trackTerminalWrite(sessionId, invocation.promise);
       return reply;
     }
@@ -195,7 +202,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     }
     queuedInputOperations++;
     const invocation = createSettlementSignal();
-    const queued = barrier.tail.then(() => sendReservedInput(request, release, 5_000, invocation.settle))
+    const queued = barrier.tail.then(() => sendReservedInput(request, release, timeoutMs, invocation.settle))
       .catch(() => {
         release();
         invocation.settle();
@@ -210,14 +217,15 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     return queued;
   }
 
-  function pasteTerminalInput(sessionId: string, command: 'terminal.paste' | 'ssh.paste' | 'telnet.paste'): Promise<TerminalActionReply> {
+  function pasteTerminalInput(sessionId: string, command: 'terminal.paste' | 'ssh.paste' | 'telnet.paste' | 'serial.paste',
+    maxChars = MAX_TERMINAL_INPUT_CHARS, timeoutMs?: number): Promise<TerminalActionReply> {
     const existing = terminalInputBarriers.get(sessionId);
     if (existing?.closing) return Promise.resolve({ requestId: requestId(), ...failure('CANCELLED', 'terminal') });
     if (existing && (existing.pendingPaste || existing.pendingWrites.size > 0)) {
       return Promise.resolve({ requestId: requestId(), ...failure('BUSY', 'terminal') });
     }
     if (inFlight >= MAX_PENDING_REQUESTS) return Promise.resolve({ requestId: requestId(), ...failure('BUSY') });
-    if (queuedInputOperations >= MAX_PENDING_REQUESTS || !reserveInputChars(sessionId, MAX_TERMINAL_INPUT_CHARS)) {
+    if (queuedInputOperations >= MAX_PENDING_REQUESTS || !reserveInputChars(sessionId, maxChars)) {
       return Promise.resolve({ requestId: requestId(), ...failure('BUSY', 'terminal') });
     }
     const barrier = existing ?? createInputBarrier(sessionId);
@@ -228,10 +236,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     let authorization: Promise<boolean>;
     try { authorization = Promise.resolve(consumePasteGesture(sessionId)).then(value => value === true, () => false); }
     catch { authorization = Promise.resolve(false); }
-    const release = reserveRelease(sessionId, MAX_TERMINAL_INPUT_CHARS);
+    const release = reserveRelease(sessionId, maxChars);
     const paste = barrier.tail.then(async () => {
       if (!await authorization) return { requestId: request.requestId, ...failure('FORBIDDEN') };
-      return sendReservedInput(request, release);
+      return sendReservedInput(request, release, timeoutMs);
     }).catch(() => {
       release();
       return { requestId: request.requestId, ...failure('UNAVAILABLE', 'terminal') };
@@ -266,6 +274,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   function voidRequest(command: 'terminal.write' | 'terminal.paste' | 'terminal.resize' | 'terminal.ack' | 'terminal.close' |
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
+    'serial.write' | 'serial.paste' | 'serial.resize' | 'serial.ack' | 'serial.close' |
     'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
     'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
     payload: Record<string, unknown>): CommandRequest {
@@ -346,6 +355,41 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     closeTelnetTerminal(sessionId: string): Promise<TerminalActionReply> {
       const request = voidRequest('telnet.close', { sessionId });
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
+    },
+    listSerialPorts(): Promise<ListSerialPortsReply> {
+      return send({ command: 'serial.ports.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, SERIAL_LIST_TIMEOUT_MS);
+    },
+    openSerialTerminal(sessionId: string, configuration: SerialConfiguration, columns: number, rows: number): Promise<OpenSerialTerminalReply> {
+      const request: Extract<CommandRequest, { command: 'serial.open' }> = {
+        command: 'serial.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, configuration, columns, rows }
+      };
+      return send<OpenSerialTerminalResult>(request, SERIAL_OPEN_TIMEOUT_MS).then(reply => {
+        if (reply.ok) serialConfigurations.set(sessionId, reply.result.configuration);
+        return reply;
+      });
+    },
+    writeSerialTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
+      const configuration = serialConfigurations.get(sessionId);
+      if (!configuration) return Promise.resolve({ requestId: requestId(), ...failure('NOT_FOUND', 'terminal') });
+      if (typeof data !== 'string') return Promise.resolve({ requestId: requestId(), ...failure('INVALID_REQUEST') });
+      return writeTerminalInput(sessionId, data, 'serial.write', serialWriteTimeoutMs(configuration, data.length), MAX_SERIAL_INPUT_CHARS);
+    },
+    pasteSerialTerminal(sessionId: string): Promise<TerminalActionReply> {
+      if (!serialConfigurations.has(sessionId)) return Promise.resolve({ requestId: requestId(), ...failure('NOT_FOUND', 'terminal') });
+      return pasteTerminalInput(sessionId, 'serial.paste', MAX_SERIAL_INPUT_CHARS, SERIAL_WRITE_TIMEOUT_MAX_MS);
+    },
+    resizeSerialTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
+      return send(voidRequest('serial.resize', { sessionId, columns, rows }), 5_000);
+    },
+    acknowledgeSerialTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply> {
+      return send(voidRequest('serial.ack', { sessionId, sequence }), 5_000);
+    },
+    closeSerialTerminal(sessionId: string): Promise<TerminalActionReply> {
+      const request = voidRequest('serial.close', { sessionId });
+      return closeTerminalInputQueue(sessionId, () => send<Record<string, never>>(request, 8_000).then(reply => {
+        serialConfigurations.delete(sessionId);
+        return reply;
+      }));
     },
     approveSshHost(token: string): Promise<TerminalActionReply> {
       return send(voidRequest('ssh.host.approve', { token }), 20_000);

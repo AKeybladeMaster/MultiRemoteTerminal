@@ -7,6 +7,7 @@ import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/ren
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
+import type { SerialConfiguration } from '../../packages/domain/src/serial.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
 const owner = { owned: true, mainFrame: true, url: APP_URL };
@@ -38,6 +39,10 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
   }, telnetTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
+    write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+  }, serialTerminals: {
+    listPorts: async () => ({ ok: true, result: [] }),
+    async open(sessionId, configuration) { return { ok: true, result: { sessionId, configuration: configuration as SerialConfiguration, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, ftpFiles: {
     async open(sessionId, host, port, secure) { return { ok: true, result: { sessionId, endpoint: { host, port, secure }, state: 'running' } }; },

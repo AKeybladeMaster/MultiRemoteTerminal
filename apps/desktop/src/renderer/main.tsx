@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../../../packages/application/src/telnet-terminals.ts';
+import type { SerialTerminalSession } from '../../../../packages/application/src/serial-terminals.ts';
 import type { FtpFilesSession } from '../../../../packages/application/src/ftp-files.ts';
 import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
@@ -19,7 +20,7 @@ import type { MacroRecordingSnapshot, MacroRecordingWarning } from '../../../../
 import { createMultiExecRunner } from '../../../../packages/application/src/multi-exec.ts';
 import type { MultiExecRequest } from '../../../../packages/domain/src/multi-exec.ts';
 import type { MultiExecDisplayTarget, MultiExecView } from './MultiExecDialog.tsx';
-import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
+import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenSerialTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
@@ -27,6 +28,8 @@ import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts'
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import { normalizeSerialConfiguration } from '../../../../packages/domain/src/serial.ts';
+import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
@@ -47,28 +50,31 @@ import { workbenchPreferenceFailureMessage } from './workbench-preference-errors
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
 
-type WorkbenchTerminal =
+type InteractiveTerminal =
   | (LocalTerminalSession & { readonly transport: 'local'; readonly title: string })
   | (SshTerminalSession & { readonly transport: 'ssh'; readonly title: string })
   | (TelnetTerminalSession & { readonly transport: 'telnet'; readonly title: string });
+type WorkbenchTerminal = InteractiveTerminal | (SerialTerminalSession & { readonly transport: 'serial'; readonly title: string });
 
 type WorkbenchFtpSession = FtpFilesSession & { readonly transport: 'ftp'; readonly title: string };
 type WorkbenchSftpSession = SshTerminalSession & { readonly transport: 'sftp'; readonly title: string };
 type WorkbenchSession = WorkbenchTerminal | WorkbenchFtpSession | WorkbenchSftpSession;
 
-function isMacroTerminal(session: WorkbenchSession | undefined): session is WorkbenchTerminal {
+function isMacroTerminal(session: WorkbenchSession | undefined): session is InteractiveTerminal {
   return session !== undefined && (session.transport === 'local' || session.transport === 'ssh' || session.transport === 'telnet');
 }
 
 type OpeningTerminal =
   | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
-  | { readonly transport: 'ssh' | 'sftp' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean };
+  | { readonly transport: 'ssh' | 'sftp' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean }
+  | { readonly transport: 'serial'; readonly sessionId: string; readonly configuration: SerialConfiguration; readonly cancelling: boolean };
 
 type PendingOpenRequest =
   | { cancelled: boolean; readonly transport: 'local'; readonly reply: Promise<OpenTerminalReply> }
   | { cancelled: boolean; readonly transport: 'ssh'; readonly reply: Promise<OpenSshTerminalReply> }
   | { cancelled: boolean; readonly transport: 'sftp'; readonly reply: Promise<OpenSftpFilesReply> }
-  | { cancelled: boolean; readonly transport: 'telnet'; readonly reply: Promise<OpenTelnetTerminalReply> };
+  | { cancelled: boolean; readonly transport: 'telnet'; readonly reply: Promise<OpenTelnetTerminalReply> }
+  | { cancelled: boolean; readonly transport: 'serial'; readonly reply: Promise<OpenSerialTerminalReply> };
 
 type SavedFolderDialogState =
   | { readonly mode: 'create'; readonly parentId: string | null }
@@ -94,7 +100,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -111,7 +117,7 @@ function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell]
 function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell].badge; }
 function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
-function macroTargetTitle(session: WorkbenchTerminal): string {
+function macroTargetTitle(session: InteractiveTerminal): string {
   if (session.transport === 'local') return `${session.title} · ${shellName(session.shell)} · local`;
   const protocol = session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH';
   return `${session.title} · ${protocol} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)}`;
@@ -119,6 +125,7 @@ function macroTargetTitle(session: WorkbenchTerminal): string {
 
 function openingName(opening: OpeningTerminal): string {
   if (opening.transport === 'local') return `${shellName(opening.shell)} terminal`;
+  if (opening.transport === 'serial') return `Serial connection to ${opening.configuration.path}`;
   const protocol = opening.transport === 'telnet' ? 'Telnet (plaintext)' : opening.transport === 'sftp' ? 'SFTP' : 'SSH';
   return `${protocol} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
 }
@@ -181,6 +188,7 @@ function terminalStatus(session: WorkbenchSession | undefined): string {
   if (session.transport === 'ftp') return `${session.endpoint.secure ? 'FTPS' : 'FTP (plaintext)'} files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
   if (session.transport === 'sftp') return `SFTP files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
   if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
+  if (session.transport === 'serial') return `Serial · ${session.configuration.path} · ${session.configuration.baudRate} baud · ${session.state}`;
   return `${session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
 }
 
@@ -233,10 +241,11 @@ function tunnelOpenError(code: string): string {
   return `The tunnel operation failed (${code}).`;
 }
 
-function closeTerminalConnection(sessionId: string, transport: 'local' | 'ssh' | 'telnet' | 'ftp' | 'sftp') {
+function closeTerminalConnection(sessionId: string, transport: 'local' | 'ssh' | 'telnet' | 'serial' | 'ftp' | 'sftp') {
   if (transport === 'ssh') return window.multiRemoteTerminal.closeSshTerminal(sessionId);
   if (transport === 'sftp') return window.multiRemoteTerminal.closeSftpFiles(sessionId);
   if (transport === 'telnet') return window.multiRemoteTerminal.closeTelnetTerminal(sessionId);
+  if (transport === 'serial') return window.multiRemoteTerminal.closeSerialTerminal(sessionId);
   if (transport === 'ftp') return window.multiRemoteTerminal.closeFtpFiles(sessionId);
   return window.multiRemoteTerminal.closeTerminal(sessionId);
 }
@@ -294,6 +303,13 @@ function Workbench() {
   const [telnetPort, setTelnetPort] = useState('23');
   const [telnetConnectError, setTelnetConnectError] = useState<string>();
   const [telnetSavedTitle, setTelnetSavedTitle] = useState<string>();
+  const [serialConnectOpen, setSerialConnectOpen] = useState(false);
+  const [serialPorts, setSerialPorts] = useState<readonly SerialPortInfo[]>([]);
+  const [serialPortsLoading, setSerialPortsLoading] = useState(false);
+  const [serialPortsError, setSerialPortsError] = useState<string>();
+  const [serialConfigurationDraft, setSerialConfigurationDraft] = useState<SerialConfiguration>({
+    path: 'COM1', baudRate: 9600, dataBits: 8, parity: 'none', stopBits: 1, flowControl: 'none'
+  });
   const [ftpConnectOpen, setFtpConnectOpen] = useState(false);
   const [ftpHost, setFtpHost] = useState('');
   const [ftpPort, setFtpPort] = useState('21');
@@ -356,6 +372,7 @@ function Workbench() {
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0 });
   const nextSshOrdinal = useRef(0);
   const nextTelnetOrdinal = useRef(0);
+  const nextSerialOrdinal = useRef(0);
   const nextFtpOrdinal = useRef(0);
   const savedSessionsRequest = useRef(0);
   const savedFoldersRequest = useRef(0);
@@ -432,6 +449,8 @@ function Workbench() {
   const telnetHostInput = useRef<HTMLInputElement>(null);
   const telnetPortInput = useRef<HTMLInputElement>(null);
   const telnetConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const serialConnectDialog = useRef<HTMLElement>(null);
+  const serialConnectReturnFocus = useRef<HTMLElement | null>(null);
   const ftpConnectDialog = useRef<HTMLElement>(null);
   const ftpHostInput = useRef<HTMLInputElement>(null);
   const ftpPortInput = useRef<HTMLInputElement>(null);
@@ -1142,6 +1161,32 @@ function Workbench() {
     setTelnetConnectOpen(true);
   }, []);
 
+  const refreshSerialPorts = useCallback(async () => {
+    setSerialPortsLoading(true);
+    setSerialPortsError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.listSerialPorts();
+      if (!reply.ok) {
+        setSerialPortsError(`Serial ports could not be listed (${reply.error.code}).`);
+        return;
+      }
+      setSerialPorts(reply.result);
+      setSerialConfigurationDraft(current => reply.result.some(port => port.path === current.path)
+        ? current : { ...current, path: reply.result[0]?.path ?? current.path });
+    } catch {
+      setSerialPortsError('Serial ports could not be listed. Check that the device driver is installed and try again.');
+    } finally {
+      setSerialPortsLoading(false);
+    }
+  }, []);
+
+  const openSerialConnect = useCallback(() => {
+    serialConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSerialPortsError(undefined);
+    setSerialConnectOpen(true);
+    void refreshSerialPorts();
+  }, [refreshSerialPorts]);
+
   const openFtpConnect = useCallback((host = '', port = 21, secure = true, savedTitle?: string) => {
     ftpConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setFtpHost(host);
@@ -1504,6 +1549,34 @@ function Workbench() {
     setActiveId(reply.result.sessionId);
   }, []);
 
+  const openSerialTerminal = useCallback(async (input: SerialConfiguration) => {
+    const configuration = normalizeSerialConfiguration(input);
+    if (!configuration || !serialPorts.some(port => port.path === configuration.path)) {
+      setSerialPortsError('Choose a serial port that is currently listed. Refresh the list if the device changed.');
+      return;
+    }
+    setSerialConnectOpen(false);
+    setSerialPortsError(undefined);
+    setAlert(undefined);
+    const sessionId = crypto.randomUUID();
+    const replyPromise = window.multiRemoteTerminal.openSerialTerminal(sessionId, configuration, 80, 24);
+    pendingOpenRequests.current.set(sessionId, { transport: 'serial', cancelled: false, reply: replyPromise });
+    setOpeningSessions(current => [...current, { transport: 'serial', sessionId, configuration, cancelling: false }]);
+    const reply = await replyPromise;
+    if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
+    pendingOpenRequests.current.delete(sessionId);
+    setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
+    if (!reply.ok) {
+      if (reply.error.code !== 'CANCELLED') setAlert(`Could not open ${configuration.path} (${reply.error.code}). Check the port settings and device connection.`);
+      return;
+    }
+    const ordinal = ++nextSerialOrdinal.current;
+    setSessions(current => [...current, {
+      ...reply.result, transport: 'serial', title: `${configuration.path} · ${configuration.baudRate} baud · Serial ${ordinal}`
+    }]);
+    setActiveId(reply.result.sessionId);
+  }, [serialPorts]);
+
   async function openFtpFiles(hostInput: string, portInput: string, secure: boolean, savedTitle?: string) {
     if (ftpConnecting) return;
     const host = hostInput.trim();
@@ -1846,6 +1919,18 @@ function Workbench() {
         }
         return;
       }
+      if (serialConnectOpen) {
+        if (event.key === 'Escape') { event.preventDefault(); setSerialConnectOpen(false); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(serialConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (ftpConnectOpen) {
         if (event.key === 'Escape' && !ftpConnecting) { event.preventDefault(); setFtpConnectOpen(false); }
         else if (event.key === 'Tab') {
@@ -1927,7 +2012,7 @@ function Workbench() {
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
     helpOpen, rdpConnectOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents,
-    tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen]);
+    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -2031,6 +2116,15 @@ function Workbench() {
   }, [telnetConnectOpen]);
 
   useEffect(() => {
+    if (serialConnectOpen) requestAnimationFrame(() => serialConnectDialog.current?.querySelector<HTMLElement>('select, button')?.focus());
+    else if (serialConnectReturnFocus.current) {
+      const target = serialConnectReturnFocus.current;
+      serialConnectReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [serialConnectOpen]);
+
+  useEffect(() => {
     if (ftpConnectOpen) requestAnimationFrame(() => ftpHostInput.current?.focus());
     else if (ftpConnectReturnFocus.current) {
       const target = ftpConnectReturnFocus.current;
@@ -2111,6 +2205,7 @@ function Workbench() {
     { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
     { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
+    { id: 'connect-serial', label: 'Connect to serial port', run: openSerialConnect },
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
     { id: 'connect-rdp', label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() },
     { id: 'connect-vnc', label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() },
@@ -2295,7 +2390,7 @@ function Workbench() {
   }
 
   function beginSaveActiveSession() {
-    if (!active) return;
+    if (!active || active.transport === 'serial') return;
     saveSessionReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSaveSessionName(uncertainSaveDraft?.name ?? active.title);
     setSaveSessionError(uncertainSaveDraft
@@ -2305,7 +2400,7 @@ function Workbench() {
   }
 
   async function saveActiveSession() {
-    if (!active || catalogBusy || uncertainSaveDraft) return;
+    if (!active || active.transport === 'serial' || catalogBusy || uncertainSaveDraft) return;
     const draft: SavedSessionDraft = active.transport === 'local'
       ? { kind: 'local', name: saveSessionName, shell: active.shell }
       : active.transport === 'ssh'
@@ -2535,6 +2630,7 @@ function Workbench() {
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect()}><span aria-hidden="true">↗</span> Connect to SSH</button>
+        <button className="connect-ssh-button" type="button" onClick={openSerialConnect}>Connect to serial port</button>
         <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
         <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>
@@ -2543,7 +2639,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="multi-exec-open" onClick={openMultiExec}>MultiExec</button>
-        <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
+        <button className="save-session-button" type="button" disabled={!active || active.transport === 'serial' || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
         {sessions.length > 0 && <div className="session-group">
           <h3>Open sessions</h3>
           <ul>
@@ -2552,7 +2648,7 @@ function Workbench() {
                 aria-current={session.sessionId === activeId ? 'page' : undefined} onClick={() => setActiveId(session.sessionId)}>
                 <span className={`shell-glyph ${session.transport === 'local' ? session.shell : session.transport}`} aria-hidden="true">
                   {session.transport === 'local' ? shellMark(session.shell) : session.transport === 'ssh' ? 'SSH'
-                    : session.transport === 'sftp' ? 'SFTP' : session.transport === 'telnet' ? 'TELNET'
+                    : session.transport === 'sftp' ? 'SFTP' : session.transport === 'telnet' ? 'TELNET' : session.transport === 'serial' ? 'COM'
                       : session.endpoint.secure ? 'FTPS' : 'FTP'}
                 </span>
                 <span className="session-name" translate="no">{session.title}</span>
@@ -2616,7 +2712,7 @@ function Workbench() {
               }}>
               <span className={`shell-glyph ${session.transport === 'local' ? session.shell : session.transport}`} aria-hidden="true">
                 {session.transport === 'local' ? shellMark(session.shell) : session.transport === 'ssh' ? 'SSH'
-                  : session.transport === 'sftp' ? 'SFTP' : session.transport === 'telnet' ? 'TELNET'
+                  : session.transport === 'sftp' ? 'SFTP' : session.transport === 'telnet' ? 'TELNET' : session.transport === 'serial' ? 'COM'
                     : session.endpoint.secure ? 'FTPS' : 'FTP'}
               </span>
               <span translate="no">{session.title}</span>
@@ -2684,6 +2780,7 @@ function Workbench() {
             <p>Open a local terminal, connect to a terminal server, or browse files over FTP or FTPS.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect()}>Connect to SSH</button>
+            <button type="button" className="connect-ssh-button" onClick={openSerialConnect}>Connect to serial port</button>
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
             <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>
             <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>
@@ -2879,6 +2976,64 @@ function Workbench() {
           <div className="ssh-connect-actions">
             <button type="button" onClick={() => setTelnetConnectOpen(false)}>Cancel</button>
             <button type="submit" className="ssh-primary" data-mrt-telnet-consent-trigger>Connect</button>
+          </div>
+        </form>
+      </section>
+    </div>}
+    {serialConnectOpen && <div className="ssh-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSerialConnectOpen(false); }}>
+      <section ref={serialConnectDialog} className="ssh-connect-dialog serial-connect-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="serial-connect-heading" aria-describedby="serial-connect-description" aria-busy={serialPortsLoading}>
+        <h2 id="serial-connect-heading">Connect to a serial port</h2>
+        <p id="serial-connect-description">Choose a listed Windows COM port and match its settings to the attached device. Data is displayed as UTF-8 text.</p>
+        <form onSubmit={event => { event.preventDefault(); void openSerialTerminal(serialConfigurationDraft); }}>
+          <div className="serial-port-toolbar">
+            <label htmlFor="serial-port">Port</label>
+            <button type="button" onClick={() => void refreshSerialPorts()} disabled={serialPortsLoading}>
+              {serialPortsLoading ? 'Refreshing…' : 'Refresh ports'}
+            </button>
+          </div>
+          <select id="serial-port" value={serialPorts.some(port => port.path === serialConfigurationDraft.path) ? serialConfigurationDraft.path : ''}
+            onChange={event => setSerialConfigurationDraft(current => ({ ...current, path: event.target.value }))}>
+            <option value="">{serialPorts.length === 0 ? 'No serial ports found' : 'Choose a serial port'}</option>
+            {serialPorts.map(port => <option key={port.path} value={port.path}>
+              {port.path}{port.manufacturer ? ` · ${port.manufacturer}` : ''}
+            </option>)}
+          </select>
+          {serialPortsLoading && <p className="serial-port-status" role="status">Looking for serial ports…</p>}
+          {!serialPortsLoading && serialPorts.length === 0 && <p className="serial-port-status" role="status">Connect a device, then refresh the port list.</p>}
+          {serialPortsError && <p className="dialog-error" role="alert">{serialPortsError}</p>}
+          <div className="serial-options">
+            <label htmlFor="serial-baud">Baud rate</label>
+            <input id="serial-baud" type="number" inputMode="numeric" min="300" max="2000000" step="1" required
+              value={serialConfigurationDraft.baudRate} onChange={event => setSerialConfigurationDraft(current => ({ ...current, baudRate: Number(event.target.value) }))} />
+            <label htmlFor="serial-data-bits">Data bits</label>
+            <select id="serial-data-bits" value={serialConfigurationDraft.dataBits}
+              onChange={event => setSerialConfigurationDraft(current => ({ ...current, dataBits: Number(event.target.value) as SerialConfiguration['dataBits'] }))}>
+              {[5, 6, 7, 8].map(bits => <option key={bits} value={bits}>{bits}</option>)}
+            </select>
+            <label htmlFor="serial-parity">Parity</label>
+            <select id="serial-parity" value={serialConfigurationDraft.parity}
+              onChange={event => setSerialConfigurationDraft(current => ({ ...current, parity: event.target.value as SerialConfiguration['parity'] }))}>
+              {(['none', 'even', 'odd', 'mark', 'space'] as const).map(parity => <option key={parity} value={parity}>{parity[0]?.toUpperCase()}{parity.slice(1)}</option>)}
+            </select>
+            <label htmlFor="serial-stop-bits">Stop bits</label>
+            <select id="serial-stop-bits" value={serialConfigurationDraft.stopBits}
+              onChange={event => setSerialConfigurationDraft(current => ({ ...current, stopBits: Number(event.target.value) as SerialConfiguration['stopBits'] }))}>
+              {[1, 1.5, 2].map(bits => <option key={bits} value={bits}>{bits}</option>)}
+            </select>
+            <label htmlFor="serial-flow-control">Flow control</label>
+            <select id="serial-flow-control" value={serialConfigurationDraft.flowControl}
+              onChange={event => setSerialConfigurationDraft(current => ({ ...current, flowControl: event.target.value as SerialConfiguration['flowControl'] }))}>
+              <option value="none">None</option>
+              <option value="rtscts">RTS/CTS</option>
+              <option value="xonxoff">XON/XOFF</option>
+            </select>
+          </div>
+          <div className="ssh-connect-actions">
+            <button type="button" onClick={() => setSerialConnectOpen(false)}>Cancel</button>
+            <button type="submit" className="ssh-primary" disabled={serialPortsLoading || !serialPorts.some(port => port.path === serialConfigurationDraft.path) || !normalizeSerialConfiguration(serialConfigurationDraft)}>
+              Connect
+            </button>
           </div>
         </form>
       </section>

@@ -1139,6 +1139,56 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
   }
 });
 
+test('Windows serial terminal uses the utility worker mock and supports terminal tab actions', async () => {
+  test.skip(process.platform !== 'win32', 'Electron serial addon acceptance evidence is required on Windows');
+  test.setTimeout(75_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-serial-e2e-'));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-serial-mock'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to serial port', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to a serial port' });
+    const portSelect = dialog.getByLabel('Port');
+    await expect(portSelect.locator('option[value="COM4095"]')).toHaveCount(1, { timeout: 15_000 });
+    await portSelect.selectOption('COM4095');
+    await expect(dialog.getByLabel('Baud rate')).toHaveValue('9600');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+
+    const serialTab = page.getByRole('tab').filter({ hasText: 'COM4095 · 9600 baud · Serial' });
+    await expect(serialTab).toBeVisible({ timeout: 15_000 });
+    const panelId = await serialTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing serial terminal panel');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT serial mock ready', { timeout: 10_000 });
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await page.keyboard.type('MRT-SERIAL-ECHO');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SERIAL-ECHO', { timeout: 10_000 });
+
+    await serialTab.click({ button: 'right' });
+    await expect(page.getByRole('menu', { name: /Terminal actions for COM4095/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Clear terminal' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await serialTab.click({ button: 'middle' });
+    const closeDialog = page.getByRole('alertdialog', { name: /Close COM4095/ });
+    await expect(closeDialog).toBeVisible();
+    await closeDialog.getByRole('button', { name: 'Keep terminal' }).click();
+    await serialTab.click();
+    await page.keyboard.press('Control+W');
+    await expect(closeDialog).toBeVisible();
+    await closeDialog.getByRole('button', { name: 'Close terminal' }).click();
+    await expect(serialTab).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('Telnet requires plaintext consent and carries terminal input through the worker to a saved-profile reconnect', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-telnet-e2e-'));
@@ -2979,6 +3029,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
+      'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
       'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
       'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
