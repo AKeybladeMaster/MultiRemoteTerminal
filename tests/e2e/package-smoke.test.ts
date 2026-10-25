@@ -48,11 +48,36 @@ async function expectLocalPowerShellTerminal(page: Page): Promise<void> {
   await expect(panel.locator('.xterm-rows')).toContainText('MRT-PACKAGED-LOCAL-SHELL', { timeout: 20_000 });
 }
 
-async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userData: string }> {
+async function expectPackagedWindow(app: ElectronApp, options: {
+  readonly deviceScaleFactor?: number;
+  readonly emulateOffline?: boolean;
+} = {}): Promise<{ readonly userData: string }> {
   const page = await app.firstWindow();
   await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
   const metadata = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() }));
   expect(metadata.packaged).toBe(true);
+  if (options.deviceScaleFactor !== undefined) {
+    await expect.poll(() => page.evaluate(() => devicePixelRatio)).toBe(options.deviceScaleFactor);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  if (options.emulateOffline) {
+    await page.context().setOffline(true);
+    const geolocationPermission = await page.evaluate(async () => (await navigator.permissions.query({ name: 'geolocation' })).state);
+    expect(geolocationPermission).toBe('denied');
+
+    const helpButton = page.getByRole('button', { name: 'Help', exact: true });
+    await helpButton.click();
+    const help = page.getByRole('dialog', { name: 'Help & keyboard shortcuts' });
+    await expect(help.getByRole('heading', { name: 'Troubleshooting' })).toBeVisible();
+    await help.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByLabel('Startup greeting').fill('Offline package profile \u2014 caf\u00e9');
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+  }
   await expectLocalPowerShellTerminal(page);
   const serialPorts = await page.evaluate(() => window.multiRemoteTerminal.listSerialPorts());
   expect(serialPorts.ok).toBe(true);
@@ -116,7 +141,7 @@ test('Windows x64 artifacts have per-artifact CycloneDX SBOMs and verified SHA-2
   }
 });
 
-test('NSIS installs a runnable per-user app and silently uninstalls it', async () => {
+test('NSIS package works offline at 200% scale, persists local settings, and uninstalls', async () => {
   test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
     'Run on Windows x64 through package:win:smoke; signature verification is outside this smoke');
   test.setTimeout(240_000);
@@ -134,9 +159,22 @@ test('NSIS installs a runnable per-user app and silently uninstalls it', async (
     await expect.poll(async () => (await stat(executable).catch(() => undefined)) !== undefined, { timeout: 30_000 }).toBe(true);
     const environment = cleanEnvironment();
     const profile = join(temporaryRoot, 'user-data');
-    app = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`], env: environment });
-    const { userData } = await expectPackagedWindow(app);
+    const launchInstalled = () => electron.launch({
+      executablePath: executable,
+      args: [`--user-data-dir=${profile}`, '--force-device-scale-factor=2'],
+      env: environment
+    });
+    app = await launchInstalled();
+    const { userData } = await expectPackagedWindow(app, { deviceScaleFactor: 2, emulateOffline: true });
     expect(win32.resolve(userData).toLowerCase()).not.toContain(win32.resolve(installDirectory).toLowerCase());
+    await app.close();
+    app = undefined;
+
+    app = await launchInstalled();
+    const reopenedPage = await app.firstWindow();
+    await expect(reopenedPage.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
+    await reopenedPage.context().setOffline(true);
+    await expect(reopenedPage.getByRole('region', { name: 'Startup greeting' })).toContainText('Offline package profile \u2014 caf\u00e9');
     await app.close();
     app = undefined;
 

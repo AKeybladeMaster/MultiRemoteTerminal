@@ -152,6 +152,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07D — Windows distribution SBOM and signing plan (partial):** Windows x64 packaging now emits a CycloneDX 1.6 SBOM for each installer/portable executable, covering the resolved production dependency graph for `@mrt/desktop` plus the pinned Electron runtime. Each SBOM carries the corresponding executable's SHA-256, signature state, and build tool versions; `SHA256SUMS.txt` covers the executable and SBOM files. The package smoke checks graph references, production-only scope, artifact hashes and manifest entries. `MRT_SIGNED_RELEASE=1` requires signing credentials and rejects artifacts without valid Authenticode signatures. A reproducible release procedure is recorded in [the Windows release plan](release/WINDOWS-RELEASE.md). N-007 remains partial until a publisher certificate is provisioned, a signed release build and its signatures are verified, and the final version is selected; M4 remains open.
 
+**WP-07E — Packaged offline and 200% device-scale smoke:** The installed NSIS app launches with Electron's 2× device scale and is checked for horizontal overflow. Playwright then emulates an offline renderer network while the app opens local help, saves a greeting through SQLite, launches PowerShell and reopens the greeting after restart. The packaged renderer's geolocation permission remains denied. This is Windows 11 packaged acceptance; it does not emulate an OS-wide network outage or add Windows 10 evidence. See [WP-07E results](results/WP-07E-packaged-offline-and-dpi-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
