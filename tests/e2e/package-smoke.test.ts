@@ -1,0 +1,110 @@
+import { test, expect, _electron as electron } from '@playwright/test';
+import { copyFile, mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join, resolve, win32 } from 'node:path';
+
+function cleanEnvironment(): Record<string, string> {
+  return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
+    entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE' && !entry[0].startsWith('PORTABLE_EXECUTABLE_')));
+}
+
+type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
+
+async function expectPackagedWindow(app: ElectronApp): Promise<{ readonly userData: string }> {
+  const page = await app.firstWindow();
+  await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
+  const metadata = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, userData: app.getPath('userData'), appPath: app.getAppPath() }));
+  expect(metadata.packaged).toBe(true);
+  await page.keyboard.press('Control+Shift+P');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await expect(palette).toBeVisible();
+  await palette.getByRole('button', { name: 'New PowerShell terminal', exact: true }).click();
+  const tab = page.getByRole('tab').filter({ hasText: 'PowerShell session 1' }).first();
+  await expect(tab).toBeVisible({ timeout: 20_000 });
+  const panelId = await tab.getAttribute('aria-controls');
+  if (!panelId) throw new Error('Packaged PowerShell terminal has no panel');
+  const panel = page.locator(`#${panelId}`);
+  await tab.click();
+  await expect(panel.locator('.terminal-host')).toBeVisible();
+  await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+  await page.keyboard.type("Write-Output 'MRT-PACKAGED-LOCAL-SHELL'");
+  await page.keyboard.press('Enter');
+  await expect(panel.locator('.xterm-rows')).toContainText('MRT-PACKAGED-LOCAL-SHELL', { timeout: 20_000 });
+  const profile = await stat(metadata.userData);
+  expect(profile.isDirectory()).toBe(true);
+  expect(metadata.appPath.toLowerCase()).toContain('resources');
+  return { userData: metadata.userData };
+}
+
+test('NSIS installs a runnable per-user app and silently uninstalls it', async () => {
+  test.skip(process.platform !== 'win32' || process.env.MRT_PACKAGE_E2E !== '1', 'Run through package:win:smoke on Windows');
+  test.setTimeout(240_000);
+  const artifacts = resolve('artifacts/windows');
+  const installer = join(artifacts, 'MultiRemoteTerminal Setup 0.0.0.exe');
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-installer-smoke-'));
+  const installDirectory = join(temporaryRoot, 'installed');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    const installResult = spawnSync(installer, ['/S', `/D=${installDirectory}`], { timeout: 120_000, windowsHide: true, encoding: 'utf8' });
+    if (installResult.error) throw installResult.error;
+    expect(installResult.status, installResult.stderr).toBe(0);
+
+    const executable = join(installDirectory, 'MultiRemoteTerminal.exe');
+    await expect.poll(async () => (await stat(executable).catch(() => undefined)) !== undefined, { timeout: 30_000 }).toBe(true);
+    const environment = cleanEnvironment();
+    const profile = join(temporaryRoot, 'user-data');
+    app = await electron.launch({ executablePath: executable, args: [`--user-data-dir=${profile}`], env: environment });
+    const { userData } = await expectPackagedWindow(app);
+    expect(win32.resolve(userData).toLowerCase()).not.toContain(win32.resolve(installDirectory).toLowerCase());
+    await app.close();
+    app = undefined;
+
+    const uninstaller = (await readdir(installDirectory)).find(name => /^uninstall.*\.exe$/iu.test(name));
+    if (!uninstaller) throw new Error('The NSIS install did not include an uninstaller');
+    const uninstallResult = spawnSync(join(installDirectory, uninstaller), ['/S'], { timeout: 120_000, windowsHide: true, encoding: 'utf8' });
+    if (uninstallResult.error) throw uninstallResult.error;
+    expect(uninstallResult.status, uninstallResult.stderr).toBe(0);
+    await expect.poll(async () => (await stat(installDirectory).catch(() => undefined)) === undefined, { timeout: 30_000 }).toBe(true);
+  } finally {
+    if (app) await app.close();
+    const uninstaller = (await readdir(installDirectory).catch(() => [])).find(name => /^uninstall.*\.exe$/iu.test(name));
+    if (uninstaller) spawnSync(join(installDirectory, uninstaller), ['/S'], { timeout: 120_000, windowsHide: true });
+    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+  }
+});
+
+test('portable app starts from its own folder and keeps profile data beside the executable', async () => {
+  test.skip(process.platform !== 'win32' || process.env.MRT_PACKAGE_E2E !== '1', 'Run through package:win:smoke on Windows');
+  test.setTimeout(180_000);
+  const portableArtifact = resolve('artifacts/windows/MultiRemoteTerminal 0.0.0.exe');
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-portable-smoke-'));
+  const portableExecutable = join(temporaryRoot, 'MultiRemoteTerminal.exe');
+  await copyFile(portableArtifact, portableExecutable);
+  let portableApp: ReturnType<typeof spawn> | undefined;
+  try {
+    const environment = cleanEnvironment();
+    const expected = win32.join(temporaryRoot, 'MultiRemoteTerminal-data');
+    portableApp = spawn(portableExecutable, [], { env: environment, stdio: 'ignore', windowsHide: true });
+    if (!portableApp.pid) throw new Error('The portable launcher did not start');
+    await expect.poll(async () => (await stat(join(expected, 'multiremote-terminal.sqlite')).catch(() => undefined)) !== undefined,
+      { timeout: 60_000, intervals: [200, 500, 1_000] }).toBe(true);
+    expect(portableApp.exitCode).toBeNull();
+    const profileStat = await stat(expected);
+    expect(profileStat.isDirectory()).toBe(true);
+  } finally {
+    if (portableApp?.pid && portableApp.exitCode === null) {
+      const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+      spawnSync(taskkill, ['/PID', String(portableApp.pid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });
+      await new Promise<void>(resolveExit => {
+        if (portableApp?.exitCode !== null) resolveExit();
+        else {
+          const timer = setTimeout(resolveExit, 5_000);
+          timer.unref();
+          portableApp?.once('exit', () => { clearTimeout(timer); resolveExit(); });
+        }
+      });
+    }
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});

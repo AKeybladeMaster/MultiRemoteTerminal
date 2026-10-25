@@ -55,7 +55,7 @@ WP-06F adds Windows loopback E2E for macro playback over trusted SSH and explici
 | P-29 | Password management / master password | OS-protected vault + optional user passphrase | MVP | Lock/unlock, corruption test, no plaintext at rest |
 | P-30 | Syntax highlighting in terminal | Renderer keyword rules applied to text stream | Next | Optional regex rules with DoS-safe limits and no ANSI corruption |
 | P-31 | Plugins / additional tools | Capability provider registry | Next | Enable/disable vetted external integration, no arbitrary plugin runtime |
-| P-32 | Installer and portable | Installer + ZIP/portable mode | MVP | Install/uninstall; portable data-location choice |
+| P-32 (PARTIAL) | Installer and portable | Installer + ZIP/portable mode | MVP | WP-07A produces x64 NSIS and portable executables. Windows 11 E2E installs, launches a PowerShell terminal, uninstalls, and verifies the portable profile database is beside the portable executable. Windows 10, code signing, 200% DPI, offline and broader crash/startup acceptance remain open; see [WP-07A evidence](results/WP-07A-windows-package-2026-10-25.md). |
 | P-33 | Documentation and help | Offline manual and keybinding reference | MVP | Covers every MVP command + troubleshooting |
 | P-34 | Custom startup message | Settings theme + greeting template | MVP | User-set Unicode greeting at startup; no code execution |
 | P-35 | Custom logo | Validated user-owned image reference | MVP | No borrowed MobaXterm branding; missing file fallback |

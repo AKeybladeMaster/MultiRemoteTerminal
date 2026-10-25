@@ -470,7 +470,7 @@ class StorageWorkerClient {
     this.readyResolve = resolveReady;
     this.readyReject = rejectReady;
     const worker = this.launchWorker(this.workerPath, [], {
-      cwd: this.appRoot,
+      cwd: process.resourcesPath ?? this.appRoot,
       env: { MRT_STORAGE_DB_PATH: this.databasePath },
       serviceName: 'MultiRemoteTerminal SQLite storage provider',
       stdio: 'ignore'

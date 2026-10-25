@@ -188,7 +188,7 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
     let resolveExit!: () => void;
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
     const worker = this.launchWorker(this.workerPath, [], {
-      cwd: this.appRoot,
+      cwd: process.resourcesPath ?? this.appRoot,
       env: { MRT_APP_ROOT: this.appRoot },
       serviceName: 'MultiRemoteTerminal FTP file provider',
       stdio: 'ignore'

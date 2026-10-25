@@ -1,10 +1,16 @@
 import { spawnSync } from 'node:child_process';
-import { cp, mkdir, readFile } from 'node:fs/promises';
-import { resolve, win32 as path } from 'node:path';
+import { cp, mkdir, readFile, rm } from 'node:fs/promises';
+import { dirname, resolve, win32 as path } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build as viteBuild } from 'vite';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+process.chdir(projectRoot);
+await import('./generate-app-icon.mjs');
+await rm(resolve(projectRoot, 'dist'), { recursive: true, force: true });
+await rm(resolve(projectRoot, 'apps/desktop/dist'), { recursive: true, force: true });
 if (process.platform === 'win32') {
   const rootManifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronVersion = rootManifest.devDependencies?.electron;
@@ -44,3 +50,4 @@ const { build } = await import('esbuild');
 await mkdir('dist/preload', { recursive: true });
 await build({ entryPoints: ['apps/desktop/src/preload/bridge.ts'], outfile: 'dist/preload/bridge.cjs', bundle: true, platform: 'node', format: 'cjs', external: ['electron'], target: 'node24' });
 await viteBuild();
+await cp('dist', 'apps/desktop/dist', { recursive: true });
