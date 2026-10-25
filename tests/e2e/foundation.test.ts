@@ -61,7 +61,7 @@ interface SftpFixtureOptions {
 
 function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2FixturePackage['utils']['sftp'],
   options: SftpFixtureOptions = {}): void {
-  interface DirectoryHandle { readonly names: string[]; read: boolean; }
+  interface DirectoryHandle { readonly path: string; readonly names: string[]; read: boolean; }
   const fileHandles = new Map<number, Awaited<ReturnType<typeof openFile>>>();
   const directoryHandles = new Map<number, DirectoryHandle>();
   let nextHandleId = 1;
@@ -103,7 +103,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
       const stats = await statFile(location.local);
       if (!stats.isDirectory()) throw Object.assign(new Error('Not a directory'), { code: 'ENOTDIR' });
       const id = nextHandleId++;
-      directoryHandles.set(id, { names: await readDirectory(location.local), read: false });
+      directoryHandles.set(id, { path: location.remote, names: await readDirectory(location.local), read: false });
       sftp.handle(requestId, handleBytes(id));
     })().catch(error => sftp.status(requestId, statusForError(error)));
   });
@@ -113,7 +113,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     directory.read = true;
     void (async () => {
       const entries = await Promise.all(directory.names.map(async filename => {
-        const path = remoteLocation(posix.join('/home/mrt', filename)).local;
+        const path = remoteLocation(posix.join(directory.path, filename)).local;
         const item = await lstatFile(path);
         const prefix = item.isDirectory() ? 'drwx------' : item.isSymbolicLink() ? 'lrwxrwxrwx' : '-rw-------';
         return { filename, longname: `${prefix} 1 mrt mrt ${item.size} Jan 01 00:00 ${filename}`, attrs: attributes(item) };
@@ -208,6 +208,18 @@ let nextPowerShellSizeProbe = 0;
 function electronEnvironment(): Record<string, string> {
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
     entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE'));
+}
+
+async function focusVirtualizedListBoundary(list: Locator, edge: 'first' | 'last') {
+  return list.evaluate((element, direction) => {
+    const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
+      .filter(control => control.getClientRects().length > 0);
+    const boundary = direction === 'first' ? controls[0] : controls.at(-1);
+    const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
+    if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
+    boundary.focus();
+    return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
+  }, edge);
 }
 
 async function runPaletteCommand(page: Page, label: string): Promise<void> {
@@ -405,9 +417,12 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
   const remoteRoot = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-remote-'));
+  const remoteScaleRoot = join(remoteRoot, 'scale');
   const uploadSource = join(profile, 'upload.txt');
   const downloadRoot = join(profile, 'downloads');
   await mkdir(downloadRoot);
+  await mkdir(remoteScaleRoot);
+  await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
   await writeFile(uploadSource, 'private local upload payload');
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
   await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\r\n');
@@ -478,6 +493,33 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
     if (!sftpPanelId) throw new Error('Missing standalone SFTP file panel');
     const sftpPanel = page.locator(`#${sftpPanelId}`);
     await expect(sftpPanel.getByTestId('remote-file-browser').getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    const remoteFileList = sftpPanel.locator('.remote-file-list');
+    await remoteFileList.getByRole('button', { name: 'Open folder scale', exact: true }).click();
+    await expect(remoteFileList).toHaveAttribute('aria-label', 'Items in /home/mrt/scale');
+    await expect.poll(() => remoteFileList.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
+    await expect(remoteFileList.locator('li[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
+    const initiallyRenderedFiles = await remoteFileList.locator('li[data-virtual-index]').count();
+    expect(initiallyRenderedFiles).toBeGreaterThan(0);
+    expect(initiallyRenderedFiles).toBeLessThan(100);
+    const remoteForwardProbe = await focusVirtualizedListBoundary(remoteFileList, 'last');
+    expect(remoteForwardProbe.focused).toBe(true);
+    await page.keyboard.press('Tab');
+    await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
+      .toBe(remoteForwardProbe.index + 1);
+    await remoteFileList.evaluate(element => { element.scrollTop = 1_200; });
+    await expect.poll(() => remoteFileList.locator('li[data-virtual-index]').first().getAttribute('data-virtual-index'))
+      .not.toBe('0');
+    const remoteReverseProbe = await focusVirtualizedListBoundary(remoteFileList, 'first');
+    expect(remoteReverseProbe.focused).toBe(true);
+    await page.keyboard.press('Shift+Tab');
+    await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
+      .toBe(remoteReverseProbe.index - 1);
+    await remoteFileList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(remoteFileList.locator('li[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '99');
+    await remoteFileList.evaluate(element => { element.scrollTop = 0; });
+    await expect(remoteFileList.locator('li[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
+    await sftpPanel.getByRole('button', { name: 'Open parent folder', exact: true }).click();
+    await expect(remoteFileList).toHaveAttribute('aria-label', 'Items in /home/mrt');
     await sftpPanel.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
     await expect(sftpPanel.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
@@ -1801,22 +1843,13 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
     const catalogList = page.locator('.saved-session-list');
     await expect(catalogList.locator('.saved-session-row').first().locator('.saved-actions-panel')).toBeHidden();
-    const focusCatalogBoundary = (edge: 'first' | 'last') => catalogList.evaluate((element, direction) => {
-      const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
-        .filter(control => control.getClientRects().length > 0);
-      const boundary = direction === 'first' ? controls[0] : controls.at(-1);
-      const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
-      if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
-      boundary.focus();
-      return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
-    }, edge);
     const initiallyRenderedRows = await catalogList.locator('.saved-session-row').count();
     expect(initiallyRenderedRows).toBeGreaterThan(0);
     expect(initiallyRenderedRows).toBeLessThan(1_000);
 
     await catalogList.evaluate(element => { element.scrollTop = 0; });
     await expect.poll(() => catalogList.evaluate(element => element.clientHeight)).toBeGreaterThan(0);
-    const keyboardProbe = await focusCatalogBoundary('last');
+    const keyboardProbe = await focusVirtualizedListBoundary(catalogList, 'last');
     expect(keyboardProbe.focused).toBe(true);
     await page.keyboard.press('Tab');
     await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
@@ -1825,7 +1858,7 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     await catalogList.evaluate(element => { element.scrollTop = 1_500; });
     await expect.poll(() => catalogList.locator('[data-virtual-index]').first().getAttribute('data-virtual-index'))
       .not.toBe('0');
-    const reverseKeyboardProbe = await focusCatalogBoundary('first');
+    const reverseKeyboardProbe = await focusVirtualizedListBoundary(catalogList, 'first');
     expect(reverseKeyboardProbe.focused).toBe(true);
     await page.keyboard.press('Shift+Tab');
     await expect.poll(() => page.evaluate(() => Number(document.activeElement?.closest('[data-virtual-index]')?.getAttribute('data-virtual-index'))))
@@ -1835,7 +1868,7 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
     await expect(catalogList.locator('[data-virtual-index]').last()).toHaveAttribute('data-virtual-index', '1001');
     await catalogList.evaluate(element => { element.scrollTop = 0; });
     await expect(catalogList.locator('[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
-    const firstFocusableRow = await focusCatalogBoundary('first');
+    const firstFocusableRow = await focusVirtualizedListBoundary(catalogList, 'first');
     expect(firstFocusableRow.index).toBe(1);
     expect(firstFocusableRow.focused).toBe(true);
     await page.keyboard.press('Shift+Tab');

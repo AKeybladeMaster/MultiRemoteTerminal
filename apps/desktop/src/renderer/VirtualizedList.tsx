@@ -2,47 +2,55 @@ import { cloneElement, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, LiHTMLAttributes, ReactElement, ReactNode } from 'react';
 
 export const SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD = 80;
-const VIRTUAL_ROW_HEIGHT = 52;
+
 const VIRTUAL_OVERSCAN = 8;
 const FOCUSABLE_ROW_CONTROL = 'button:not(:disabled), summary[role="button"]';
 
-function visibleFocusableControls(container: ParentNode): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_ROW_CONTROL))
-    .filter(control => control.getClientRects().length > 0);
-}
-
 type VirtualRowProps = LiHTMLAttributes<HTMLLIElement> & {
   readonly 'data-virtual-index'?: number;
-  readonly 'data-virtual-focusable'?: boolean;
 };
-
-function findFocusableVirtualRowIndex(rows: readonly ReactElement[], startIndex: number, step: -1 | 1): number | undefined {
-  for (let index = startIndex; index >= 0 && index < rows.length; index += step) {
-    const props = rows[index]?.props as VirtualRowProps | undefined;
-    if (props?.['data-virtual-focusable'] !== false) return index;
-  }
-  return undefined;
-}
 
 interface PendingFocus {
   readonly index: number;
   readonly edge: 'first' | 'last';
 }
 
-interface SavedSessionCatalogListProps {
-  readonly virtualRows: readonly ReactElement[];
-  readonly renderNestedRows: () => readonly ReactNode[];
+interface VirtualizedListProps<T> {
+  readonly items: readonly T[];
+  readonly label: string;
+  readonly className: string;
+  readonly rowHeight: number;
+  readonly threshold: number;
+  readonly ariaSetSize?: number;
+  readonly renderItem: (item: T, index: number) => ReactElement<VirtualRowProps>;
+  readonly isItemFocusable: (item: T) => boolean;
+  readonly renderNonVirtualizedRows: () => ReactNode;
 }
 
-export function SavedSessionCatalogList({ virtualRows, renderNestedRows }: SavedSessionCatalogListProps): ReactElement {
+function visibleFocusableControls(container: ParentNode): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_ROW_CONTROL))
+    .filter(control => control.getClientRects().length > 0);
+}
+
+function findFocusableItemIndex<T>(items: readonly T[], isItemFocusable: (item: T) => boolean,
+  startIndex: number, step: -1 | 1): number | undefined {
+  for (let index = startIndex; index >= 0 && index < items.length; index += step) {
+    const item = items[index];
+    if (item !== undefined && isItemFocusable(item)) return index;
+  }
+  return undefined;
+}
+
+export function VirtualizedList<T>({ items, label, className, rowHeight, threshold, ariaSetSize,
+  renderItem, isItemFocusable, renderNonVirtualizedRows }: VirtualizedListProps<T>): ReactElement {
   const list = useRef<HTMLUListElement>(null);
   const pendingFocus = useRef<PendingFocus | null>(null);
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 320 });
-  const virtualized = virtualRows.length > SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD;
-  const firstIndex = virtualized ? Math.max(0, Math.floor(viewport.scrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN) : 0;
+  const virtualized = items.length > threshold;
+  const firstIndex = virtualized ? Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - VIRTUAL_OVERSCAN) : 0;
   const endIndex = virtualized
-    ? Math.min(virtualRows.length, Math.ceil((viewport.scrollTop + viewport.height) / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN)
-    : virtualRows.length;
+    ? Math.min(items.length, Math.ceil((viewport.scrollTop + viewport.height) / rowHeight) + VIRTUAL_OVERSCAN)
+    : items.length;
 
   useLayoutEffect(() => {
     if (!virtualized) return;
@@ -73,62 +81,62 @@ export function SavedSessionCatalogList({ virtualRows, renderNestedRows }: Saved
     if (!control) return;
     pendingFocus.current = null;
     control.focus();
-  }, [endIndex, firstIndex, virtualized]);
+  }, [endIndex, firstIndex, items, virtualized]);
 
   useLayoutEffect(() => {
     if (!virtualized) return;
     const element = list.current;
     if (!element) return;
-    const maximumScrollTop = Math.max(0, virtualRows.length * VIRTUAL_ROW_HEIGHT - element.clientHeight);
+    const maximumScrollTop = Math.max(0, items.length * rowHeight - element.clientHeight);
     if (element.scrollTop > maximumScrollTop) element.scrollTop = maximumScrollTop;
-  }, [virtualRows.length, virtualized]);
+  }, [items.length, rowHeight, virtualized]);
 
   function moveFocusAcrossVirtualWindow(event: ReactKeyboardEvent<HTMLUListElement>): void {
     if (!virtualized || event.key !== 'Tab') return;
     const controls = visibleFocusableControls(event.currentTarget);
-    const boundary = event.shiftKey ? controls[0] : controls[controls.length - 1];
+    const boundary = event.shiftKey ? controls[0] : controls.at(-1);
     if (!boundary || document.activeElement !== boundary) return;
     const row = boundary.closest<HTMLElement>('[data-virtual-index]');
     const rowIndex = Number(row?.dataset.virtualIndex);
     const step = event.shiftKey ? -1 : 1;
     if (!Number.isInteger(rowIndex)) return;
-    const nextIndex = findFocusableVirtualRowIndex(virtualRows, rowIndex + step, step);
+    const nextIndex = findFocusableItemIndex(items, isItemFocusable, rowIndex + step, step);
     if (nextIndex === undefined) return;
 
     event.preventDefault();
     pendingFocus.current = { index: nextIndex, edge: event.shiftKey ? 'last' : 'first' };
     const element = event.currentTarget;
-    element.scrollTop = nextIndex * VIRTUAL_ROW_HEIGHT;
+    element.scrollTop = nextIndex * rowHeight;
     setViewport({ scrollTop: element.scrollTop, height: element.clientHeight });
   }
 
   if (!virtualized) {
-    return <ul className="saved-session-list" aria-label="Saved sessions and folders">{renderNestedRows()}</ul>;
+    return <ul className={className} aria-label={label}>{renderNonVirtualizedRows()}</ul>;
   }
 
-  const positionedRows = virtualRows.slice(firstIndex, endIndex).map((row, offset) => {
+  const positionedRows = items.slice(firstIndex, endIndex).map((item, offset) => {
     const index = firstIndex + offset;
-    const props = row.props as VirtualRowProps;
+    const row = renderItem(item, index);
     const style: CSSProperties = {
-      ...props.style,
+      ...row.props.style,
       position: 'absolute',
-      top: index * VIRTUAL_ROW_HEIGHT,
+      top: index * rowHeight,
       right: 0,
       left: 0,
-      height: VIRTUAL_ROW_HEIGHT
+      height: rowHeight
     };
-    return cloneElement(row as ReactElement<VirtualRowProps>, {
-      key: row.key ?? `saved-row-${index}`,
+    return cloneElement(row, {
+      key: row.key ?? `virtual-row-${index}`,
       style,
       'data-virtual-index': index,
       'aria-posinset': index + 1,
-      'aria-setsize': virtualRows.length
+      'aria-setsize': ariaSetSize ?? items.length
     });
   });
 
-  return <ul ref={list} className="saved-session-list is-virtualized" aria-label="Saved sessions and folders"
+  return <ul ref={list} className={`${className} is-virtualized`} aria-label={label}
     onKeyDown={moveFocusAcrossVirtualWindow}>
-    <li className="saved-session-virtual-space" aria-hidden="true" style={{ height: virtualRows.length * VIRTUAL_ROW_HEIGHT }} />
+    <li className="virtualized-list-spacer" aria-hidden="true" style={{ height: items.length * rowHeight }} />
     {positionedRows}
   </ul>;
 }

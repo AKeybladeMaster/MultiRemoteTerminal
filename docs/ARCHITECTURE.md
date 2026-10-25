@@ -265,7 +265,7 @@ Do not call a feature complete when it merely opens an unsupported-protocol erro
 - **Interaction:** drag/drop between local and remote file browser, grouped/favorite sessions, quick connect, keyboard tab navigation, accessible contrast, clear connection/host-key status.
 - **Branding:** independent neutral name/logos by default. P-34 stores a bounded plain-text startup greeting in the SQLite `settings` table; workbench settings also store optional bounded terminal keyword rules. Logo, profile script path, and enabled-tool controls remain planned.
 - **Theme:** the workbench currently offers a transient dark/light switch. High-contrast, font scale and persisted theme preferences remain planned; future UI preferences stay separate from session definitions.
-- **Performance:** virtualized session list and file tables; terminal output flows through renderer backpressure; do not run crypto/file operations in UI thread.
+- **Performance:** saved-session catalogs window rows above 80 entries and remote file tables above 50 entries; see WP-03F and [WP-05D evidence](results/WP-05D-virtualized-file-tables-2026-10-25.md). Terminal output flows through renderer backpressure; do not run crypto/file operations in UI thread.
 
 ## 11. Architecture fitness rules
 
