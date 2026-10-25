@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { UtilityProcess } from 'electron';
 import { SshTerminalWorkerHost } from '../../apps/desktop/src/adapters/ssh-terminal-worker-host.ts';
@@ -105,6 +106,30 @@ class DelayedCommitTransferUtilityProcess extends FakeUtilityProcess {
   }
 }
 
+class RemoteTextUtilityProcess extends FakeUtilityProcess {
+  override postMessage(input: unknown): void {
+    const request = input as Record<string, unknown>;
+    if (request.command === 'files.read-text') {
+      this.requests.push(request);
+      const content = 'remote contents';
+      const revision = request.remotePath === '/home/alice/bad.txt' ? 'b'.repeat(64)
+        : createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex');
+      queueMicrotask(() => this.emit('message', { version: 1, type: 'reply', requestId: request.requestId, ok: true,
+        result: { path: request.remotePath, content, revision, bytes: Buffer.byteLength(content) } }));
+      return;
+    }
+    if (request.command === 'files.write-text') {
+      this.requests.push(request);
+      const content = request.content as string;
+      const bytesSaved = Buffer.byteLength(content) + (request.remotePath === '/home/alice/bad-size.txt' ? 1 : 0);
+      queueMicrotask(() => this.emit('message', { version: 1, type: 'reply', requestId: request.requestId, ok: true,
+        result: { path: request.remotePath, revision: 'c'.repeat(64), bytesSaved } }));
+      return;
+    }
+    super.postMessage(input);
+  }
+}
+
 test('worker host consumes the raw message payload emitted by Electron utilityProcess', async () => {
   const worker = new FakeUtilityProcess();
   const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
@@ -126,6 +151,26 @@ test('worker host opens a file-only SSH session without sending terminal dimensi
   await host.openFiles(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' }, async () => true);
   assert.equal(worker.requests[0]?.command, 'open-files');
   assert.equal(Object.hasOwn(worker.requests[0] ?? {}, 'size'), false);
+  await host.shutdown();
+});
+
+test('worker host verifies remote text revisions, byte counts, and request-bound paths', async () => {
+  const worker = new RemoteTextUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const content = 'remote contents';
+  const revision = createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex');
+  await host.openFiles(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' }, async () => true);
+  assert.deepEqual(await host.readRemoteTextFile(sessionId, '22222222-2222-4222-8222-222222222222', '/home/alice/config.txt'), {
+    path: '/home/alice/config.txt', content, revision, bytes: Buffer.byteLength(content)
+  });
+  await assert.rejects(host.readRemoteTextFile(sessionId, '33333333-3333-4333-8333-333333333333', '/home/alice/bad.txt'),
+    error => (error as { code?: string }).code === 'UNAVAILABLE');
+  assert.deepEqual(await host.saveRemoteTextFile(sessionId, '44444444-4444-4444-8444-444444444444', '/home/alice/config.txt', 'updated', revision), {
+    path: '/home/alice/config.txt', revision: 'c'.repeat(64), bytesSaved: Buffer.byteLength('updated')
+  });
+  await assert.rejects(host.saveRemoteTextFile(sessionId, '55555555-5555-4555-8555-555555555555', '/home/alice/bad-size.txt', 'updated', revision),
+    error => (error as { code?: string }).code === 'UNAVAILABLE');
   await host.shutdown();
 });
 

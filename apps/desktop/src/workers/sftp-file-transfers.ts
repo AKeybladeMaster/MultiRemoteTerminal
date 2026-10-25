@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, open as openFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import { basename, extname, posix } from 'node:path';
-import { Transform } from 'node:stream';
-import type { Readable, Writable } from 'node:stream';
+import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { SFTPWrapper, Stats as SftpStats } from 'ssh2';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -12,6 +11,8 @@ import { SshTerminalProviderError } from '../../../../packages/application/src/s
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import { isFileTransferConflictPolicy } from '../../../../packages/domain/src/file-transfer.ts';
 import { isRemoteFileName, isRemotePath, MAX_REMOTE_FILE_NAME_CHARS, remoteChildPath } from '../../../../packages/domain/src/remote-files.ts';
+import { MAX_REMOTE_TEXT_FILE_BYTES, isRemoteTextRevision, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
+import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import { isAbsoluteNormalizedLocalPath, LocalTransferTargetError, mapLocalTransferTargetError, prepareLocalTransferTarget } from './local-transfer-target.ts';
 
 const SFTP_OPERATION_TIMEOUT_MS = 10_000;
@@ -27,6 +28,10 @@ export interface SftpFileTransfers {
   download(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string, localPath: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
     onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
+  readText(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile>;
+  saveText(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string, content: string, expectedRevision: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFileSaveResult>;
 }
 
 interface RemoteIdentity {
@@ -245,6 +250,59 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
   }
 }
 
+async function readRemoteFileBytes(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string,
+  cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<{ readonly stats: SftpStats; readonly data: Buffer }> {
+  if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+  const before = await assertRemotePathComponents(channel, remotePath, 'file');
+  if (!Number.isSafeInteger(before.size) || before.size < 0 || before.size > MAX_REMOTE_TEXT_FILE_BYTES) {
+    throw new SshTerminalProviderError('OUTPUT_LIMIT');
+  }
+  const beforeRead = await assertRemotePathComponents(channel, remotePath, 'file');
+  if (!sameIdentity(identity(before), identity(beforeRead))) throw new SshTerminalProviderError('CONFLICT');
+
+  const chunks: Buffer[] = [];
+  let collectedBytes = 0;
+  const source = channel.createReadStream(remotePath, { flags: 'r' });
+  const destination = new Writable({
+    write(chunk: Buffer | string, encoding, callback) {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, encoding as BufferEncoding) : Buffer.from(chunk);
+      if (collectedBytes + bytes.byteLength > MAX_REMOTE_TEXT_FILE_BYTES) {
+        callback(new SshTerminalProviderError('OUTPUT_LIMIT'));
+        return;
+      }
+      chunks.push(bytes);
+      collectedBytes += bytes.byteLength;
+      callback();
+    }
+  });
+  try {
+    const bytesTransferred = await runStreamTransfer(sessionId, operationId, 'download', posix.basename(remotePath), before.size,
+      source, destination, cancellation, onProgress);
+    const afterRead = await assertRemotePathComponents(channel, remotePath, 'file');
+    if (!sameIdentity(identity(before), identity(afterRead)) || bytesTransferred !== before.size || collectedBytes !== before.size) {
+      throw new SshTerminalProviderError('CONFLICT');
+    }
+    return { stats: afterRead, data: Buffer.concat(chunks, collectedBytes) };
+  } finally {
+    source.destroy();
+    destination.destroy();
+  }
+}
+
+function contentRevision(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+async function decodeRemoteTextFile(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string,
+  cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile> {
+  const { data } = await readRemoteFileBytes(sessionId, operationId, channel, remotePath, cancellation, onProgress);
+  let content: string;
+  try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data); }
+  catch { throw new SshTerminalProviderError('NOT_SUPPORTED'); }
+  if (remoteTextByteLength(content) !== data.byteLength) throw new SshTerminalProviderError('NOT_SUPPORTED');
+  return { path: remotePath, content, revision: contentRevision(data), bytes: data.byteLength };
+}
+
 async function remoteCommit(channel: SFTPWrapper, temporaryPath: string, finalPath: string, originalName: string, expected: SftpStats | undefined,
   conflictPolicy: FileTransferConflictPolicy, beginCommit: () => boolean): Promise<{ readonly path: string; readonly fileName: string; readonly skipped: boolean }> {
   await assertRemotePathComponents(channel, posix.dirname(finalPath), 'directory');
@@ -451,7 +509,86 @@ export function createSftpFileTransfers(): SftpFileTransfers {
     }
   }
 
-  return Object.freeze({ upload, download });
+  async function readText(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile> {
+    if (!TRANSFER_OPERATION_ID.test(operationId) || !isRemotePath(remotePath) || remotePath === '.' || remotePath === '/') {
+      throw new SshTerminalProviderError('INVALID_REQUEST');
+    }
+    return decodeRemoteTextFile(sessionId, operationId, channel, remotePath, cancellation, onProgress);
+  }
+
+  async function saveText(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string, content: string,
+    expectedRevision: string, cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFileSaveResult> {
+    const bytes = typeof content === 'string' ? remoteTextByteLength(content) : undefined;
+    if (!TRANSFER_OPERATION_ID.test(operationId) || !isRemotePath(remotePath) || remotePath === '.' || remotePath === '/' ||
+        bytes === undefined || !isRemoteTextRevision(expectedRevision)) throw new SshTerminalProviderError('INVALID_REQUEST');
+    if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+    const fileName = posix.basename(remotePath);
+    if (!isRemoteFileName(fileName)) throw new SshTerminalProviderError('INVALID_REQUEST');
+
+    const original = await assertRemotePathComponents(channel, remotePath, 'file');
+    const initial = await readRemoteFileBytes(sessionId, operationId, channel, remotePath, cancellation);
+    if (!sameIdentity(identity(original), identity(initial.stats)) || contentRevision(initial.data) !== expectedRevision) {
+      throw new SshTerminalProviderError('CONFLICT');
+    }
+    if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+
+    const parent = posix.dirname(remotePath);
+    const temporaryPath = remoteChildPath(parent, `.mrt-${randomUUID()}.partial`);
+    const backupPath = remoteChildPath(parent, `.mrt-${randomUUID()}.backup`);
+    if (!temporaryPath || !backupPath) throw new SshTerminalProviderError('INVALID_REQUEST');
+    let temporaryOwned = false;
+    let committing = false;
+    let source: Readable | undefined;
+    let destination: Writable | undefined;
+    const wasCancelled = () => !committing && cancellation?.aborted === true;
+    try {
+      await assertRemotePathComponents(channel, parent, 'directory');
+      destination = channel.createWriteStream(temporaryPath, { flags: 'wx', mode: original.mode & 0o777 });
+      destination.once('open', () => { temporaryOwned = true; });
+      source = Readable.from([Buffer.from(content, 'utf8')]);
+      const bytesTransferred = await runStreamTransfer(sessionId, operationId, 'upload', fileName, bytes, source, destination,
+        cancellation, onProgress);
+      if (bytesTransferred !== bytes || wasCancelled()) throw new SshTerminalProviderError(wasCancelled() ? 'CANCELLED' : 'CONFLICT');
+
+      const current = await readRemoteFileBytes(sessionId, operationId, channel, remotePath, cancellation);
+      if (!sameIdentity(identity(original), identity(current.stats)) || contentRevision(current.data) !== expectedRevision) {
+        throw new SshTerminalProviderError('CONFLICT');
+      }
+      await assertRemotePathComponents(channel, parent, 'directory');
+      if (wasCancelled()) throw new SshTerminalProviderError('CANCELLED');
+      committing = true;
+      report(onProgress, sessionId, operationId, 'upload', 'committing', fileName, bytes, bytes);
+
+      const targetBeforeMove = await assertRemotePathComponents(channel, remotePath, 'file');
+      if (!sameIdentity(identity(original), identity(targetBeforeMove))) throw new SshTerminalProviderError('CONFLICT');
+      await renameRemote(channel, remotePath, backupPath);
+      const moved = await readRemoteFileBytes(sessionId, operationId, channel, backupPath);
+      if (!sameIdentity(identity(original), identity(moved.stats)) || contentRevision(moved.data) !== expectedRevision) {
+        try { if (!await remoteLstat(channel, remotePath)) await renameRemote(channel, backupPath, remotePath); } catch { /* Retain the backup for recovery. */ }
+        throw new SshTerminalProviderError('CONFLICT');
+      }
+      try { await renameRemote(channel, temporaryPath, remotePath); }
+      catch (error) {
+        try { if (!await remoteLstat(channel, remotePath)) await renameRemote(channel, backupPath, remotePath); }
+        catch { throw new SshTerminalProviderError('UNAVAILABLE'); }
+        throw error;
+      }
+      temporaryOwned = false;
+      await unlinkRemote(channel, backupPath).catch(() => undefined);
+      return { path: remotePath, revision: contentRevision(Buffer.from(content, 'utf8')), bytesSaved: bytes };
+    } catch (error) {
+      if (temporaryOwned) await unlinkRemote(channel, temporaryPath).catch(() => undefined);
+      if (wasCancelled()) throw new SshTerminalProviderError('CANCELLED');
+      if (error instanceof SshTerminalProviderError) throw error;
+      throw mappedSftpError(error);
+    } finally {
+      source?.destroy();
+      destination?.destroy();
+    }
+  }
+
+  return Object.freeze({ upload, download, readText, saveText });
 }
 
 function sameLocalVersion(before: Stats, after: Stats): boolean {

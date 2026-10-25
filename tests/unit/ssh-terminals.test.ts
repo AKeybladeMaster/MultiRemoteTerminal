@@ -136,6 +136,19 @@ class FakeProvider implements SshTerminalProvider {
   async downloadRemoteFile(_session: string, _operationId: string, remotePath: string): Promise<FileTransferResult> {
     return { direction: 'download' as const, fileName: remotePath.slice(remotePath.lastIndexOf('/') + 1), bytesTransferred: 4, state: 'completed' as const };
   }
+  async readRemoteTextFile(session: string, operationId: string, remotePath: string, _cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void) {
+    const content = 'first line\n';
+    onProgress?.({ sessionId: session, operationId, direction: 'download', phase: 'transferring',
+      fileName: remotePath.slice(remotePath.lastIndexOf('/') + 1), bytesTransferred: Buffer.byteLength(content), totalBytes: Buffer.byteLength(content) });
+    return { path: remotePath, content, revision: 'a'.repeat(64), bytes: Buffer.byteLength(content) };
+  }
+  async saveRemoteTextFile(session: string, operationId: string, remotePath: string, content: string, _expectedRevision: string,
+    _cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void) {
+    onProgress?.({ sessionId: session, operationId, direction: 'upload', phase: 'committing',
+      fileName: remotePath.slice(remotePath.lastIndexOf('/') + 1), bytesTransferred: Buffer.byteLength(content), totalBytes: Buffer.byteLength(content) });
+    return { path: remotePath, revision: 'b'.repeat(64), bytesSaved: Buffer.byteLength(content) };
+  }
   async close(session: string): Promise<void> { this.closed.push(session); }
   async shutdown(): Promise<void> {}
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -180,6 +193,28 @@ test('standalone SFTP reuses SSH credentials and host trust without exposing ter
   assert.deepEqual(await controller.resize(sessionId, { columns: 80, rows: 24 }), { ok: false, error: { code: 'NOT_FOUND', target: 'terminal', retryable: false } });
   assert.equal((await controller.close(sessionId)).ok, true);
   assert.deepEqual(provider.closed, [sessionId]);
+  await controller.dispose();
+});
+
+test('SFTP text editing uses a bounded cancellable operation on a running trusted session', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+  const remotePath = '/home/alice/config.txt';
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  assert.equal((await controller.openFiles(sessionId, 'server.example.net', 22)).ok, true);
+  const progress: FileTransferProgress[] = [];
+  const read = await controller.readRemoteTextFile(sessionId, operationId, remotePath, undefined, event => progress.push(event));
+  assert.deepEqual(read, { ok: true, result: { path: remotePath, content: 'first line\n', revision: 'a'.repeat(64), bytes: 11 } });
+  assert.equal(progress[0]?.direction, 'download');
+  const saved = await controller.saveRemoteTextFile(sessionId, operationId, remotePath, 'updated\n', 'a'.repeat(64), undefined,
+    event => progress.push(event));
+  assert.deepEqual(saved, { ok: true, result: { path: remotePath, revision: 'b'.repeat(64), bytesSaved: 8 } });
+  assert.equal(progress.at(-1)?.phase, 'committing');
+  assert.equal((await controller.readRemoteTextFile(sessionId, '33333333-3333-4333-8333-333333333333', '/', undefined)).ok, false);
+  assert.equal((await controller.saveRemoteTextFile(sessionId, '44444444-4444-4444-8444-444444444444', remotePath, 'bad\0text', 'a'.repeat(64))).ok, false);
+  assert.equal((await controller.close(sessionId)).ok, true);
   await controller.dispose();
 });
 

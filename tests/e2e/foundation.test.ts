@@ -397,6 +397,7 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
   await mkdir(downloadRoot);
   await writeFile(uploadSource, 'private local upload payload');
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
+  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\n');
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -467,6 +468,27 @@ test('standalone and contextual SFTP sessions verify trust, transfer files, and 
     await sftpPanel.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
     await expect(sftpPanel.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
+    await sftpPanel.getByRole('button', { name: 'Edit editor.txt', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: 'editor.txt' });
+    const editorText = editor.getByRole('textbox', { name: 'File contents' });
+    await expect(editorText).toHaveValue('original remote text\n');
+    await editorText.fill('edited from app\n');
+    await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(editor.getByRole('status')).toContainText('Saved', { timeout: 15_000 });
+    expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('edited from app\n');
+
+    await editor.getByRole('button', { name: 'Reload', exact: true }).click();
+    await expect(editorText).toHaveValue('edited from app\n');
+    await editorText.fill('draft kept on conflict\n');
+    await writeFile(join(remoteRoot, 'editor.txt'), 'remote changed!\n');
+    await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(editor.getByRole('alert')).toContainText('remote file changed', { timeout: 15_000 });
+    await expect(editorText).toHaveValue('draft kept on conflict\n');
+    await editor.getByRole('button', { name: 'Reload', exact: true }).click();
+    await editor.getByRole('button', { name: 'Discard and reload', exact: true }).click();
+    await expect(editorText).toHaveValue('remote changed!\n');
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();

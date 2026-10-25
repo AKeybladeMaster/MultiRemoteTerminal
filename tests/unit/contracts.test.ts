@@ -153,6 +153,40 @@ test('SFTP transfer requests keep local paths private and validate direction-bou
   assert.equal(isSshTransferEvent({ ...progress, localPath: 'C:\\private\\secret.txt' }), false);
 });
 
+test('remote text editing accepts bounded file payloads and exact path-bound replies', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  const remotePath = '/home/alice/config.txt';
+  const content = 'Host example.test\n  User alice\n';
+  const revision = 'a'.repeat(64);
+  const read = { command: 'ssh.files.read-text', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath } };
+  const parsedRead = parseRequest(read);
+  assert.equal(parsedRead.ok, true);
+  assert.equal(parseRequest({ ...read, payload: { ...read.payload, remotePath: '/' } }).ok, false);
+  assert.equal(parseRequest({ ...read, payload: { ...read.payload, localPath: 'C:\\secret.txt' } }).ok, false);
+  if (parsedRead.ok) {
+    const result = { path: remotePath, content, revision, bytes: Buffer.byteLength(content) };
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result }, parsedRead.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, bytes: result.bytes + 1 } }, parsedRead.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, path: '/other/file' } }, parsedRead.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, password: 'secret' } }, parsedRead.result), false);
+  }
+  const save = { command: 'ssh.files.write-text', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath, content, expectedRevision: revision } };
+  const parsedSave = parseRequest(save);
+  assert.equal(parsedSave.ok, true);
+  assert.equal(parseRequest({ ...save, payload: { ...save.payload, content: 'x'.repeat(512 * 1024 + 1) } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { ...save.payload, content: 'secret\u0000value' } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { ...save.payload, expectedRevision: 'bad' } }).ok, false);
+  if (parsedSave.ok) {
+    const result = { path: remotePath, revision: 'b'.repeat(64), bytesSaved: Buffer.byteLength(content) };
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result }, parsedSave.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, bytesSaved: result.bytesSaved + 1 } }, parsedSave.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, path: '/other/file' } }, parsedSave.result), false);
+  }
+});
+
 test('Telnet terminal IPC bounds endpoint and stream commands and validates the open reply', () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const open = { command: 'telnet.open', requestId: request.requestId, contractVersion: 1,

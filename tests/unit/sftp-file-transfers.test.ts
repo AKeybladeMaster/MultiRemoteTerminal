@@ -6,6 +6,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import { createSftpFileTransfers } from '../../apps/desktop/src/workers/sftp-file-transfers.ts';
+import { MAX_REMOTE_TEXT_FILE_BYTES } from '../../packages/domain/src/remote-text-file.ts';
 
 interface FakeFile {
   data: Buffer;
@@ -278,4 +279,65 @@ test('SFTP progress reports are coalesced during multi-chunk transfers', async (
     }
     assert.equal(transferProgress.at(-1)?.bytesTransferred, 1024 * 1024);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP text editor reads strict bounded UTF-8 and atomically saves against its loaded revision', async () => {
+  const sftp = new FakeSftp();
+  const original = Buffer.from('line one\r\nserver café\n');
+  const replacement = 'line one\r\nserver résumé\n';
+  sftp.files.set('/home/edit.txt', { data: original, kind: 'file', mtime: 1_800_000_000 });
+  const file = await transfers.readText(sessionId, operationId, sftp as never, '/home/edit.txt');
+  assert.equal(file.content, original.toString('utf8'));
+  assert.equal(file.bytes, original.byteLength);
+
+  const saved = await transfers.saveText(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never,
+    '/home/edit.txt', replacement, file.revision);
+  assert.deepEqual(sftp.files.get('/home/edit.txt')?.data, Buffer.from(replacement, 'utf8'));
+  assert.equal(saved.bytesSaved, Buffer.byteLength(replacement));
+  assert.notEqual(saved.revision, file.revision);
+  assert.equal([...sftp.files.keys()].some(path => /\.mrt-[0-9a-f-]+\.(?:partial|backup)$/u.test(path)), false);
+});
+
+test('SFTP text editor rejects binary and oversized files without exposing partial text', async () => {
+  const sftp = new FakeSftp();
+  sftp.files.set('/home/binary.dat', { data: Buffer.from([0x43, 0xff, 0x41]), kind: 'file', mtime: 1_800_000_000 });
+  sftp.files.set('/home/large.txt', { data: Buffer.alloc(MAX_REMOTE_TEXT_FILE_BYTES + 1), kind: 'file', mtime: 1_800_000_000 });
+  await assert.rejects(transfers.readText(sessionId, operationId, sftp as never, '/home/binary.dat'),
+    error => (error as { code?: string }).code === 'NOT_SUPPORTED');
+  await assert.rejects(transfers.readText(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never, '/home/large.txt'),
+    error => (error as { code?: string }).code === 'OUTPUT_LIMIT');
+});
+
+test('SFTP text editor detects a concurrent replacement and preserves the remote version', async () => {
+  const sftp = new FakeSftp();
+  const original = Buffer.from('original');
+  const changed = Buffer.from('changed outside the editor');
+  sftp.files.set('/home/edit.txt', { data: original, kind: 'file', mtime: 1_800_000_000 });
+  const file = await transfers.readText(sessionId, operationId, sftp as never, '/home/edit.txt');
+  let injected = false;
+  sftp.beforeRename = (source, destination) => {
+    if (injected || source !== '/home/edit.txt' || !destination.endsWith('.backup')) return;
+    injected = true;
+    sftp.files.set(source, { data: changed, kind: 'file', mtime: 1_800_000_001 });
+  };
+  await assert.rejects(transfers.saveText(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never,
+    '/home/edit.txt', 'my unsaved edit', file.revision), error => (error as { code?: string }).code === 'CONFLICT');
+  assert.deepEqual(sftp.files.get('/home/edit.txt')?.data, changed);
+  assert.equal([...sftp.files.keys()].some(path => /\.mrt-[0-9a-f-]+\.(?:partial|backup)$/u.test(path)), false);
+});
+
+test('SFTP text editor cancels a staged save and leaves the original remote file intact', async () => {
+  const sftp = new FakeSftp();
+  const original = Buffer.from('keep remote data');
+  sftp.files.set('/home/edit.txt', { data: original, kind: 'file', mtime: 1_800_000_000 });
+  const file = await transfers.readText(sessionId, operationId, sftp as never, '/home/edit.txt');
+  sftp.delayWrites = true;
+  const cancellation = new AbortController();
+  const pending = transfers.saveText(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never,
+    '/home/edit.txt', 'x'.repeat(MAX_REMOTE_TEXT_FILE_BYTES), file.revision, cancellation.signal, progress => {
+      if (progress.bytesTransferred > 0) cancellation.abort();
+    });
+  await assert.rejects(pending, error => (error as { code?: string }).code === 'CANCELLED');
+  assert.deepEqual(sftp.files.get('/home/edit.txt')?.data, original);
+  assert.equal([...sftp.files.keys()].some(path => path.endsWith('.partial')), false);
 });

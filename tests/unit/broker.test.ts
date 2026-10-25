@@ -31,6 +31,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     write: noOp, resize: noOp, acknowledgeOutput: noOp, listRemoteDirectory: async () => ({ ok: true, result: { path: '/', entries: [], truncated: false } }),
     uploadRemoteFile: async () => ({ ok: true, result: { direction: 'upload', fileName: 'x', bytesTransferred: 0, state: 'completed' } }),
     downloadRemoteFile: async () => ({ ok: true, result: { direction: 'download', fileName: 'x', bytesTransferred: 0, state: 'completed' } }),
+    readRemoteTextFile: async (_id, remotePath) => ({ ok: true, result: { path: remotePath, content: 'contents', revision: 'a'.repeat(64), bytes: 8 } }),
+    saveRemoteTextFile: async (_id, _op, remotePath, content) => ({ ok: true, result: { path: remotePath, revision: 'b'.repeat(64), bytesSaved: Buffer.byteLength(content) } }),
     cancelTransfer: noOp, close: noOp, approveHostKey: noOp,
     rejectHostKey: () => ({ ok: true, result: {} }), revokeHostKey: noOp
   }, telnetTerminals: {
@@ -355,6 +357,44 @@ test('SFTP transfer broker keeps local selections in main and forwards explicit 
     payload: { sessionId, operationId } }, withSftpTransfers, () => {});
   assert.deepEqual(cancelled, { requestId: request.requestId, ok: true, result: {} });
   assert.equal(seen.at(-1), `cancel:${sessionId}:${operationId}`);
+});
+
+test('SFTP text editor broker forwards the exact path, revision, cancellation, and progress', async () => {
+  const sessionId = request.requestId;
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  const remotePath = '/home/alice/config.txt';
+  const content = 'new configuration';
+  const revision = 'a'.repeat(64);
+  const cancellation = new AbortController().signal;
+  const progress: unknown[] = [];
+  const calls: unknown[] = [];
+  const base = actions();
+  const withEditor: CommandActions = { ...base, cancellation, reportSshTransferProgress: event => progress.push(event), sshTerminals: {
+    ...base.sshTerminals,
+    async readRemoteTextFile(id, op, path, signal, onProgress) {
+      calls.push({ kind: 'read', id, op, path, signal });
+      onProgress?.({ sessionId: id, operationId: op, direction: 'download', phase: 'transferring', fileName: 'config.txt', bytesTransferred: 3, totalBytes: 3 });
+      return { ok: true, result: { path, content: 'old', revision, bytes: 3 } };
+    },
+    async saveRemoteTextFile(id, op, path, text, expectedRevision, signal, onProgress) {
+      calls.push({ kind: 'save', id, op, path, text, expectedRevision, signal });
+      onProgress?.({ sessionId: id, operationId: op, direction: 'upload', phase: 'committing', fileName: 'config.txt', bytesTransferred: 3, totalBytes: 3 });
+      return { ok: true, result: { path, revision: 'b'.repeat(64), bytesSaved: Buffer.byteLength(text) } };
+    }
+  } };
+  const read = await dispatchCommand(owner, { command: 'ssh.files.read-text', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath } }, withEditor, () => {});
+  assert.deepEqual(read, { requestId: request.requestId, ok: true,
+    result: { path: remotePath, content: 'old', revision, bytes: 3 } });
+  const save = await dispatchCommand(owner, { command: 'ssh.files.write-text', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remotePath, content, expectedRevision: revision } }, withEditor, () => {});
+  assert.deepEqual(save, { requestId: request.requestId, ok: true,
+    result: { path: remotePath, revision: 'b'.repeat(64), bytesSaved: Buffer.byteLength(content) } });
+  assert.deepEqual(calls, [
+    { kind: 'read', id: sessionId, op: operationId, path: remotePath, signal: cancellation },
+    { kind: 'save', id: sessionId, op: operationId, path: remotePath, text: content, expectedRevision: revision, signal: cancellation }
+  ]);
+  assert.equal(progress.length, 2);
 });
 
 test('saved-session IPC dispatches only validated catalog operations', async () => {

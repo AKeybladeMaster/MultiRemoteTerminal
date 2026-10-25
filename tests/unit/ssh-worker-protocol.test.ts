@@ -77,6 +77,24 @@ test('SSH worker validates bounded remote-directory requests and listing replies
   assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { ...result, secret: 'private' } }), undefined);
 });
 
+test('SSH worker bounds remote text edit messages and rejects credential-bearing replies', () => {
+  const operationId = '33333333-3333-4333-8333-333333333333';
+  const remotePath = '/home/alice/config.txt';
+  const content = 'first line\n';
+  const revision = 'a'.repeat(64);
+  const read = { version: 1, type: 'request', requestId, command: 'files.read-text', sessionId, operationId, remotePath };
+  assert.equal(parseSshWorkerInput(read)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...read, remotePath: '/' }), undefined);
+  assert.equal(parseSshWorkerInput({ ...read, localPath: 'C:\\secret.txt' }), undefined);
+  const save = { version: 1, type: 'request', requestId, command: 'files.write-text', sessionId, operationId, remotePath, content, expectedRevision: revision };
+  assert.equal(parseSshWorkerInput(save)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...save, content: 'x'.repeat(512 * 1024 + 1) }), undefined);
+  assert.equal(parseSshWorkerInput({ ...save, expectedRevision: 'stale' }), undefined);
+  const result = { path: remotePath, content, revision, bytes: Buffer.byteLength(content) };
+  assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result })?.type, 'reply');
+  assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { ...result, password: 'secret' } }), undefined);
+});
+
 test('SSH worker accepts only loopback tunnel definitions and bounded assigned-port replies', () => {
   const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1',
     bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };

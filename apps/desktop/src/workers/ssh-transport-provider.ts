@@ -15,6 +15,7 @@ import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tu
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
+import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import { createSftpFileTransfers } from './sftp-file-transfers.ts';
 
 const CONNECT_TIMEOUT_MS = 130_000;
@@ -100,6 +101,10 @@ export interface SshTransportProvider {
   downloadRemoteFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
     onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
+  readRemoteTextFile(sessionId: string, operationId: string, remotePath: string, cancellation?: CancellationSignal,
+    onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile>;
+  saveRemoteTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string,
+    cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFileSaveResult>;
   startForward(sessionId: string, definition: SshTunnelDefinition): Promise<number>;
   stopForward(sessionId: string, tunnelId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
@@ -818,6 +823,32 @@ export function createSshTransportProvider(
         const channel = await getSftp(session, cancellation);
         if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
         return await fileTransfers.download(sessionId, operationId, channel, remotePath, localPath, conflictPolicy, cancellation, onProgress);
+      } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
+    },
+
+    async readRemoteTextFile(sessionId, operationId, remotePath, cancellation, onProgress) {
+      const session = sessions.get(sessionId);
+      if (!session || session.closing || session.opening || (!session.channel && session.mode !== 'files')) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+      if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
+      session.sftpBusy = true;
+      try {
+        const channel = await getSftp(session, cancellation);
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        return await fileTransfers.readText(sessionId, operationId, channel, remotePath, cancellation, onProgress);
+      } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
+    },
+
+    async saveRemoteTextFile(sessionId, operationId, remotePath, content, expectedRevision, cancellation, onProgress) {
+      const session = sessions.get(sessionId);
+      if (!session || session.closing || session.opening || (!session.channel && session.mode !== 'files')) throw new SshTerminalProviderError('UNAVAILABLE');
+      if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+      if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
+      session.sftpBusy = true;
+      try {
+        const channel = await getSftp(session, cancellation);
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        return await fileTransfers.saveText(sessionId, operationId, channel, remotePath, content, expectedRevision, cancellation, onProgress);
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
     },
 

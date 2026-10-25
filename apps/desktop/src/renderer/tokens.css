@@ -206,6 +206,35 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .remote-file-icon.symlink { color: var(--focus); font-size: 15px; }
 .remote-file-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .remote-file-meta { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.remote-text-editor-dialog:not([open]) { display: none; }
+.remote-text-editor-dialog[open] {
+  display: flex; flex-direction: column; gap: 10px; width: min(980px, calc(100vw - 32px)); height: min(820px, calc(100vh - 32px)); max-height: calc(100vh - 32px);
+  margin: auto; padding: 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text);
+  box-shadow: 0 12px 40px #0008; overscroll-behavior: contain;
+}
+.remote-text-editor-dialog::backdrop { background: #07111dcc; }
+.remote-text-editor-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.remote-text-editor-header h2 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 19px; font-weight: 650; text-wrap: balance; }
+.remote-text-editor-path { min-width: 0; overflow: hidden; color: var(--muted); font: 11px/1.45 "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.remote-text-editor-state, .remote-text-editor-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.remote-text-editor-label { color: var(--muted); font-size: 12px; font-weight: 650; }
+.remote-text-editor-content {
+  flex: 1 1 auto; width: 100%; min-height: 120px; resize: none; padding: 13px 14px; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--terminal-background); color: var(--text); font: 13px/1.6 "Cascadia Mono", Consolas, monospace;
+  tab-size: 2; white-space: pre; overflow: auto; overscroll-behavior: contain; user-select: text; -webkit-user-select: text;
+}
+.remote-text-editor-content:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.remote-text-editor-content:disabled { opacity: .8; }
+.remote-text-editor-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-left: 3px solid var(--focus); background: var(--surface-raised); font-size: 12px; }
+.remote-text-editor-confirm span { flex: 1 1 100%; }
+.remote-text-editor-confirm button, .remote-text-editor-actions button {
+  min-height: 36px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-raised); color: var(--text); cursor: pointer;
+}
+.remote-text-editor-confirm button:hover, .remote-text-editor-actions button:hover:not(:disabled) { border-color: var(--accent); }
+.remote-text-editor-confirm .remote-text-editor-discard { border-color: var(--error); color: var(--error); }
+.remote-text-editor-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.remote-text-editor-actions button:disabled { opacity: .55; cursor: default; }
+.remote-text-editor-actions .ssh-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 650; }
 .empty-terminal { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; height: 100%; padding: 32px clamp(24px, 5vw, 72px); background: var(--terminal-background); }
 .empty-mark { color: var(--accent); font: 600 24px "Cascadia Mono", Consolas, monospace; }
 .empty-terminal h2 { margin: 0; font-size: 22px; font-weight: 600; }
@@ -586,6 +615,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
   .workspace { grid-template-columns: 164px minmax(0, 1fr); }
   .build-label { display: none; }
   .remote-file-panel { flex-basis: 210px; }
+  .remote-text-editor-dialog[open] { width: calc(100vw - 20px); height: calc(100vh - 20px); max-height: calc(100vh - 20px); padding: 14px; }
   .palette-hint { flex-wrap: wrap; gap: 3px 4px; }
   .palette-hint > span { flex: 0 0 100%; white-space: nowrap; }
 }

@@ -60,7 +60,7 @@ export interface CommandActions {
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
-    'downloadRemoteFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
+    'downloadRemoteFile' | 'readRemoteTextFile' | 'saveRemoteTextFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
@@ -108,7 +108,8 @@ export async function dispatchCommand(
     if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
         parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close' ||
         parsed.result.command === 'sftp.open' || parsed.result.command === 'sftp.close' ||
-        parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' || parsed.result.command === 'ssh.files.cancel' ||
+        parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' || parsed.result.command === 'ssh.files.read-text' ||
+        parsed.result.command === 'ssh.files.write-text' || parsed.result.command === 'ssh.files.cancel' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
@@ -208,6 +209,16 @@ export async function dispatchCommand(
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         return { requestId, ...await actions.sshTerminals.downloadRemoteFile(sessionId, operationId, remotePath, localPath,
           conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
+      }
+      case 'ssh.files.read-text': {
+        const { sessionId, operationId, remotePath } = parsed.result.payload;
+        return { requestId, ...await actions.sshTerminals.readRemoteTextFile(sessionId, operationId, remotePath,
+          actions.cancellation, actions.reportSshTransferProgress) };
+      }
+      case 'ssh.files.write-text': {
+        const { sessionId, operationId, remotePath, content, expectedRevision } = parsed.result.payload;
+        return { requestId, ...await actions.sshTerminals.saveRemoteTextFile(sessionId, operationId, remotePath, content, expectedRevision,
+          actions.cancellation, actions.reportSshTransferProgress) };
       }
       case 'ssh.files.cancel': {
         const { sessionId, operationId } = parsed.result.payload;
