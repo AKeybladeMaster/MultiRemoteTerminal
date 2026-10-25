@@ -8,7 +8,7 @@ Saved SSH terminal profiles can explicitly save or replace a password, forget it
 
 The SQLite storage worker keeps the credential reference private. Updates compare the current reference before attaching or removing one. Replacements rotate references and remove the old vault entry after commit; competing saves cannot both attach their vault entries. A saved-profile connection retries reference resolution once when a concurrent replacement has removed the reference it first read.
 
-Settings shows whether the default Windows-account-protected vault is unlocked, locked or unavailable, and offers explicit lock/unlock controls. Saved-session actions show credential presence and offer save/replace or forget. This UI describes the protection accurately as Windows account protection, not a separate master password. Removing an SSH profile also removes its attached vault entry.
+Settings shows whether the default Windows-account-protected vault is unlocked, locked or unavailable, and offers explicit lock/unlock controls. It explains that Windows account protection cannot defend against malware running as the same Windows user and that the lock is a local privacy control. Saved-session actions show credential presence and offer save/replace or forget. Removing an SSH profile also removes its attached vault entry.
 
 ## Validation
 

@@ -718,8 +718,8 @@ test('a lost SSH transport fails its tab cleanly and allows explicit saved-profi
     await expect(reopenButton).toBeVisible();
     await page.getByRole('button', { name: `Actions for saved session ${savedName}` }).click();
     await page.getByRole('button', { name: 'Save password…', exact: true }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved securely' }))
-      .toContainText('A password is saved securely');
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
     expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
 
     const liveClient = terminalClient;
@@ -832,8 +832,8 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     await expect(page.getByRole('button', { name: `Open ${savedName}`, exact: true })).toBeVisible();
     await page.getByRole('button', { name: `Actions for saved session ${savedName}` }).click();
     await page.getByRole('button', { name: 'Save password…', exact: true }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved securely' }))
-      .toContainText('A password is saved securely');
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
     expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
     await page.getByRole('button', { name: `Open ${savedName}`, exact: true }).click();
     const savedProfileTab = page.getByRole('tab', { name: savedName, exact: true });

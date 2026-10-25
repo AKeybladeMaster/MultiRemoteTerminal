@@ -9,7 +9,7 @@ import type { CancellationSignal } from './cancellation.ts';
 import type { CredentialPrompt, CredentialPromptCancellation } from './credential-prompt.ts';
 import type { SecretVault, SecretVaultState } from './secret-vault.ts';
 import { SecretVaultError } from './secret-vault.ts';
-import { StorageOperationError } from './storage-errors.ts';
+import { storageOperationErrorCode } from './storage-errors.ts';
 import type { SshTerminalCredentials } from './ssh-terminals.ts';
 
 export interface SessionCredentialStore {
@@ -25,7 +25,7 @@ export interface SessionCredentialManager {
   unlock(): Promise<Outcome<SecretVaultState>>;
   hasSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<boolean>>;
   saveSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
-  forgetSshProfile(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
+  forgetSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
   resolveSshCredential(sessionId: unknown, host: unknown, port: unknown,
     cancellation?: CancellationSignal): Promise<Outcome<SshTerminalCredentials | undefined>>;
 }
@@ -91,7 +91,7 @@ export function createSessionCredentialManager(store: SessionCredentialStore, pr
         return { ok: true, result: EMPTY_RESULT };
       } catch (error) { return failure(errorCode(error)); }
     },
-    async forgetSshProfile(sessionId: unknown, cancellation?: CancellationSignal) {
+    async forgetSshCredential(sessionId: unknown, cancellation?: CancellationSignal) {
       if (!isSessionDefinitionId(sessionId)) return failure('INVALID_REQUEST');
       if (cancellation?.aborted) return failure('CANCELLED');
       try {
@@ -162,13 +162,5 @@ function errorCode(error: unknown): ErrorCode {
     if (error.kind === 'invalid-input') return 'INVALID_REQUEST';
     if (error.kind === 'not-found') return 'NOT_FOUND';
   }
-  if (error instanceof StorageOperationError) {
-    if (error.kind === 'busy') return 'BUSY';
-    if (error.kind === 'invalid') return 'INVALID_REQUEST';
-    if (error.kind === 'cancelled') return 'CANCELLED';
-    if (error.kind === 'conflict') return 'CONFLICT';
-    if (error.kind === 'not-found') return 'NOT_FOUND';
-    if (error.kind === 'corrupt') return 'CORRUPT';
-  }
-  return 'UNAVAILABLE';
+  return storageOperationErrorCode(error) ?? 'UNAVAILABLE';
 }

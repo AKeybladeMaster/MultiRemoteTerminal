@@ -2353,7 +2353,7 @@ function Workbench() {
             aria-expanded={menuOpen} onClick={event => toggleSavedActionsMenu(event, menuId, session.kind === 'ssh' ? session.id : undefined)}>···</summary>
           <div className="saved-actions-panel" aria-label={`Saved-session actions for ${session.name}`}>
             {session.kind === 'ssh' && <>
-              <p className="saved-session-credential-status" role="status">{credentialStatus === 'saved' ? 'A password is saved securely.'
+              <p className="saved-session-credential-status" role="status">{credentialStatus === 'saved' ? 'A password is saved with Windows account protection.'
                 : credentialStatus === 'loading' ? 'Checking saved password…' : credentialStatus === 'unavailable' ? 'Password status is unavailable.' : 'No password is saved.'}</p>
               <button type="button" disabled={catalogBusy || credentialBusyId === session.id}
                 onClick={() => void saveSshCredential(session)}>{credentialStatus === 'saved' ? 'Replace saved password…' : 'Save password…'}</button>
@@ -2610,7 +2610,7 @@ function Workbench() {
       const reply = await window.multiRemoteTerminal.saveSshCredential(session.id);
       if (reply.ok) {
         setSavedSshCredentialStatus(current => ({ ...current, [session.id]: 'saved' }));
-        setAlert(`A password is saved securely for ${session.name}. It will be used when this profile is opened.`);
+        setAlert(`A password is saved with Windows account protection for ${session.name}. It will be used when this profile is opened.`);
       } else if (reply.error.code !== 'CANCELLED') setAlert(sshCredentialError(reply.error.code));
     } catch { setAlert('The SSH password could not be saved.'); }
     finally { setCredentialBusyId(undefined); }

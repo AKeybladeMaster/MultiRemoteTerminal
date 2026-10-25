@@ -72,7 +72,7 @@ export interface CommandActions {
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'count' | 'get' | 'create' | 'remember' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
-  readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'hasSshCredential' | 'saveSshCredential' | 'forgetSshProfile' | 'resolveSshCredential'>;
+  readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
@@ -357,7 +357,7 @@ export async function dispatchCommand(
       case 'session.move': return { requestId, ...await actions.sessionCatalog.moveSession(parsed.result.payload.id, parsed.result.payload.folderId, actions.cancellation) };
       case 'session.credential.has': return { requestId, ...await actions.sessionCredentials.hasSshCredential(parsed.result.payload.id, actions.cancellation) };
       case 'session.credential.save': return { requestId, ...await actions.sessionCredentials.saveSshCredential(parsed.result.payload.id, actions.cancellation) };
-      case 'session.credential.forget': return { requestId, ...await actions.sessionCredentials.forgetSshProfile(parsed.result.payload.id, actions.cancellation) };
+      case 'session.credential.forget': return { requestId, ...await actions.sessionCredentials.forgetSshCredential(parsed.result.payload.id, actions.cancellation) };
       case 'vault.state': return { requestId, ok: true, result: actions.sessionCredentials.state() };
       case 'vault.lock':
         actions.sessionCredentials.lock();

@@ -167,7 +167,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         <div className="settings-highlights">
           <h3>Credential vault</h3>
           <p className="settings-highlight-help">
-            Saved SSH passwords are encrypted with Windows account protection. Locking the vault blocks saved-password connections until you unlock it. This is not a separate master password.
+            Saved SSH passwords use Windows account protection, which does not protect them from malware running as your Windows user. Locking the vault blocks saved-password connections until you unlock it. This is a local privacy control, not a separate master password.
           </p>
           <p role="status" aria-live="polite">Status: {credentialVaultState === 'available' ? 'Unlocked'
             : credentialVaultState === 'locked' ? 'Locked' : credentialVaultState === 'uninitialized' ? 'Starting' : 'Unavailable'}</p>

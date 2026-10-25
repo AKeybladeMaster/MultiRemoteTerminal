@@ -6,7 +6,7 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/src/session-folder.ts';
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../domain/src/session-folder-bundle.ts';
-import { StorageOperationError } from './storage-errors.ts';
+import { storageOperationErrorCode } from './storage-errors.ts';
 import type { CredentialReference } from '../../domain/src/credentials.ts';
 
 export interface SessionCatalogStore {
@@ -65,7 +65,7 @@ export interface SessionRemovalGuard {
 }
 
 export interface SessionCredentialRemover {
-  forgetSshProfile(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
+  forgetSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
 }
 
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
@@ -128,7 +128,7 @@ export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: S
       if (removalGuard && !removalGuard.beginSessionRemoval(id)) return failure('BUSY');
       try {
         if (credentialRemover) {
-          const credentials = await credentialRemover.forgetSshProfile(id, cancellation);
+          const credentials = await credentialRemover.forgetSshCredential(id, cancellation);
           if (!credentials.ok && credentials.error.code !== 'INVALID_REQUEST') return credentials;
         }
         const removed = await store.removeSession(id, cancellation);
@@ -206,12 +206,5 @@ function isFilePath(value: unknown): value is string {
 }
 
 function errorCode(error: unknown): ErrorCode {
-  if (error instanceof StorageOperationError) {
-    if (error.kind === 'busy') return 'BUSY';
-    if (error.kind === 'invalid') return 'INVALID_REQUEST';
-    if (error.kind === 'cancelled') return 'CANCELLED';
-    if (error.kind === 'conflict') return 'CONFLICT';
-    if (error.kind === 'not-found') return 'NOT_FOUND';
-  }
-  return 'UNAVAILABLE';
+  return storageOperationErrorCode(error) ?? 'UNAVAILABLE';
 }

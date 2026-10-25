@@ -83,7 +83,7 @@ test('credential removal deletes the vault entry and detaches the profile refere
   const context = setup();
   await context.manager.saveSshCredential(sshProfile.id);
   assert.equal((await context.manager.hasSshCredential(sshProfile.id)).ok, true);
-  assert.deepEqual(await context.manager.forgetSshProfile(sshProfile.id), { ok: true, result: {} });
+  assert.deepEqual(await context.manager.forgetSshCredential(sshProfile.id), { ok: true, result: {} });
   assert.equal(context.reference, undefined);
   assert.equal(context.secrets.size, 0);
 });
@@ -126,7 +126,7 @@ test('locked vault fails closed when saved credentials are resolved or changed',
   assert.deepEqual(await context.manager.resolveSshCredential(sshProfile.id, sshProfile.host, sshProfile.port), {
     ok: false, error: { code: 'LOCKED', target: 'application', retryable: false }
   });
-  assert.deepEqual(await context.manager.forgetSshProfile(sshProfile.id), {
+  assert.deepEqual(await context.manager.forgetSshCredential(sshProfile.id), {
     ok: false, error: { code: 'LOCKED', target: 'application', retryable: false }
   });
 });

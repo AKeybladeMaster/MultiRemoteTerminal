@@ -69,7 +69,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     state: () => 'available', lock() {}, async unlock() { return { ok: true, result: 'available' } as const; },
     async hasSshCredential() { return { ok: true, result: false } as const; },
     async saveSshCredential() { return { ok: true, result: {} } as const; },
-    async forgetSshProfile() { return { ok: true, result: {} } as const; },
+    async forgetSshCredential() { return { ok: true, result: {} } as const; },
     async resolveSshCredential() { return { ok: true, result: undefined } as const; }
   }, macros: {
     list: async () => ({ ok: true, result: [] }),
