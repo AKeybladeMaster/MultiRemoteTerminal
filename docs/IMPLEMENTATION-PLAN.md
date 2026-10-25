@@ -142,6 +142,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07B — Offline user help:** A searchable, keyboard-operable in-app help dialog is available from the workbench header and command palette. It covers current connection, saved-session, tab, file-transfer, macro, MultiExec, forwarding, theme and troubleshooting actions. A matching [offline user guide](USER-GUIDE.md) records security and export limitations. Windows E2E verifies filtering, Escape and focus restoration, both entry points, light theme and a narrow workbench layout. P-33 is VERIFIED; no M4 release gate is implied. See [WP-07B results](results/WP-07B-offline-help-2026-10-25.md).
 
+**WP-07C — Persisted startup greeting:** Workbench settings now expose an editable, bounded Unicode greeting through a modal available from the header and command palette. The greeting is stored as a versioned `settings` row through typed renderer → preload → main broker → SQLite worker calls; the renderer treats it as text, and dismissal lasts only for the current app run. Windows E2E verifies edit/save, keyboard dismissal, the narrow layout, and the greeting after relaunch. Focused unit and contract tests cover normalization, malformed data rejection and SQLite restart persistence. P-34 is VERIFIED for this behavior; F-009 remains incomplete because logo, profile script and tool visibility settings remain open. No schema migration was needed because the versioned `settings` table already existed. See [WP-07C results](results/WP-07C-startup-greeting-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  

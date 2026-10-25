@@ -17,6 +17,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
     'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
+    'getWorkbenchPreferences', 'saveWorkbenchPreferences',
     'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
     'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
@@ -311,6 +312,22 @@ test('preload routes saved-session commands through fixed validated requests', a
   }, id);
   const reply = await bridge.createSavedSession({ kind: 'local', name: 'Work shell', shell: 'powershell' });
   assert.equal(reply.ok, true);
+});
+
+test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
+  const greeting = 'Terminal ready — こんにちは 👋';
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return { requestId: request.requestId, ok: true, result: { startupGreeting: greeting } };
+  }, id);
+  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: { startupGreeting: greeting } });
+  assert.deepEqual(await bridge.saveWorkbenchPreferences({ startupGreeting: greeting }),
+    { requestId: id(), ok: true, result: { startupGreeting: greeting } });
+  assert.deepEqual(seen, [
+    { command: 'preferences.get', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'preferences.save', requestId: id(), contractVersion: 1, payload: { preferences: { startupGreeting: greeting } } }
+  ]);
 });
 
 test('preload routes macro library operations through fixed credential-free commands', async () => {

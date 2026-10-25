@@ -7,6 +7,7 @@ import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catal
 import { SqliteTunnelRepository } from '../adapters/sqlite-tunnel-repository.ts';
 import { SqliteMacroCatalogRepository } from '../adapters/sqlite-macro-catalog-repository.ts';
 import { SqliteMacroShortcutRepository } from '../adapters/sqlite-macro-shortcut-repository.ts';
+import { SqliteWorkbenchPreferencesRepository } from '../adapters/sqlite-workbench-preferences-repository.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -20,6 +21,7 @@ let sessionCatalogRepository: SqliteSessionCatalogRepository;
 let tunnelRepository: SqliteTunnelRepository;
 let macroCatalogRepository: SqliteMacroCatalogRepository;
 let macroShortcutRepository: SqliteMacroShortcutRepository;
+let workbenchPreferencesRepository: SqliteWorkbenchPreferencesRepository;
 try {
   await mkdir(dirname(databasePath), { recursive: true });
   const database = new DatabaseSync(databasePath, {
@@ -35,6 +37,7 @@ try {
   tunnelRepository = new SqliteTunnelRepository(database);
   macroCatalogRepository = new SqliteMacroCatalogRepository(database);
   macroShortcutRepository = new SqliteMacroShortcutRepository(database);
+  workbenchPreferencesRepository = new SqliteWorkbenchPreferencesRepository(database);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
   const errorCode = storageWorkerErrorCode(normalizedError);
@@ -125,6 +128,12 @@ parent.on('message', async event => {
     } else if (request.command === 'macro.shortcut.remove') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: macroShortcutRepository.remove(request.macroId) } });
+    } else if (request.command === 'preferences.get') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'preferences', value: workbenchPreferencesRepository.read() } });
+    } else if (request.command === 'preferences.save') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'preferences', value: workbenchPreferencesRepository.save(request.preferences) } });
     } else if (request.command === 'tunnel.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'tunnels', value: await tunnelRepository.listSshTunnels() } });

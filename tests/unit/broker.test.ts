@@ -62,6 +62,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
     async stop(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; }
+  }, preferences: {
+    read: async () => ({ ok: true, result: { startupGreeting: '' } }),
+    save: async value => ({ ok: true, result: value as { readonly startupGreeting: string } })
   }
 });
 

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
+import { MAX_STARTUP_GREETING_CODE_POINTS } from '../../packages/domain/src/workbench-preferences.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
 
@@ -314,5 +315,28 @@ test('macro IPC accepts only typed steps and credential-free replies', () => {
   if (parsedShortcutSet.ok) {
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { macroId, code: 'F2' } }, parsedShortcutSet.result), true);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { macroId, code: 'F3' } }, parsedShortcutSet.result), false);
+  }
+});
+
+test('workbench preference IPC accepts bounded plain Unicode greeting text only', () => {
+  const get = { command: 'preferences.get', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const save = { command: 'preferences.save', requestId: request.requestId, contractVersion: 1,
+    payload: { preferences: { startupGreeting: 'Terminal ready — こんにちは 👋' } } };
+  assert.equal(parseRequest(get).ok, true);
+  const parsed = parseRequest(save);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'bad\u0000text' } } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { preferences: {
+    startupGreeting: 'x'.repeat(MAX_STARTUP_GREETING_CODE_POINTS * 2 + 1)
+  } } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'safe', code: 'run' } } }).ok, false);
+  assert.equal(parseRequest({ ...get, payload: { unexpected: true } }).ok, false);
+  if (parsed.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { startupGreeting: 'Terminal ready — こんにちは 👋' } }, parsed.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { startupGreeting: 'safe', command: 'whoami' } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: false,
+      error: { code: 'CORRUPT', target: 'application', retryable: false } }, parsed.result), true);
   }
 });
