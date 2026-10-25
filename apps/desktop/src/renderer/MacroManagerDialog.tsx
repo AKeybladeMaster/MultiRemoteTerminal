@@ -2,18 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
 import { MAX_MACRO_STEPS, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft, MacroStep } from '../../../../packages/domain/src/macro.ts';
-import type { AppError } from '../../../../packages/domain/src/errors.ts';
-import type { MacroRunProgress } from '../../../../packages/application/src/macro-runner.ts';
-
-export interface MacroPlaybackView {
-  readonly macroId: string;
-  readonly sessionId: string;
-  readonly targetTitle: string;
-  readonly status: 'running' | 'completed' | 'cancelled' | 'failed';
-  readonly progress?: MacroRunProgress;
-  readonly error?: AppError;
-  readonly cancelRequested?: boolean;
-}
+import { playbackStatusText } from './macro-playback-status.ts';
+import type { MacroPlaybackView } from './macro-playback-status.ts';
+export type { MacroPlaybackView } from './macro-playback-status.ts';
 
 export interface MacroManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
@@ -70,25 +61,6 @@ function playbackStepPresentation(step: MacroStep): PlaybackStepPresentation {
     case 'delay': return { name: 'Delay', description: `Wait ${step.durationMs.toLocaleString()} milliseconds before continuing.`, content: `${step.durationMs.toLocaleString()} ms`, command: false };
     case 'confirm': return { name: 'Confirmation', description: 'Pause here until you approve or stop playback.', content: step.message, command: false };
   }
-}
-
-function playbackStatusText(playback: MacroPlaybackView, macro: MacroDefinition): string {
-  if (playback.status === 'completed') return `Macro completed on ${playback.targetTitle}.`;
-  if (playback.status === 'cancelled') return `Playback stopped on ${playback.targetTitle}. Later steps were not sent.`;
-  if (playback.status === 'failed') {
-    const code = playback.error?.code ?? 'UNAVAILABLE';
-    return code === 'TIMEOUT'
-      ? `Playback stopped on ${playback.targetTitle} (${code}). Check the terminal output and adjust the wait before retrying.`
-      : `Playback stopped on ${playback.targetTitle} (${code}). Check the terminal before reviewing and retrying ${macro.name}.`;
-  }
-  if (playback.cancelRequested) return 'Stopping after any terminal write already in flight settles. Later steps will not run.';
-  const progress = playback.progress;
-  if (!progress) return `Starting ${macro.name} on ${playback.targetTitle}.`;
-  if (progress.phase === 'waiting') return `Step ${progress.stepNumber} of ${progress.stepCount}: waiting for terminal text.`;
-  if (progress.phase === 'delaying') return `Step ${progress.stepNumber} of ${progress.stepCount}: waiting before the next command.`;
-  if (progress.phase === 'confirming') return `Step ${progress.stepNumber} of ${progress.stepCount}: confirmation required.`;
-  if (progress.phase === 'step-complete') return `Step ${progress.stepNumber} of ${progress.stepCount} completed.`;
-  return `Step ${progress.stepNumber} of ${progress.stepCount}: sending the reviewed command.`;
 }
 
 export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, recordingTargets, recordingActive, playbackMacroId, playback,
@@ -283,7 +255,7 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
               : playbackTargetUnavailable ? 'The selected terminal is no longer running. Choose another target before playback.'
                 : 'Open a running local, SSH or Telnet terminal before running this macro.'}
         </p>}
-        {playback && <p className={`macro-playback-feedback${playback.status === 'failed' ? ' error' : ''}`} role="status" aria-live="polite">{playbackStatusText(playback, reviewedMacro)}</p>}
+        {playback && <p className={`macro-playback-feedback${playback.status === 'failed' ? ' error' : ''}`} role="status" aria-live="polite">{playbackStatusText(playback, reviewedMacro.name)}</p>}
         {confirmationPending && playback?.progress?.step.kind === 'confirm' && <div className="macro-playback-confirmation" role="group" aria-label="Confirm macro step">
           <div><strong>Continue with this step?</strong><p>{playback.progress.step.message}</p></div>
           <button ref={continuePlaybackButton} type="button" className="ssh-primary" onClick={() => onConfirmPlayback(true)}>Continue</button>

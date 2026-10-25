@@ -41,6 +41,9 @@ Windows x64 with Node 24.14.1 and Electron 45.0.0:
   step suppression, split literal text with ANSI controls, timeout and case
   sensitivity, cancellation during wait and confirmation, disconnect,
   confirmation decline, and invalid/unavailable/busy runs.
+- A renderer status test confirms write timeouts warn that command acceptance is
+  uncertain, while text-wait timeouts explain that the expected output did not
+  arrive.
 - The Windows Electron E2E reviews exact steps and target, runs a successful
   send/wait/delay/confirm/send sequence, and cancels a waiting run. It also
   keeps a second terminal active while the reviewed target exits: playback
