@@ -10,6 +10,7 @@ export type { TerminalTheme } from './terminal-theme.ts';
 export interface TerminalUiHandle {
   readonly write: (data: string, onParsed: () => void) => void;
   readonly focus: () => void;
+  readonly currentLineText: () => string;
   readonly clear: () => void;
   readonly copySelection: () => Promise<boolean>;
   readonly acknowledgeOutput: (sequence: number) => Promise<void>;
@@ -122,6 +123,10 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
         instance.write(data, onParsed);
       },
       focus: () => instance.focus(),
+      currentLineText: () => {
+        const buffer = instance.buffer.active;
+        return buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true, 0, buffer.cursorX) ?? '';
+      },
       clear: () => instance.clear(),
       copySelection: async () => {
         const selection = instance.getSelection();

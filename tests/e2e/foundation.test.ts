@@ -1687,6 +1687,59 @@ test('macro recorder captures completed terminal lines and suppresses a recogniz
   }
 });
 
+test('macro recorder protects a recognized password prompt already open when recording starts', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-open-prompt-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const title = 'PowerShell session 1';
+    const panel = await selectTerminal(page, title);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+
+    const secret = 'never-store-this-open-prompt-secret';
+    const promptCommand = "$mrtSecret = Read-Host -Prompt 'Password' -AsSecureString; Write-Output 'MRT-OPEN-PROMPT-READY'";
+    await page.keyboard.type(promptCommand);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('Password:', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Macros' });
+    await dialog.getByLabel('New recording name').fill('Open prompt recording');
+    await dialog.getByRole('button', { name: 'Start recording', exact: true }).click();
+    const banner = page.getByRole('region', { name: 'Macro recording controls' });
+    await expect(banner).toBeVisible();
+    await expect(banner.getByRole('status')).toContainText('recognized secret prompt');
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+
+    await page.keyboard.type(secret);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OPEN-PROMPT-READY', { timeout: 15_000 });
+    await expect(banner).toContainText('Recording paused');
+    await banner.getByRole('button', { name: 'Resume recording', exact: true }).click();
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type("Write-Output 'MRT-OPEN-PROMPT-SAFE'");
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OPEN-PROMPT-SAFE', { timeout: 15_000 });
+    await expect(banner).toContainText('1 complete line');
+
+    await banner.getByRole('button', { name: 'Stop and save', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('Recording saved');
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    const saved = page.getByRole('dialog', { name: 'Macros' });
+    const macro = saved.getByRole('button', { name: /Open prompt recording/ });
+    await expect(macro).toContainText('1 step');
+    await macro.click();
+    await expect(saved.locator('#macro-step-0-text')).toHaveValue("Write-Output 'MRT-OPEN-PROMPT-SAFE'");
+    await expect(saved.locator('#macro-step-0-text')).not.toHaveValue(new RegExp(secret));
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only actions', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-tab-actions-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });

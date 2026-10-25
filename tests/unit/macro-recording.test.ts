@@ -115,6 +115,41 @@ test('resume stays paused when a recognized secret prompt is already open', () =
   ]);
 });
 
+test('paused recognized prompts stay latched across echoed text and line breaks', () => {
+  for (const outputAfterPrompt of ['********', '\r\n']) {
+    const recorder = createMacroRecorder();
+    recorder.start('terminal-a');
+    recorder.pause();
+    recorder.observeOutput('terminal-a', 'Password: ');
+    recorder.observeOutput('terminal-a', outputAfterPrompt);
+
+    recorder.resume();
+    assert.equal(recorder.snapshot().status, 'paused', `output after prompt: ${JSON.stringify(outputAfterPrompt)}`);
+    recorder.recordInput('terminal-a', 'never-store-this\r');
+    recorder.observeOutput('terminal-a', '\r\nPS> ');
+    recorder.resume();
+    recorder.recordInput('terminal-a', 'safe command\r');
+
+    assert.deepEqual(recorder.stop('terminal-a')?.steps, [{ kind: 'send', text: 'safe command' }]);
+  }
+});
+
+test('cursor-addressed screen redraw checks the cursor line for an open secret prompt', () => {
+  const recorder = createMacroRecorder();
+  recorder.start('terminal-a');
+  recorder.pause();
+  recorder.observeOutput('terminal-a',
+    `\u001b[HPS> ${'x'.repeat(64)}\u001b[K\u001b[2;1HPassword: \u001b[K\u001b[3;1Hother output\u001b[K\u001b[2;10H`);
+
+  recorder.resume();
+  assert.equal(recorder.snapshot().status, 'paused');
+  recorder.recordInput('terminal-a', 'never-store-this\r');
+  recorder.observeOutput('terminal-a', '\r\nPS> ');
+  recorder.resume();
+  recorder.recordInput('terminal-a', 'safe command\r');
+  assert.deepEqual(recorder.stop('terminal-a')?.steps, [{ kind: 'send', text: 'safe command' }]);
+});
+
 test('ignores xterm focus reports without discarding the next submitted command', () => {
   const recorder = createMacroRecorder();
   recorder.start('terminal-a');

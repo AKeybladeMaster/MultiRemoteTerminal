@@ -27,9 +27,11 @@ export interface MacroRecorder {
 
 const MAX_PROMPT_LINE_CHARS = 512;
 const MAX_INPUT_CHARS_PER_EVENT = MAX_MACRO_SEND_CHARS * 2;
+const MAX_REDRAW_ROWS = 256;
+const MAX_CSI_SEQUENCE_CHARS = 64;
 const isScreenRedraw = (data: string): boolean => {
-  const clearedLines = data.match(/\u001b\[K/gu)?.length ?? 0;
-  return data.length >= 64 && clearedLines >= 2 && /\u001b\[(?:H|1;1H)/u.test(data);
+  const clearedLines = data.match(/(?:\u001b\[|\u009b)[0-9;?]*K/gu)?.length ?? 0;
+  return data.length >= 64 && clearedLines >= 2 && /(?:\u001b\[|\u009b)(?:H|f|1;1H)/u.test(data);
 };
 const SECRET_PROMPT = /\b(?:password|passwd|passphrase|token|secret|verification(?:\s+code)?|one[- ]time\s+code)\b[^:\r\n]{0,80}[:?]\s*$/iu;
 
@@ -47,6 +49,7 @@ export function createMacroRecorder(): MacroRecorder {
   let pausedPromptLine = '';
   let pausedSecretPromptOpen = false;
   let ansiMode: AnsiMode = 'text';
+  let csiSequence = '';
   let discardUntilEnter = false;
   let suppressUntilEnter = false;
   let pausedAfterSecretPrompt = false;
@@ -61,6 +64,11 @@ export function createMacroRecorder(): MacroRecorder {
   function clearLine(): void { line = []; }
 
   function finishLine(): void {
+    if (paused && pausedSecretPromptOpen) {
+      pausedSecretPromptOpen = false;
+      pausedAfterSecretPrompt = true;
+      warning = 'secret-prompt';
+    }
     if (suppressUntilEnter) {
       suppressUntilEnter = false;
       paused = true;
@@ -102,18 +110,23 @@ export function createMacroRecorder(): MacroRecorder {
     if (paused) {
       if (character === '\r' || character === '\n') {
         pausedPromptLine = '';
-        pausedSecretPromptOpen = false;
         return;
       }
       if (character === '\b' || character === '\u007f') {
         pausedPromptLine = Array.from(pausedPromptLine).slice(0, -1).join('');
-        pausedSecretPromptOpen = SECRET_PROMPT.test(pausedPromptLine);
+        if (SECRET_PROMPT.test(pausedPromptLine)) {
+          pausedSecretPromptOpen = true;
+          warning = 'secret-prompt';
+        }
         return;
       }
       if (character < ' ' || character === '\u007f') return;
       pausedPromptLine += character;
       if (pausedPromptLine.length > MAX_PROMPT_LINE_CHARS) pausedPromptLine = pausedPromptLine.slice(-MAX_PROMPT_LINE_CHARS);
-      pausedSecretPromptOpen = SECRET_PROMPT.test(pausedPromptLine);
+      if (SECRET_PROMPT.test(pausedPromptLine)) {
+        pausedSecretPromptOpen = true;
+        warning = 'secret-prompt';
+      }
       return;
     }
     if (character === '\r' || character === '\n') {
@@ -146,24 +159,67 @@ export function createMacroRecorder(): MacroRecorder {
   function observeOutput(targetSessionId: string, data: string): MacroRecordingSnapshot {
     if (sessionId !== targetSessionId) return snapshot();
     const screenRedraw = isScreenRedraw(data);
-    let redrawnActiveLine: string[] = [];
+    const redrawnLines = new Map<number, string[]>();
+    let redrawnCursorRow = 0;
+    let redrawnCursorColumn = 0;
+    const currentRedrawnLine = (): string[] => {
+      const current = redrawnLines.get(redrawnCursorRow);
+      if (current) return current;
+      const created: string[] = [];
+      redrawnLines.set(redrawnCursorRow, created);
+      return created;
+    };
+    const applyRedrawCsi = (finalCharacter: string): void => {
+      const parameters = csiSequence.replace(/^[?>!]/u, '').split(';');
+      const positiveParameter = (index: number, fallback: number): number => {
+        const value = Number.parseInt(parameters[index] ?? '', 10);
+        return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+      };
+      if (finalCharacter === 'H' || finalCharacter === 'f') {
+        redrawnCursorRow = Math.min(MAX_REDRAW_ROWS - 1, positiveParameter(0, 1) - 1);
+        redrawnCursorColumn = Math.min(MAX_PROMPT_LINE_CHARS, positiveParameter(1, 1) - 1);
+      } else if (finalCharacter === 'A') redrawnCursorRow = Math.max(0, redrawnCursorRow - positiveParameter(0, 1));
+      else if (finalCharacter === 'B') redrawnCursorRow = Math.min(MAX_REDRAW_ROWS - 1, redrawnCursorRow + positiveParameter(0, 1));
+      else if (finalCharacter === 'C') redrawnCursorColumn = Math.min(MAX_PROMPT_LINE_CHARS, redrawnCursorColumn + positiveParameter(0, 1));
+      else if (finalCharacter === 'D') redrawnCursorColumn = Math.max(0, redrawnCursorColumn - positiveParameter(0, 1));
+      else if (finalCharacter === 'E') {
+        redrawnCursorRow = Math.min(MAX_REDRAW_ROWS - 1, redrawnCursorRow + positiveParameter(0, 1));
+        redrawnCursorColumn = 0;
+      } else if (finalCharacter === 'F') {
+        redrawnCursorRow = Math.max(0, redrawnCursorRow - positiveParameter(0, 1));
+        redrawnCursorColumn = 0;
+      } else if (finalCharacter === 'G') redrawnCursorColumn = Math.min(MAX_PROMPT_LINE_CHARS, positiveParameter(0, 1) - 1);
+      else if (finalCharacter === 'd') redrawnCursorRow = Math.min(MAX_REDRAW_ROWS - 1, positiveParameter(0, 1) - 1);
+      else if (finalCharacter === 'K') {
+        const mode = Number.parseInt(parameters[0] ?? '0', 10) || 0;
+        const row = currentRedrawnLine();
+        if (mode === 0) row.length = Math.min(row.length, redrawnCursorColumn);
+        else if (mode === 1) {
+          for (let index = 0; index < Math.min(redrawnCursorColumn, MAX_PROMPT_LINE_CHARS); index++) row[index] = ' ';
+        } else if (mode === 2) redrawnLines.set(redrawnCursorRow, []);
+      }
+    };
     if (screenRedraw) {
       promptLine = '';
       submittedLineForEcho = '';
       pausedPromptLine = '';
-      pausedSecretPromptOpen = false;
       ansiMode = 'text';
+      csiSequence = '';
     }
     for (const character of data) {
       if (ansiMode === 'escape') {
-        if (character === '[') ansiMode = 'csi';
+        if (character === '[') { ansiMode = 'csi'; csiSequence = ''; }
         else if (character === ']') ansiMode = 'osc';
         else if (character === 'P' || character === 'X' || character === '^' || character === '_') ansiMode = 'control-string';
         else ansiMode = 'text';
         continue;
       }
       if (ansiMode === 'csi') {
-        if (character === '\u009c' || (character >= '@' && character <= '~')) ansiMode = 'text';
+        if (character === '\u009c' || (character >= '@' && character <= '~')) {
+          if (screenRedraw && character !== '\u009c') applyRedrawCsi(character);
+          ansiMode = 'text';
+          csiSequence = '';
+        } else if (csiSequence.length < MAX_CSI_SEQUENCE_CHARS) csiSequence += character;
         continue;
       }
       if (ansiMode === 'osc') {
@@ -185,7 +241,7 @@ export function createMacroRecorder(): MacroRecorder {
         continue;
       }
       if (character === '\u001b') { ansiMode = 'escape'; continue; }
-      if (character === '\u009b') { ansiMode = 'csi'; continue; }
+      if (character === '\u009b') { ansiMode = 'csi'; csiSequence = ''; continue; }
       if (character === '\u009d') { ansiMode = 'osc'; continue; }
       if (character === '\u0090' || character === '\u0098' || character === '\u009e' || character === '\u009f') {
         ansiMode = 'control-string';
@@ -196,14 +252,19 @@ export function createMacroRecorder(): MacroRecorder {
         appendPromptCharacter(character);
         continue;
       }
-      if (character === '\r' || character === '\n') redrawnActiveLine = [];
-      else if (character === '\b' || character === '\u007f') redrawnActiveLine.pop();
+      if (character === '\r') redrawnCursorColumn = 0;
+      else if (character === '\n') {
+        redrawnCursorRow = Math.min(MAX_REDRAW_ROWS - 1, redrawnCursorRow + 1);
+        redrawnCursorColumn = 0;
+      } else if (character === '\b' || character === '\u007f') redrawnCursorColumn = Math.max(0, redrawnCursorColumn - 1);
       else if (character >= ' ') {
-        redrawnActiveLine.push(character);
-        if (redrawnActiveLine.length > MAX_PROMPT_LINE_CHARS) redrawnActiveLine.shift();
+        if (redrawnCursorColumn < MAX_PROMPT_LINE_CHARS) {
+          currentRedrawnLine()[redrawnCursorColumn] = character;
+          redrawnCursorColumn++;
+        }
       }
     }
-    if (screenRedraw) for (const character of redrawnActiveLine) appendPromptCharacter(character);
+    if (screenRedraw) for (const character of currentRedrawnLine().join('')) appendPromptCharacter(character);
     return snapshot();
   }
 
@@ -221,6 +282,7 @@ export function createMacroRecorder(): MacroRecorder {
       pausedPromptLine = '';
       pausedSecretPromptOpen = false;
       ansiMode = 'text';
+      csiSequence = '';
       discardUntilEnter = false;
       suppressUntilEnter = false;
       pausedAfterSecretPrompt = false;
@@ -277,6 +339,10 @@ export function createMacroRecorder(): MacroRecorder {
         if (character === '\u0003') {
           clearLine();
           discardUntilEnter = false;
+          if (paused) {
+            pausedSecretPromptOpen = false;
+            pausedPromptLine = '';
+          }
           if (suppressUntilEnter) {
             suppressUntilEnter = false;
             paused = true;
@@ -323,6 +389,7 @@ export function createMacroRecorder(): MacroRecorder {
       pausedPromptLine = '';
       pausedSecretPromptOpen = false;
       ansiMode = 'text';
+      csiSequence = '';
       discardUntilEnter = false;
       suppressUntilEnter = false;
       pausedAfterSecretPrompt = false;

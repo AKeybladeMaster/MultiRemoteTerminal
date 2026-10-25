@@ -292,6 +292,7 @@ function Workbench() {
   const tunnelOperationRequest = useRef(0);
   const macroManagerRequest = useRef(0);
   const macroRecorder = useState(createMacroRecorder)[0];
+  const macroSaveErrorCode = useRef('UNAVAILABLE');
   const macroRecordingView = useRef<MacroRecordingView | undefined>(undefined);
   const pendingMacroTerminalFocus = useRef<string | undefined>(undefined);
   const paletteInput = useRef<HTMLInputElement>(null);
@@ -487,6 +488,7 @@ function Workbench() {
   }, []);
 
   const saveMacro = useCallback(async (id: string | undefined, draft: MacroDraft): Promise<string | undefined> => {
+    macroSaveErrorCode.current = 'UNAVAILABLE';
     setMacroBusy(true);
     setMacroError(undefined);
     try {
@@ -494,6 +496,7 @@ function Workbench() {
         ? await window.multiRemoteTerminal.updateMacro(id, draft)
         : await window.multiRemoteTerminal.createMacro(draft);
       if (!reply.ok) {
+        macroSaveErrorCode.current = reply.error.code;
         setMacroError(`The macro could not be saved (${reply.error.code}).`);
         return undefined;
       }
@@ -517,7 +520,8 @@ function Workbench() {
         : `Recording saved as "${recording.name}".`);
       return;
     }
-    publishMacroRecording({ ...recording, status: 'stopped', saveError: 'The recording could not be saved. Retry or discard it.' });
+    publishMacroRecording({ ...recording, status: 'stopped',
+      saveError: `The recording for ${recording.targetTitle} could not be saved (${macroSaveErrorCode.current}). Retry or discard it.` });
   }, [publishMacroRecording, saveMacro]);
 
   const stopMacroRecording = useCallback((targetSessionId: string, reason: 'stopped' | 'disconnected') => {
@@ -547,15 +551,22 @@ function Workbench() {
       setMacroError('Choose a valid name and a running terminal tab.');
       return false;
     }
+    const terminal = handles.current.get(targetSessionId);
+    if (!terminal) {
+      setMacroError('The selected terminal is not ready for recording.');
+      return false;
+    }
     if (macroRecordingView.current || !macroRecorder.start(targetSessionId, draft.name.length)) {
       setMacroError('Stop or discard the current recording before starting another.');
       return false;
     }
+    const initialSnapshot = macroRecorder.observeOutput(targetSessionId, terminal.currentLineText());
     setMacroError(undefined);
     pendingMacroTerminalFocus.current = targetSessionId;
     setActiveId(targetSessionId);
     publishMacroRecording({ sessionId: targetSessionId, name: draft.name, targetTitle: target.title,
-      status: 'recording', steps: [], stepCount: 0 });
+      status: initialSnapshot.status === 'idle' ? 'recording' : initialSnapshot.status,
+      steps: [], stepCount: initialSnapshot.stepCount, warning: initialSnapshot.warning });
     macroManagerReturnFocus.current = null;
     closeMacroManager();
     return true;

@@ -32,14 +32,19 @@ MultiExec and Windows acceptance of 100 definitions remain open.
 
 Windows x64 with Node 24.14.1 and Electron 45.0.0:
 
-- Twelve focused recorder unit tests cover completed lines, target isolation,
+- Fourteen focused recorder unit tests cover completed lines, target isolation,
   backspace, prompt suppression and explicit resume, echoed-command handling,
   focus-report handling, unsafe input, manual pause/resume, multi-stage secret
-  prompts, ANSI control strings, and per-line, step and aggregate text limits.
+  prompts, prompt-state latching across echo/newline output, cursor-addressed
+  redraws, ANSI control strings, and per-line, step and aggregate text limits.
 - The Windows Electron E2E records PowerShell commands that ask for a password
   and a verification code, verifies each recognized prompt pauses recording,
   submits dummy secrets, explicitly resumes, then saves safe command lines. It
   also pastes a command and verifies that pasted text is not recorded.
+- A second Windows Electron E2E opens a recognized PowerShell password prompt
+  before recording starts, then verifies that the current cursor line is
+  inspected, the dummy secret is suppressed, and only a later safe command is
+  saved.
 - The existing macro-library E2E checks keyboard focus during editor creation,
   create/edit, restart persistence and deletion. After the focus adjustment it
   passed ten consecutive isolated repetitions. The editor defers focus until
@@ -52,18 +57,21 @@ Windows x64 with Node 24.14.1 and Electron 45.0.0:
   is discarded. A redraw regression covers PowerShell repainting old prompt
   text after resume.
 - `corepack pnpm check` passed on this follow-up: TypeScript typecheck, ESLint
-  and import-boundary checks, 255 unit tests, native x64 addon and renderer
-  build, and all 19 Electron E2E tests. Vite reports the renderer bundle-size
+  and import-boundary checks, 257 unit tests, native x64 addon and renderer
+  build, and all 20 Electron E2E tests. Vite reports the renderer bundle-size
   advisory (>500 kB after minification).
 
 ## Security and remaining limits
 
-Prompt matching is heuristic and does not protect arbitrary secrets or prompt
-styles the matcher does not recognize. While paused, a bounded transient line
-is checked only to determine whether a recognized secret prompt remains open;
-resuming then keeps recording paused and suppresses input through submission.
-Recognizable full-screen redraws scan only the current active line, so older
-visible rows are not reprocessed as fresh prompts. Users must not treat
+Prompt matching and redraw classification are heuristic and do not protect
+arbitrary secrets, unsupported prompt styles or redraw sequences. Recording
+starts by inspecting only the selected terminal's current cursor line. While
+paused, recognized prompt state remains latched through Enter or Ctrl+C, so
+echo and newline output cannot clear suppression. Recognizable full-screen
+redraws use a bounded row map and common CSI cursor movement/erase controls to
+inspect the cursor row; older visible rows are not reprocessed as fresh
+prompts. Save errors include a stable code, target and retry/discard guidance.
+Users must not treat
 recording as a secret detector and must not enter secrets while it is active.
 User-authored macro text remains local database content. The E2E covers local PowerShell;
 SSH and Telnet recorder flows, playback, cancellation, and the 100-definition

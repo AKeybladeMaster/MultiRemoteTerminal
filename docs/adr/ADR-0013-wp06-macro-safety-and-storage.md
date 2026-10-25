@@ -46,14 +46,17 @@ The initial SQLite schema already contains `macro_definitions` and
    total macro-text limit after reserving characters for the macro name.
    Clipboard paste is omitted. Terminal output is inspected transiently after
    stripping CSI, OSC, DCS, SOS, PM and APC controls in 7-bit and C1 forms, and
-   is never stored. While recording is paused, only a bounded transient prompt
-   line is tracked to detect whether a recognized secret prompt remains open;
-   resuming in that state keeps recording paused and input suppressed through
-   submission. For recognizable full-screen redraws, only the current active
-   line is checked so prior visible rows are not processed as new prompts.
-   After input is suppressed for a detected prompt and the line is submitted,
-   recording pauses and requires an explicit user resume. Detection is
-   heuristic and arbitrary secret prompts may go unrecognized.
+   is never stored. At recording start, the selected terminal's current xterm
+   cursor line is inspected transiently for a prompt already in progress.
+   While paused, only a bounded transient prompt line is tracked; recognized
+   secret-prompt state remains latched until Enter or Ctrl+C so echoed text or
+   a line break cannot clear suppression. Resume while the prompt remains
+   open keeps recording paused and input suppressed. For recognizable
+   full-screen redraws, a bounded row map follows common CSI cursor movement
+   and erase controls and checks only the cursor row. After input is suppressed
+   for a detected prompt and the line is submitted, recording pauses and
+   requires an explicit user resume. Prompt and redraw detection are heuristic;
+   arbitrary secrets and unsupported redraw styles may go unrecognized.
 
 ## Consequences
 
