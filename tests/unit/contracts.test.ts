@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
+import { MAX_STARTUP_GREETING_CODE_POINTS } from '../../packages/domain/src/workbench-preferences.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
 
@@ -325,6 +326,9 @@ test('workbench preference IPC accepts bounded plain Unicode greeting text only'
   const parsed = parseRequest(save);
   assert.equal(parsed.ok, true);
   assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'bad\u0000text' } } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { preferences: {
+    startupGreeting: 'x'.repeat(MAX_STARTUP_GREETING_CODE_POINTS * 2 + 1)
+  } } }).ok, false);
   assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'safe', code: 'run' } } }).ok, false);
   assert.equal(parseRequest({ ...get, payload: { unexpected: true } }).ok, false);
   if (parsed.ok) {

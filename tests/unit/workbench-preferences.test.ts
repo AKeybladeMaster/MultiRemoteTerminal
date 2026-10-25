@@ -13,6 +13,23 @@ test('workbench greeting validation preserves Unicode, normalizes newlines, and 
   assert.equal(normalizeWorkbenchPreferences({ startupGreeting: 'safe', credential: 'secret' }), undefined);
 });
 
+test('workbench greeting validation rejects oversized input before normalization scans it', () => {
+  const originalReplace = String.prototype.replace;
+  let scannedOversizedInput = false;
+  let normalized: ReturnType<typeof normalizeWorkbenchPreferences>;
+  String.prototype.replace = function (searchValue, replaceValue) {
+    if (this.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) scannedOversizedInput = true;
+    return Reflect.apply(originalReplace, this, [searchValue, replaceValue]) as string;
+  };
+  try {
+    normalized = normalizeWorkbenchPreferences({ startupGreeting: 'x'.repeat(MAX_STARTUP_GREETING_CODE_POINTS * 2 + 1) });
+  } finally {
+    String.prototype.replace = originalReplace;
+  }
+  assert.equal(normalized, undefined);
+  assert.equal(scannedOversizedInput, false);
+});
+
 test('preferences manager validates before storage and returns saved values', async () => {
   const writes: string[] = [];
   const manager = createWorkbenchPreferencesManager({

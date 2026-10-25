@@ -11,7 +11,10 @@ export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferen
   if (!isRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'startupGreeting') ||
       typeof value.startupGreeting !== 'string') return undefined;
 
-  const startupGreeting = value.startupGreeting.replace(/\r\n?/gu, '\n');
+  const inputGreeting = value.startupGreeting;
+  if (inputGreeting.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) return undefined;
+
+  const startupGreeting = inputGreeting.replace(/\r\n?/gu, '\n');
   if (Array.from(startupGreeting).length > MAX_STARTUP_GREETING_CODE_POINTS ||
       /\p{Cc}/u.test(startupGreeting.replace(/[\n\t]/gu, ''))) return undefined;
 

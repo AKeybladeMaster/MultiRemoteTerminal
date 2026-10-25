@@ -10,7 +10,7 @@ Workbench Settings lets the user save a greeting of up to 512 Unicode code point
 
 ## Architecture
 
-- Domain validation accepts exactly the `startupGreeting` field, normalizes CRLF/CR to LF, bounds Unicode code points and rejects Unicode control characters other than tabs and newlines (including C1 controls).
+- Domain validation accepts exactly the `startupGreeting` field, rejects UTF-16 input longer than twice the code-point limit before scanning or normalization, then normalizes CRLF/CR to LF, bounds Unicode code points and rejects Unicode control characters other than tabs and newlines (including C1 controls).
 - Application logic validates before storage and maps storage failures to stable error categories.
 - A versioned `workbench` row in the existing `settings` table stores the value; no schema migration was needed.
 - Typed, exact-shape IPC carries read/save calls through preload and the main broker to the supervised SQLite worker.
@@ -25,12 +25,12 @@ All commands ran on Windows from the repository root on 2026-10-25:
 |---|---|
 | `corepack pnpm typecheck` | Passed |
 | `corepack pnpm lint` | Passed; import boundary check passed |
-| `node --test --test-reporter=tap tests/unit/workbench-preference-errors.test.ts tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/workbench-preferences-protocol.test.ts tests/unit/contracts.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` | 73 passed, 0 failed |
-| `corepack pnpm build` | Passed; renderer bundle 725.60 kB minified / 195.03 kB gzip |
+| `node --test --test-reporter=tap tests/unit/workbench-preference-errors.test.ts tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/workbench-preferences-protocol.test.ts tests/unit/contracts.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` | 74 passed, 0 failed |
+| `corepack pnpm build` | Passed; renderer bundle 725.63 kB minified / 195.03 kB gzip |
 | `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "custom Unicode startup greeting saves"` | 1 Windows Electron E2E passed; verifies edit/save, dismissal, empty-value clearing, keyboard/focus behavior, narrow layout, and both populated and cleared values after relaunch |
 | `git diff --check` | Passed |
 
-A focused regression assertion first reproduced acceptance of U+0085, then passed after domain validation was updated to reject Unicode `Cc` characters while retaining tabs and newlines. Independent review also caught two error-reporting gaps: the app startup alert and settings dialog now use actionable user-facing messages, and corrupt storage remains a distinct `CORRUPT` category through the application manager and typed IPC. Focused tests cover both message guidance and preserving that error category.
+A focused regression assertion first reproduced acceptance of U+0085, then passed after domain validation was updated to reject Unicode `Cc` characters while retaining tabs and newlines. Review also caught unbounded work on oversized IPC greeting values; a regression test reproduced normalization before rejection, and the domain now rejects over-limit UTF-16 input before scanning. The contract test confirms IPC rejects that value. Other review-driven fixes map failures to actionable messages in both the settings dialog and startup alert, and preserve corrupt storage as a distinct `CORRUPT` category through application and typed IPC; focused tests cover these paths.
 
 The production build reports the existing Vite chunk-size advisory (>500 kB). Node also reports that `node:sqlite` is experimental in this runtime. Neither warning failed the checks.
 
@@ -42,4 +42,4 @@ The greeting is ordinary local configuration stored in the app profile, not encr
 
 ## Review status
 
-Final independent spec, standards and merge-readiness reviews are pending after review-driven corrections. The standards reviewer’s possible duplicated SQLite error-classification logic is a non-blocking cleanup candidate to revisit when another storage slice touches these adapters; it does not conflict with a documented rule.
+Final independent spec, standards and merge-readiness reviews are pending after the oversized-input correction. A possible duplication of SQLite error classification is tracked as non-blocking cleanup to revisit when another storage slice touches these adapters; it is a heuristic, not a documented-rule violation.
