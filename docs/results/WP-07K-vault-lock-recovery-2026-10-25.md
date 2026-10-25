@@ -22,4 +22,6 @@ An initial focused E2E attempt before rebuilding used the previously compiled ma
 
 ## Review and remaining scope
 
+The Spec-axis review found no missing WP-07K behavior or incorrect implementation and agreed that the broader partial statuses are accurate. The Standards-axis review found no hard violations; it noted duplicated credential-reference validation in the two probe operations as a minor smell. That observation is accepted: the checks are two short, local validations in a test-only probe, and extracting a helper would not add meaningful shared behavior. Both axes assessed the slice ready to merge.
+
 This is adapter-level Windows evidence for the lock handler and recovery semantics, not a full user-flow test. The event is synthetic, the unlock is invoked directly through a test-only main-process probe, and saved SSH credentials are not yet wired to the vault. User-facing vault management, optional master-password mode, physical Windows session-lock acceptance, vault restart acceptance, and plaintext exclusion across DB/log/export/IPC remain open. N-001 and F-010/P-29 remain partial.
