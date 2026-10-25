@@ -2,6 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
 import { MAX_MACRO_STEPS, normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft, MacroStep } from '../../../../packages/domain/src/macro.ts';
+import type { AppError } from '../../../../packages/domain/src/errors.ts';
+import type { MacroRunProgress } from '../../../../packages/application/src/macro-runner.ts';
+
+export interface MacroPlaybackView {
+  readonly macroId: string;
+  readonly sessionId: string;
+  readonly targetTitle: string;
+  readonly status: 'running' | 'completed' | 'cancelled' | 'failed';
+  readonly progress?: MacroRunProgress;
+  readonly error?: AppError;
+  readonly cancelRequested?: boolean;
+}
 
 export interface MacroManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
@@ -11,10 +23,17 @@ export interface MacroManagerDialogProps {
   readonly error: string | undefined;
   readonly recordingTargets: readonly { readonly sessionId: string; readonly title: string }[];
   readonly recordingActive: boolean;
+  readonly playbackMacroId: string | undefined;
+  readonly playback: MacroPlaybackView | undefined;
   readonly onClose: () => void;
   readonly onSave: (id: string | undefined, draft: MacroDraft) => Promise<string | undefined>;
   readonly onDelete: (id: string) => Promise<boolean>;
   readonly onStartRecording: (name: string, sessionId: string) => boolean;
+  readonly onReviewPlayback: (id: string) => void;
+  readonly onClosePlayback: () => void;
+  readonly onStartPlayback: (macroId: string, sessionId: string) => void;
+  readonly onCancelPlayback: () => void;
+  readonly onConfirmPlayback: (accepted: boolean) => void;
 }
 
 type MacroStepKind = MacroStep['kind'];
@@ -37,7 +56,47 @@ function updateStep(steps: readonly MacroStep[], index: number, next: MacroStep)
   return steps.map((step, current) => current === index ? next : step);
 }
 
-export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, recordingTargets, recordingActive, onClose, onSave, onDelete, onStartRecording }: MacroManagerDialogProps): ReactElement {
+function playbackStepName(step: MacroStep): string {
+  if (step.kind === 'send') return 'Send command';
+  if (step.kind === 'waitForText') return 'Wait for text';
+  if (step.kind === 'delay') return 'Delay';
+  return 'Confirmation';
+}
+
+function playbackStepDescription(step: MacroStep): string {
+  if (step.kind === 'send') return 'Send this one-line command, followed by Enter.';
+  if (step.kind === 'waitForText') return `Wait for this literal text in terminal output. Timeout after ${step.timeoutMs / 1_000} seconds.`;
+  if (step.kind === 'delay') return `Wait ${step.durationMs.toLocaleString()} milliseconds before continuing.`;
+  return 'Pause here until you approve or stop playback.';
+}
+
+function playbackStepContent(step: MacroStep): string {
+  if (step.kind === 'send' || step.kind === 'waitForText') return step.text;
+  if (step.kind === 'delay') return `${step.durationMs.toLocaleString()} ms`;
+  return step.message;
+}
+
+function playbackStatusText(playback: MacroPlaybackView, macro: MacroDefinition): string {
+  if (playback.status === 'completed') return `Macro completed on ${playback.targetTitle}.`;
+  if (playback.status === 'cancelled') return `Playback stopped on ${playback.targetTitle}. Later steps were not sent.`;
+  if (playback.status === 'failed') {
+    const code = playback.error?.code ?? 'UNAVAILABLE';
+    return code === 'TIMEOUT'
+      ? `Playback stopped on ${playback.targetTitle} (${code}). Check the terminal output and adjust the wait before retrying.`
+      : `Playback stopped on ${playback.targetTitle} (${code}). Check the terminal before reviewing and retrying ${macro.name}.`;
+  }
+  if (playback.cancelRequested) return 'Stopping after any terminal write already in flight settles. Later steps will not run.';
+  const progress = playback.progress;
+  if (!progress) return `Starting ${macro.name} on ${playback.targetTitle}.`;
+  if (progress.phase === 'waiting') return `Step ${progress.stepNumber} of ${progress.stepCount}: waiting for terminal text.`;
+  if (progress.phase === 'delaying') return `Step ${progress.stepNumber} of ${progress.stepCount}: waiting before the next command.`;
+  if (progress.phase === 'confirming') return `Step ${progress.stepNumber} of ${progress.stepCount}: confirmation required.`;
+  if (progress.phase === 'step-complete') return `Step ${progress.stepNumber} of ${progress.stepCount} completed.`;
+  return `Step ${progress.stepNumber} of ${progress.stepCount}: sending the reviewed command.`;
+}
+
+export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, recordingTargets, recordingActive, playbackMacroId, playback,
+  onClose, onSave, onDelete, onStartRecording, onReviewPlayback, onClosePlayback, onStartPlayback, onCancelPlayback, onConfirmPlayback }: MacroManagerDialogProps): ReactElement {
   const [selectedId, setSelectedId] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
@@ -48,7 +107,14 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   const [recordingName, setRecordingName] = useState('');
   const [recordingTargetId, setRecordingTargetId] = useState('');
   const nameInput = useRef<HTMLInputElement>(null);
+  const reviewRunButton = useRef<HTMLButtonElement>(null);
+  const playbackTarget = useRef<HTMLSelectElement>(null);
+  const continuePlaybackButton = useRef<HTMLButtonElement>(null);
+  const playbackDoneButton = useRef<HTMLButtonElement>(null);
+  const [playbackTargetId, setPlaybackTargetId] = useState('');
   const selected = macros.find(macro => macro.id === selectedId);
+  const reviewedMacro = macros.find(macro => macro.id === playbackMacroId);
+  const isReviewingPlayback = playbackMacroId !== undefined;
 
   useEffect(() => {
     if (!creating) return;
@@ -57,8 +123,8 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   }, [creating]);
 
   useEffect(() => {
-    if (!creating && selectedId && !macros.some(macro => macro.id === selectedId)) setSelectedId(undefined);
-  }, [creating, macros, selectedId]);
+    if (!creating && !busy && !loading && selectedId && !macros.some(macro => macro.id === selectedId)) setSelectedId(undefined);
+  }, [busy, creating, loading, macros, selectedId]);
 
   useEffect(() => {
     if (creating || !selected) return;
@@ -68,7 +134,31 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
     setDeleteConfirmation(false);
   }, [creating, selected]);
 
+  useEffect(() => {
+    if (!isReviewingPlayback) {
+      requestAnimationFrame(() => reviewRunButton.current?.focus());
+      return;
+    }
+    if (playback?.status === 'running' && playback.progress?.phase === 'confirming') {
+      requestAnimationFrame(() => continuePlaybackButton.current?.focus());
+      return;
+    }
+    if (playback && playback.status !== 'running') {
+      requestAnimationFrame(() => playbackDoneButton.current?.focus());
+      return;
+    }
+    if (!playback) requestAnimationFrame(() => playbackTarget.current?.focus());
+  }, [isReviewingPlayback, playback]);
+
+  useEffect(() => {
+    if (!isReviewingPlayback) return;
+    if (!recordingTargets.some(target => target.sessionId === playbackTargetId)) {
+      setPlaybackTargetId(recordingTargets[0]?.sessionId ?? '');
+    }
+  }, [isReviewingPlayback, playbackTargetId, recordingTargets]);
+
   function startNew(): void {
+    if (playbackMacroId) onClosePlayback();
     setCreating(true);
     setSelectedId(undefined);
     setName('');
@@ -78,6 +168,7 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   }
 
   function selectMacro(id: string): void {
+    if (playbackMacroId) onClosePlayback();
     setCreating(false);
     setSelectedId(id);
     setDeleteConfirmation(false);
@@ -128,17 +219,85 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
   const draft = normalizeMacroDraft({ name, ...(description.trim() ? { description } : {}), steps });
   const canSave = draft !== undefined && (creating || selected !== undefined);
   const canEdit = creating || selected !== undefined;
+  const playbackRunning = playback?.status === 'running';
+  const confirmationPending = playbackRunning && playback?.progress?.phase === 'confirming' && playback.progress.step.kind === 'confirm';
+  const selectedPlaybackTarget = recordingTargets.find(item => item.sessionId === playbackTargetId);
+  const canStartPlayback = Boolean(reviewedMacro && reviewedMacro.steps.length > 0 && selectedPlaybackTarget && !recordingActive && !playbackRunning);
 
-  return <div className="ssh-backdrop tunnel-backdrop macro-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
-    <section ref={dialogRef} className="tunnel-manager macro-manager" role="dialog" aria-modal="true" aria-labelledby="macro-manager-heading" aria-describedby="macro-manager-description macro-storage-warning"
-      onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.preventDefault(); onClose(); } }}>
+  return <div className="ssh-backdrop tunnel-backdrop macro-backdrop" onMouseDown={event => {
+    if (event.target !== event.currentTarget || busy || playbackRunning) return;
+    if (isReviewingPlayback) onClosePlayback();
+    else onClose();
+  }}>
+    <section ref={dialogRef} className={`tunnel-manager macro-manager${isReviewingPlayback ? ' macro-manager-playback' : ''}`} role="dialog" aria-modal="true" aria-labelledby="macro-manager-heading" aria-describedby="macro-manager-description macro-storage-warning"
+      onKeyDown={event => {
+        if (event.key !== 'Escape' || busy) return;
+        event.preventDefault();
+        if (!isReviewingPlayback) onClose();
+        else if (playbackRunning) onCancelPlayback();
+        else onClosePlayback();
+      }}>
       <header className="tunnel-manager-header">
-        <div><p className="dialog-eyebrow">Reusable terminal actions</p><h2 id="macro-manager-heading">Macros</h2></div>
-        <button className="tunnel-close" type="button" aria-label="Close macro manager" onClick={onClose} disabled={busy}>×</button>
+        <div><p className="dialog-eyebrow">{isReviewingPlayback ? 'Macros' : 'Reusable terminal actions'}</p><h2 id="macro-manager-heading">{isReviewingPlayback ? 'Review macro run' : 'Macros'}</h2></div>
+        <button className="tunnel-close" type="button" aria-label={isReviewingPlayback ? 'Return to macros' : 'Close macro manager'} onClick={isReviewingPlayback ? onClosePlayback : onClose} disabled={busy || playbackRunning}>&times;</button>
       </header>
-      <p id="macro-manager-description" className="tunnel-manager-description">Create typed steps or record complete input lines from one running terminal.</p>
-      <p id="macro-storage-warning" className="macro-storage-warning"><strong>Keep secrets out of macro fields.</strong> Names, descriptions and step text are stored in the local database. Do not include passwords, tokens or private key content.</p>
-      <div className="tunnel-manager-body macro-manager-body">
+      <p id="macro-manager-description" className="tunnel-manager-description">{isReviewingPlayback
+        ? 'Review the exact commands and selected running terminal. Playback stops on a failed wait, confirmation, or disconnect.'
+        : 'Create typed steps or record complete input lines from one running terminal.'}</p>
+      <p id="macro-storage-warning" className="macro-storage-warning"><strong>{isReviewingPlayback ? 'Review before starting.' : 'Keep secrets out of macro fields.'}</strong> {isReviewingPlayback
+        ? 'This sends input to the selected terminal. Macro text stays in the local database; do not include passwords, tokens or private key content.'
+        : 'Names, descriptions and step text are stored in the local database. Do not include passwords, tokens or private key content.'}</p>
+      {isReviewingPlayback && reviewedMacro ? <div className="macro-playback-body">
+        <div className="macro-playback-targets">
+          <div className="macro-playback-name"><span className="tunnel-field-label">Macro name</span><strong>{reviewedMacro.name}</strong></div>
+          <div className="macro-playback-target-field">
+            <label htmlFor="macro-playback-target">Run on target</label>
+            <select ref={playbackTarget} id="macro-playback-target" value={playback?.sessionId ?? playbackTargetId}
+              onChange={event => setPlaybackTargetId(event.target.value)} disabled={playback !== undefined || recordingTargets.length === 0}>
+              {playback && !recordingTargets.some(item => item.sessionId === playback.sessionId) &&
+                <option value={playback.sessionId}>{playback.targetTitle} · no longer running</option>}
+              {!playback && recordingTargets.length === 0 && <option value="">No running terminals</option>}
+              {recordingTargets.map(item => <option key={item.sessionId} value={item.sessionId}>{item.title} · running</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="macro-playback-steps-heading"><h3>Steps to run ({reviewedMacro.steps.length})</h3><span>Shown exactly as saved</span></div>
+        {reviewedMacro.steps.length === 0 ? <p className="macro-no-steps">This macro has no steps to run. Add a step before starting playback.</p> :
+          <ol className="macro-playback-steps" aria-label="Exact macro steps">
+            {reviewedMacro.steps.map((step, index) => {
+              const progress = playback?.progress;
+              const current = playbackRunning && progress?.stepNumber === index + 1 && progress.phase !== 'step-complete';
+              const complete = playback?.status === 'completed' || Boolean(progress && (progress.stepNumber > index + 1 ||
+                (progress.stepNumber === index + 1 && progress.phase === 'step-complete')));
+              return <li key={index} className={`macro-playback-step${current ? ' current' : ''}${complete ? ' complete' : ''}`} aria-current={current ? 'step' : undefined}>
+                <span className="macro-playback-number" aria-hidden="true">{index + 1}</span>
+                <div className="macro-playback-step-copy"><strong>{playbackStepName(step)}</strong><p>{playbackStepDescription(step)}</p>
+                  {current && <small>In progress</small>}
+                </div>
+                <div className={`macro-playback-step-value${step.kind === 'send' ? ' command' : ''}`}>
+                  {step.kind === 'send' ? <code translate="no">{playbackStepContent(step)}</code> : <span>{playbackStepContent(step)}</span>}
+                </div>
+              </li>;
+            })}
+          </ol>}
+        {!playback && (recordingActive || recordingTargets.length === 0) && <p className="macro-playback-feedback" role="status">
+          {recordingActive && recordingTargets.length === 0 ? 'Stop or discard the active recording, then open a running local, SSH or Telnet terminal before playback.'
+            : recordingActive ? 'Stop or discard the active recording before running a macro.'
+              : 'Open a running local, SSH or Telnet terminal before running this macro.'}
+        </p>}
+        {playback && <p className={`macro-playback-feedback${playback.status === 'failed' ? ' error' : ''}`} role="status" aria-live="polite">{playbackStatusText(playback, reviewedMacro)}</p>}
+        {confirmationPending && playback?.progress?.step.kind === 'confirm' && <div className="macro-playback-confirmation" role="group" aria-label="Confirm macro step">
+          <div><strong>Continue with this step?</strong><p>{playback.progress.step.message}</p></div>
+          <button ref={continuePlaybackButton} type="button" className="ssh-primary" onClick={() => onConfirmPlayback(true)}>Continue</button>
+          <button type="button" onClick={() => onConfirmPlayback(false)}>Stop macro</button>
+        </div>}
+        <footer className="macro-playback-footer">
+          {!playback && <><button type="button" onClick={onClosePlayback}>Cancel</button>
+            <button type="button" className="ssh-primary" onClick={() => reviewedMacro && onStartPlayback(reviewedMacro.id, playbackTargetId)} disabled={!canStartPlayback}>Run macro</button></>}
+          {playbackRunning && !confirmationPending && <button type="button" className="macro-playback-cancel" onClick={onCancelPlayback} disabled={playback?.cancelRequested}>Cancel macro</button>}
+          {playback && !playbackRunning && <button ref={playbackDoneButton} type="button" className="ssh-primary" onClick={onClosePlayback}>Done</button>}
+        </footer>
+      </div> : <div className="tunnel-manager-body macro-manager-body">
         <section className="tunnel-list-column" aria-labelledby="macro-list-heading">
           <div className="tunnel-list-header"><h3 id="macro-list-heading">Saved macros</h3><button className="tunnel-new" type="button" onClick={startNew} disabled={busy}>New macro</button></div>
           <form className="macro-record-setup" onSubmit={submitRecording}>
@@ -206,6 +365,10 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
               <div className="tunnel-actions macro-actions"><span>{busy ? 'Saving…' : 'Saved on this device'}</span>
                 {!creating && selected && <button type="button" className="tunnel-delete" onClick={() => setDeleteConfirmation(true)} disabled={busy}>Delete</button>}
                 <button type="button" onClick={onClose} disabled={busy}>Close</button>
+                {!creating && selected && <button ref={reviewRunButton} type="button" className="macro-review-run" onClick={() => {
+                  setPlaybackTargetId(recordingTargets[0]?.sessionId ?? '');
+                  onReviewPlayback(selected.id);
+                }} disabled={busy || recordingActive || selected.steps.length === 0 || recordingTargets.length === 0}>Review &amp; run</button>}
                 <button type="submit" className="ssh-primary" disabled={busy || !canSave}>{creating ? 'Create macro' : 'Save changes'}</button>
               </div>
             </form>
@@ -214,7 +377,7 @@ export function MacroManagerDialog({ dialogRef, macros, loading, busy, error, re
           </div>}
           {!canEdit && error && <p className="dialog-error" role="alert">{error}</p>}
         </section>
-      </div>
+      </div>}
     </section>
   </div>;
 }

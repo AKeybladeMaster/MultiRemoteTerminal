@@ -9,6 +9,9 @@ import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh
 import { normalizeMacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroStep } from '../../../../packages/domain/src/macro.ts';
+import { failure } from '../../../../packages/domain/src/errors.ts';
+import { createMacroRunner } from '../../../../packages/application/src/macro-runner.ts';
+import type { MacroPlaybackView } from './MacroManagerDialog.tsx';
 import { createMacroRecorder } from '../../../../packages/application/src/macro-recording.ts';
 import type { MacroRecordingSnapshot, MacroRecordingWarning } from '../../../../packages/application/src/macro-recording.ts';
 import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
@@ -37,6 +40,10 @@ type WorkbenchTerminal =
 type WorkbenchFtpSession = FtpFilesSession & { readonly transport: 'ftp'; readonly title: string };
 type WorkbenchSftpSession = SshTerminalSession & { readonly transport: 'sftp'; readonly title: string };
 type WorkbenchSession = WorkbenchTerminal | WorkbenchFtpSession | WorkbenchSftpSession;
+
+function isMacroTerminal(session: WorkbenchSession | undefined): session is WorkbenchTerminal {
+  return session !== undefined && (session.transport === 'local' || session.transport === 'ssh' || session.transport === 'telnet');
+}
 
 type OpeningTerminal =
   | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
@@ -88,6 +95,12 @@ const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly b
 function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell].name; }
 function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell].badge; }
 function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
+
+function macroTargetTitle(session: WorkbenchTerminal): string {
+  if (session.transport === 'local') return `${session.title} · ${shellName(session.shell)} · local`;
+  const protocol = session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH';
+  return `${session.title} · ${protocol} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)}`;
+}
 
 function openingName(opening: OpeningTerminal): string {
   if (opening.transport === 'local') return `${shellName(opening.shell)} terminal`;
@@ -264,6 +277,8 @@ function Workbench() {
   const [macroBusy, setMacroBusy] = useState(false);
   const [macroError, setMacroError] = useState<string>();
   const [macroRecording, setMacroRecording] = useState<MacroRecordingView>();
+  const [macroPlaybackMacroId, setMacroPlaybackMacroId] = useState<string>();
+  const [macroPlayback, setMacroPlayback] = useState<MacroPlaybackView>();
   const [savedSearch, setSavedSearch] = useState('');
   const [savedSessionsLoading, setSavedSessionsLoading] = useState(true);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -277,6 +292,8 @@ function Workbench() {
   const [folderParentDraft, setFolderParentDraft] = useState('');
   const [folderDialogError, setFolderDialogError] = useState<string>();
   const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
+  const sessionsRef = useRef<WorkbenchSession[]>(sessions);
+  sessionsRef.current = sessions;
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const fileOnlySshSessionIds = useRef(new Set<string>());
@@ -292,6 +309,34 @@ function Workbench() {
   const tunnelOperationRequest = useRef(0);
   const macroManagerRequest = useRef(0);
   const macroRecorder = useState(createMacroRecorder)[0];
+  const macroPlaybackRun = useRef(false);
+  const pendingMacroConfirmation = useRef<((accepted: boolean) => void) | undefined>(undefined);
+  const macroRunner = useState(() => createMacroRunner({
+    isTargetReady: sessionId => {
+      const session = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
+      return isMacroTerminal(session) && session.state === 'running' && handles.current.has(sessionId);
+    },
+    scheduleTimeout: (callback, delayMs) => {
+      const timer = window.setTimeout(callback, delayMs);
+      return () => window.clearTimeout(timer);
+    },
+    sendLine: async (sessionId, line) => {
+      const session = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
+      if (!isMacroTerminal(session) || session.state !== 'running' || !handles.current.has(sessionId)) {
+        return failure('UNAVAILABLE', 'terminal');
+      }
+      try {
+        const reply = session.transport === 'local'
+          ? await window.multiRemoteTerminal.writeTerminal(sessionId, line)
+          : session.transport === 'ssh'
+            ? await window.multiRemoteTerminal.writeSshTerminal(sessionId, line)
+            : await window.multiRemoteTerminal.writeTelnetTerminal(sessionId, line);
+        return reply.ok ? { ok: true, result: undefined } : { ok: false, error: reply.error };
+      } catch {
+        return failure('UNAVAILABLE', 'terminal');
+      }
+    }
+  }))[0];
   const macroSaveErrorCode = useRef('UNAVAILABLE');
   const macroRecordingView = useRef<MacroRecordingView | undefined>(undefined);
   const pendingMacroTerminalFocus = useRef<string | undefined>(undefined);
@@ -481,10 +526,80 @@ function Workbench() {
     void loadMacroManager();
   }, [loadMacroManager]);
 
+  const closeMacroPlayback = useCallback(() => {
+    if (macroPlaybackRun.current) return;
+    setMacroPlayback(undefined);
+    setMacroPlaybackMacroId(undefined);
+  }, []);
+
   const closeMacroManager = useCallback(() => {
+    if (macroPlaybackRun.current) return;
     macroManagerRequest.current++;
     setMacrosLoading(false);
     setMacroManagerOpen(false);
+    setMacroPlayback(undefined);
+    setMacroPlaybackMacroId(undefined);
+  }, []);
+
+  const reviewMacroPlayback = useCallback((macroId: string) => {
+    setMacroPlayback(undefined);
+    setMacroPlaybackMacroId(macroId);
+  }, []);
+
+  const startMacroPlayback = useCallback((macroId: string, sessionId: string) => {
+    if (macroPlaybackRun.current) return;
+    const macro = macros.find(candidate => candidate.id === macroId);
+    const target = sessionsRef.current.find(candidate => candidate.sessionId === sessionId);
+    const targetTitle = isMacroTerminal(target) ? macroTargetTitle(target) : 'selected terminal';
+    if (!macro || macro.steps.length === 0 || !isMacroTerminal(target) || target.state !== 'running' || !handles.current.has(sessionId) || macroRecordingView.current) {
+      setMacroPlayback({ macroId, sessionId, targetTitle, status: 'failed', error: failure('UNAVAILABLE', 'terminal').error });
+      return;
+    }
+
+    macroPlaybackRun.current = true;
+    setMacroPlayback({ macroId, sessionId, targetTitle, status: 'running' });
+    setActiveId(sessionId);
+    void macroRunner.run(macro, sessionId, {
+      onProgress: progress => setMacroPlayback(current => current?.macroId === macroId ? { ...current, progress } : current),
+      confirm: (_message, cancellation) => new Promise<boolean>(resolve => {
+        let settled = false;
+        const finish = (accepted: boolean) => {
+          if (settled) return;
+          settled = true;
+          cancellation.removeEventListener('abort', onAbort);
+          if (pendingMacroConfirmation.current === finish) pendingMacroConfirmation.current = undefined;
+          resolve(accepted);
+        };
+        const onAbort = () => finish(false);
+        pendingMacroConfirmation.current = finish;
+        cancellation.addEventListener('abort', onAbort, { once: true });
+        if (cancellation.aborted) onAbort();
+      })
+    }).then(result => {
+      setMacroPlayback(current => {
+        if (!current || current.macroId !== macroId) return current;
+        return result.status === 'failed'
+          ? { ...current, status: 'failed', error: result.error, cancelRequested: false }
+          : { ...current, status: result.status, cancelRequested: false };
+      });
+    }).catch(() => {
+      setMacroPlayback(current => current?.macroId === macroId
+        ? { ...current, status: 'failed', error: failure('UNAVAILABLE', 'terminal').error, cancelRequested: false }
+        : current);
+    }).finally(() => {
+      macroPlaybackRun.current = false;
+      pendingMacroConfirmation.current = undefined;
+    });
+  }, [macroRunner, macros]);
+
+  const cancelMacroPlayback = useCallback(() => {
+    if (!macroPlaybackRun.current) return;
+    setMacroPlayback(current => current?.status === 'running' ? { ...current, cancelRequested: true } : current);
+    macroRunner.cancel();
+  }, [macroRunner]);
+
+  const confirmMacroPlayback = useCallback((accepted: boolean) => {
+    pendingMacroConfirmation.current?.(accepted);
   }, []);
 
   const saveMacro = useCallback(async (id: string | undefined, draft: MacroDraft): Promise<string | undefined> => {
@@ -578,8 +693,9 @@ function Workbench() {
   }, [macroRecorder, syncMacroRecordingSnapshot]);
 
   const observeMacroOutput = useCallback((sessionId: string, data: string) => {
+    macroRunner.observeOutput(sessionId, data);
     syncMacroRecordingSnapshot(macroRecorder.observeOutput(sessionId, data));
-  }, [macroRecorder, syncMacroRecordingSnapshot]);
+  }, [macroRecorder, macroRunner, syncMacroRecordingSnapshot]);
 
   const pauseMacroRecording = useCallback(() => {
     const current = macroRecordingView.current;
@@ -832,14 +948,16 @@ function Workbench() {
         });
       });
     } else if (event.kind === 'exit') {
+      macroRunner.disconnect(event.sessionId);
       stopMacroRecording(event.sessionId, 'disconnected');
       setSessions(current => current.map(session => session.sessionId === event.sessionId && session.transport !== 'ftp' ? { ...session, state: 'exited' } : session));
     } else {
+      macroRunner.disconnect(event.sessionId);
       stopMacroRecording(event.sessionId, 'disconnected');
       setSessions(current => current.map(session => session.sessionId === event.sessionId && session.transport !== 'ftp' ? { ...session, state: 'failed' } : session));
       setAlert(messageForError(event.error));
     }
-  }, [stopMacroRecording]);
+  }, [macroRunner, stopMacroRecording]);
 
   const terminalReady = useCallback((sessionId: string, handle: TerminalUiHandle | undefined) => {
     if (!handle) { handles.current.delete(sessionId); return; }
@@ -1140,6 +1258,7 @@ function Workbench() {
   }, [removeSshTrustEvent, sshTrustBusy]);
 
   const closeTerminal = useCallback(async (sessionId: string, transport: WorkbenchSession['transport']) => {
+    macroRunner.disconnect(sessionId);
     const reply = await closeTerminalConnection(sessionId, transport);
     if (!reply.ok && reply.error.code !== 'NOT_FOUND') setAlert(messageForError(reply.error));
     stopMacroRecording(sessionId, 'stopped');
@@ -1151,7 +1270,7 @@ function Workbench() {
     }
     focusTerminalOnActiveChange.current = true;
     setSessions(current => current.filter(session => session.sessionId !== sessionId));
-  }, [stopMacroRecording]);
+  }, [macroRunner, stopMacroRecording]);
 
   const reconnectFtp = useCallback((session: WorkbenchFtpSession) => {
     void (async () => {
@@ -1219,7 +1338,12 @@ function Workbench() {
         return;
       }
       if (macroManagerOpen) {
-        if (event.key === 'Escape' && !macroBusy) { event.preventDefault(); closeMacroManager(); }
+        if (event.key === 'Escape' && !macroBusy) {
+          event.preventDefault();
+          if (macroPlaybackRun.current) cancelMacroPlayback();
+          else if (macroPlaybackMacroId) closeMacroPlayback();
+          else closeMacroManager();
+        }
         else if (event.key === 'Tab') {
           const focusable = [...(macroManagerDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button:not(:disabled)') ?? [])];
           if (focusable.length) {
@@ -1348,7 +1472,9 @@ function Workbench() {
     }
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [activeId, catalogBusy, closeMacroManager, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+  }, [activeId, cancelMacroPlayback, catalogBusy, closeMacroManager, closeMacroPlayback, decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy,
+    macroManagerOpen, macroPlaybackMacroId, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal, saveSessionOpen, sessions, sshConnectOpen,
+    sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -1382,6 +1508,12 @@ function Workbench() {
     pendingMacroTerminalFocus.current = undefined;
     handles.current.get(targetSessionId)?.focus();
   }, [activeId, macroManagerOpen, macroRecording]);
+
+  useEffect(() => {
+    const cancelPlaybackOnShutdown = () => macroRunner.cancel();
+    window.addEventListener('beforeunload', cancelPlaybackOnShutdown);
+    return () => window.removeEventListener('beforeunload', cancelPlaybackOnShutdown);
+  }, [macroRunner]);
 
   useEffect(() => {
     if (!macroManagerOpen && macroManagerReturnFocus.current) {
@@ -2013,7 +2145,7 @@ function Workbench() {
                 <div className="terminal-pane-stage">
                   <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
                     transport={session.transport}
-                    canWrite={session.state === 'running'} theme={theme} fontSize={fontSize} onReady={terminalReady}
+                    canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId)} theme={theme} fontSize={fontSize} onReady={terminalReady}
                     onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
                 </div>
                 {session.transport === 'ssh' && session.state === 'running' &&
@@ -2259,8 +2391,11 @@ function Workbench() {
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
     {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} loading={macrosLoading} busy={macroBusy} error={macroError}
-      recordingTargets={sessions.filter((session): session is WorkbenchTerminal => session.transport === 'local' || session.transport === 'ssh' || session.transport === 'telnet').filter(session => session.state === 'running').map(session => ({ sessionId: session.sessionId, title: session.title }))}
-      recordingActive={macroRecording !== undefined} onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} onStartRecording={startMacroRecording} />}
+      recordingTargets={sessions.filter(isMacroTerminal).filter(session => session.state === 'running').map(session => ({ sessionId: session.sessionId, title: macroTargetTitle(session) }))}
+      recordingActive={macroRecording !== undefined} playbackMacroId={macroPlaybackMacroId} playback={macroPlayback}
+      onClose={closeMacroManager} onSave={saveMacro} onDelete={deleteMacro} onStartRecording={startMacroRecording}
+      onReviewPlayback={reviewMacroPlayback} onClosePlayback={closeMacroPlayback} onStartPlayback={startMacroPlayback}
+      onCancelPlayback={cancelMacroPlayback} onConfirmPlayback={confirmMacroPlayback} />}
     {currentSshTrust && <div className="ssh-backdrop ssh-trust-backdrop" onMouseDown={event => {
       if (event.target === event.currentTarget && !sshTrustBusy) void decideSshTrust(currentSshTrust, false);
     }}>

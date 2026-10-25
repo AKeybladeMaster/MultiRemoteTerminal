@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { EventEmitter } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -1598,6 +1598,103 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
     await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
     await dialog.getByRole('button', { name: 'Delete macro', exact: true }).click();
     await expect(dialog.getByText('No macros saved yet.')).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('macro playback previews exact steps, confirms explicitly, cancels and stops on disconnect', async () => {
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-playback-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.setViewportSize({ width: 1564, height: 1006 });
+    const terminalTitle = 'PowerShell session 1';
+    const panel = await selectTerminal(page, terminalTitle);
+    const rows = panel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: `${terminalTitle} running` })).toBeVisible({ timeout: 15_000 });
+    await sendLine(page, terminalTitle, "function prompt { 'PS> ' }", 'PS>');
+    await sendLine(page, terminalTitle, 'Clear-Host', 'PS>');
+    await page.getByRole('button', { name: 'Macros', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: 'Macros' });
+
+    async function newMacro(name: string): Promise<void> {
+      await dialog.getByRole('button', { name: 'New macro', exact: true }).click();
+      await dialog.getByLabel('Name', { exact: true }).fill(name);
+    }
+    async function addStep(kind: string): Promise<void> {
+      await dialog.getByLabel('Step type to add').selectOption(kind);
+      await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+    }
+    async function reviewSelectedMacro(): Promise<Locator> {
+      const reviewButton = dialog.getByRole('button', { name: 'Review & run', exact: true });
+      await expect(reviewButton).toBeEnabled({ timeout: 15_000 });
+      await reviewButton.click();
+      const review = page.getByRole('dialog', { name: 'Review macro run' });
+      await expect(review.getByLabel('Run on target')).toHaveValue(await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id') ?? '');
+      return review;
+    }
+
+    await newMacro('Playback success');
+    await addStep('send');
+    await dialog.locator('#macro-step-0-text').fill("Write-Output ([string][char]77 + 'RT-PLAYBACK-READY')");
+    await addStep('waitForText');
+    await dialog.locator('#macro-step-1-text').fill('MRT-PLAYBACK-READY');
+    await dialog.locator('#macro-step-1-timeout').fill('10000');
+    await addStep('delay');
+    await dialog.locator('#macro-step-2-duration').fill('100');
+    await addStep('confirm');
+    await dialog.locator('#macro-step-3-message').fill('Continue after the ready marker?');
+    await addStep('send');
+    await dialog.locator('#macro-step-4-text').fill("Write-Output ([string][char]77 + 'RT-PLAYBACK-DONE')");
+    await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: /Playback success/ })).toContainText('5 steps');
+    let review = await reviewSelectedMacro();
+    await expect(review.getByText("Write-Output ([string][char]77 + 'RT-PLAYBACK-READY')", { exact: true })).toBeVisible();
+    await expect(review.getByText('MRT-PLAYBACK-READY', { exact: true })).toBeVisible();
+    await expect(review.getByText('Continue after the ready marker?', { exact: true })).toBeVisible();
+    await page.screenshot({ path: 'test-results/WP-06B2-playback-actual.png' });
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    const confirmation = review.getByRole('group', { name: 'Confirm macro step' });
+    await expect(confirmation).toContainText('Continue after the ready marker?', { timeout: 15_000 });
+    await confirmation.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('Macro completed', { timeout: 15_000 });
+    await expect(rows).toContainText('MRT-PLAYBACK-DONE', { timeout: 15_000 });
+    await review.getByRole('button', { name: 'Done', exact: true }).click();
+
+    dialog = page.getByRole('dialog', { name: 'Macros' });
+    await newMacro('Playback cancellation');
+    await addStep('waitForText');
+    await dialog.locator('#macro-step-0-text').fill('MRT-CANCEL-NEVER-ARRIVES');
+    await dialog.locator('#macro-step-0-timeout').fill('120000');
+    await addStep('send');
+    await dialog.locator('#macro-step-1-text').fill("Write-Output 'MRT-CANCEL-LATER'");
+    await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
+    review = await reviewSelectedMacro();
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('waiting for terminal text', { timeout: 10_000 });
+    await review.getByRole('button', { name: 'Cancel macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('Playback stopped', { timeout: 5_000 });
+    await expect(rows).not.toContainText('MRT-CANCEL-LATER');
+    await review.getByRole('button', { name: 'Done', exact: true }).click();
+
+    dialog = page.getByRole('dialog', { name: 'Macros' });
+    await newMacro('Playback disconnect');
+    await addStep('send');
+    await dialog.locator('#macro-step-0-text').fill('exit');
+    await addStep('waitForText');
+    await dialog.locator('#macro-step-1-text').fill('MRT-DISCONNECT-NEVER-ARRIVES');
+    await dialog.locator('#macro-step-1-timeout').fill('120000');
+    await addStep('send');
+    await dialog.locator('#macro-step-2-text').fill("Write-Output 'MRT-DISCONNECT-LATER'");
+    await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
+    review = await reviewSelectedMacro();
+    await review.getByRole('button', { name: 'Run macro', exact: true }).click();
+    await expect(review.getByRole('status')).toContainText('UNAVAILABLE', { timeout: 10_000 });
+    await expect(rows).not.toContainText('MRT-DISCONNECT-LATER');
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
