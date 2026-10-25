@@ -61,13 +61,19 @@ The initial SQLite schema already contains `macro_definitions` and
 ## Consequences
 
 WP-06A does not claim playback, recording, secret suppression or MultiExec.
-WP-06B1 implements explicit recording and heuristic secret-prompt suppression;
-playback and MultiExec remain planned until their separate implementations and
-Windows evidence are available. `send` steps are user-authored terminal
-input and must be reviewed in the playback preview. Because these fields are
-user-authored text, static secret detection is not promised; the WP-06A editor
-warns users not to enter passwords, tokens or private-key content. No macro
-command is logged by the app.
+WP-06B1 implements explicit recording and heuristic secret-prompt suppression.
+WP-06B2 implements explicit single-terminal playback: the renderer previews
+the saved steps and a running local, SSH or Telnet target, and only the Run
+action starts the application runner. The runner sends a single line through
+existing typed terminal commands, matches literal output in a bounded
+transient window, applies bounded waits and delays, and pauses for each
+authored confirmation. Cancellation or a failed wait/write/disconnect stops
+the sequence and later steps are not sent. The target terminal rejects
+manual input while playback is active. No target is stored in the macro, and
+there is no reconnect or automatic resume. `send` steps remain user-authored
+terminal input; the editor warns against passwords, tokens and private-key
+content, while static secret detection is not promised. No macro command or
+terminal transcript is logged by the app.
 
 ## Verification
 
@@ -75,8 +81,9 @@ WP-06A covers exact schema validation, persistence, update/delete behavior,
 100 definitions and restart persistence on Windows. WP-06B1 covers complete
 line recording, recognized password and verification-code prompts, explicit
 resume, pause-without-partial-line behavior, ANSI control-string stripping,
-total text limits and paste omission on Windows. WP-06B2 must exercise exact
-preview, literal waits, progress, cancellation, disconnect and no automatic
-reconnect. WP-06C must
+total text limits and paste omission on Windows. WP-06B2 unit and Windows
+Electron E2E coverage verifies exact preview, literal waits, progress,
+confirmation, cancellation, disconnect and no later sends. Windows replay of
+100 definitions and broader adapter interoperability remain open. WP-06C must
 deliver input to three independent active terminals only after confirmation
 and preserve per-target outcomes.
