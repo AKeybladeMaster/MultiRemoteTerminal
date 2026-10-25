@@ -253,6 +253,15 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   const create = { command: 'session.create', requestId: request.requestId, contractVersion: 1,
     payload: { kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 } };
   assert.equal(parseRequest(create).ok, true);
+  const remember = { ...create, command: 'session.remember' };
+  const parsedRemember = parseRequest(remember);
+  assert.equal(parsedRemember.ok, true);
+  assert.equal(parseRequest({ ...remember, payload: { ...remember.payload, password: 'must-not-pass' } }).ok, false);
+  if (parsedRemember.ok) {
+    const session = { id: '8cc8c44e-8660-4232-961b-ff7760afc745', folderId: null, kind: 'ssh', name: 'Build host',
+      host: 'server.example.com', port: 2222, favorite: false, createdAt: '2026-10-25T00:00:00.000Z', updatedAt: '2026-10-25T00:00:00.000Z' };
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: session }, parsedRemember.result), true);
+  }
   assert.equal(parseRequest({ ...create, payload: { ...create.payload, password: 'must-not-pass' } }).ok, false);
   assert.equal(parseRequest({ ...create, payload: { ...create.payload, port: 65_536 } }).ok, false);
   assert.equal(parseRequest({ ...create, payload: { kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23 } }).ok, true);

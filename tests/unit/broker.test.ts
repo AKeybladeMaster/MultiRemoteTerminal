@@ -58,6 +58,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     list: async () => ({ ok: true, result: [] }),
     get: async () => ({ ok: true, result: emptySavedSession }),
     create: async () => ({ ok: true, result: emptySavedSession }),
+    remember: async () => ({ ok: true, result: emptySavedSession }),
     setFavorite: noOp, remove: noOp, listFolders: async () => ({ ok: true, result: [] }),
     createFolder: async () => ({ ok: true, result: { id: emptySavedSession.id, parentId: null, name: 'Folder' } }),
     renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp,
@@ -79,6 +80,32 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
     save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
   }
+});
+
+test('session auto-save requires the persisted opt-in preference at the main-process broker', async () => {
+  let enabled = false;
+  let saved = 0;
+  let activity = 0;
+  const base = actions(snapshot, () => { activity++; });
+  const guarded: CommandActions = { ...base,
+    preferences: { ...base.preferences, async read() {
+      return { ok: true, result: { ...DEFAULT_WORKBENCH_PREFERENCES, autoSaveSessions: enabled } };
+    } },
+    sessionCatalog: { ...base.sessionCatalog, async remember() { saved++; return { ok: true, result: emptySavedSession }; } }
+  };
+  const input = { command: 'session.remember', requestId: request.requestId, contractVersion: 1,
+    payload: { kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 22 } };
+
+  const denied = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(saved, 0);
+
+  enabled = true;
+  const allowed = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(allowed.ok, true);
+  assert.equal(saved, 1);
+  assert.equal(activity, 2);
 });
 
 test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {
@@ -412,6 +439,7 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
     async list(query, signal) { calls.push(`list:${query}`); forwardedCancellations.push(signal); return { ok: true, result: [] }; },
     async get(id, signal) { calls.push(`get:${id}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async create(draft, signal) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
+    async remember(draft, signal) { calls.push(`remember:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async setFavorite(id, favorite, signal) { calls.push(`favorite:${id}:${favorite}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
     async remove(id, signal) { calls.push(`remove:${id}`); forwardedCancellations.push(signal); return { ok: true, result: {} }; },
     async listFolders(signal) { forwardedCancellations.push(signal); return { ok: true, result: [] }; },

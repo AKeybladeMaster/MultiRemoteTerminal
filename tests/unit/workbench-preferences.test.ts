@@ -15,6 +15,21 @@ test('workbench greeting validation preserves Unicode, normalizes newlines, and 
   assert.equal(normalizeWorkbenchPreferences({ startupGreeting: 'safe', credential: 'secret' }), undefined);
 });
 
+test('workbench preferences migrate the prior highlight schema and validate opt-in session saving', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }] };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }]
+  });
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, autoSaveSessions: true }), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }], autoSaveSessions: true
+  });
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, autoSaveSessions: 'yes' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, autoSaveSessions: true, credential: 'secret' }), undefined);
+});
+
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {
   const originalReplace = String.prototype.replace;
   let scannedOversizedInput = false;

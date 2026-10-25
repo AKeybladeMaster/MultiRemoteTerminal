@@ -493,6 +493,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
       return send({ command: 'session.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
     },
+    rememberSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
+      return send({ command: 'session.remember', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
+    },
     setSavedSessionFavorite(id: string, favorite: boolean): Promise<TerminalActionReply> {
       return send(voidRequest('session.favorite', { id, favorite }), 8_000);
     },

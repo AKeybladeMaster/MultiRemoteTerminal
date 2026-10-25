@@ -70,6 +70,7 @@ Portable profile initialization failures write the static `{component: "main", e
 ## Secrets and key provenance
 
 - Sessions reference `credential_ref`; vault content remains outside session definitions.
+- Automatic saving of opened session definitions is disabled by default. Enabling it is an explicit persisted user choice; the main-process broker checks that stored preference before accepting `session.remember`, even if renderer state is stale or forged. Only validated protocol settings (shell or canonical endpoint/serial options) enter the catalog; credentials, private keys, command text and terminal contents remain excluded. The catalog deduplicates by normalized protocol settings. Gateway-routed SSH sessions are skipped because their route is not part of the saved definition, and external RDP/VNC launches are skipped because the workbench cannot verify a connection.
 - User may use SSH agent for non-exportable keys; do not copy private key files into DB.
 - Clipboard paste and remote text editing may contain secrets: do not silently record.
 - Accept known host certificate authorities only after verified implementation of SSH certificate semantics; do not pretend simple fingerprints cover OpenSSH hashed host entries/CA policies.

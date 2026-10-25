@@ -53,6 +53,8 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   private readonly listSubtreeFolders: StatementSync;
   private readonly listSubtreeSessions: StatementSync;
   private readonly findSession: StatementSync;
+  private readonly findSameSession: StatementSync;
+  private readonly touchSession: StatementSync;
   private readonly insertImportedSession: StatementSync;
 
   constructor(database: DatabaseSync) {
@@ -104,6 +106,13 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       WHERE session.kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial') ORDER BY session.id LIMIT ?
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
+    this.findSameSession = database.prepare(`
+      SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
+      FROM session_definitions
+      WHERE kind = ? AND host IS ? AND port IS ? AND options_json = ?
+      ORDER BY favorite DESC, updated_at DESC, id ASC LIMIT 1
+    `);
+    this.touchSession = database.prepare('UPDATE session_definitions SET updated_at = ? WHERE id = ?');
     this.insertImportedSession = database.prepare(`
       INSERT INTO session_definitions (id, folder_id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
@@ -133,22 +142,29 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       if (!draft) throw new StorageOperationError('unavailable');
       const id = randomUUID();
       const timestamp = new Date().toISOString();
-      const local = draft.kind === 'local';
-      const serial = draft.kind === 'serial';
-      const storedKind = draft.kind === 'sftp' ? 'ssh' : draft.kind;
-      const options = local ? JSON.stringify({ shell: draft.shell }) : serial ? JSON.stringify(draft.configuration)
-        : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure })
-        : draft.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}';
-      this.insertSession.run(id, storedKind, draft.name, local || serial ? null : draft.host, local || serial ? null : draft.port, options, timestamp, timestamp);
-      if (draft.kind === 'local') return { id, folderId: null, kind: 'local', name: draft.name, shell: draft.shell, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      if (draft.kind === 'ssh') return { id, folderId: null, kind: 'ssh', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      if (draft.kind === 'sftp') return { id, folderId: null, kind: 'sftp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      if (draft.kind === 'telnet') return { id, folderId: null, kind: 'telnet', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      if (draft.kind === 'ftp') return { id, folderId: null, kind: 'ftp', name: draft.name, host: draft.host, port: draft.port, secure: draft.secure, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      if (draft.kind === 'rdp') return { id, folderId: null, kind: 'rdp', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      if (draft.kind === 'serial') return { id, folderId: null, kind: 'serial', name: draft.name, configuration: draft.configuration,
-        favorite: false, createdAt: timestamp, updatedAt: timestamp };
-      return { id, folderId: null, kind: 'vnc', name: draft.name, host: draft.host, port: draft.port, favorite: false, createdAt: timestamp, updatedAt: timestamp };
+      const stored = storedSessionFields(draft);
+      this.insertSession.run(id, stored.kind, draft.name, stored.host, stored.port, stored.options, timestamp, timestamp);
+      return savedSessionFromDraft(draft, id, timestamp);
+    } catch (error) { throw mapStorageError(error); }
+  }
+
+  async rememberSession(input: SavedSessionDraft): Promise<SavedSessionDefinition> {
+    try {
+      const draft = normalizeSavedSessionDraft(input);
+      if (!draft) throw new StorageOperationError('unavailable');
+      const stored = storedSessionFields(draft);
+      const timestamp = new Date().toISOString();
+      return this.inTransaction(() => {
+        const existing = this.findSameSession.get(stored.kind, stored.host, stored.port, stored.options) as unknown as SavedSessionRow | undefined;
+        if (existing) {
+          const definition = decodeSessionRow(existing);
+          this.touchSession.run(timestamp, definition.id);
+          return { ...definition, updatedAt: timestamp };
+        }
+        const id = randomUUID();
+        this.insertSession.run(id, stored.kind, draft.name, stored.host, stored.port, stored.options, timestamp, timestamp);
+        return savedSessionFromDraft(draft, id, timestamp);
+      });
     } catch (error) { throw mapStorageError(error); }
   }
 
@@ -448,6 +464,31 @@ async function readSessionFolderBundle(path: string): Promise<SessionFolderBundl
 
 function isFilePath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 32_767 && !value.includes('\0') && isAbsolute(value);
+}
+
+function storedSessionFields(draft: SavedSessionDraft): { readonly kind: string; readonly host: string | null; readonly port: number | null; readonly options: string } {
+  const local = draft.kind === 'local';
+  const serial = draft.kind === 'serial';
+  return {
+    kind: draft.kind === 'sftp' ? 'ssh' : draft.kind,
+    host: local || serial ? null : draft.host,
+    port: local || serial ? null : draft.port,
+    options: local ? JSON.stringify({ shell: draft.shell }) : serial ? JSON.stringify(draft.configuration)
+      : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure })
+      : draft.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}'
+  };
+}
+
+function savedSessionFromDraft(draft: SavedSessionDraft, id: string, timestamp: string): SavedSessionDefinition {
+  const base = { id, folderId: null, name: draft.name, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  if (draft.kind === 'local') return { ...base, kind: 'local', shell: draft.shell };
+  if (draft.kind === 'serial') return { ...base, kind: 'serial', configuration: draft.configuration };
+  if (draft.kind === 'ssh') return { ...base, kind: 'ssh', host: draft.host, port: draft.port };
+  if (draft.kind === 'sftp') return { ...base, kind: 'sftp', host: draft.host, port: draft.port };
+  if (draft.kind === 'telnet') return { ...base, kind: 'telnet', host: draft.host, port: draft.port };
+  if (draft.kind === 'ftp') return { ...base, kind: 'ftp', host: draft.host, port: draft.port, secure: draft.secure };
+  if (draft.kind === 'rdp') return { ...base, kind: 'rdp', host: draft.host, port: draft.port };
+  return { ...base, kind: 'vnc', host: draft.host, port: draft.port };
 }
 
 function isFileSystemError(value: unknown): value is NodeJS.ErrnoException {

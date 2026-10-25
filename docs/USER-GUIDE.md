@@ -55,6 +55,15 @@ session; folder actions create subfolders, export, rename, move, or delete a
 folder. Deletions ask for confirmation. Import or export a folder as a JSON
 bundle from this area.
 
+Automatic saving is off by default. In **Workbench settings**, enable
+**Automatically save connections I open** to add successfully opened terminal
+and file connections to Saved sessions. Reopening the same protocol and
+settings updates the existing profile instead of adding a duplicate. Only
+connection metadata is saved; credentials and terminal contents are not.
+SSH connections routed through gateways and external RDP/VNC viewer launches
+are not automatically saved because the workbench cannot restore or confirm
+those routes.
+
 Bundles are not encrypted. They contain connection and folder metadata such as
 host names, ports, shell choices, and folder names. They do not contain
 credentials, private keys, or terminal history. Protect exported files as you
@@ -112,8 +121,9 @@ forwards. Review bind addresses and server policy before starting a forward.
 For a saved SSH connection, choose **Connect through gateways** from its action
 menu to route that connection through up to two saved SSH profiles.
 
-Use **Workbench settings** in the header or command palette to set a startup
-greeting. It supports up to 512 Unicode code points, is stored in the local app
+Use **Workbench settings** in the header or command palette to control automatic
+session saving, set a startup greeting, and configure terminal text colors.
+The greeting supports up to 512 Unicode code points, is stored in the local app
 profile, and appears below the tab bar after startup until you dismiss it. The
 greeting is plain text and never runs in a terminal. Leave it blank to hide it.
 

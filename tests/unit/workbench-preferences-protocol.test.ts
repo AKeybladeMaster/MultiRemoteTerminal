@@ -26,3 +26,10 @@ test('storage worker validates preference requests and reply shape', () => {
   assert.ok(parseStorageWorkerMessage(message));
   assert.equal(parseStorageWorkerMessage({ ...message, result: { kind: 'preferences', value: { startupGreeting: 'safe', password: 'hidden' } } }), undefined);
 });
+
+test('storage worker accepts only exact, credential-free remember-session definitions', () => {
+  const envelope = { version: 1, type: 'request', requestId };
+  const request = { ...envelope, command: 'session.remember', draft: { kind: 'ssh', name: 'Build host', host: 'build.example.com', port: 22 } };
+  assert.ok(parseStorageWorkerRequest(request));
+  assert.equal(parseStorageWorkerRequest({ ...request, draft: { ...request.draft, password: 'never-store' } }), undefined);
+});

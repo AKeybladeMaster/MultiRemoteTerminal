@@ -77,6 +77,9 @@ parent.on('message', async event => {
     } else if (request.command === 'session.create') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'session', value: await sessionCatalogRepository.createSession(request.draft) } });
+    } else if (request.command === 'session.remember') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'session', value: await sessionCatalogRepository.rememberSession(request.draft) } });
     } else if (request.command === 'session.favorite') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: await sessionCatalogRepository.setFavorite(request.id, request.favorite) } });
