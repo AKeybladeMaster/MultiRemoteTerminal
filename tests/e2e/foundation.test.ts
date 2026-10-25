@@ -1513,7 +1513,11 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
     await paletteHint.scrollIntoViewIfNeeded();
     await expect(paletteHint).toBeVisible();
     await page.screenshot({ path: 'test-results/saved-session-catalog-min-width.png', fullPage: true });
+    const previousSavedSessionRow = await page.locator('.saved-session-row').filter({ hasText: 'Reusable PowerShell' }).elementHandle();
+    if (!previousSavedSessionRow) throw new Error('Saved session row was missing before the search refresh.');
     await search.fill('reusable power');
+    await expect.poll(() => previousSavedSessionRow.evaluate(element => element.isConnected).catch(() => false),
+      { intervals: [10, 50, 100], timeout: 5_000 }).toBe(false);
     await expect(openSaved).toBeVisible();
     await openSaved.click();
     await expect(page.getByRole('tab')).toHaveCount(2);
