@@ -65,6 +65,12 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     renameFolder: noOp, moveFolder: noOp, removeFolder: noOp, moveSession: noOp,
     exportFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1 } }),
     importFolder: async () => ({ ok: true, result: { folderCount: 1, sessionCount: 1, createdFolderCount: 1, createdSessionCount: 1 } })
+  }, sessionCredentials: {
+    state: () => 'available', lock() {}, async unlock() { return { ok: true, result: 'available' } as const; },
+    async hasSshCredential() { return { ok: true, result: false } as const; },
+    async saveSshCredential() { return { ok: true, result: {} } as const; },
+    async forgetSshCredential() { return { ok: true, result: {} } as const; },
+    async resolveSshCredential() { return { ok: true, result: undefined } as const; }
   }, macros: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptyMacro }),
@@ -107,6 +113,32 @@ test('session auto-save requires the persisted opt-in preference at the main-pro
   assert.equal(allowed.ok, true);
   assert.equal(saved, 1);
   assert.equal(activity, 2);
+});
+
+test('saved SSH opens resolve the profile credential in main and clear it after provider handoff', async () => {
+  const profileId = '11111111-1111-4111-8111-111111111111';
+  const secret = { username: 'alice', password: 'must-not-reach-renderer' };
+  let received: { username: string; password: string } | undefined;
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    sessionCredentials: { ...base.sessionCredentials, async resolveSshCredential(id, host, port) {
+      assert.equal(id, profileId);
+      assert.equal(host, 'server.example.com');
+      assert.equal(port, 22);
+      return { ok: true, result: secret };
+    } },
+    sshTerminals: { ...base.sshTerminals, async open(sessionId, host, port, _size, _gateways, credentials) {
+      received = credentials;
+      return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', host: 'server.example.com', port: 22, columns: 80, rows: 24, profileId } }, wired, () => {});
+  assert.equal(reply.ok, true);
+  assert.equal(received?.password, '');
+  assert.deepEqual(secret, { username: '', password: '' });
+  assert.equal(JSON.stringify(reply).includes('must-not-reach-renderer'), false);
 });
 
 test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {

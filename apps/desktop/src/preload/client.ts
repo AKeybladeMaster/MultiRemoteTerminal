@@ -8,6 +8,7 @@ import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTra
 import type { SshTextFileReply, SshTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
 import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
+import type { CredentialVaultStateReply, SessionCredentialPresenceReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSerialTerminalResult } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
@@ -41,6 +42,7 @@ type ListenTunnelStatus = Listen;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_CREDENTIAL_PROMPT_TIMEOUT_MS = 120_000;
+const SESSION_CREDENTIAL_TIMEOUT_MS = 130_000;
 const SSH_WORKER_OPEN_TIMEOUT_MS = 140_000;
 // Covers two bounded catalog reads, worker startup, and IPC scheduling after three sequential prompts.
 const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
@@ -305,9 +307,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-      gatewayProfileIds?: readonly string[]): Promise<OpenSshTerminalReply> {
+      gatewayProfileIds?: readonly string[], savedProfileId?: string): Promise<OpenSshTerminalReply> {
       return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
-        payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }) } },
+        payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }),
+          ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }) } },
       sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
     openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply> {
@@ -528,6 +531,24 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply> {
       return send(voidRequest('session.move', { id, folderId }), 8_000);
+    },
+    hasSavedSshCredential(id: string): Promise<SessionCredentialPresenceReply> {
+      return send({ command: 'session.credential.has', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, 8_000);
+    },
+    saveSshCredential(id: string): Promise<TerminalActionReply> {
+      return send({ command: 'session.credential.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, SESSION_CREDENTIAL_TIMEOUT_MS);
+    },
+    forgetSshCredential(id: string): Promise<TerminalActionReply> {
+      return send({ command: 'session.credential.forget', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, 8_000);
+    },
+    getCredentialVaultState(): Promise<CredentialVaultStateReply> {
+      return send({ command: 'vault.state', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    lockCredentialVault(): Promise<TerminalActionReply> {
+      return send({ command: 'vault.lock', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    unlockCredentialVault(): Promise<CredentialVaultStateReply> {
+      return send({ command: 'vault.unlock', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 30_000);
     },
     listSshTunnels(): Promise<ListSshTunnelsReply> {
       return send({ command: 'tunnel.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);

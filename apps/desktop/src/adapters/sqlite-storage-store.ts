@@ -18,6 +18,7 @@ import { isMacroShortcutCode } from '../../../../packages/domain/src/macro-short
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import { isWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
@@ -138,6 +139,21 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     const result = await this.worker.request({ command: 'session.get', id }, cancellation);
     if (result.kind !== 'sessionLookup') throw new StorageOperationError('corrupt');
     return result.value ?? undefined;
+  }
+
+  async getSessionCredentialReference(id: string, cancellation?: CancellationSignal): Promise<CredentialReference | undefined> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.credential.get', id }, cancellation);
+    if (result.kind !== 'credentialReference') throw new StorageOperationError('corrupt');
+    return result.value ?? undefined;
+  }
+
+  async setSessionCredentialReference(id: string, reference: CredentialReference | null, expectedReference: CredentialReference | null,
+    cancellation?: CancellationSignal): Promise<boolean> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.credential.set', id, reference, expectedReference }, cancellation);
+    if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
+    return result.value;
   }
 
   async createSession(input: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition> {

@@ -716,6 +716,11 @@ test('a lost SSH transport fails its tab cleanly and allows explicit saved-profi
     await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
     const reopenButton = page.getByRole('button', { name: `Open ${savedName}`, exact: true });
     await expect(reopenButton).toBeVisible();
+    await page.getByRole('button', { name: `Actions for saved session ${savedName}` }).click();
+    await page.getByRole('button', { name: 'Save password…', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
 
     const liveClient = terminalClient;
     // The pinned ssh2 fixture exposes the accepted TCP socket internally; resetAndDestroy models a link failure, while client.end() is a graceful SSH disconnect.
@@ -725,6 +730,23 @@ test('a lost SSH transport fails its tab cleanly and allows explicit saved-profi
     await expect(sshTab.locator('.state-dot')).toHaveClass(/(?:^|\s)failed(?:\s|$)/u, { timeout: 15_000 });
     await expect(page.getByRole('alert')).toContainText('UNAVAILABLE');
 
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await settings.getByRole('button', { name: 'Lock credentials', exact: true }).click();
+    await expect(settings.getByText('Status: Locked')).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    await reopenButton.click();
+    await expect(page.getByRole('alert')).toContainText('credential vault is locked');
+    expect(shellCount).toBe(1);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Locked')).toBeVisible();
+    await settings.getByRole('button', { name: 'Unlock credentials', exact: true }).click();
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
     await reopenButton.click();
     const reopenedTab = page.getByRole('tab', { name: savedName, exact: true });
     await expect(reopenedTab).toBeVisible({ timeout: 20_000 });
@@ -734,6 +756,7 @@ test('a lost SSH transport fails its tab cleanly and allows explicit saved-profi
     await expect(reopenedPanel.locator('.xterm-rows')).toContainText('MRT-SSH-RECOVERY-2', { timeout: 15_000 });
     await expect(reopenedTab.locator('.state-dot')).toHaveClass(/(?:^|\s)running(?:\s|$)/u);
     expect(shellCount).toBe(2);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
   } finally {
     for (const client of clients) client.end();
     await app?.close();
@@ -750,13 +773,13 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
   const secret = 'sftp-e2e-secret';
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
-  let acceptedPassword = false;
+  let acceptedPasswordAttempts = 0;
   const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
     const client = rawClient as Ssh2FixtureClient;
     client.on('authentication', (rawContext: unknown) => {
       const context = rawContext as Ssh2AuthenticationContext;
       if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === secret) {
-        acceptedPassword = true;
+        acceptedPasswordAttempts += 1;
         context.accept();
       } else context.reject();
     });
@@ -798,7 +821,7 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     const panelId = await sshTab.getAttribute('aria-controls');
     if (!panelId) throw new Error('Missing credential-boundary SSH terminal panel');
     await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-SECRET-BOUNDARY-READY', { timeout: 15_000 });
-    expect(acceptedPassword).toBe(true);
+    expect(acceptedPasswordAttempts).toBe(1);
     expect(await page.locator('body').innerText()).not.toContain(secret);
 
     const savedName = 'Boundary profile';
@@ -807,6 +830,20 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     await saveDialog.getByLabel('Session name').fill(savedName);
     await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
     await expect(page.getByRole('button', { name: `Open ${savedName}`, exact: true })).toBeVisible();
+    await page.getByRole('button', { name: `Actions for saved session ${savedName}` }).click();
+    await page.getByRole('button', { name: 'Save password…', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
+    await page.getByRole('button', { name: `Open ${savedName}`, exact: true }).click();
+    const savedProfileTab = page.getByRole('tab', { name: savedName, exact: true });
+    await expect(savedProfileTab).toBeVisible({ timeout: 20_000 });
+    const savedProfilePanelId = await savedProfileTab.getAttribute('aria-controls');
+    if (!savedProfilePanelId) throw new Error('Missing saved-credential SSH terminal panel');
+    await expect(page.locator(`#${savedProfilePanelId} .xterm-rows`)).toContainText('MRT-SECRET-BOUNDARY-READY', { timeout: 15_000 });
+    expect(acceptedPasswordAttempts).toBe(2);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(2);
+    expect(await page.locator('body').innerText()).not.toContain(secret);
     await page.getByRole('button', { name: '+ Folder', exact: true }).click();
     const folderDialog = page.getByRole('dialog', { name: 'Create folder' });
     await folderDialog.getByLabel('Folder name').fill('Audit');
@@ -837,7 +874,8 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     try {
       const saved = database.prepare('SELECT id, kind, name, host, port, username, credential_ref, options_json FROM session_definitions WHERE name = ?')
         .get(savedName) as Record<string, unknown> | undefined;
-      expect(saved).toMatchObject({ kind: 'ssh', name: savedName, host: '127.0.0.1', port: address.port, username: null, credential_ref: null });
+      expect(saved).toMatchObject({ kind: 'ssh', name: savedName, host: '127.0.0.1', port: address.port, username: null });
+      expect(saved?.credential_ref).toMatch(/^[0-9a-f-]{36}$/i);
       expect(JSON.stringify(saved)).not.toContain(secret);
     } finally { database.close(); }
 

@@ -12,6 +12,7 @@ import type { LocalTerminalController } from '../../../../packages/application/s
 import { createHostTrustManager } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustRuntime } from '../../../../packages/application/src/host-trust.ts';
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
+import { createSessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
 import { createMacroCatalog } from '../../../../packages/application/src/macros.ts';
 import { createWorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
@@ -269,9 +270,16 @@ function boot(): void {
   const vncViewer = createVncViewerController(e2eVncViewer ? { async launch() {} } : new WindowsVncViewer(systemDirectory));
   const e2eSshCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-credentials');
   const e2eFtpCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ftp-credentials');
+  let e2eSshCredentialPromptCount = 0;
+  if (e2eSshCredentials) Object.defineProperty(globalThis, '__mrtE2ESshCredentialPromptCount', {
+    configurable: false, enumerable: false, get: () => e2eSshCredentialPromptCount
+  });
   const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eFtpCredentials
     ? { async prompt(purpose) {
-      if (purpose === 'ssh-password' && e2eSshCredentials) return { kind: 'provided', username: 'mrt-e2e-user', secret: 'sftp-e2e-secret' };
+      if (purpose === 'ssh-password' && e2eSshCredentials) {
+        e2eSshCredentialPromptCount += 1;
+        return { kind: 'provided', username: 'mrt-e2e-user', secret: 'sftp-e2e-secret' };
+      }
       if (purpose === 'ftp-account' && e2eFtpCredentials) return { kind: 'provided', username: 'mrt-e2e-user', secret: 'ftp-e2e-secret' };
       return { kind: 'unavailable' };
     } }
@@ -290,7 +298,8 @@ function boot(): void {
   );
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
   const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
-  const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels);
+  const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
+  const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels, sessionCredentials);
   const macros = createMacroCatalog(storageStore);
   const preferences = createWorkbenchPreferencesManager(storageStore);
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
@@ -508,7 +517,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, sessionCatalog, macros, preferences, tunnels, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, sessionCatalog, sessionCredentials, macros, preferences, tunnels, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;

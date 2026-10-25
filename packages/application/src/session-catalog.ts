@@ -6,7 +6,8 @@ import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/src/session-folder.ts';
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../domain/src/session-folder-bundle.ts';
-import { StorageOperationError } from './storage-errors.ts';
+import { storageOperationErrorCode } from './storage-errors.ts';
+import type { CredentialReference } from '../../domain/src/credentials.ts';
 
 export interface SessionCatalogStore {
   listSessions(query: string, cancellation?: CancellationSignal): Promise<readonly SavedSessionDefinition[]>;
@@ -14,6 +15,9 @@ export interface SessionCatalogStore {
   getSessionDefinition(id: string, cancellation?: CancellationSignal): Promise<SavedSessionDefinition | undefined>;
   createSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
   rememberSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
+  getSessionCredentialReference(id: string, cancellation?: CancellationSignal): Promise<CredentialReference | undefined>;
+  setSessionCredentialReference(id: string, reference: CredentialReference | null, expectedReference: CredentialReference | null,
+    cancellation?: CancellationSignal): Promise<boolean>;
   setFavorite(id: string, favorite: boolean, cancellation?: CancellationSignal): Promise<boolean>;
   removeSession(id: string, cancellation?: CancellationSignal): Promise<boolean>;
   listFolders(cancellation?: CancellationSignal): Promise<readonly SavedSessionFolder[]>;
@@ -60,10 +64,14 @@ export interface SessionRemovalGuard {
   endSessionRemoval(sessionId: string): void;
 }
 
+export interface SessionCredentialRemover {
+  forgetSshCredential(sessionId: unknown, cancellation?: CancellationSignal): Promise<Outcome<Record<string, never>>>;
+}
+
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
 
 export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: SessionFolderBundleFileDialog,
-  removalGuard?: SessionRemovalGuard): SessionCatalog {
+  removalGuard?: SessionRemovalGuard, credentialRemover?: SessionCredentialRemover): SessionCatalog {
   return {
     async list(query: unknown, cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionDefinition[]>> {
       const normalized = normalizeSessionSearch(query);
@@ -119,6 +127,10 @@ export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: S
       if (cancellation?.aborted) return failure('CANCELLED');
       if (removalGuard && !removalGuard.beginSessionRemoval(id)) return failure('BUSY');
       try {
+        if (credentialRemover) {
+          const credentials = await credentialRemover.forgetSshCredential(id, cancellation);
+          if (!credentials.ok && credentials.error.code !== 'INVALID_REQUEST') return credentials;
+        }
         const removed = await store.removeSession(id, cancellation);
         return removed ? { ok: true, result: EMPTY_RESULT } : failure('NOT_FOUND');
       }
@@ -194,12 +206,5 @@ function isFilePath(value: unknown): value is string {
 }
 
 function errorCode(error: unknown): ErrorCode {
-  if (error instanceof StorageOperationError) {
-    if (error.kind === 'busy') return 'BUSY';
-    if (error.kind === 'invalid') return 'INVALID_REQUEST';
-    if (error.kind === 'cancelled') return 'CANCELLED';
-    if (error.kind === 'conflict') return 'CONFLICT';
-    if (error.kind === 'not-found') return 'NOT_FOUND';
-  }
-  return 'UNAVAILABLE';
+  return storageOperationErrorCode(error) ?? 'UNAVAILABLE';
 }

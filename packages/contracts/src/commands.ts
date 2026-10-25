@@ -91,7 +91,7 @@ export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessio
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
-  readonly gatewayProfileIds?: readonly string[] }>;
+  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number }>;
 export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
 export type WriteSshTerminalRequest = Request<'ssh.write', { readonly sessionId: string; readonly data: string }>;
@@ -143,6 +143,12 @@ export type DeleteSessionFolderRequest = Request<'session.folder.delete', { read
 export type ExportSessionFolderRequest = Request<'session.folder.export', { readonly id: string }>;
 export type ImportSessionFolderRequest = Request<'session.folder.import', Record<string, never>>;
 export type MoveSessionRequest = Request<'session.move', { readonly id: string; readonly folderId: string | null }>;
+export type HasSessionCredentialRequest = Request<'session.credential.has', { readonly id: string }>;
+export type SaveSessionCredentialRequest = Request<'session.credential.save', { readonly id: string }>;
+export type ForgetSessionCredentialRequest = Request<'session.credential.forget', { readonly id: string }>;
+export type GetCredentialVaultStateRequest = Request<'vault.state', Record<string, never>>;
+export type LockCredentialVaultRequest = Request<'vault.lock', Record<string, never>>;
+export type UnlockCredentialVaultRequest = Request<'vault.unlock', Record<string, never>>;
 export type ListSshTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
 export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
   readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number } |
@@ -168,6 +174,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   LaunchRdpViewerRequest | LaunchVncViewerRequest |
   ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
+  HasSessionCredentialRequest | SaveSessionCredentialRequest | ForgetSessionCredentialRequest | GetCredentialVaultStateRequest | LockCredentialVaultRequest | UnlockCredentialVaultRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
   GetWorkbenchPreferencesRequest | SaveWorkbenchPreferencesRequest;
@@ -209,6 +216,9 @@ export type ListMacroShortcutsReply = CommandReply<readonly MacroShortcutBinding
 export type MacroShortcutReply = CommandReply<MacroShortcutBinding>;
 export type WorkbenchPreferencesReply = CommandReply<WorkbenchPreferences>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
+export type CredentialVaultState = 'uninitialized' | 'available' | 'locked' | 'unavailable';
+export type CredentialVaultStateReply = CommandReply<CredentialVaultState>;
+export type SessionCredentialPresenceReply = CommandReply<boolean>;
 
 export interface DesktopBridge {
   describe(): Promise<DescribeReply>;
@@ -219,7 +229,7 @@ export interface DesktopBridge {
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-    gatewayProfileIds?: readonly string[]): Promise<OpenSshTerminalReply>;
+    gatewayProfileIds?: readonly string[], savedProfileId?: string): Promise<OpenSshTerminalReply>;
   openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   pasteSshTerminal(sessionId: string): Promise<TerminalActionReply>;
@@ -271,6 +281,12 @@ export interface DesktopBridge {
   exportSavedSessionFolder(id: string): Promise<ExportSessionFolderReply>;
   importSavedSessionFolder(): Promise<ImportSessionFolderReply>;
   moveSavedSession(id: string, folderId: string | null): Promise<TerminalActionReply>;
+  hasSavedSshCredential(id: string): Promise<SessionCredentialPresenceReply>;
+  saveSshCredential(id: string): Promise<TerminalActionReply>;
+  forgetSshCredential(id: string): Promise<TerminalActionReply>;
+  getCredentialVaultState(): Promise<CredentialVaultStateReply>;
+  lockCredentialVault(): Promise<TerminalActionReply>;
+  unlockCredentialVault(): Promise<CredentialVaultStateReply>;
   listSshTunnels(): Promise<ListSshTunnelsReply>;
   saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply>;
   deleteTunnel(id: string): Promise<TerminalActionReply>;
@@ -302,7 +318,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TRUST_TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
-const ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'NOT_SUPPORTED', 'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CORRUPT', 'CANCELLED', 'OUTPUT_LIMIT',
+const ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'NOT_SUPPORTED', 'TIMEOUT', 'BUSY', 'LOCKED', 'NOT_FOUND', 'CONFLICT', 'CORRUPT', 'CANCELLED', 'OUTPUT_LIMIT',
   'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
 
 export function parsePasteGestureRequest(value: unknown): string | undefined {
@@ -353,8 +369,17 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'terminal.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseTerminalRequest };
   }
-  if (value.command === 'ssh.open' && (exactKeys(payload, ['sessionId', 'host', 'port', 'columns', 'rows']) ||
-      (exactKeys(payload, ['sessionId', 'host', 'port', 'columns', 'rows', 'gatewayProfileIds']) && isSshGatewayProfileIds(payload.gatewayProfileIds))) &&
+  const sshOpenBaseKeys = ['sessionId', 'host', 'port', 'columns', 'rows'] as const;
+  const sshOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
+  const sshOpenHasProfile = Object.hasOwn(payload, 'profileId');
+  const validSshOpenKeys = sshOpenHasGateways && sshOpenHasProfile
+    ? exactKeys(payload, [...sshOpenBaseKeys, 'gatewayProfileIds', 'profileId']) && isSshGatewayProfileIds(payload.gatewayProfileIds) && isSessionDefinitionId(payload.profileId)
+    : sshOpenHasGateways
+      ? exactKeys(payload, [...sshOpenBaseKeys, 'gatewayProfileIds']) && isSshGatewayProfileIds(payload.gatewayProfileIds)
+      : sshOpenHasProfile
+        ? exactKeys(payload, [...sshOpenBaseKeys, 'profileId']) && isSessionDefinitionId(payload.profileId)
+        : exactKeys(payload, [...sshOpenBaseKeys]);
+  if (value.command === 'ssh.open' && validSshOpenKeys &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };
@@ -500,6 +525,20 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'session.move' && exactKeys(payload, ['id', 'folderId']) && isSessionDefinitionId(payload.id) &&
       (payload.folderId === null || isSessionFolderId(payload.folderId))) return { ok: true, result: value as unknown as MoveSessionRequest };
+  if (value.command === 'session.credential.has' && exactKeys(payload, ['id']) && isSessionDefinitionId(payload.id)) {
+    return { ok: true, result: value as unknown as HasSessionCredentialRequest };
+  }
+  if (value.command === 'session.credential.save' && exactKeys(payload, ['id']) && isSessionDefinitionId(payload.id)) {
+    return { ok: true, result: value as unknown as SaveSessionCredentialRequest };
+  }
+  if (value.command === 'session.credential.forget' && exactKeys(payload, ['id']) && isSessionDefinitionId(payload.id)) {
+    return { ok: true, result: value as unknown as ForgetSessionCredentialRequest };
+  }
+  if ((value.command === 'vault.state' || value.command === 'vault.lock' || value.command === 'vault.unlock') && exactKeys(payload, [])) {
+    if (value.command === 'vault.state') return { ok: true, result: value as unknown as GetCredentialVaultStateRequest };
+    if (value.command === 'vault.lock') return { ok: true, result: value as unknown as LockCredentialVaultRequest };
+    return { ok: true, result: value as unknown as UnlockCredentialVaultRequest };
+  }
   if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSshTunnelsRequest };
   if (value.command === 'tunnel.save' && normalizeSshTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveSshTunnelRequest };
   if ((value.command === 'tunnel.delete' || value.command === 'tunnel.start' || value.command === 'tunnel.stop') &&
@@ -534,6 +573,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
+    'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
     'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'preferences.get', 'preferences.save'].includes(value.command)) {
     return failure('INVALID_REQUEST');
@@ -644,6 +684,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'session.folder.create') return isSavedSessionFolder(value.result);
     if (request.command === 'session.folder.export') return isFolderExportResult(value.result);
     if (request.command === 'session.folder.import') return isFolderImportResult(value.result);
+    if (request.command === 'session.credential.has') return typeof value.result === 'boolean';
+    if (request.command === 'vault.state' || request.command === 'vault.unlock') return isCredentialVaultState(value.result);
     if (request.command === 'tunnel.list') return Array.isArray(value.result) && value.result.every(isSshTunnelSnapshot);
     if (request.command === 'tunnel.save') return isSshTunnelDefinition(value.result);
     if (request.command === 'tunnel.delete') return record(value.result) && exactKeys(value.result, []);
@@ -661,6 +703,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);
+}
+
+function isCredentialVaultState(value: unknown): value is CredentialVaultState {
+  return value === 'uninitialized' || value === 'available' || value === 'locked' || value === 'unavailable';
 }
 
 function isSshTunnelSnapshot(value: unknown): value is SshTunnelSnapshot {

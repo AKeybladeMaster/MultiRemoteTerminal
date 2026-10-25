@@ -14,6 +14,7 @@ import type { SessionCatalog } from '../../../../packages/application/src/sessio
 import type { MacroCatalog } from '../../../../packages/application/src/macros.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
@@ -22,6 +23,8 @@ import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { Outcome } from '../../../../packages/domain/src/errors.ts';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import { MAX_SERIAL_INPUT_CHARS } from '../../../../packages/domain/src/serial.ts';
+
+const EMPTY_RESULT: Record<string, never> = Object.freeze({});
 
 export interface CommandSender {
   readonly owned: boolean;
@@ -69,6 +72,7 @@ export interface CommandActions {
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'count' | 'get' | 'create' | 'remember' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
+  readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
@@ -148,7 +152,7 @@ export async function dispatchCommand(
         return { requestId, ...await actions.terminals.close(parsed.result.payload.sessionId) };
       }
       case 'ssh.open': {
-        const { sessionId, host, port, columns, rows, gatewayProfileIds = [] } = parsed.result.payload;
+        const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId } = parsed.result.payload;
         const endpoints: SshHostEndpoint[] = [];
         for (const gatewayProfileId of gatewayProfileIds) {
           const result = await actions.sessionCatalog.get(gatewayProfileId, actions.cancellation);
@@ -158,7 +162,20 @@ export async function dispatchCommand(
         }
         const route = normalizeSshGatewayRoute(endpoints, { host, port });
         if (!route) return { requestId, ...failure('INVALID_REQUEST') };
-        return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route) };
+        let savedCredentials;
+        if (profileId) {
+          const credential = await actions.sessionCredentials.resolveSshCredential(profileId, host, port, actions.cancellation);
+          if (!credential.ok) return { requestId, ...credential };
+          savedCredentials = credential.result;
+        }
+        try {
+          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route, savedCredentials) };
+        } finally {
+          if (savedCredentials) {
+            savedCredentials.username = '';
+            savedCredentials.password = '';
+          }
+        }
       }
       case 'sftp.open': {
         const { sessionId, host, port } = parsed.result.payload;
@@ -338,6 +355,14 @@ export async function dispatchCommand(
       case 'session.folder.export': return { requestId, ...await actions.sessionCatalog.exportFolder(parsed.result.payload.id, actions.cancellation) };
       case 'session.folder.import': return { requestId, ...await actions.sessionCatalog.importFolder(actions.cancellation) };
       case 'session.move': return { requestId, ...await actions.sessionCatalog.moveSession(parsed.result.payload.id, parsed.result.payload.folderId, actions.cancellation) };
+      case 'session.credential.has': return { requestId, ...await actions.sessionCredentials.hasSshCredential(parsed.result.payload.id, actions.cancellation) };
+      case 'session.credential.save': return { requestId, ...await actions.sessionCredentials.saveSshCredential(parsed.result.payload.id, actions.cancellation) };
+      case 'session.credential.forget': return { requestId, ...await actions.sessionCredentials.forgetSshCredential(parsed.result.payload.id, actions.cancellation) };
+      case 'vault.state': return { requestId, ok: true, result: actions.sessionCredentials.state() };
+      case 'vault.lock':
+        actions.sessionCredentials.lock();
+        return { requestId, ok: true, result: EMPTY_RESULT };
+      case 'vault.unlock': return { requestId, ...await actions.sessionCredentials.unlock() };
       case 'macro.list': return { requestId, ...await actions.macros.list(actions.cancellation) };
       case 'macro.create': return { requestId, ...await actions.macros.create(parsed.result.payload, actions.cancellation) };
       case 'macro.update': {
