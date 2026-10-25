@@ -1,8 +1,8 @@
 # WP-05D — Virtualized remote file tables
 
-**Date:** 2026-10-25  
-**Branch:** `dev-1`  
-**Requirement:** Architecture §10 performance requirement for virtualized file tables; F-005/P-14 remain partial.  
+**Date:** 2026-10-25
+**Branch:** `dev-1`
+**Requirement:** Architecture §10 performance requirement for virtualized file tables; F-005/P-14 remain partial.
 **Status:** Implemented and verified for the covered Windows loopback workflow; the broader WP-05 gate remains open.
 
 ## Behavior
