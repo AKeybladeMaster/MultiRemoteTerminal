@@ -27,4 +27,9 @@ This verifies saved SSH password management with Electron's Windows `safeStorage
 
 ## Review
 
-Independent Spec and Standards review pending.
+Independent Spec and Standards reviews covered `git diff origin/main...HEAD` from merge-base `2e9c33ce94cc6cea194bb7834c701f95948aed79` through `319304b485d02269b1fa8e695ebe69db13846964`.
+
+- The Spec reviewer first found that the UI omitted the same-user malware limitation and used an overly broad "saved securely" phrase. Commit `319304b` adds the limitation to Settings and names Windows account protection in saved-password status and confirmation messages. Follow-up Spec review confirmed the finding is fixed, identified no other mismatch or scope creep, and kept F-010/P-29 partial for the remaining master-password and platform-acceptance gaps.
+- The Standards reviewer first noted two non-blocking judgment calls: the ambiguous `forgetSshProfile` name and duplicated storage-error mapping. Commit `319304b` renames the operation to `forgetSshCredential` and centralizes storage-error conversion. Follow-up Standards review found no remaining documented-standard breach or baseline smell.
+
+Reviewers did not run tests or modify files. The requesting-review companion template was unavailable; the paired review prompts followed the installed `code-review` skill's Spec and Standards process. No unresolved Critical or Important finding remains.
