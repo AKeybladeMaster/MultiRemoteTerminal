@@ -21,12 +21,14 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     const sftp = await catalog.createSession({ kind: 'sftp', name: 'Build files', host: 'SSH.Example.com.', port: 22 });
     const telnet = await catalog.createSession({ kind: 'telnet', name: 'Legacy switch', host: 'TELNET.Example.com.', port: 23 });
     const ftp = await catalog.createSession({ kind: 'ftp', name: 'Secure file host', host: 'Files.Example.com.', port: 2121, secure: true });
+    const rdp = await catalog.createSession({ kind: 'rdp', name: 'Windows desktop', host: 'Desk.Example.com.', port: 3390 });
     const local = await catalog.createSession({ kind: 'local', name: 'Local PowerShell', shell: 'powershell' });
     const bash = await catalog.createSession({ kind: 'local', name: 'Local Bash', shell: 'bash' });
     assert.equal(ssh.kind, 'ssh');
     assert.equal(sftp.kind, 'sftp');
     assert.equal(telnet.kind, 'telnet');
     assert.equal(ftp.kind, 'ftp');
+    assert.deepEqual(rdp.kind === 'rdp' ? { host: rdp.host, port: rdp.port } : undefined, { host: 'desk.example.com', port: 3390 });
     if (ftp.kind !== 'ftp') throw new Error('Expected FTP definition');
     assert.deepEqual({ host: ftp.host, port: ftp.port, secure: ftp.secure }, { host: 'files.example.com', port: 2121, secure: true });
     if (telnet.kind !== 'telnet') throw new Error('Expected Telnet definition');
@@ -49,12 +51,13 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.ok((await catalog.listSessions('ssh.example')).some(item => item.id === sftp.id));
     assert.ok((await catalog.listSessions('telnet.example')).some(item => item.id === telnet.id));
     assert.ok((await catalog.listSessions('files.example')).some(item => item.id === ftp.id));
+    assert.ok((await catalog.listSessions('desk.example')).some(item => item.id === rdp.id));
 
     for (let index = 0; index < 1_000; index += 1) {
       await catalog.createSession({ kind: 'local', name: `Connection ${String(index).padStart(4, '0')}`, shell: index % 2 === 0 ? 'powershell' : 'cmd' });
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
-    assert.equal((await catalog.listSessions('')).length, 1_006);
+    assert.equal((await catalog.listSessions('')).length, 1_007);
     assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
     assert.equal(await catalog.setFavorite(telnet.id, true), true);
@@ -121,7 +124,7 @@ test('folder moves reject cycles and folder deletion preserves children and sess
     const timestamp = new Date().toISOString();
     database.prepare(`INSERT INTO session_definitions
       (id, folder_id, kind, name, options_json, options_version, favorite, created_at, updated_at)
-      VALUES (?, ?, 'rdp', 'Future viewer', '{}', 1, 0, ?, ?)`)
+      VALUES (?, ?, 'vnc', 'Future viewer', '{}', 1, 0, ?, ?)`)
       .run(futureSessionId, work.id, timestamp, timestamp);
     const applicationCatalog = createSessionCatalog(catalog, unusedBundleDialog);
     assert.equal(await catalog.moveSession(rootSession.id, work.id), true);
@@ -271,26 +274,28 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const telnet = await source.createSession({ kind: 'telnet', name: 'Lab console', host: 'console.example.com', port: 23 });
     const ftp = await source.createSession({ kind: 'ftp', name: 'Archive files', host: 'files.example.com', port: 2121, secure: false });
     const sftp = await source.createSession({ kind: 'sftp', name: 'Build artifacts', host: 'build.example.com', port: 22 });
+    const rdp = await source.createSession({ kind: 'rdp', name: 'Windows desktop', host: 'desktop.example.com', port: 3390 });
     await source.moveSession(session.id, child.id);
     await source.moveSession(telnet.id, root.id);
     await source.moveSession(ftp.id, child.id);
     await source.moveSession(sftp.id, child.id);
+    await source.moveSession(rdp.id, child.id);
     await source.setFavorite(session.id, true);
     const path = join(directory, 'project.mrt-session-folder.json');
 
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 4 });
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 4 },
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 5 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 5 },
       'exporting again to the selected file replaces it atomically');
     const text = await readFile(path, 'utf8');
     assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
     assert.doesNotMatch(text, /password|credential|privateKey/i);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 4, createdFolderCount: 4, createdSessionCount: 4
+      folderCount: 4, sessionCount: 5, createdFolderCount: 4, createdSessionCount: 5
     });
     assert.deepEqual(new Set((await destination.listFolders()).map(folder => folder.name)),
       new Set([root.name, child.name, unicodeUpper.name, unicodeLower.name]));
     const importedSessions = await destination.listSessions('');
-    assert.equal(importedSessions.length, 4);
+    assert.equal(importedSessions.length, 5);
     const importedSession = importedSessions.find(item => item.kind === 'ssh');
     assert.ok(importedSession?.kind === 'ssh');
     if (importedSession?.kind !== 'ssh') throw new Error('Expected an imported SSH definition');
@@ -316,8 +321,12 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
       host: importedSftp.host, port: importedSftp.port }, {
       id: sftp.id, folderId: child.id, kind: 'sftp', name: 'Build artifacts', host: 'build.example.com', port: 22
     });
+    const importedRdp = importedSessions.find(item => item.kind === 'rdp');
+    const sourceRdp = (await source.listSessions('')).find(item => item.kind === 'rdp');
+    assert.ok(importedRdp?.kind === 'rdp' && sourceRdp?.kind === 'rdp');
+    assert.deepEqual(importedRdp, sourceRdp);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 4, createdFolderCount: 0, createdSessionCount: 0
+      folderCount: 4, sessionCount: 5, createdFolderCount: 0, createdSessionCount: 0
     });
   } finally {
     sourceDatabase.close();

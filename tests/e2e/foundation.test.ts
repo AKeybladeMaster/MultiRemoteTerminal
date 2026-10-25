@@ -1545,6 +1545,52 @@ test('saved sessions save, search, favorite, reopen and delete through the workb
   }
 });
 
+test('RDP profiles persist and launch through the explicitly external viewer handoff', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-rdp-profile-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-rdp-viewer'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to RDP desktop', exact: true }).first().click();
+    const dialog = page.getByTestId('rdp-connect-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('External Windows Remote Desktop viewer');
+    await expect(dialog).toContainText('does not store RDP credentials');
+    await dialog.getByLabel('Host name or IP address').fill('desktop.example.com');
+    await dialog.getByLabel('Port').fill('3390');
+    await dialog.getByLabel('Saved profile name').fill('Lab desktop');
+    await page.screenshot({ path: 'test-results/rdp-connection-dialog.png', fullPage: true });
+    await dialog.getByRole('button', { name: 'Save profile', exact: true }).click();
+    const savedRdp = page.getByRole('button', { name: 'Open Lab desktop', exact: true });
+    await expect(savedRdp).toBeVisible();
+    await expect(page.locator('.saved-session-row').filter({ hasText: 'Lab desktop' })).toContainText('RDP · external viewer');
+
+    await savedRdp.click();
+    const launchDialog = page.getByTestId('rdp-connect-dialog');
+    await expect(launchDialog).toBeVisible();
+    await expect(launchDialog.getByLabel('Host name or IP address')).toHaveValue('desktop.example.com');
+    await expect(launchDialog.getByLabel('Port')).toHaveValue('3390');
+    await page.keyboard.press('Escape');
+    await expect(launchDialog).toHaveCount(0);
+    await expect(savedRdp).toBeFocused();
+    await savedRdp.click();
+    await launchDialog.getByTestId('rdp-launch').click();
+    await expect(launchDialog).toHaveCount(0);
+    await expect(page.locator('.alert-strip > span')).toContainText('Connection status is not tracked here.');
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Open Lab desktop', exact: true })).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('macro library creates, edits, persists and deletes typed steps', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-library-e2e-'));

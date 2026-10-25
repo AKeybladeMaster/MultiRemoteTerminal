@@ -243,6 +243,29 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
     payload: { path: 'C:\\private.json' } }).ok, false, 'the renderer cannot provide a filesystem path');
 });
 
+test('RDP IPC validates the external viewer target and its launch-requested result', () => {
+  const rdp = { command: 'rdp.launch', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'Desktop.Example.com.', port: 3389 } };
+  const parsed = parseRequest(rdp);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...rdp, payload: { ...rdp.payload, port: 65_536 } }).ok, false);
+  assert.equal(parseRequest({ ...rdp, payload: { ...rdp.payload, password: 'must-not-pass' } }).ok, false);
+  if (parsed.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'external', endpoint: { host: 'desktop.example.com', port: 3389 }, state: 'launch-requested'
+    } }, parsed.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'embedded', endpoint: { host: 'desktop.example.com', port: 3389 }, state: 'connected'
+    } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'external', endpoint: { host: 'other.example.com', port: 3389 }, state: 'launch-requested'
+    } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {
+      provider: 'external', endpoint: { host: 'desktop.example.com', port: 3389 }, state: 'launch-requested', password: 'secret'
+    } }, parsed.result), false);
+  }
+});
+
 test('tunnel IPC accepts named loopback forwards and matches replies to the requested definition', () => {
   const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId: '44444444-4444-4444-8444-444444444444',
     name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0, targetHost: 'db.internal', targetPort: 5432 };

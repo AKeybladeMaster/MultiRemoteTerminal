@@ -41,6 +41,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async uploadFile() { return { ok: true, result: { direction: 'upload', fileName: 'x', bytesTransferred: 0, state: 'completed' } }; },
     async downloadFile() { return { ok: true, result: { direction: 'download', fileName: 'x', bytesTransferred: 0, state: 'completed' } }; },
     cancelTransfer: noOp, close: noOp
+  }, rdpViewer: {
+    async launch(host, port) { return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } }; }
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
     get: async () => ({ ok: true, result: emptySavedSession }),
@@ -389,6 +391,25 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
   assert.deepEqual(calls, ['list:Prod', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`,
     `export-folder:${emptySavedSession.id}`, 'import-folder']);
   assert.deepEqual(forwardedCancellations, Array(6).fill(cancellation));
+});
+
+test('RDP IPC dispatches an explicit external viewer launch through the application controller', async () => {
+  const seen: Array<{ host: string; port: number }> = [];
+  let activityCount = 0;
+  const withRdp: CommandActions = {
+    ...actions(snapshot, () => { activityCount += 1; }),
+    rdpViewer: { async launch(host, port) {
+      seen.push({ host, port });
+      return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'rdp.launch', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'desk.example.com', port: 3390 } }, withRdp, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: true, result: {
+    provider: 'external', endpoint: { host: 'desk.example.com', port: 3390 }, state: 'launch-requested'
+  } });
+  assert.deepEqual(seen, [{ host: 'desk.example.com', port: 3390 }]);
+  assert.equal(activityCount, 1);
 });
 
 test('only validated local, SSH or Telnet terminal open, write and close commands count as user activity', async () => {

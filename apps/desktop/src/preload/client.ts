@@ -2,6 +2,7 @@ import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEven
 import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
 import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
@@ -388,6 +389,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     closeFtpFiles(sessionId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ftp.close', { sessionId }), 8_000);
+    },
+    launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply> {
+      return send({ command: 'rdp.launch', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { host, port } }, 8_000);
     },
     listSavedSessions(query: string): Promise<ListSessionsReply> {
       return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);

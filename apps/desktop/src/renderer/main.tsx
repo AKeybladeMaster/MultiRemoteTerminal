@@ -23,6 +23,7 @@ import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply,
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
+import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
@@ -37,6 +38,7 @@ import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import { MultiExecDialog } from './MultiExecDialog.tsx';
 import { HelpDialog } from './HelpDialog.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
+import { RdpConnectDialog } from './RdpConnectDialog.tsx';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
@@ -88,7 +90,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-ftp' | 'connect-rdp' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -201,6 +203,13 @@ function ftpOpenError(code: string, secure: boolean): string {
   return `Could not connect to the ${secure ? 'FTPS' : 'FTP'} server (${code}).`;
 }
 
+function rdpOpenError(code: string): string {
+  if (code === 'NOT_SUPPORTED') return 'Windows Remote Desktop is available only on Windows.';
+  if (code === 'CANCELLED') return 'Opening Windows Remote Desktop was cancelled.';
+  if (code === 'INVALID_REQUEST') return 'Enter a valid host name or IP address and port.';
+  return 'Windows Remote Desktop could not be started. Check that the Windows viewer is available.';
+}
+
 function tunnelOpenError(code: string): string {
   if (code === 'CONFLICT') return 'That local port is already in use. Choose another port or use 0 to let Windows assign one.';
   if (code === 'AUTHENTICATION_FAILED') return 'The SSH server rejected these credentials.';
@@ -278,6 +287,10 @@ function Workbench() {
   const [ftpConnectError, setFtpConnectError] = useState<string>();
   const [ftpSavedTitle, setFtpSavedTitle] = useState<string>();
   const [ftpConnecting, setFtpConnecting] = useState(false);
+  const [rdpConnectOpen, setRdpConnectOpen] = useState(false);
+  const [rdpHost, setRdpHost] = useState('');
+  const [rdpPort, setRdpPort] = useState(3389);
+  const [rdpSavedProfileName, setRdpSavedProfileName] = useState<string>();
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
   const [sshTrustBusy, setSshTrustBusy] = useState(false);
   const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
@@ -405,6 +418,8 @@ function Workbench() {
   const ftpHostInput = useRef<HTMLInputElement>(null);
   const ftpPortInput = useRef<HTMLInputElement>(null);
   const ftpConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const rdpConnectDialog = useRef<HTMLElement>(null);
+  const rdpConnectReturnFocus = useRef<HTMLElement | null>(null);
   const saveSessionDialog = useRef<HTMLElement>(null);
   const saveSessionNameInput = useRef<HTMLInputElement>(null);
   const checkSavedSessionsButton = useRef<HTMLButtonElement>(null);
@@ -1115,6 +1130,39 @@ function Workbench() {
     setFtpConnectOpen(true);
   }, []);
 
+  const openRdpConnect = useCallback((host = '', port = 3389, savedTitle?: string) => {
+    rdpConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setRdpHost(host);
+    setRdpPort(port);
+    setRdpSavedProfileName(savedTitle);
+    setRdpConnectOpen(true);
+  }, []);
+
+  const launchRdpViewer = useCallback(async (host: string, port: number): Promise<string | undefined> => {
+    const endpoint = canonicalizeRdpEndpoint({ host, port });
+    if (!endpoint) return 'Enter a valid host name or IP address and port.';
+    try {
+      const reply = await window.multiRemoteTerminal.launchRdpViewer(endpoint.host, endpoint.port);
+      if (!reply.ok) return rdpOpenError(reply.error.code);
+      setAlert('Windows Remote Desktop was opened outside this app. Connection status is not tracked here.');
+      return undefined;
+    } catch { return 'Windows Remote Desktop could not be started. Check that the Windows viewer is available.'; }
+  }, []);
+
+  const saveRdpProfile = useCallback(async (name: string, host: string, port: number): Promise<string | undefined> => {
+    const draft = normalizeSavedSessionDraft({ kind: 'rdp', name, host, port });
+    if (!draft || draft.kind !== 'rdp') return 'Enter a valid profile name, host, and port.';
+    setCatalogBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.createSavedSession(draft);
+      if (!reply.ok) return `The RDP profile could not be saved (${reply.error.code}).`;
+      await loadSavedSessions(savedSearch);
+      setAlert(`Saved RDP profile “${reply.result.name}”.`);
+      return undefined;
+    } catch { return 'The RDP profile could not be saved.'; }
+    finally { setCatalogBusy(false); }
+  }, [loadSavedSessions, savedSearch]);
+
   const requestCloseTerminal = useCallback((sessionId: string) => {
     closeReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPendingCloseId(sessionId);
@@ -1692,6 +1740,20 @@ function Workbench() {
         }
         return;
       }
+      if (rdpConnectOpen) {
+        if (event.key === 'Escape' && rdpConnectDialog.current?.getAttribute('aria-busy') !== 'true') {
+          event.preventDefault(); setRdpConnectOpen(false);
+        }
+        else if (event.key === 'Tab') {
+          const focusable = [...(rdpConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (sshConnectOpen) {
         if (event.key === 'Escape') { event.preventDefault(); cancelSshConnect(); }
         else if (event.key === 'Tab') {
@@ -1796,7 +1858,7 @@ function Workbench() {
   }, [activeId, cancelMacroPlayback, cancelMultiExec, catalogBusy, closeMacroManager, closeMacroPlayback, closeMultiExec, confirmMultiExec,
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
-    helpOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
+    helpOpen, rdpConnectOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents, tabContextMenu, telnetConnectOpen, tunnelManagerOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -1829,6 +1891,10 @@ function Workbench() {
       else sshHostInput.current?.focus();
     }
   }, [sshConnectOpen, sshGatewayTarget]);
+
+  useLayoutEffect(() => {
+    if (rdpConnectOpen) requestAnimationFrame(() => rdpConnectDialog.current?.querySelector<HTMLElement>('input')?.focus());
+  }, [rdpConnectOpen]);
 
   useLayoutEffect(() => {
     if (tunnelManagerOpen) requestAnimationFrame(() => tunnelManagerDialog.current?.querySelector<HTMLElement>('select, input, button')?.focus());
@@ -1901,6 +1967,14 @@ function Workbench() {
   }, [ftpConnectOpen]);
 
   useEffect(() => {
+    if (!rdpConnectOpen && rdpConnectReturnFocus.current) {
+      const target = rdpConnectReturnFocus.current;
+      rdpConnectReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [rdpConnectOpen]);
+
+  useEffect(() => {
     if (saveSessionOpen) {
       if (!catalogBusy) requestAnimationFrame(() => {
         if (uncertainSaveDraft) checkSavedSessionsButton.current?.focus();
@@ -1957,6 +2031,7 @@ function Workbench() {
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
     { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
+    { id: 'connect-rdp', label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() },
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
@@ -2017,11 +2092,11 @@ function Workbench() {
       <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : session.kind}`} aria-hidden="true">
           {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : session.kind === 'sftp' ? 'SFTP'
-            : session.kind === 'telnet' ? 'TELNET' : session.secure ? 'FTPS' : 'FTP'}
+            : session.kind === 'telnet' ? 'TELNET' : session.kind === 'rdp' ? 'RDP' : session.secure ? 'FTPS' : 'FTP'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
         <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell
-          : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind.toUpperCase()}`}</span>
+          : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind === 'rdp' ? 'RDP · external viewer' : session.kind.toUpperCase()}`}</span>
       </button>
       <div className="saved-session-actions">
         <button type="button" aria-label={`${session.favorite ? 'Remove favorite from' : 'Make favorite'} ${session.name}`}
@@ -2092,7 +2167,8 @@ function Workbench() {
     else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name);
     else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
-    else openFtpConnect(session.host, session.port, session.secure, session.name);
+    else if (session.kind === 'ftp') openFtpConnect(session.host, session.port, session.secure, session.name);
+    else openRdpConnect(session.host, session.port, session.name);
   }
 
   async function openSavedSshThroughGateways(session: Extract<SavedSessionDefinition, { kind: 'ssh' }>) {
@@ -2378,6 +2454,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect()}><span aria-hidden="true">↗</span> Connect to SSH</button>
         <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
         <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
+        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
@@ -2525,6 +2602,7 @@ function Workbench() {
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
             <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>
             <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>
+            <button type="button" className="connect-ssh-button" onClick={() => openRdpConnect()}>Connect to RDP desktop</button>
           </div>}
         </div>
       </main>
@@ -2753,6 +2831,9 @@ function Workbench() {
         </form>
       </section>
     </div>}
+    {rdpConnectOpen && <RdpConnectDialog dialogRef={rdpConnectDialog} initialHost={rdpHost} initialPort={rdpPort}
+      {...(rdpSavedProfileName ? { savedProfileName: rdpSavedProfileName } : {})}
+      onClose={() => setRdpConnectOpen(false)} onLaunch={launchRdpViewer} onSaveProfile={saveRdpProfile} />}
     {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}

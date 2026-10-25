@@ -12,7 +12,7 @@ The SQLite `sessions.kind` constraint currently permits `local`, `ssh`, `telnet`
 
 - Add `sftp.open` / `sftp.close` as fixed typed preload commands. They route through the SSH application controller, which reuses the normal endpoint validation, host-key approval, native credential prompt, cancellation and supervised worker lifecycle.
 - Add an explicit files-only connection mode to the SSH transport. After SSH authentication reaches `ready`, this mode resolves without requesting a PTY or shell. It reuses `ssh.files.*` for listing and transfers and rejects terminal write, resize and output acknowledgement operations.
-- Represent saved SFTP definitions as `kind: 'sftp'` in the domain and version-3 saved-folder bundle. Continue to import version-1 and version-2 bundles under their original session-kind allowances.
+- Represent saved SFTP definitions as `kind: 'sftp'` in the domain and version-3 saved-folder bundle. Continue to import version-1 and version-2 bundles under their original session-kind allowances; version 4 adds RDP profiles and retains version-1 through version-3 import compatibility.
 - Encode persisted SFTP definitions in the existing SQLite table as `kind: 'ssh'` with the exact options object `{"sftpOnly":true}`. Decode that marker into domain kind `sftp`; reject malformed or extra option fields. This avoids a table rebuild while keeping the storage exception private to the SQLite adapter.
 - Persist/export only the validated host and port with ordinary folder/session metadata. Credentials and terminal history are never part of the saved definition or bundle.
 
