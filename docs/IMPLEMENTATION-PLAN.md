@@ -172,6 +172,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07N — SFTP path and transfer security evidence:** Re-ran focused path and transfer unit suites: 15/15 pass, covering traversal validation, cancellation cleanup, symlink rejection, collision behavior and explicit overwrite. The Windows loopback SFTP E2E passed 1/1 through the app and verifies uploaded/downloaded bytes. The security gate item is checked; 100 MB throughput, network-loss cleanup and broader SFTP server interoperability remain open, so F-005/P-14 remain partial. See [WP-07N results](results/WP-07N-sftp-security-acceptance-2026-10-25.md).
 
+**WP-07O — SSH forwarding security evidence:** Focused SSH tunnel/provider unit suites pass 31/31. The Windows loopback E2E passes 1/1 across local TCP forwarding, a remote forward requested on `127.0.0.1` with a visible `GatewayPorts` warning, and dynamic SOCKS5 TCP CONNECT. It verifies relay traffic, no shell request, listener cleanup, and stopped saved definitions after restart. This checks the forwarding test item in `docs/SECURITY.md`; P-23/P-24/P-25 and F-006 remain partial because public-bind consent, SOCKS UDP/BIND/authentication, and broader server interoperability are not covered. A remote SSH server may override a requested loopback bind with its `GatewayPorts` policy, and the dynamic SOCKS listener has no proxy authentication. See [WP-07O results](results/WP-07O-ssh-forwarding-security-acceptance-2026-10-25.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
