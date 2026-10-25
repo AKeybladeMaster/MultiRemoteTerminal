@@ -56,6 +56,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async launch(host, port) { return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } }; }
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
+    count: async () => ({ ok: true, result: 0 }),
     get: async () => ({ ok: true, result: emptySavedSession }),
     create: async () => ({ ok: true, result: emptySavedSession }),
     remember: async () => ({ ok: true, result: emptySavedSession }),
@@ -437,6 +438,7 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
   const base = actions();
   const withCatalog: CommandActions = { ...base, cancellation, sessionCatalog: {
     async list(query, signal) { calls.push(`list:${query}`); forwardedCancellations.push(signal); return { ok: true, result: [] }; },
+    async count(signal) { calls.push('count'); forwardedCancellations.push(signal); return { ok: true, result: 1_009 }; },
     async get(id, signal) { calls.push(`get:${id}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async create(draft, signal) { calls.push(`create:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
     async remember(draft, signal) { calls.push(`remember:${String((draft as { readonly name?: unknown }).name)}`); forwardedCancellations.push(signal); return { ok: true, result: emptySavedSession }; },
@@ -454,6 +456,7 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
   const requestId = request.requestId;
   const replies = await Promise.all([
     dispatchCommand(owner, { command: 'session.list', requestId, contractVersion: 1, payload: { query: 'Prod' } }, withCatalog, () => {}),
+    dispatchCommand(owner, { command: 'session.count', requestId, contractVersion: 1, payload: {} }, withCatalog, () => {}),
     dispatchCommand(owner, { command: 'session.create', requestId, contractVersion: 1,
       payload: { kind: 'local', name: 'Work shell', shell: 'powershell' } }, withCatalog, () => {}),
     dispatchCommand(owner, { command: 'session.favorite', requestId, contractVersion: 1,
@@ -465,9 +468,9 @@ test('saved-session IPC dispatches only validated catalog operations', async () 
     dispatchCommand(owner, { command: 'session.folder.import', requestId, contractVersion: 1, payload: {} }, withCatalog, () => {})
   ]);
   assert.ok(replies.every(reply => reply.ok));
-  assert.deepEqual(calls, ['list:Prod', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`,
+  assert.deepEqual(calls, ['list:Prod', 'count', 'create:Work shell', `favorite:${emptySavedSession.id}:true`, `remove:${emptySavedSession.id}`,
     `export-folder:${emptySavedSession.id}`, 'import-folder']);
-  assert.deepEqual(forwardedCancellations, Array(6).fill(cancellation));
+  assert.deepEqual(forwardedCancellations, Array(7).fill(cancellation));
 });
 
 test('RDP IPC dispatches an explicit external viewer launch through the application controller', async () => {

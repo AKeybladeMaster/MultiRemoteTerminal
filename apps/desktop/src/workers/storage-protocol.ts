@@ -26,6 +26,7 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.remove'; readonly endpoint: SshHostEndpoint }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'hostTrust.importLegacy'; readonly identities: readonly TrustedHostKey[] }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.list'; readonly query: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.count' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remember'; readonly draft: SavedSessionDraft }
@@ -60,6 +61,7 @@ export type StorageWorkerResult =
   | { readonly kind: 'removed'; readonly value: boolean }
   | { readonly kind: 'migrated'; readonly value: { readonly sourceCount: number; readonly verifiedCount: number } }
   | { readonly kind: 'sessions'; readonly value: readonly SavedSessionDefinition[] }
+  | { readonly kind: 'sessionCount'; readonly value: number }
   | { readonly kind: 'folders'; readonly value: readonly SavedSessionFolder[] }
   | { readonly kind: 'folder'; readonly value: SavedSessionFolder }
   | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
@@ -135,6 +137,7 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'query']) && normalizeSessionSearch(value.query) !== undefined) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.count' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.get' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
@@ -213,6 +216,7 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'migrated' && exactKeys(value, ['kind', 'value']) && record(value.value) && exactKeys(value.value, ['sourceCount', 'verifiedCount']) &&
       Number.isSafeInteger(value.value.sourceCount) && value.value.sourceCount === value.value.verifiedCount && (value.value.sourceCount as number) >= 0) return true;
   if (value.kind === 'sessions' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionDefinition)) return true;
+  if (value.kind === 'sessionCount' && exactKeys(value, ['kind', 'value']) && Number.isSafeInteger(value.value) && (value.value as number) >= 0) return true;
   if (value.kind === 'folders' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isSavedSessionFolder)) return true;
   if (value.kind === 'folder' && exactKeys(value, ['kind', 'value']) && isSavedSessionFolder(value.value)) return true;
   if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;

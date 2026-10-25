@@ -272,6 +272,16 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   assert.equal(parseRequest({ ...list, payload: { query: 'x'.repeat(257) } }).ok, false);
   assert.equal(parseRequest({ ...list, payload: { query: '', secret: 'hidden' } }).ok, false);
 
+  const count = { command: 'session.count', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsedCount = parseRequest(count);
+  assert.equal(parsedCount.ok, true);
+  assert.equal(parseRequest({ ...count, payload: { query: '' } }).ok, false);
+  if (parsedCount.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: 1_000 }, parsedCount.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: -1 }, parsedCount.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: 1.5 }, parsedCount.result), false);
+  }
+
   const folderCreate = { command: 'session.folder.create', requestId: request.requestId, contractVersion: 1,
     payload: { parentId: null, name: 'Work' } };
   assert.equal(parseRequest(folderCreate).ok, true);

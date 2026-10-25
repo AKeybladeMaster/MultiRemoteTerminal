@@ -112,6 +112,7 @@ const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly b
   cmd: { name: 'cmd', badge: 'CMD', mark: 'C:\\' },
   bash: { name: 'Bash', badge: 'BASH', mark: '$' }
 };
+const SAVED_SESSION_SEARCH_DEBOUNCE_MS = 50;
 
 function shellName(shell: LocalShell): string { return SHELL_PRESENTATION[shell].name; }
 function autoSavedProfileName(protocol: string, host: string, port: number): string {
@@ -517,25 +518,25 @@ function Workbench() {
   }, [openSavedActionsMenuId]);
 
   const showTerminalError = useCallback((message: string) => setAlert(message), []);
-  const loadSavedSessions = useCallback(async (search: string): Promise<readonly SavedSessionDefinition[] | undefined> => {
+  const loadSavedSessions = useCallback(async (search: string, refreshCount = true): Promise<readonly SavedSessionDefinition[] | undefined> => {
     const request = ++savedSessionsRequest.current;
     setSavedSessionsLoading(true);
     try {
-      const [reply, totalReply] = await Promise.all([
+      const [reply, countReply] = await Promise.all([
         window.multiRemoteTerminal.listSavedSessions(search),
-        search ? window.multiRemoteTerminal.listSavedSessions('') : undefined
+        refreshCount ? window.multiRemoteTerminal.countSavedSessions() : Promise.resolve(undefined)
       ]);
       if (request !== savedSessionsRequest.current) return undefined;
       if (!reply.ok) {
         setAlert(`Saved sessions could not be loaded (${reply.error.code}).`);
         return undefined;
       }
-      if (totalReply && !totalReply.ok) {
-        setAlert(`Saved-session count could not be loaded (${totalReply.error.code}).`);
+      if (countReply && !countReply.ok) {
+        setAlert(`Saved-session count could not be loaded (${countReply.error.code}).`);
         return undefined;
       }
       setSavedSessions(reply.result);
-      setSavedSessionCount(totalReply?.result.length ?? reply.result.length);
+      if (countReply?.ok) setSavedSessionCount(countReply.result);
       return reply.result;
     } catch {
       if (request === savedSessionsRequest.current) setAlert('Saved sessions could not be loaded.');
@@ -1118,7 +1119,7 @@ function Workbench() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => { void loadSavedSessions(savedSearch); }, 160);
+    const timer = window.setTimeout(() => { void loadSavedSessions(savedSearch, savedSearch.length === 0); }, SAVED_SESSION_SEARCH_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
       savedSessionsRequest.current++;
@@ -2718,7 +2719,10 @@ function Workbench() {
           </div>
           <label className="visually-hidden" htmlFor="saved-session-search">Search saved sessions</label>
           <input className="saved-session-search" id="saved-session-search" type="search" autoComplete="off" maxLength={256}
-            placeholder="Search saved sessions…" value={savedSearch} onChange={event => setSavedSearch(event.target.value)} />
+            placeholder="Search saved sessions…" value={savedSearch} onChange={event => {
+              setSavedSessionsLoading(true);
+              setSavedSearch(event.target.value);
+            }} />
           {savedSessionsLoading && <p className="saved-session-empty" role="status">Loading saved sessions…</p>}
           {!savedSessionsLoading && savedSearch && savedSessions.length === 0 && <p className="saved-session-empty">No saved sessions match this search.</p>}
           {!savedSessionsLoading && !savedSearch && savedSessions.length === 0 && savedFolders.length === 0 && <p className="saved-session-empty">No saved sessions yet.</p>}

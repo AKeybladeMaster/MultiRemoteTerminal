@@ -1,5 +1,5 @@
 import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
-import type { CommandReply, CommandRequest, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
+import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
@@ -462,6 +462,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     listSavedSessions(query: string): Promise<ListSessionsReply> {
       return send({ command: 'session.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { query } }, 8_000);
+    },
+    countSavedSessions(): Promise<CountSessionsReply> {
+      return send({ command: 'session.count', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
     },
     listMacros(): Promise<ListMacrosReply> {
       return send({ command: 'macro.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);

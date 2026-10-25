@@ -38,6 +38,7 @@ interface SessionFolderRow {
 export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   private readonly database: DatabaseSync;
   private readonly listByQuery: StatementSync;
+  private readonly countAllSessions: StatementSync;
   private readonly insertSession: StatementSync;
   private readonly setSessionFavorite: StatementSync;
   private readonly deleteSession: StatementSync;
@@ -65,6 +66,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial') AND (? = '' OR name LIKE ? ESCAPE '\\' COLLATE NOCASE OR host LIKE ? ESCAPE '\\' COLLATE NOCASE)
       ORDER BY favorite DESC, updated_at DESC, id ASC
     `);
+    this.countAllSessions = database.prepare("SELECT COUNT(*) AS count FROM session_definitions WHERE kind IN ('local', 'ssh', 'telnet', 'ftp', 'rdp', 'vnc', 'serial')");
     this.insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, host, port, options_json, options_version, favorite, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
@@ -125,6 +127,14 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       const pattern = `%${escapeLike(query)}%`;
       const rows = this.listByQuery.all(query, pattern, pattern) as unknown as SavedSessionRow[];
       return rows.map(decodeSessionRow);
+    } catch (error) { throw mapStorageError(error); }
+  }
+
+  async countSessions(): Promise<number> {
+    try {
+      const row = this.countAllSessions.get() as unknown as { readonly count: unknown } | undefined;
+      if (!row || !Number.isSafeInteger(row.count) || (row.count as number) < 0) throw new StorageOperationError('corrupt');
+      return row.count as number;
     } catch (error) { throw mapStorageError(error); }
   }
 

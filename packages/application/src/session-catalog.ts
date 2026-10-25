@@ -10,6 +10,7 @@ import { StorageOperationError } from './storage-errors.ts';
 
 export interface SessionCatalogStore {
   listSessions(query: string, cancellation?: CancellationSignal): Promise<readonly SavedSessionDefinition[]>;
+  countSessions(cancellation?: CancellationSignal): Promise<number>;
   getSessionDefinition(id: string, cancellation?: CancellationSignal): Promise<SavedSessionDefinition | undefined>;
   createSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
   rememberSession(draft: SavedSessionDraft, cancellation?: CancellationSignal): Promise<SavedSessionDefinition>;
@@ -38,6 +39,7 @@ export interface SessionFolderBundleFileDialog {
 
 export interface SessionCatalog {
   list(query: unknown, cancellation?: CancellationSignal): Promise<Outcome<readonly SavedSessionDefinition[]>>;
+  count(cancellation?: CancellationSignal): Promise<Outcome<number>>;
   get(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
   create(draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
   remember(draft: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>>;
@@ -71,6 +73,11 @@ export function createSessionCatalog(store: SessionCatalogStore, bundleDialog: S
         const result = await store.listSessions(normalized, cancellation);
         return { ok: true, result };
       }
+      catch (error) { return failure(errorCode(error)); }
+    },
+    async count(cancellation?: CancellationSignal): Promise<Outcome<number>> {
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try { return { ok: true, result: await store.countSessions(cancellation) }; }
       catch (error) { return failure(errorCode(error)); }
     },
     async get(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<SavedSessionDefinition>> {
