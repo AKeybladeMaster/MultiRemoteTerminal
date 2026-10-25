@@ -15,6 +15,7 @@ export interface MacroManagerDialogProps {
   readonly loading: boolean;
   readonly busy: boolean;
   readonly error: string | undefined;
+  readonly activeSessionId: string | undefined;
   readonly recordingTargets: readonly { readonly sessionId: string; readonly title: string }[];
   readonly recordingActive: boolean;
   readonly playbackMacroId: string | undefined;
@@ -71,7 +72,7 @@ function playbackStepPresentation(step: MacroStep): PlaybackStepPresentation {
   }
 }
 
-export function MacroManagerDialog({ dialogRef, macros, shortcuts, loading, busy, error, recordingTargets, recordingActive, playbackMacroId, playback,
+export function MacroManagerDialog({ dialogRef, macros, shortcuts, loading, busy, error, activeSessionId, recordingTargets, recordingActive, playbackMacroId, playback,
   shortcutCaptureMacroId, shortcutNotice, onClose, onSave, onDelete, onStartRecording, onReviewPlayback, onClosePlayback, onStartPlayback,
   onCancelPlayback, onConfirmPlayback, onCaptureShortcut, onCancelShortcutCapture, onClearShortcut }: MacroManagerDialogProps): ReactElement {
   const [selectedId, setSelectedId] = useState<string>();
@@ -134,10 +135,10 @@ export function MacroManagerDialog({ dialogRef, macros, shortcuts, loading, busy
 
   useEffect(() => {
     if (!playbackMacroId) return;
-    const target = recordingTargetsRef.current[0];
+    const target = recordingTargetsRef.current.find(candidate => candidate.sessionId === activeSessionId) ?? recordingTargetsRef.current[0];
     setPlaybackTargetId(target?.sessionId ?? '');
     setPlaybackTargetTitle(target?.title ?? '');
-  }, [playbackMacroId]);
+  }, [activeSessionId, playbackMacroId]);
 
   function startNew(): void {
     onCancelShortcutCapture();

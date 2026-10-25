@@ -15,7 +15,7 @@
 ## Evidence
 
 - `corepack pnpm build` — passed on Windows x64. Electron native addon and renderer/main bundles built successfully. Vite emitted a large renderer chunk advisory; the build still passed.
-- `corepack pnpm exec playwright test --grep "macro shortcuts persist and open exact review"` — **1 passed** on Windows in 6.8 seconds. The test assigns F2, restarts the app, activates the shortcut, verifies the target and exact review, confirms the marker file is absent before approval, then verifies a single marker after Run.
+- `corepack pnpm exec playwright test --grep "macro shortcuts persist and open exact review"` — **1 passed** on Windows in 6.8 seconds. The test assigns F2, restarts the app, opens two PowerShell terminals, makes the second terminal active, and verifies the shortcut review targets that active terminal. It confirms the marker file is absent before approval, then verifies a single marker after Run.
 - Focused unit run: `node --test tests/unit/macro-shortcuts.test.ts tests/unit/sqlite-macro-catalog.test.ts tests/unit/macros.test.ts tests/unit/macro-storage-protocol.test.ts tests/unit/contracts.test.ts tests/unit/bridge.test.ts tests/unit/broker.test.ts` — **72/72 passed**.
 - `corepack pnpm typecheck` — passed.
 

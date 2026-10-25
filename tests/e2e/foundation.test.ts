@@ -1721,10 +1721,14 @@ test('macro shortcuts persist and open exact review before explicit playback app
     await expect(dialog.locator('kbd')).toHaveText('Ctrl+Alt+Shift+F2');
     await dialog.getByRole('button', { name: 'Close macro manager', exact: true }).click();
 
-    const terminalTitle = 'PowerShell session 1';
-    const panel = await selectTerminal(page, terminalTitle);
+    const firstPanel = await selectTerminal(page, 'PowerShell session 1');
+    const firstSessionId = await firstPanel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
+    if (!firstSessionId) throw new Error('The first PowerShell terminal has no session id.');
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const panel = await selectTerminal(page, 'PowerShell session 2');
     const sessionId = await panel.locator('.terminal-host').getAttribute('data-mrt-terminal-session-id');
     if (!sessionId) throw new Error('The shortcut playback terminal has no session id.');
+    expect(sessionId).not.toBe(firstSessionId);
     await page.keyboard.press('Control+Alt+Shift+F2');
     const review = page.getByRole('dialog', { name: 'Review macro run' });
     await expect(review.getByText('Shortcut review', { exact: true })).toBeVisible();

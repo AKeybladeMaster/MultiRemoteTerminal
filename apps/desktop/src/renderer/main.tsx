@@ -2685,6 +2685,7 @@ function Workbench() {
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
     {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} shortcuts={macroShortcuts} loading={macrosLoading} busy={macroBusy} error={macroError}
+      activeSessionId={activeId}
       recordingTargets={sessions.filter(isMacroTerminal).filter(session => session.state === 'running').map(session => ({ sessionId: session.sessionId, title: macroTargetTitle(session) }))}
       recordingActive={macroRecording !== undefined} playbackMacroId={macroPlaybackMacroId} playback={macroPlayback}
       shortcutCaptureMacroId={macroShortcutCaptureMacroId} shortcutNotice={macroShortcutNotice}
