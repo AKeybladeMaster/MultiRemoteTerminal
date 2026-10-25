@@ -1065,6 +1065,75 @@ test('Windows master-password vault converts, locks after restart, unlocks throu
   }
 });
 
+test('Windows master-password vault restores into a different app profile after explicit unlock', async () => {
+  test.skip(process.platform !== 'win32', 'Exercise master-password profile restore and the Electron KDF utility process on Windows');
+  test.setTimeout(180_000);
+  const sourceProfile = await mkdtemp(join(tmpdir(), 'mrt-master-vault-source-'));
+  const restoredProfile = await mkdtemp(join(tmpdir(), 'mrt-master-vault-restored-'));
+  const reference = randomUUID();
+  const secret = `MRT-E2E-RESTORED-MASTER-VAULT-${randomUUID()}`;
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await launchVaultE2EApp(sourceProfile, true);
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await waitForVaultE2EProbe(app);
+    const sourceUserDataPath = await app.evaluate(async ({ app: electronApp }, { credentialReference, credentialSecret }) => {
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultE2EProbe }).__mrtE2EVaultProbe;
+      if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
+      await probe.store(credentialReference, credentialSecret);
+      return electronApp.getPath('userData');
+    }, { credentialReference: reference, credentialSecret: secret });
+    expect(sourceUserDataPath).toBe(sourceProfile);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const sourceSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await sourceSettings.getByRole('button', { name: 'Use a master password' }).click();
+    await expect(sourceSettings.getByText('Protection: Master password')).toBeVisible({ timeout: 60_000 });
+    const sourceVault = await readFile(join(sourceUserDataPath, 'credentials.json'));
+    expect(sourceVault.toString('utf8')).not.toContain(secret);
+    expect(JSON.parse(sourceVault.toString('utf8')).mode).toBe('master-password');
+
+    await app.close();
+    app = undefined;
+    await writeFile(join(restoredProfile, 'credentials.json'), sourceVault);
+    app = await launchVaultE2EApp(restoredProfile, true);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect.poll(() => vaultE2EProbeState(app!)).toBe('locked');
+    const restoredUserDataPath = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+    expect(restoredUserDataPath).toBe(restoredProfile);
+    expect(restoredUserDataPath).not.toBe(sourceUserDataPath);
+    const beforeUnlock = await app.evaluate(async (_electron, credentialReference) => {
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultE2EProbe }).__mrtE2EVaultProbe;
+      if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
+      try { await probe.resolve(credentialReference); return 'resolved'; }
+      catch (error) { return typeof error === 'object' && error !== null && 'kind' in error ? String(error.kind) : 'failed'; }
+    }, reference);
+    expect(beforeUnlock).toBe('locked');
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(restoredSettings.getByText('Protection: Master password')).toBeVisible();
+    await expect(restoredSettings.getByRole('status')).toHaveText('Status: Locked');
+    await restoredSettings.getByRole('button', { name: 'Unlock credentials' }).click();
+    await expect(restoredSettings.getByRole('status')).toHaveText('Status: Unlocked', { timeout: 60_000 });
+    const restoredSecret = await app.evaluate(async (_electron, credentialReference) => {
+      const probe = (globalThis as typeof globalThis & { __mrtE2EVaultProbe?: VaultE2EProbe }).__mrtE2EVaultProbe;
+      if (!probe) throw new Error('The guarded main-process vault probe is unavailable');
+      return probe.resolve(credentialReference);
+    }, reference);
+    expect(restoredSecret).toBe(secret);
+    const restoredVault = await readFile(join(restoredUserDataPath, 'credentials.json'), 'utf8');
+    expect(restoredVault).not.toContain(secret);
+    expect(JSON.parse(restoredVault).mode).toBe('master-password');
+  } finally {
+    await app?.close();
+    await rm(sourceProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await rm(restoredProfile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SSH saved-profile jump routes verify every hop and clean up one- and two-gateway chains', async () => {
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));
