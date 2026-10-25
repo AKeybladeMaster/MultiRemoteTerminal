@@ -15,3 +15,7 @@ Windows loopback application E2E:
 ## Status
 
 The focused N-002 checklist item for SFTP traversal, cancellation, symlink and overwrite acceptance is checked in `docs/SECURITY.md`. This does not establish 100 MB transfer performance, network-loss cleanup, or interoperability with public SFTP servers. A hostile server may still race path-based ancestor checks; forced worker termination or lost transport can leave staged files if bounded cleanup cannot finish. F-005/P-14 remain partial for drag/drop, large-file and disconnect acceptance, configurable browser behavior and broader server interoperability.
+
+## Review
+
+The Spec-axis reviewer found the narrow checklist evidence supported and confirmed that F-005/P-14 remain partial with the open limitations stated. The Standards-axis reviewer found no documented-standard violations, unsupported claims or baseline smells. Both axes assessed the documentation-only slice ready to merge; no source code changed.
