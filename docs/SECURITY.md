@@ -33,6 +33,7 @@
 - Validate IPC origin/sender and schemas for **every** command; do not expose raw `ipcRenderer` from preload.
 - Main or privileged worker owns filesystem, system processes and vault. Distinguish worker process isolation from a strong OS sandbox.
 - Review Electron security guidance before first release: https://www.electronjs.org/docs/latest/tutorial/security/
+- Packaged acceptance mutates the SHA-256 integrity metadata inside an installed `resources/app.asar` and verifies that the application process exits. Test-only delay hooks require an unpackaged build, `MRT_E2E=1`, and their exact command-line flag; the focused unit test also proves packaged builds ignore them. See [WP-07H](results/WP-07H-n002-electron-review-follow-up-2026-10-25.md) and the official [ASAR integrity guide](https://www.electronjs.org/docs/latest/tutorial/asar-integrity).
 
 ## SSH rules
 
@@ -97,7 +98,7 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 
 ## Release security gate
 
-- [ ] Electron checklist reviewed and recorded for pinned version.
+- [x] Electron checklist reviewed and recorded for pinned Electron 45.0.0; the independent review found no high/critical boundary issue, with remaining evidence gaps tracked in [WP-07H](results/WP-07H-n002-electron-review-follow-up-2026-10-25.md).
 - [ ] IPC validation and renderer isolation penetration tests pass.
 - [ ] Host-key mismatch and jump-host verification tests pass.
 - [ ] Vault survives restart and no plaintext secret in DB/log/export/IPC.
@@ -105,4 +106,4 @@ Optional Git for Windows Bash is user-installed and is not redistributed by the 
 - [ ] Local/remote/dynamic SSH forwarding policy tests pass.
 - [ ] Network daemons/X11, when implemented, not exposed publicly by default.
 - [ ] Build dependencies audited, SBOM created, installer hash published.
-- [ ] Independent reviewer has no unresolved critical/high finding.
+- [x] Independent reviewer has no unresolved critical/high finding; unsigned distribution integrity and missing hostile terminal-output privilege-injection evidence remain release blockers.

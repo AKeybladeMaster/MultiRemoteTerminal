@@ -43,6 +43,7 @@ import { WindowsVncViewer } from '../adapters/windows-vnc-viewer.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
+import { isE2ETestHookEnabled } from './e2e-test-hooks.ts';
 import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
 import { createNetworkWorkerEnvironment } from './network-worker-environment.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
@@ -184,8 +185,8 @@ function boot(): void {
   idleLock.start();
   void credentialVault.initialize().catch(() => undefined);
 
-  let delayFirstOpenReply = process.argv.includes('--mrt-e2e-delay-first-terminal-open');
-  let delayFirstSessionCreateReply = process.argv.includes('--mrt-e2e-delay-first-session-create-reply');
+  let delayFirstOpenReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-terminal-open', app.isPackaged, process.env, process.argv);
+  let delayFirstSessionCreateReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-session-create-reply', app.isPackaged, process.env, process.argv);
   const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
     if (!delayFirstOpenReply) return;
     delayFirstOpenReply = false;
@@ -600,7 +601,7 @@ function safeFtpDownloadName(value: string): string {
 }
 
 function e2eTransferPath(prefix: string, testModeFlag: string): string | undefined {
-  if (app.isPackaged || process.env.MRT_E2E !== '1' || !process.argv.includes(testModeFlag)) return undefined;
+  if (!isE2ETestHookEnabled(testModeFlag, app.isPackaged, process.env, process.argv)) return undefined;
   const value = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length);
   return value && resolve(value) === value ? value : undefined;
 }
