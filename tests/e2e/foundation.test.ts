@@ -1558,6 +1558,8 @@ test('RDP profiles persist and launch through the explicitly external viewer han
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('External Windows Remote Desktop viewer');
     await expect(dialog).toContainText('does not store RDP credentials');
+    const bypass = await page.evaluate(() => window.multiRemoteTerminal.launchRdpViewer('attacker.example.com', 3389));
+    expect(bypass).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
     await dialog.getByLabel('Host name or IP address').fill('desktop.example.com');
     await dialog.getByLabel('Port').fill('3390');
     await dialog.getByLabel('Saved profile name').fill('Lab desktop');

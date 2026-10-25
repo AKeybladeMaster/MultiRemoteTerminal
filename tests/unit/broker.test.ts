@@ -17,7 +17,7 @@ const emptyMacro = { id: '7c08b18a-57cc-4b44-a8b3-2d404850e81c', schemaVersion: 
   createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
-  authorizeFtpConsent: () => false,
+  authorizeFtpConsent: () => false, authorizeRdpLaunch: () => false,
   confirmMultilinePaste: async () => false,
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
@@ -398,6 +398,7 @@ test('RDP IPC dispatches an explicit external viewer launch through the applicat
   let activityCount = 0;
   const withRdp: CommandActions = {
     ...actions(snapshot, () => { activityCount += 1; }),
+    authorizeRdpLaunch: (host, port) => host === 'desk.example.com' && port === 3390,
     rdpViewer: { async launch(host, port) {
       seen.push({ host, port });
       return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } };
@@ -410,6 +411,11 @@ test('RDP IPC dispatches an explicit external viewer launch through the applicat
   } });
   assert.deepEqual(seen, [{ host: 'desk.example.com', port: 3390 }]);
   assert.equal(activityCount, 1);
+
+  const denied = await dispatchCommand(owner, { command: 'rdp.launch', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'attacker.example.com', port: 3389 } }, actions(), () => {});
+  assert.deepEqual(denied, { requestId: request.requestId, ok: false,
+    error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
 });
 
 test('only validated local, SSH or Telnet terminal open, write and close commands count as user activity', async () => {

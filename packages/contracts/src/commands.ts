@@ -10,6 +10,7 @@ import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
 import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../domain/src/remote-endpoint.ts';
+import { canonicalizeRdpEndpoint } from '../../domain/src/rdp.ts';
 import { canonicalizeFtpEndpoint, isFtpTransferProgress, isFtpTransferResult } from '../../domain/src/ftp.ts';
 import { isCanonicalFtpEndpoint } from '../../domain/src/ftp.ts';
 import { isFtpDirectoryListing, isFtpRemotePath } from '../../domain/src/ftp.ts';
@@ -41,6 +42,7 @@ export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
+export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
@@ -270,6 +272,11 @@ export function parsePasteGestureRequest(value: unknown): string | undefined {
 export const parseTelnetConsentGestureRequest = parsePasteGestureRequest;
 export const parseFtpConsentGestureRequest = parsePasteGestureRequest;
 
+export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
+  if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
+  return canonicalizeRdpEndpoint(value);
+}
+
 function validSize(columns: unknown, rows: unknown): boolean {
   return Number.isInteger(columns) && (columns as number) >= 2 && (columns as number) <= MAX_TERMINAL_COLUMNS &&
     Number.isInteger(rows) && (rows as number) >= 1 && (rows as number) <= MAX_TERMINAL_ROWS;
@@ -364,7 +371,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     return { ok: true, result: value as unknown as CloseFtpFilesRequest };
   }
   if (value.command === 'rdp.launch' && exactKeys(payload, ['host', 'port']) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
-      canonicalizeRemoteEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
+      canonicalizeRdpEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as LaunchRdpViewerRequest };
   }
   if ((value.command === 'ssh.host.approve' || value.command === 'ssh.host.reject') && exactKeys(payload, ['token']) &&

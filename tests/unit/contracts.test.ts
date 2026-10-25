@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
+import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
+  parseRdpLaunchGestureRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { MAX_STARTUP_GREETING_CODE_POINTS } from '../../packages/domain/src/workbench-preferences.ts';
 
@@ -264,6 +265,12 @@ test('RDP IPC validates the external viewer target and its launch-requested resu
       provider: 'external', endpoint: { host: 'desktop.example.com', port: 3389 }, state: 'launch-requested', password: 'secret'
     } }, parsed.result), false);
   }
+});
+
+test('RDP launch gesture channel accepts only canonicalizable endpoint fields', () => {
+  assert.deepEqual(parseRdpLaunchGestureRequest({ host: 'Desktop.Example.com.', port: 3389 }), { host: 'desktop.example.com', port: 3389 });
+  assert.equal(parseRdpLaunchGestureRequest({ host: 'desktop.example.com', port: 70000 }), undefined);
+  assert.equal(parseRdpLaunchGestureRequest({ host: 'desktop.example.com', port: 3389, password: 'secret' }), undefined);
 });
 
 test('tunnel IPC accepts named loopback forwards and matches replies to the requested definition', () => {

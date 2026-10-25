@@ -45,6 +45,7 @@ export interface CommandActions {
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
+  readonly authorizeRdpLaunch: (host: string, port: number) => boolean;
   readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly selectFtpUploadFile: () => Promise<FtpUploadSelection | undefined>;
   readonly selectFtpDownloadPath: (fileName: string) => Promise<string | undefined>;
@@ -265,7 +266,11 @@ export async function dispatchCommand(
         return { requestId, ...await actions.ftpFiles.cancelTransfer(sessionId, operationId) };
       }
       case 'ftp.close': return { requestId, ...await actions.ftpFiles.close(parsed.result.payload.sessionId) };
-      case 'rdp.launch': return { requestId, ...await actions.rdpViewer.launch(parsed.result.payload.host, parsed.result.payload.port, actions.cancellation) };
+      case 'rdp.launch': {
+        const { host, port } = parsed.result.payload;
+        if (!actions.authorizeRdpLaunch(host, port)) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.rdpViewer.launch(host, port, actions.cancellation) };
+      }
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
       case 'session.favorite': return { requestId, ...await actions.sessionCatalog.setFavorite(parsed.result.payload.id, parsed.result.payload.favorite, actions.cancellation) };

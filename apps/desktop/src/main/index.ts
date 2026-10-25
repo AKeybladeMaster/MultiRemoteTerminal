@@ -18,8 +18,9 @@ import type { SshTerminalController } from '../../../../packages/application/src
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
+  SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -357,6 +358,7 @@ function boot(): void {
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
         authorizeTelnetConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
         authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
+        authorizeRdpLaunch: (host, port) => rendererGestures.consumeRdpLaunch(event.sender.id, host, port),
         async confirmMultilinePaste() {
           const options: Electron.MessageBoxOptions = {
             type: 'warning', title: 'Confirm multiline paste',
@@ -508,6 +510,16 @@ function boot(): void {
     rendererGestures.issue(event.sender.id, sessionId, 'ftp-plaintext-consent');
     return true;
   });
+  ipcMain.handle(RDP_LAUNCH_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const endpoint = parseRdpLaunchGestureRequest(input);
+    if (!endpoint) return false;
+    rendererGestures.issueRdpLaunch(event.sender.id, endpoint.host, endpoint.port);
+    return true;
+  });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -529,6 +541,7 @@ function boot(): void {
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
     ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(FTP_CONSENT_GESTURE_CHANNEL);
+    ipcMain.removeHandler(RDP_LAUNCH_GESTURE_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

@@ -19,6 +19,7 @@ export function RdpConnectDialog({ dialogRef, initialHost, initialPort, savedPro
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const firstInput = useRef<HTMLInputElement>(null);
+  const profileNameInput = useRef<HTMLInputElement>(null);
 
   function validatedEndpoint(): { readonly host: string; readonly port: number } | undefined {
     const parsedPort = Number(port);
@@ -46,6 +47,7 @@ export function RdpConnectDialog({ dialogRef, initialHost, initialPort, savedPro
     const profileName = name.trim();
     if (!profileName || profileName.length > 256 || /[\u0000-\u001f\u007f]/.test(profileName)) {
       setError('Enter a profile name up to 256 characters.');
+      profileNameInput.current?.focus();
       return;
     }
     setBusy(true);
@@ -68,20 +70,20 @@ export function RdpConnectDialog({ dialogRef, initialHost, initialPort, savedPro
       <form onSubmit={event => { event.preventDefault(); void launch(); }}>
         <label htmlFor="rdp-host">Host name or IP address</label>
         <input ref={firstInput} id="rdp-host" name="host" type="text" autoComplete="off" spellCheck={false}
-          placeholder="server.example.com" disabled={busy} value={host} onChange={event => setHost(event.target.value)} />
+          placeholder="server.example.com…" disabled={busy} value={host} onChange={event => setHost(event.target.value)} />
         <label htmlFor="rdp-port">Port</label>
         <input id="rdp-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
           disabled={busy} value={port} onChange={event => setPort(event.target.value)} />
         {!savedProfileName && <>
           <label htmlFor="rdp-profile-name">Saved profile name</label>
-          <input id="rdp-profile-name" name="profileName" type="text" autoComplete="off" maxLength={256}
+          <input ref={profileNameInput} id="rdp-profile-name" name="profileName" type="text" autoComplete="off" maxLength={256}
             disabled={busy} value={name} onChange={event => setName(event.target.value)} />
         </>}
         {error && <p className="dialog-error" role="alert">{error}</p>}
         <div className="ssh-connect-actions">
           <button type="button" disabled={busy} onClick={onClose}>Cancel</button>
           {!savedProfileName && <button type="button" disabled={busy} onClick={() => void saveProfile()}>Save profile</button>}
-          <button type="submit" className="ssh-primary" disabled={busy} data-testid="rdp-launch">
+          <button type="submit" className="ssh-primary" disabled={busy} data-mrt-rdp-launch-trigger data-testid="rdp-launch">
             {busy ? 'Starting viewer…' : 'Open Windows Remote Desktop'}
           </button>
         </div>

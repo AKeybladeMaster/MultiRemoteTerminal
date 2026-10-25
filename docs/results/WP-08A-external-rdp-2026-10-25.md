@@ -14,11 +14,11 @@
 
 ## Validation
 
-- `corepack pnpm typecheck` — passed.
-- `corepack pnpm lint` — passed, including import-boundary checks.
-- `corepack pnpm test` — 298 passed, 0 failed.
+- `corepack pnpm typecheck` — passed after the launch-gesture security fix.
+- `corepack pnpm lint` — passed after the launch-gesture security fix, including import-boundary checks.
+- `corepack pnpm test` — 301 passed, 0 failed after the launch-gesture security fix.
 - `corepack pnpm build` — passed on Windows x64, including the native System32 helper build. Vite reports an advisory renderer chunk above 500 kB.
-- Playwright Windows E2E — RDP profile save, reopen after app restart, focus restoration, and external launch disclosure passed. A test-only fake viewer is enabled only with `MRT_E2E=1` and `--mrt-e2e-rdp-viewer`; no actual RDP login was attempted.
+- Playwright Windows E2E — RDP profile save, reopen after app restart, focus restoration, direct bridge-call rejection without a trusted click, and explicit external launch passed. A test-only fake viewer is enabled only with `MRT_E2E=1` and `--mrt-e2e-rdp-viewer`; no actual RDP login was attempted.
 - Adapter unit tests verify the absolute System32 executable path, `/v:` argument, no-shell flags, IPv6 formatting, platform/error mapping, and cancellation cleanup.
 
 ## Limits and security

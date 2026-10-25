@@ -321,10 +321,19 @@ test('preload routes RDP launches through a fixed validated viewer command', asy
     return { requestId: id(), ok: true, result: {
       provider: 'external', endpoint: { host: 'desk.example.com', port: 3389 }, state: 'launch-requested'
     } };
-  }, id);
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => true);
   assert.deepEqual(await bridge.launchRdpViewer('desk.example.com', 3389), { requestId: id(), ok: true, result: {
     provider: 'external', endpoint: { host: 'desk.example.com', port: 3389 }, state: 'launch-requested'
   } });
+});
+
+test('preload blocks direct RDP bridge calls without a fresh trusted submit gesture', async () => {
+  let invoked = false;
+  const bridge = createBridge(async () => { invoked = true; return {}; }, id);
+  const reply = await bridge.launchRdpViewer('desk.example.com', 3389);
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(invoked, false);
 });
 
 test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
