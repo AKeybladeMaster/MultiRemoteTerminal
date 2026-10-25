@@ -35,6 +35,12 @@ On the available Windows 11 x64 workstation:
 
 The first full smoke attempt exposed an `EBUSY` error when Windows briefly held the portable SQLite shared-memory file during teardown. Cleanup now terminates the process tree and retries recursive removal for up to ten seconds; the focused portable test and the complete two-case package smoke passed after that change. A later test enhancement found that a portable workbench may start with an existing terminal, so the smoke now checks the workspace and opens a new shell instead of requiring an empty screen.
 
+## Independent review
+
+The final read-only review of `origin/main..662ca99` found no Critical or Important issues on the requesting, Spec, or Standards passes. It confirmed that P-32's location choice is placement-based, and that Windows 10 plus the N-007 distribution SBOM and signed release plan remain open. An earlier standards pass found that portable initialization needed a static redacted failure event; that event was added and documented.
+
+One non-blocking judgment remains: each worker host repeats `cwd: process.resourcesPath ?? this.appRoot`. It stays inline so each worker's launch options show the packaged working-directory rule directly; extracting a one-line forwarding helper would add indirection without owning additional behavior. An earlier review also noted repeated pnpm command-selection logic in the packaging and smoke scripts. That small duplication remains because the scripts run different task sequences; no shared runner is needed for this slice.
+
 ## Remaining limits
 
 - Only Windows 11 x64 was exercised. Windows 10 acceptance and other supported-machine coverage are absent.
