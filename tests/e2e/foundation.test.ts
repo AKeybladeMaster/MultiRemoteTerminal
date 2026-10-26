@@ -2281,6 +2281,15 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
       await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Active', { timeout: 25_000 });
     };
+    const startSelectedTunnelAndVerifyGatewayRelays = async (): Promise<void> => {
+      const firstGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length;
+      const secondGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length;
+      await startSelectedTunnelThroughGateways();
+      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length)
+        .toBe(firstGatewayRelays + 1);
+      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length)
+        .toBe(secondGatewayRelays + 1);
+    };
     const selectedStatusPort = async (pattern: RegExp): Promise<number> => {
       const endpoint = await tunnelDialog.locator('.tunnel-status-card code').innerText();
       const port = pattern.exec(endpoint)?.[1];
@@ -2290,13 +2299,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const remoteTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
     await expect(remoteTunnelItem).toBeVisible();
     await remoteTunnelItem.click();
-    const gatewayOneRelaysBeforeRemote = fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length;
-    const gatewayTwoRelaysBeforeRemote = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length;
-    await startSelectedTunnelThroughGateways();
-    await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length)
-      .toBe(gatewayOneRelaysBeforeRemote + 1);
-    await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length)
-      .toBe(gatewayTwoRelaysBeforeRemote + 1);
+    await startSelectedTunnelAndVerifyGatewayRelays();
     const remotePort = await selectedStatusPort(/SSH server 127\.0\.0\.1:(\d+)/u);
     expect(remoteBindRequests.at(-1)).toBe('127.0.0.1:0');
     expect(fixtureEvents).toContain(`tunnel-target:remote-bound:${remotePort}`);
@@ -2322,13 +2325,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const dynamicTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(dynamicTunnelName, 'u') });
     await expect(dynamicTunnelItem).toBeVisible();
     await dynamicTunnelItem.click();
-    const gatewayOneRelaysBeforeDynamic = fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length;
-    const gatewayTwoRelaysBeforeDynamic = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length;
-    await startSelectedTunnelThroughGateways();
-    await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length)
-      .toBe(gatewayOneRelaysBeforeDynamic + 1);
-    await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length)
-      .toBe(gatewayTwoRelaysBeforeDynamic + 1);
+    await startSelectedTunnelAndVerifyGatewayRelays();
     const socksPort = await selectedStatusPort(/SOCKS5 proxy 127\.0\.0\.1:(\d+)/u);
     const socksPayload = Buffer.from('two-hop-dynamic-socks-bytes');
     const bytesBeforeSocks = tunneledBytes;
