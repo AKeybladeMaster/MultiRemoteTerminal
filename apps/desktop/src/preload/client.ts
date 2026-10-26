@@ -11,6 +11,7 @@ import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/s
 import type { CredentialVaultStateReply, SessionCredentialPresenceReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSerialTerminalResult } from '../../../../packages/contracts/src/commands.ts';
+import type { LocalTextFileReply, LocalTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
@@ -48,6 +49,7 @@ const SSH_WORKER_OPEN_TIMEOUT_MS = 140_000;
 const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 const SSH_TEXT_FILE_TIMEOUT_MS = 60_000;
+const LOCAL_TEXT_FILE_TIMEOUT_MS = 20_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const SERIAL_OPEN_TIMEOUT_MS = 20_000;
 const SERIAL_LIST_TIMEOUT_MS = 10_000;
@@ -424,6 +426,19 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     cancelSshTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ssh.files.cancel', { sessionId, operationId }), SSH_CANCEL_TIMEOUT_MS);
+    },
+    openLocalTextFile(): Promise<LocalTextFileReply> {
+      return send({ command: 'local-text.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} });
+    },
+    reloadLocalTextFile(selectionId: string): Promise<LocalTextFileReply> {
+      return send({ command: 'local-text.reload', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { selectionId } }, LOCAL_TEXT_FILE_TIMEOUT_MS);
+    },
+    saveLocalTextFile(selectionId: string, content: string, expectedRevision: string): Promise<LocalTextFileSaveReply> {
+      return send({ command: 'local-text.save', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { selectionId, content, expectedRevision } }, LOCAL_TEXT_FILE_TIMEOUT_MS);
+    },
+    closeLocalTextFile(selectionId: string): Promise<TerminalActionReply> {
+      return send({ command: 'local-text.close', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { selectionId } }, LOCAL_TEXT_FILE_TIMEOUT_MS);
     },
     openFtpFiles(sessionId: string, host: string, port: number, secure: boolean): Promise<OpenFtpFilesReply> {
       const id = requestId();

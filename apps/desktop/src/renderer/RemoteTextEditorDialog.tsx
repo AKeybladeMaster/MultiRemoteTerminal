@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { RemoteTextFile } from '../../../../packages/domain/src/remote-text-file.ts';
 import { MAX_REMOTE_TEXT_FILE_BYTES, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import { fileLineEnding, hasMixedLineEndings, lineEndingLabel, textareaContent } from './text-editor-format.ts';
+import { textEditorErrorMessage } from './text-editor-errors.ts';
 
 interface RemoteTextEditorDialogProps {
   readonly open: boolean;
@@ -14,25 +16,6 @@ interface RemoteTextEditorDialogProps {
 
 type Operation = { readonly id: string; readonly kind: 'loading' | 'saving' };
 type CloseIntent = 'close' | 'reload';
-
-function errorMessage(code: string): string {
-  if (code === 'CONFLICT') return 'The remote file changed since it was opened. Your draft is preserved; reload the latest version before saving again.';
-  if (code === 'NOT_SUPPORTED') return 'This file is not valid UTF-8 text. It was not changed.';
-  if (code === 'OUTPUT_LIMIT') return 'This file exceeds the 512 KB editor limit.';
-  if (code === 'NOT_FOUND') return 'The SFTP session or file no longer exists. Reconnect and refresh the folder.';
-  if (code === 'FORBIDDEN') return 'The server denied access. Check the file permissions.';
-  if (code === 'TIMEOUT') return 'The request timed out and may have reached the server. Reload the file to check its current contents before retrying.';
-  if (code === 'CANCELLED') return 'The request was cancelled.';
-  return 'The remote text file could not be saved or loaded. Check the SFTP connection and permissions.';
-}
-
-function textareaContent(content: string): string {
-  return content.replace(/\r\n|\r/g, '\n');
-}
-
-function fileLineEnding(content: string): string {
-  return content.match(/\r\n|\r|\n/)?.[0] ?? '\n';
-}
 
 export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, onSaved, onActivityChange }: RemoteTextEditorDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -93,7 +76,7 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
     phaseRef.current = undefined;
     setCancelling(false);
     if (!reply.ok) {
-      setError(errorMessage(reply.error.code));
+      setError(textEditorErrorMessage(reply.error.code, 'remote'));
       return;
     }
     setFile(reply.result);
@@ -145,7 +128,7 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
     phaseRef.current = undefined;
     setCancelling(false);
     if (!reply.ok) {
-      setError(errorMessage(reply.error.code));
+      setError(textEditorErrorMessage(reply.error.code, 'remote'));
       return;
     }
     setFile({ path: remotePath, content, revision: reply.result.revision, bytes: reply.result.bytesSaved });
@@ -199,6 +182,9 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
     <p id={`${contentId}-hint`} className="remote-text-editor-hint">
       {bytes === undefined ? 'This file contains unsupported characters or exceeds 512 KB.' : `${bytes.toLocaleString()} of ${MAX_REMOTE_TEXT_FILE_BYTES.toLocaleString()} bytes · UTF-8`}
     </p>
+    {file && hasMixedLineEndings(file.content) && <p className="remote-text-editor-hint" role="note">
+      Mixed line endings will be normalized to {lineEndingLabel(lineEnding)} when you save.
+    </p>}
     <footer className="remote-text-editor-actions">
       {busy && phase !== 'committing' && <button type="button" disabled={cancelling} onClick={() => operationRef.current && cancelOperation(operationRef.current)}>
         {cancelling ? 'Cancelling…' : 'Cancel request'}</button>}

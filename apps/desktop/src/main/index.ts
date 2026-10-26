@@ -40,9 +40,11 @@ import { createFtpFilesController } from '../../../../packages/application/src/f
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import { createRdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import { createVncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
+import { createLocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
 import { FtpFilesWorkerHost } from '../adapters/ftp-files-worker-host.ts';
 import { WindowsRdpViewer } from '../adapters/windows-rdp-viewer.ts';
 import { WindowsVncViewer } from '../adapters/windows-vnc-viewer.ts';
+import { LocalTextFilesWorkerHost } from '../adapters/local-text-files-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
@@ -329,11 +331,29 @@ function boot(): void {
       env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env)
     })
   ), credentialPrompt);
+  const localTextFilesWorker = new LocalTextFilesWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/local-text-worker.js'), app.getAppPath(),
+    (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
+  );
+  const localTextEditor = createLocalTextEditorController(localTextFilesWorker, async () => {
+    const e2ePath = e2eLocalTextFilePath();
+    if (e2ePath) return { absolutePath: e2ePath, fileName: basename(e2ePath) };
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose a local text file', buttonLabel: 'Edit', properties: ['openFile']
+    };
+    const currentWindow = window;
+    const result = currentWindow && !currentWindow.isDestroyed()
+      ? await dialog.showOpenDialog(currentWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    const absolutePath = result.filePaths[0];
+    return { absolutePath, fileName: basename(absolutePath) };
+  }, randomUUID);
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = tunnels.closeAll().then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll()]))
+      shutdownPromise = tunnels.closeAll().then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll(), localTextEditor.closeAll()]))
         .then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
@@ -394,12 +414,13 @@ function boot(): void {
     const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' ||
       parsed.result.command === 'ssh.files.read-text' || parsed.result.command === 'ssh.files.write-text') &&
       owned && mainFrame && isAppDocument(frameUrl);
+    const localTextRequest = parsed.ok && parsed.result.command.startsWith('local-text.') && owned && mainFrame && isAppDocument(frameUrl);
     const pasteRequest = parsed.ok && (parsed.result.command === 'terminal.paste' || parsed.result.command === 'ssh.paste' || parsed.result.command === 'telnet.paste' || parsed.result.command === 'serial.paste') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const fileListRequest = parsed.ok && (parsed.result.command === 'ssh.files.list' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
-    const trackedRequestId = (catalogRequest || transferRequest || sshTransferRequest) && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
-    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest || sshTransferRequest;
+    const trackedRequestId = (catalogRequest || transferRequest || sshTransferRequest || localTextRequest) && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
+    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest || sshTransferRequest || localTextRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,
@@ -524,7 +545,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, sessionCatalog, sessionCredentials, macros, preferences, tunnels, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros, preferences, tunnels, cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
@@ -602,7 +623,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose()]))
+    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
@@ -639,6 +660,12 @@ function safeFtpDownloadName(value: string): string {
 function e2eTransferPath(prefix: string, testModeFlag: string): string | undefined {
   if (!isE2ETestHookEnabled(testModeFlag, app.isPackaged, process.env, process.argv)) return undefined;
   const value = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length);
+  return value && resolve(value) === value ? value : undefined;
+}
+
+function e2eLocalTextFilePath(): string | undefined {
+  if (!isE2ETestHookEnabled('--mrt-e2e-local-text-editor', app.isPackaged, process.env, process.argv)) return undefined;
+  const value = process.argv.find(argument => argument.startsWith('--mrt-e2e-local-text-file='))?.slice('--mrt-e2e-local-text-file='.length);
   return value && resolve(value) === value ? value : undefined;
 }
 

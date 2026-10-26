@@ -35,6 +35,7 @@ import type { WorkbenchPreferences } from '../../../../packages/domain/src/workb
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
+import type { LocalTextFile } from '../../../../packages/domain/src/local-text-file.ts';
 import type { SshTunnelDraft } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { TerminalPane } from './TerminalPane.tsx';
 import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, VirtualizedList } from './VirtualizedList.tsx';
@@ -47,6 +48,8 @@ import { HelpDialog } from './HelpDialog.tsx';
 import { SettingsDialog } from './SettingsDialog.tsx';
 import { RdpConnectDialog } from './RdpConnectDialog.tsx';
 import { VncConnectDialog } from './VncConnectDialog.tsx';
+import { LocalTextEditorDialog } from './LocalTextEditorDialog.tsx';
+import { textEditorErrorMessage } from './text-editor-errors.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
@@ -302,6 +305,9 @@ function Workbench() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [localTextEditorOpen, setLocalTextEditorOpen] = useState(false);
+  const [localTextEditorOpening, setLocalTextEditorOpening] = useState(false);
+  const [localTextFile, setLocalTextFile] = useState<LocalTextFile>();
   const [startupGreeting, setStartupGreeting] = useState('');
   const [startupGreetingVisible, setStartupGreetingVisible] = useState(false);
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
@@ -469,6 +475,9 @@ function Workbench() {
   const paletteReturnFocus = useRef<HTMLElement | null>(null);
   const helpReturnFocus = useRef<HTMLElement | null>(null);
   const settingsReturnFocus = useRef<HTMLElement | null>(null);
+  const localTextEditorTrigger = useRef<HTMLButtonElement>(null);
+  const localTextEditorReturnFocus = useRef<HTMLElement | null>(null);
+  const localTextFileRef = useRef<LocalTextFile | undefined>(undefined);
   const sshConnectDialog = useRef<HTMLElement>(null);
   const sshHostInput = useRef<HTMLInputElement>(null);
   const sshPortInput = useRef<HTMLInputElement>(null);
@@ -1173,6 +1182,42 @@ function Workbench() {
   }, [paletteOpen]);
 
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+
+  const openLocalTextEditor = useCallback(async () => {
+    if (localTextEditorOpening || localTextEditorOpen) return;
+    localTextEditorReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setLocalTextEditorOpening(true);
+    setAlert(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.openLocalTextFile();
+      if (!reply.ok) {
+        if (reply.error.code !== 'CANCELLED') setAlert(textEditorErrorMessage(reply.error.code, 'local'));
+        return;
+      }
+      localTextFileRef.current = reply.result;
+      setLocalTextFile(reply.result);
+      setLocalTextEditorOpen(true);
+    } catch {
+      setAlert('The selected local file could not be opened.');
+    } finally { setLocalTextEditorOpening(false); }
+  }, [localTextEditorOpen, localTextEditorOpening]);
+
+  const closeLocalTextEditor = useCallback(() => {
+    setLocalTextEditorOpen(false);
+    const file = localTextFileRef.current;
+    localTextFileRef.current = undefined;
+    setLocalTextFile(undefined);
+    if (file) void window.multiRemoteTerminal.closeLocalTextFile(file.selectionId);
+    const target = localTextEditorReturnFocus.current ?? localTextEditorTrigger.current;
+    localTextEditorReturnFocus.current = null;
+    requestAnimationFrame(() => target?.focus());
+  }, []);
+
+  useEffect(() => () => {
+    const file = localTextFileRef.current;
+    localTextFileRef.current = undefined;
+    if (file) void window.multiRemoteTerminal.closeLocalTextFile(file.selectionId);
+  }, []);
 
   const applyWorkbenchPreferences = useCallback((preferences: WorkbenchPreferences) => {
     setStartupGreeting(preferences.startupGreeting);
@@ -2770,6 +2815,9 @@ function Workbench() {
       <span className="wordmark" translate="no">MultiRemoteTerminal</span>
       <div className="header-actions">
         <span className="build-label">Local and remote sessions</span>
+        <button ref={localTextEditorTrigger} className="quiet-button" type="button" aria-haspopup="dialog"
+          disabled={localTextEditorOpening || localTextEditorOpen} onClick={() => void openLocalTextEditor()}>
+          {localTextEditorOpening ? 'Opening file…' : 'Edit local file'}</button>
         <button className="quiet-button" type="button" aria-haspopup="dialog" onClick={openSettings}>Settings</button>
         <button className="quiet-button" type="button" aria-haspopup="dialog" onClick={openHelp}>Help</button>
         <button className="quiet-button" type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={toggleTheme}>
@@ -2952,6 +3000,7 @@ function Workbench() {
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
     {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences} />}
+    <LocalTextEditorDialog open={localTextEditorOpen} file={localTextFile} onClose={closeLocalTextEditor} />
     <footer className="status-bar">
       <div className="terminal-status">
         <span className={`state-dot ${active?.state ?? 'idle'}`} />

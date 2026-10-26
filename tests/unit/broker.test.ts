@@ -54,6 +54,11 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async launch(host, port) { return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } }; }
   }, vncViewer: {
     async launch(host, port) { return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } }; }
+  }, localTextEditor: {
+    async open() { return { ok: true, result: { selectionId: '22222222-2222-4222-8222-222222222222', fileName: 'local.txt', content: '', revision: 'a'.repeat(64), bytes: 0 } }; },
+    async reload(selectionId) { return { ok: true, result: { selectionId, fileName: 'local.txt', content: '', revision: 'a'.repeat(64), bytes: 0 } }; },
+    async save() { return { ok: true, result: { revision: 'b'.repeat(64), bytesSaved: 0 } }; },
+    close() { return { ok: true as const, result: {} as Record<string, never> }; }
   }, sessionCatalog: {
     list: async () => ({ ok: true, result: [] }),
     count: async () => ({ ok: true, result: 0 }),
@@ -465,6 +470,39 @@ test('SFTP text editor broker forwards the exact path, revision, cancellation, a
     { kind: 'save', id: sessionId, op: operationId, path: remotePath, text: content, expectedRevision: revision, signal: cancellation }
   ]);
   assert.equal(progress.length, 2);
+});
+
+test('local text editor broker exposes an opaque selection and typed save only', async () => {
+  const selectionId = '22222222-2222-4222-8222-222222222222';
+  const selectedPath = 'C:\\private\\settings.txt';
+  const calls: unknown[] = [];
+  const base = actions();
+  const withLocalEditor: CommandActions = { ...base, localTextEditor: {
+    async open(signal) {
+      calls.push({ kind: 'open', signal });
+      return { ok: true, result: { selectionId, fileName: 'settings.txt', content: 'name=old', revision: 'a'.repeat(64), bytes: 8 } };
+    },
+    async reload(id, signal) {
+      calls.push({ kind: 'reload', id, signal });
+      return { ok: true, result: { selectionId: id, fileName: 'settings.txt', content: 'name=old', revision: 'a'.repeat(64), bytes: 8 } };
+    },
+    async save(id, content, expectedRevision, signal) {
+      calls.push({ kind: 'save', id, content, expectedRevision, signal });
+      return { ok: true, result: { revision: 'b'.repeat(64), bytesSaved: Buffer.byteLength(content) } };
+    },
+    close(id) { calls.push({ kind: 'close', id }); return { ok: true, result: {} }; }
+  } };
+  const opened = await dispatchCommand(owner, { command: 'local-text.open', requestId: request.requestId, contractVersion: 1, payload: {} }, withLocalEditor, () => {});
+  assert.deepEqual(opened, { requestId: request.requestId, ok: true,
+    result: { selectionId, fileName: 'settings.txt', content: 'name=old', revision: 'a'.repeat(64), bytes: 8 } });
+  assert.equal(JSON.stringify(opened).includes(selectedPath), false);
+  const saved = await dispatchCommand(owner, { command: 'local-text.save', requestId: request.requestId, contractVersion: 1,
+    payload: { selectionId, content: 'name=new', expectedRevision: 'a'.repeat(64) } }, withLocalEditor, () => {});
+  assert.deepEqual(saved, { requestId: request.requestId, ok: true, result: { revision: 'b'.repeat(64), bytesSaved: 8 } });
+  assert.deepEqual(calls.slice(0, 2), [
+    { kind: 'open', signal: undefined },
+    { kind: 'save', id: selectionId, content: 'name=new', expectedRevision: 'a'.repeat(64), signal: undefined }
+  ]);
 });
 
 test('saved-session IPC dispatches only validated catalog operations', async () => {

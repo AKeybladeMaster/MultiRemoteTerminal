@@ -7,6 +7,7 @@ import type { SerialConfiguration, SerialPortInfo } from '../../domain/src/seria
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../application/src/local-terminals.ts';
 import type { RdpLaunchResult } from '../../application/src/rdp-viewer.ts';
 import type { VncLaunchResult } from '../../application/src/vnc-viewer.ts';
+import type { LocalTextFile, LocalTextFileSaveResult } from '../../domain/src/local-text-file.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
 import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
 import type { SerialTerminalSession } from '../../application/src/serial-terminals.ts';
@@ -32,6 +33,7 @@ import { isFileTransferProgress, isFileTransferResult } from '../../domain/src/f
 import type { FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
 import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../domain/src/remote-text-file.ts';
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../domain/src/remote-text-file.ts';
+import { isLocalTextFile, isLocalTextFileSaveResult, isLocalTextSelectionId } from '../../domain/src/local-text-file.ts';
 import { isSshTunnelDefinition, isTunnelId, isTunnelRunStatus, normalizeSshTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
 import type { SshTunnelDefinition, SshTunnelDraft, TunnelRunStatus } from '../../domain/src/ssh-tunnel.ts';
 import { isSshGatewayProfileIds } from '../../domain/src/ssh-route.ts';
@@ -121,6 +123,10 @@ export type ReadSshTextFileRequest = Request<'ssh.files.read-text', { readonly s
 export type SaveSshTextFileRequest = Request<'ssh.files.write-text', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string;
   readonly content: string; readonly expectedRevision: string }>;
 export type CancelSshTransferRequest = Request<'ssh.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
+export type OpenLocalTextFileRequest = Request<'local-text.open', Record<string, never>>;
+export type ReloadLocalTextFileRequest = Request<'local-text.reload', { readonly selectionId: string }>;
+export type SaveLocalTextFileRequest = Request<'local-text.save', { readonly selectionId: string; readonly content: string; readonly expectedRevision: string }>;
+export type CloseLocalTextFileRequest = Request<'local-text.close', { readonly selectionId: string }>;
 export type OpenFtpFilesRequest = Request<'ftp.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly secure: boolean }>;
 export type ListFtpDirectoryRequest = Request<'ftp.files.list', { readonly sessionId: string; readonly path: string }>;
 export type UploadFtpFileRequest = Request<'ftp.files.upload', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string }>;
@@ -171,6 +177,7 @@ export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { read
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
+  OpenLocalTextFileRequest | ReloadLocalTextFileRequest | SaveLocalTextFileRequest | CloseLocalTextFileRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   ListSerialPortsRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
@@ -199,6 +206,8 @@ export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type SshTransferReply = CommandReply<FileTransferResult>;
 export type SshTextFileReply = CommandReply<RemoteTextFile>;
 export type SshTextFileSaveReply = CommandReply<RemoteTextFileSaveResult>;
+export type LocalTextFileReply = CommandReply<LocalTextFile>;
+export type LocalTextFileSaveReply = CommandReply<LocalTextFileSaveResult>;
 export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type FtpTransferReply = CommandReply<FtpTransferResult>;
@@ -265,6 +274,10 @@ export interface DesktopBridge {
   readSshTextFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTextFileReply>;
   saveSshTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string): Promise<SshTextFileSaveReply>;
   cancelSshTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
+  openLocalTextFile(): Promise<LocalTextFileReply>;
+  reloadLocalTextFile(selectionId: string): Promise<LocalTextFileReply>;
+  saveLocalTextFile(selectionId: string, content: string, expectedRevision: string): Promise<LocalTextFileSaveReply>;
+  closeLocalTextFile(selectionId: string): Promise<TerminalActionReply>;
   openFtpFiles(sessionId: string, host: string, port: number, secure: boolean): Promise<OpenFtpFilesReply>;
   listFtpDirectory(sessionId: string, path: string): Promise<ListFtpDirectoryReply>;
   uploadFtpFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<FtpTransferReply>;
@@ -505,6 +518,16 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId)) {
     return { ok: true, result: value as unknown as CancelSshTransferRequest };
   }
+  if (value.command === 'local-text.open' && exactKeys(payload, [])) return { ok: true, result: value as unknown as OpenLocalTextFileRequest };
+  if ((value.command === 'local-text.reload' || value.command === 'local-text.close') && exactKeys(payload, ['selectionId']) &&
+      isLocalTextSelectionId(payload.selectionId)) {
+    return { ok: true, result: value as unknown as ReloadLocalTextFileRequest | CloseLocalTextFileRequest };
+  }
+  if (value.command === 'local-text.save' && exactKeys(payload, ['selectionId', 'content', 'expectedRevision']) &&
+      isLocalTextSelectionId(payload.selectionId) && typeof payload.content === 'string' && remoteTextByteLength(payload.content) !== undefined &&
+      isRemoteTextRevision(payload.expectedRevision)) {
+    return { ok: true, result: value as unknown as SaveLocalTextFileRequest };
+  }
   if (value.command === 'session.list' && exactKeys(payload, ['query']) && normalizeSessionSearch(payload.query) !== undefined) {
     return { ok: true, result: value as unknown as ListSessionsRequest };
   }
@@ -581,6 +604,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel',
+    'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'serial.ports.list', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
@@ -673,6 +697,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ssh.files.read-text') return isRemoteTextFile(value.result) && value.result.path === request.payload.remotePath;
     if (request.command === 'ssh.files.write-text') return isRemoteTextFileSaveResult(value.result) && value.result.path === request.payload.remotePath &&
       value.result.bytesSaved === remoteTextByteLength(request.payload.content);
+    if (request.command === 'local-text.open' || request.command === 'local-text.reload') return isLocalTextFile(value.result);
+    if (request.command === 'local-text.save') return isLocalTextFileSaveResult(value.result) &&
+      value.result.bytesSaved === remoteTextByteLength(request.payload.content);
+    if (request.command === 'local-text.close') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'ftp.open') return validFtpOpenResult(value.result, request);
     if (request.command === 'ftp.files.list') return isFtpDirectoryListing(value.result);
     if (request.command === 'ftp.files.upload') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
