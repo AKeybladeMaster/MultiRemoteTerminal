@@ -2227,6 +2227,13 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await page.getByTestId('tunnel-manager-open').click();
     const tunnelDialog = page.getByRole('dialog', { name: 'Port forwarding' });
     await expect(tunnelDialog.getByRole('button', { name: 'Start tunnel' })).toBeVisible();
+    const stopSelectedTunnelAndVerifySharedCleanup = async (): Promise<void> => {
+      await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
+      await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
+      await expect.poll(() => clients.size).toBe(0);
+      await waitForRelayCleanup();
+      await expect.poll(() => tunneledSockets.size).toBe(0);
+    };
     await tunnelDialog.getByRole('button', { name: 'Start through gateways' }).click();
     await tunnelDialog.getByLabel('SSH gateway 1').selectOption(profileIds[4]!);
     await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
@@ -2266,11 +2273,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     expect(echoed).toEqual(expectedEcho);
     expect(tunneledBytes).toBe(payload.byteLength);
     expect(fixtureEvents).toContain('target:tunnel-forward');
-    await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
-    await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
-    await expect.poll(() => clients.size).toBe(0);
-    await expect.poll(() => relaySockets.size).toBe(0);
-    await expect.poll(() => tunneledSockets.size).toBe(0);
+    await stopSelectedTunnelAndVerifySharedCleanup();
     expectExactTunnelRequestBytes(requestBytesBeforeLocal, payload);
     expect(await localPortRefusesConnections(tunnelPort)).toBe(true);
 
@@ -2312,11 +2315,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect.poll(() => remoteSockets.size).toBe(0);
     expect(fixtureEvents).toContain(`target:tunnel-forward`);
     expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
-    await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
-    await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
-    await expect.poll(() => clients.size).toBe(0);
-    await waitForRelayCleanup();
-    await expect.poll(() => tunneledSockets.size).toBe(0);
+    await stopSelectedTunnelAndVerifySharedCleanup();
     expectExactTunnelRequestBytes(requestBytesBeforeRemote, remotePayload);
     expect([...remoteBindings.values()].some(bindings => bindings.has(remotePort))).toBe(false);
     expect(fixtureEvents).toContain(`tunnel-target:remote-unbound:${remotePort}`);
@@ -2335,11 +2334,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     expect(tunneledBytes - bytesBeforeSocks).toBe(socksPayload.byteLength);
     expect(fixtureEvents).toContain('tunnel-target:dynamic-destination');
     expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
-    await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
-    await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
-    await expect.poll(() => clients.size).toBe(0);
-    await waitForRelayCleanup();
-    await expect.poll(() => tunneledSockets.size).toBe(0);
+    await stopSelectedTunnelAndVerifySharedCleanup();
     expectExactTunnelRequestBytes(requestBytesBeforeSocks, socksPayload);
     expect(await localPortRefusesConnections(socksPort)).toBe(true);
   } finally {
