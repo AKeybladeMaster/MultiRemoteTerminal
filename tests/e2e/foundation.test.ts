@@ -729,6 +729,7 @@ test('SSH private-key mode selects the key in main and authenticates a trusted l
 test('SSH agent mode signs through a Windows named pipe and authenticates a trusted loopback terminal', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-agent-e2e-'));
+  const remoteRoot = join(profile, 'remote-files');
   const agentPipePath = String.raw`\\.\pipe\mrt-ssh-agent-${randomUUID()}`;
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
@@ -743,6 +744,8 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
   const agentSockets = new Set<Socket>();
   let identityRequests = 0;
   let signRequests = 0;
+  let shellRequests = 0;
+  let sftpRequests = 0;
   const agentServer = createServer(socket => {
     agentSockets.add(socket);
     socket.once('close', () => agentSockets.delete(socket));
@@ -781,7 +784,14 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
       client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
         const session = acceptSession();
         session.on('pty', (accept: () => void) => accept());
-        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SSH-AGENT-READY\r\n'));
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          shellRequests += 1;
+          acceptShell().write('MRT-SSH-AGENT-READY\r\n');
+        });
+        session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
+          sftpRequests += 1;
+          startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp);
+        });
       });
     });
   });
@@ -789,6 +799,8 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
   let agentListening = false;
   let sshListening = false;
   try {
+    await mkdir(remoteRoot);
+    await writeFile(join(remoteRoot, 'agent-sftp.txt'), 'agent-authenticated SFTP payload');
     await new Promise<void>((resolveListen, rejectListen) => {
       agentServer.once('error', rejectListen);
       agentServer.listen(agentPipePath, () => { agentListening = true; resolveListen(); });
@@ -824,6 +836,25 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
     expect(identityRequests).toBeGreaterThan(0);
     expect(signRequests).toBeGreaterThan(0);
     expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(1);
+
+    const signRequestsBeforeSftp = signRequests;
+    const sftpRequestsBeforeStandalone = sftpRequests;
+    await page.getByRole('button', { name: 'Connect to SFTP files', exact: true }).first().click();
+    const sftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await sftpDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await sftpDialog.getByLabel('Port').fill(String(address.port));
+    await sftpDialog.getByLabel('Authentication method').selectOption('agent');
+    await sftpDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const sftpTab = page.getByRole('tab').filter({ hasText: /SFTP/ }).first();
+    await expect(sftpTab).toBeVisible({ timeout: 20_000 });
+    const sftpPanelId = await sftpTab.getAttribute('aria-controls');
+    if (!sftpPanelId) throw new Error('Missing standalone SFTP agent panel');
+    await expect(page.locator(`#${sftpPanelId}`).getByTestId('remote-file-browser').getByText('agent-sftp.txt', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(sftpRequests).toBeGreaterThan(sftpRequestsBeforeStandalone);
+    expect(shellRequests).toBe(1);
+    expect(signRequests).toBeGreaterThan(signRequestsBeforeSftp);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(2);
     const bodyText = await page.locator('body').innerText();
     expect(bodyText).not.toContain(agentPipePath);
     expect(bodyText).not.toContain(agentKeyPair.private);
