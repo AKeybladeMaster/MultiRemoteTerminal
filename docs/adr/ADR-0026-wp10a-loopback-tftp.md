@@ -22,4 +22,4 @@ The server is unauthenticated and intentionally exposes every permitted top-leve
 
 ## Verification
 
-See [WP-10A results](../results/WP-10A-loopback-tftp-2026-10-26.md). Static checks, focused unit tests, exact-byte transfer, runtime WRQ/traversal rejection, active-transfer stop and service cleanup pass; broader interoperability, machine-to-machine exposure/isolation and >360-second lifetime remain open.
+See [WP-10A results](../results/WP-10A-loopback-tftp-2026-10-26.md). Static checks, focused unit tests, exact-byte transfer, runtime WRQ/traversal and oversized-file rejection, eight-request admission bound, loopback transfer-ID checks, active-transfer stop and service cleanup pass. Runtime symlink rejection remains unverified because the current Windows account cannot create a symlink; broader interoperability, machine-to-machine exposure/isolation, NFS/Cron/helper daemons and >360-second lifetime also remain open.
