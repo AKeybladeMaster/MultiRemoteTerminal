@@ -14,7 +14,6 @@ The review follow-up keeps the Windows pipe endpoint out of the application auth
 - The same E2E then opens a standalone SFTP files-only session using the agent, lists a fixture file, observes another signed authentication request, and confirms no additional shell request was made. This covers the agent authentication route through the UI, main broker, controller, worker and SFTP subsystem.
 - The E2E fixture accepts the matching unsigned public-key probe before verifying the subsequent signed request. Its first run incorrectly rejected the probe; after aligning the fixture with SSH public-key authentication, the red-capable E2E passed.
 - The Windows OpenSSH Authentication Agent service on this machine is stopped and disabled; `SSH_AUTH_SOCK` is unset. The service was left unchanged. The mock-agent test does not prove interoperability with that real service or satisfy the disposable OpenSSH fixture requirement.
-- Standalone SFTP private-key auth is covered by the broker/controller/worker path but has no E2E evidence.
 
 ## Validation
 
@@ -28,7 +27,7 @@ The review follow-up keeps the Windows pipe endpoint out of the application auth
 
 ## Status and limitations
 
-P-03/F-003 remains PARTIAL. The actual Windows OpenSSH agent service, a disposable OpenSSH server, standalone SFTP private-key authentication, packaged native credential prompting, agent authentication through gateway routes, and broader interoperability remain unverified. Do not treat the same-library mock fixture as OpenSSH acceptance.
+P-03/F-003 remains PARTIAL. The actual Windows OpenSSH agent service, a disposable OpenSSH server, packaged native credential prompting, agent authentication through gateway routes, and broader interoperability remain unverified. The separate [WP-02A evidence](WP-02A-ssh-private-key-auth-2026-10-26.md) covers private-key authentication for standalone SFTP. Do not treat the same-library mock fixture as OpenSSH acceptance.
 
 ## Review results
 
