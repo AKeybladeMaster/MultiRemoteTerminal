@@ -1,5 +1,6 @@
 import type { Client, ClientChannel, ConnectConfig, VerifyCallback } from 'ssh2';
 import type { FileEntryWithStats, SFTPWrapper } from 'ssh2';
+import { createHash } from 'node:crypto';
 import { connect as connectTcp, createServer, isIP } from 'node:net';
 import type { Server, Socket } from 'node:net';
 import { posix } from 'node:path';
@@ -9,6 +10,7 @@ import { SshTerminalProviderError } from '../../../../packages/application/src/s
 import type { SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
+import { awaitWithCancellation } from '../../../../packages/application/src/cancellation.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -123,6 +125,9 @@ interface RuntimeSession {
   readonly remoteForwards: Map<string, RemoteForwardRuntime>;
   sftpBusy: boolean;
   sftpOpenAttempt: PendingSftpOpen | undefined;
+  sftpRecoveryCheckedChannel: SftpChannel | undefined;
+  fileRecoveryScope: string | undefined;
+  pendingUploadSettlement: Promise<void> | undefined;
   opening: boolean;
   closing: boolean;
   terminalEventSent: boolean;
@@ -146,6 +151,7 @@ export function createSshTransportProvider(
   connectToDestination: (port: number, host: string) => Socket = connectTcp,
 ): SshTransportProvider {
   const sessions = new Map<string, RuntimeSession>();
+  const disconnectedUploadsByScope = new Map<string, Set<Promise<void>>>();
   const fileTransfers = createSftpFileTransfers();
 
   function closeSftpChannel(session: RuntimeSession, channel = session.sftp): Promise<void> {
@@ -397,6 +403,17 @@ export function createSshTransportProvider(
     if (session.closing) return;
     session.closing = true;
     sessions.delete(session.sessionId);
+    const recoveryScope = session.fileRecoveryScope;
+    const pendingUpload = session.pendingUploadSettlement;
+    if (recoveryScope && pendingUpload) {
+      let pending = disconnectedUploadsByScope.get(recoveryScope);
+      if (!pending) { pending = new Set(); disconnectedUploadsByScope.set(recoveryScope, pending); }
+      pending.add(pendingUpload);
+      void pendingUpload.then(() => {
+        pending?.delete(pendingUpload);
+        if (pending?.size === 0) disconnectedUploadsByScope.delete(recoveryScope);
+      });
+    }
     session.sftpOpenAttempt?.cancel(new SshTerminalProviderError('CANCELLED'));
     session.sftpOpenAttempt = undefined;
     session.sftpBusy = false;
@@ -511,6 +528,7 @@ export function createSshTransportProvider(
     const session: RuntimeSession = {
       sessionId, client: firstClient, clients: [firstClient], routeChannels: [], mode, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
       sftp: undefined, localForwards: new Map(), remoteForwards: new Map(), sftpBusy: false, sftpOpenAttempt: undefined,
+      sftpRecoveryCheckedChannel: undefined, fileRecoveryScope: undefined, pendingUploadSettlement: undefined,
       nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
       outputBytesBySequence: new Map(), outputPaused: false, clearPasswords: () => {},
       openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
@@ -518,6 +536,7 @@ export function createSshTransportProvider(
     sessions.set(sessionId, session);
 
     const clientConfigs = new Map<Client, ConnectConfig>();
+    const verifiedHostFingerprints: string[] = [];
     session.clearPasswords = () => {
       for (const [client, config] of clientConfigs) {
         delete config.password;
@@ -542,7 +561,7 @@ export function createSshTransportProvider(
     }
 
     function connectHop(client: Client, hopEndpoint: SshHostEndpoint, hopCredentials: SshTerminalCredentials,
-      socket: ClientChannel | undefined, isDestination: boolean): Promise<void> {
+      socket: ClientChannel | undefined, isDestination: boolean, routeIndex: number): Promise<void> {
       const config: ConnectConfig = {
         host: hopEndpoint.host,
         port: hopEndpoint.port,
@@ -562,6 +581,7 @@ export function createSshTransportProvider(
           void verifyHost(hopEndpoint, evidence).then((accepted: boolean) => {
             const stillAccepted = accepted && !session.closing;
             if (!stillAccepted) session.failureCode ??= 'HOST_KEY_REJECTED';
+            else verifiedHostFingerprints[routeIndex] = evidence.fingerprint;
             callback(stillAccepted);
           }, () => {
             session.failureCode ??= 'UNAVAILABLE';
@@ -669,8 +689,18 @@ export function createSshTransportProvider(
         if (index > 0) session.clients.push(client);
         session.client = client;
         const isDestination = index === route.length - 1;
-        await connectHop(client, hop.endpoint, hop.credentials, socket, isDestination);
+        await connectHop(client, hop.endpoint, hop.credentials, socket, isDestination, index);
         if (!isDestination) socket = await openRouteChannel(client, route[index + 1]!.endpoint);
+      }
+      const recoveryRoute = route.map((hop, index) => {
+        const canonicalEndpoint = canonicalizeRemoteEndpoint(hop.endpoint);
+        const hostFingerprint = verifiedHostFingerprints[index];
+        return canonicalEndpoint && hostFingerprint
+          ? { endpoint: canonicalEndpoint, username: hop.credentials.username, hostFingerprint }
+          : undefined;
+      });
+      if (recoveryRoute.every(hop => hop !== undefined)) {
+        session.fileRecoveryScope = createHash('sha256').update(JSON.stringify(recoveryRoute)).digest('hex');
       }
       finishOpen();
     })().catch(error => {
@@ -791,7 +821,7 @@ export function createSshTransportProvider(
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;
       try {
-        const sftp = await getSftp(session, cancellation);
+        const sftp = await getSftpForSession(session, cancellation);
         if (cancellation?.aborted) {
           await closeSftpChannel(session, sftp);
           throw new SshTerminalProviderError('CANCELLED');
@@ -807,9 +837,14 @@ export function createSshTransportProvider(
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;
       try {
-        const channel = await getSftp(session, cancellation);
+        const channel = await getSftpForSession(session, cancellation);
         if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
-        return await fileTransfers.upload(sessionId, operationId, channel, localPath, remoteDirectory, fileName, conflictPolicy, cancellation, onProgress);
+        const upload = fileTransfers.upload(sessionId, operationId, channel, localPath, remoteDirectory, fileName, conflictPolicy, cancellation,
+          onProgress, session.fileRecoveryScope);
+        const settlement = upload.then(() => undefined, () => undefined);
+        session.pendingUploadSettlement = settlement;
+        try { return await upload; }
+        finally { if (session.pendingUploadSettlement === settlement) session.pendingUploadSettlement = undefined; }
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
     },
 
@@ -820,7 +855,7 @@ export function createSshTransportProvider(
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;
       try {
-        const channel = await getSftp(session, cancellation);
+        const channel = await getSftpForSession(session, cancellation);
         if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
         return await fileTransfers.download(sessionId, operationId, channel, remotePath, localPath, conflictPolicy, cancellation, onProgress);
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
@@ -833,7 +868,7 @@ export function createSshTransportProvider(
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;
       try {
-        const channel = await getSftp(session, cancellation);
+        const channel = await getSftpForSession(session, cancellation);
         if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
         return await fileTransfers.readText(sessionId, operationId, channel, remotePath, cancellation, onProgress);
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
@@ -846,7 +881,7 @@ export function createSshTransportProvider(
       if (session.sftpBusy) throw new SshTerminalProviderError('BUSY');
       session.sftpBusy = true;
       try {
-        const channel = await getSftp(session, cancellation);
+        const channel = await getSftpForSession(session, cancellation);
         if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
         return await fileTransfers.saveText(sessionId, operationId, channel, remotePath, content, expectedRevision, cancellation, onProgress);
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
@@ -1005,6 +1040,20 @@ export function createSshTransportProvider(
         });
       } catch { attempt.cancel(new SshTerminalProviderError('UNAVAILABLE')); }
     });
+  }
+
+  async function getSftpForSession(session: RuntimeSession, cancellation?: CancellationSignal): Promise<SftpChannel> {
+    const channel = await getSftp(session, cancellation);
+    if (session.sftpRecoveryCheckedChannel !== channel) {
+      const pendingUploads = session.fileRecoveryScope ? disconnectedUploadsByScope.get(session.fileRecoveryScope) : undefined;
+      if (pendingUploads?.size) {
+        await awaitWithCancellation(Promise.all([...pendingUploads]).then(() => undefined), cancellation,
+          () => new SshTerminalProviderError('CANCELLED'));
+      }
+      await fileTransfers.cleanupOrphanedUploads(channel, session.fileRecoveryScope, cancellation);
+      session.sftpRecoveryCheckedChannel = channel;
+    }
+    return channel;
   }
 
   async function listSftpDirectory(

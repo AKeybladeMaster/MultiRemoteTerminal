@@ -43,8 +43,11 @@ class FakeSftp extends EventEmitter {
   delayWrites = false;
   writeDelayMs = 20;
   ended = false;
+  hangWriteStreamDestroy = false;
   beforeRename?: (source: string, destination: string) => void;
   renameFailureCode?: number;
+  writeFailureCode?: number;
+  unlinkFailureCode?: number;
 
   lstat(path: string, callback: (error: Error | null, stats: unknown) => void): void {
     const file = this.files.get(path);
@@ -70,12 +73,17 @@ class FakeSftp extends EventEmitter {
     }
     const file: FakeFile = { data: Buffer.alloc(0), kind: 'file', mtime: 1_800_000_000 };
     this.files.set(path, file);
+    const hangDestroy = this.hangWriteStreamDestroy;
     const stream = new Writable({
       write: (chunk: Buffer, _encoding, callback) => {
-        const append = () => { file.data = Buffer.concat([file.data, Buffer.from(chunk)]); callback(); };
+        const append = () => {
+          file.data = Buffer.concat([file.data, Buffer.from(chunk)]);
+          callback(this.writeFailureCode === undefined ? undefined : Object.assign(new Error('SFTP write failed'), { code: this.writeFailureCode }));
+        };
         if (this.delayWrites) setTimeout(append, this.writeDelayMs);
         else append();
-      }
+      },
+      destroy: (error, callback) => { if (!hangDestroy) callback(error); }
     });
     queueMicrotask(() => stream.emit('open', Buffer.from('fake')));
     return stream;
@@ -96,6 +104,10 @@ class FakeSftp extends EventEmitter {
   }
 
   unlink(path: string, callback: (error: Error | null) => void): void {
+    if (this.unlinkFailureCode !== undefined) {
+      callback(Object.assign(new Error('SFTP unlink failed'), { code: this.unlinkFailureCode }));
+      return;
+    }
     if (!this.files.delete(path)) { callback(Object.assign(new Error('Missing file'), { code: 2 })); return; }
     callback(null);
   }
@@ -209,6 +221,75 @@ test('SFTP download uses a staged local target, respects skip collisions, and re
     assert.equal([...sftp.files.keys()].some(path => path.endsWith('.partial')), false);
     const names = await readdir(directory);
     assert.equal(names.some(name => name.startsWith('.mrt-')), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP reconnect removes only an owned orphaned upload stage for the same trusted connection scope', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-upload-recovery-'));
+  const sourcePath = join(directory, 'report.txt');
+  await writeFile(sourcePath, Buffer.alloc(32 * 1024, 9));
+  const recoveryTransfers = createSftpFileTransfers();
+  const disconnected = new FakeSftp();
+  disconnected.writeFailureCode = 4;
+  disconnected.unlinkFailureCode = 4;
+  const recoveryScope = 'trusted-route-account-one';
+  try {
+    await assert.rejects(recoveryTransfers.upload(sessionId, '55555555-5555-4555-8555-555555555555', disconnected as never,
+      sourcePath, '/home', 'report.txt', 'rename', undefined, undefined, recoveryScope),
+    error => (error as { code?: string }).code === 'UNAVAILABLE');
+    const stagedPath = [...disconnected.files.keys()].find(path => path.endsWith('.partial'));
+    assert.ok(stagedPath, 'the failed transfer must have created its exclusive staging path');
+    assert.ok((disconnected.files.get(stagedPath)?.data.length ?? 0) > 0, 'the staged upload must contain partial bytes');
+
+    const reconnected = new FakeSftp();
+    reconnected.files.clear();
+    for (const [path, file] of disconnected.files) reconnected.files.set(path, file);
+    await recoveryTransfers.cleanupOrphanedUploads(reconnected as never, 'different-trusted-route');
+    assert.ok(reconnected.files.has(stagedPath), 'a different connection identity must not remove a remote path');
+
+    const cancelledCleanup = new AbortController();
+    cancelledCleanup.abort();
+    await assert.rejects(recoveryTransfers.cleanupOrphanedUploads(reconnected as never, recoveryScope, cancelledCleanup.signal),
+      error => (error as { code?: string }).code === 'CANCELLED');
+    assert.ok(reconnected.files.has(stagedPath), 'cancelled cleanup must retain its record for a later SFTP operation');
+
+    await recoveryTransfers.cleanupOrphanedUploads(reconnected as never, recoveryScope);
+    assert.equal(reconnected.files.has(stagedPath), false);
+    assert.equal(reconnected.files.has('/home/report.txt'), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP upload cancellation settles when closing the remote write handle never answers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-upload-hung-close-'));
+  const sourcePath = join(directory, 'large.bin');
+  await writeFile(sourcePath, Buffer.alloc(256 * 1024, 5));
+  const recoveryTransfers = createSftpFileTransfers();
+  const disconnected = new FakeSftp();
+  disconnected.hangWriteStreamDestroy = true;
+  disconnected.delayWrites = true;
+  disconnected.writeDelayMs = 200;
+  disconnected.unlinkFailureCode = 4;
+  const cancellation = new AbortController();
+  const recoveryScope = 'trusted-route-hung-close';
+  try {
+    const upload = recoveryTransfers.upload(sessionId, '66666666-6666-4666-8666-666666666666', disconnected as never,
+      sourcePath, '/home', 'large.bin', 'rename', cancellation.signal, progress => {
+        if (progress.bytesTransferred > 0) cancellation.abort();
+      }, recoveryScope);
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      deadlineTimer = setTimeout(() => reject(new Error('SFTP cancellation did not settle')), 2_000);
+    });
+    try { await assert.rejects(Promise.race([upload, deadline]), error => (error as { code?: string }).code === 'CANCELLED'); }
+    finally { clearTimeout(deadlineTimer); }
+    const stagedPath = [...disconnected.files.keys()].find(path => path.endsWith('.partial'));
+    assert.ok(stagedPath, 'the interrupted upload must retain its worker-owned stage for reconnect cleanup');
+
+    const reconnected = new FakeSftp();
+    reconnected.files.clear();
+    for (const [path, file] of disconnected.files) reconnected.files.set(path, file);
+    await recoveryTransfers.cleanupOrphanedUploads(reconnected as never, recoveryScope);
+    assert.equal(reconnected.files.has(stagedPath), false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

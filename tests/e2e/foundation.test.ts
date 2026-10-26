@@ -639,6 +639,9 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const largeTransferSize = 100 * 1024 * 1024;
   const interruptedRemoteFile = join(remoteRoot, 'interrupted.bin');
   const interruptedTransferSize = 4 * 1024 * 1024;
+  const interruptedUploadSource = join(profile, 'interrupted-upload.txt');
+  const interruptedUploadTarget = join(remoteRoot, 'interrupted-upload.txt');
+  const interruptedUploadContents = Buffer.alloc(512 * 1024, 0x5a);
   const largeDropUploadSource = join(profile, 'large-upload.bin');
   const dropUploadContents = [Buffer.alloc(1_024, 0x41), Buffer.from('private dropped upload payload two')];
   const uploadSource = join(profile, 'upload.txt');
@@ -647,6 +650,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   let sftpDropUploadStartCount = 0;
   let largeDropUploadStarted = false;
   let stallInterruptedDownload = true;
+  let stallInterruptedUpload = false;
   let activeFilesOnlyClient: Ssh2FixtureClient | undefined;
   const terminalClients = new Set<Ssh2FixtureClient>();
   const downloadRoot = join(profile, 'downloads');
@@ -691,7 +695,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
             ? stallInterruptedDownload && offset >= 1024 * 1024 ? 10_000 : 0
             : undefined,
           readDelayForPath: path => path === '/home/mrt/large.bin' ? 0 : 700,
-          writeDelayForPath: () => largeDropUploadStarted ? 0 : 700,
+          writeDelayForPath: path => path.endsWith('.partial') && stallInterruptedUpload ? 30_000 : largeDropUploadStarted ? 0 : 700,
           onUploadStart: path => {
             if (path.endsWith('.partial')) {
               sftpDropUploadStartCount++;
@@ -901,6 +905,44 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     expect(await hashFile(join(downloadRoot, 'interrupted.bin'))).toEqual(await hashFile(interruptedRemoteFile));
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
+    await writeFile(interruptedUploadSource, interruptedUploadContents);
+    stallInterruptedUpload = true;
+    await dispatchFileDrop(page, [interruptedUploadSource], `#${recoveredSftpPanelId} [data-testid="remote-file-browser"]`);
+    const interruptedRemoteUploadStages = async () => Promise.all((await readDirectory(remoteRoot))
+      .filter(name => name.startsWith('.mrt-') && name.endsWith('.partial'))
+      .map(async name => ({ name, size: (await statFile(join(remoteRoot, name))).size })));
+    await expect.poll(async () => (await interruptedRemoteUploadStages()).some(file => file.size > 0), { timeout: 15_000 }).toBe(true);
+    const interruptedRemoteStages = await interruptedRemoteUploadStages();
+    expect(interruptedRemoteStages).toHaveLength(1);
+    expect(interruptedRemoteStages[0]?.size).toBeGreaterThan(0);
+    expect(interruptedRemoteStages[0]?.size).toBeLessThan(interruptedUploadContents.length);
+    const interruptedUploadClient = activeFilesOnlyClient;
+    const interruptedUploadSocket = (interruptedUploadClient as unknown as { readonly _sock?: Socket } | undefined)?._sock;
+    if (!interruptedUploadSocket || interruptedUploadSocket.destroyed) throw new Error('The SFTP upload fixture has no live socket to reset');
+    interruptedUploadSocket.resetAndDestroy();
+    await expect(recoveredRemoteBrowser.getByRole('button', { name: 'Reconnect to SFTP server', exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(await statFile(interruptedUploadTarget).then(() => true, () => false)).toBe(false);
+    expect((await interruptedRemoteUploadStages()).length).toBe(1);
+
+    stallInterruptedUpload = false;
+    await recoveredRemoteBrowser.getByRole('button', { name: 'Reconnect to SFTP server', exact: true }).click();
+    const reconnectUploadDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await expect(reconnectUploadDialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
+    await reconnectUploadDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const uploadRecoveredSftpTab = page.getByRole('tab').filter({ hasText: 'SFTP loopback' }).last();
+    await expect(uploadRecoveredSftpTab).toBeVisible({ timeout: 20_000 });
+    const uploadRecoveredSftpPanelId = await uploadRecoveredSftpTab.getAttribute('aria-controls');
+    if (!uploadRecoveredSftpPanelId) throw new Error('Missing SFTP panel after interrupted-upload recovery');
+    const uploadRecoveredRemoteBrowser = page.locator(`#${uploadRecoveredSftpPanelId} [data-testid="remote-file-browser"]`);
+    await expect(uploadRecoveredRemoteBrowser.getByText('interrupted.bin', { exact: true })).toBeVisible({ timeout: 15_000 });
+    expect(await interruptedRemoteUploadStages()).toEqual([]);
+    expect(await statFile(interruptedUploadTarget).then(() => true, () => false)).toBe(false);
+    await dispatchFileDrop(page, [interruptedUploadSource], `#${uploadRecoveredSftpPanelId} [data-testid="remote-file-browser"]`);
+    await expect.poll(async () => readFile(interruptedUploadTarget).then(data => data.equals(interruptedUploadContents), () => false),
+      { timeout: 30_000 }).toBe(true);
+    expect(await interruptedRemoteUploadStages()).toEqual([]);
+
     await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
     const sshDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
     const sshHost = sshDialog.getByLabel('Host name or IP address');
@@ -947,7 +989,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(contextualFiles).toHaveCount(1);
     await expect(contextualFiles).toBeHidden();
     await expect(sshPanel.locator('.terminal-panel-layout')).not.toHaveClass(/with-remote-files/u);
-    await expect(recoveredSftpPanel.getByTestId('remote-file-browser')).toHaveCount(1);
+    await expect(uploadRecoveredRemoteBrowser).toHaveCount(1);
     await expect(contextualFiles.getByText('Downloading interrupted.bin', { exact: true })).toBeAttached();
     await expect.poll(async () => (await contextualDownloadStagingFiles()).some(file => file.size > 0), { timeout: 15_000 }).toBe(true);
 
