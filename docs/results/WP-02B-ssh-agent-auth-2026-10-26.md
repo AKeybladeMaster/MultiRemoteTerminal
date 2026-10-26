@@ -26,3 +26,9 @@ The native credential prompt collects the account username and requires the pass
 ## Status and limitations
 
 P-03/F-003 remains PARTIAL. The actual Windows OpenSSH agent service, a disposable OpenSSH server, standalone SFTP private-key authentication, packaged native credential prompting, agent authentication through gateway routes, and broader interoperability remain unverified. Do not treat the same-library mock fixture as OpenSSH acceptance.
+
+## Review results
+
+- General review of `3d638a1` found no Critical, Important or Minor implementation issues and approved this as a partial slice. It recommended standalone SFTP agent E2E, real Windows OpenSSH-agent and disposable OpenSSH acceptance, packaged prompt coverage, gateway-route acceptance and broader interoperability.
+- Standards review found no documented-standard breach. It noted duplicate pipe-selection checks and repeated credential cleanup branches as judgment-call smells across process boundaries.
+- Spec review found no behavior mismatch. Follow-up review of `f3b0be8` confirmed standalone SFTP agent E2E coverage, then identified stale wording in `docs/SECURITY.md`; that sentence now distinguishes mock-agent coverage from the remaining real-service and disposable-server gaps.
