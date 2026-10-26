@@ -4929,17 +4929,17 @@ test('Git Bash supplementary Unicode paste survives a full command round trip', 
     await page.keyboard.type('cat');
     await page.keyboard.press('Enter');
     await expect(panel.locator('.xterm-rows')).toContainText('cat');
-    const rawPaste = `MRT-RAW:${supplementarySample}`;
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), rawPaste);
-    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(rawPaste);
+    const catPaste = `MRT-RAW:${supplementarySample}`;
+    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), catPaste);
+    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(catPaste);
     await page.keyboard.press('Control+V');
     await page.keyboard.press('Enter');
     await expect(panel.locator('.xterm-rows')).toContainText('MRT-RAW:', { timeout: 5_000 });
-    const rawInputText = await panel.locator('.xterm-rows').innerText();
-    if (rawInputText.includes('MRT-RAW:\uFFFD')) {
+    const catInputText = await panel.locator('.xterm-rows').innerText();
+    if (catInputText.includes('MRT-RAW:\uFFFD')) {
       test.fail(true, 'Git Bash replaces supplementary input in cat before Bash line editing through system ConPTY on this Windows host.');
     }
-    await expect(panel.locator('.xterm-rows')).toContainText(rawPaste);
+    await expect(panel.locator('.xterm-rows')).toContainText(catPaste);
     await page.keyboard.press('Control+C');
     await expect(panel.locator('.xterm-rows')).toContainText('^C', { timeout: 5_000 });
 
