@@ -63,6 +63,7 @@ interface SftpFixtureOptions {
   readonly readDelayMs?: number;
   readonly readDelayForPath?: (path: string) => number;
   readonly writeDelayMs?: number;
+  readonly writeDelayForPath?: (path: string) => number;
   readonly renameDelayMs?: number;
   readonly onUploadStart?: (path: string) => void;
   readonly onRename?: (path: string) => void;
@@ -167,10 +168,12 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     })().catch(error => sftp.status(requestId, statusForError(error)));
   });
   sftp.on('WRITE', (requestId: number, handle: Buffer, offset: number, data: Buffer) => {
-    const file = fileHandles.get(handleId(handle));
+    const id = handleId(handle);
+    const file = fileHandles.get(id);
     if (!file || data.byteLength > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
+    const delayMs = options.writeDelayForPath?.(fileHandlePaths.get(id) ?? '') ?? options.writeDelayMs ?? 0;
     void file.write(data, 0, data.length, offset).then(async () => {
-      if (options.writeDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, options.writeDelayMs));
+      if (delayMs > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
       sftp.status(requestId, api.STATUS_CODE.OK);
     }, error => sftp.status(requestId, statusForError(error)));
   });
@@ -602,7 +605,7 @@ test('SSH quick connect validates the address before any credential prompt and r
 });
 
 test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
   const remoteRoot = join(profile, 'remote-files');
   const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
@@ -611,12 +614,16 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const remoteScaleRoot = join(remoteRoot, 'scale');
   const largeRemoteFile = join(remoteRoot, 'large.bin');
   const largeTransferSize = 100 * 1024 * 1024;
+  const largeDropUploadSource = join(profile, 'large-upload.bin');
   const dropUploadContents = [Buffer.alloc(1_024, 0x41), Buffer.from('private dropped upload payload two')];
   const uploadSource = join(profile, 'upload.txt');
   const dropUploadSources = [join(profile, 'dragged-upload.txt'), join(profile, 'dragged-upload-second.txt')];
   const dropFixtureEvents: string[] = [];
+  let sftpDropUploadStartCount = 0;
+  let largeDropUploadStarted = false;
   const downloadRoot = join(profile, 'downloads');
   let expectedLargeFileDigest: E2EFileDigest;
+  let expectedLargeUploadDigest: E2EFileDigest;
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -647,10 +654,19 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
         fixtureEvents.push('sftp');
         startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500,
           readDelayForPath: path => path === '/home/mrt/large.bin' ? 0 : 700,
-          onUploadStart: path => { if (path.endsWith('.partial')) dropFixtureEvents.push('start'); },
+          writeDelayForPath: () => largeDropUploadStarted ? 0 : 700,
+          onUploadStart: path => {
+            if (path.endsWith('.partial')) {
+              sftpDropUploadStartCount++;
+              largeDropUploadStarted = sftpDropUploadStartCount === 3;
+              dropFixtureEvents.push('start');
+            }
+          },
           onRename: path => {
             const fileName = posix.basename(path);
-            if (fileName === 'dragged-upload.txt' || fileName === 'dragged-upload-second.txt') dropFixtureEvents.push(`complete:${fileName}`);
+            if (fileName === 'dragged-upload.txt' || fileName === 'dragged-upload-second.txt' || fileName === 'large-upload.bin') {
+              dropFixtureEvents.push(`complete:${fileName}`);
+            }
           }
         });
       });
@@ -668,6 +684,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
     await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
     expectedLargeFileDigest = await hashFile(largeRemoteFile);
+    await writePatternFile(largeDropUploadSource, largeTransferSize, 0x36);
+    expectedLargeUploadDigest = await hashFile(largeDropUploadSource);
     await writeFile(uploadSource, 'private local upload payload');
     await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
     await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
@@ -834,13 +852,17 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(contextualFiles).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
 
     dropFixtureEvents.length = 0;
-    await dispatchFileDrop(page, dropUploadSources, `#${sshPanelId} [data-testid="remote-file-browser"]`);
-    await expect.poll(() => [...dropFixtureEvents], { timeout: 20_000 }).toEqual([
-      'start', 'complete:dragged-upload.txt', 'start', 'complete:dragged-upload-second.txt'
+    sftpDropUploadStartCount = 0;
+    largeDropUploadStarted = false;
+    await dispatchFileDrop(page, [...dropUploadSources, largeDropUploadSource], `#${sshPanelId} [data-testid="remote-file-browser"]`);
+    await expect.poll(() => [...dropFixtureEvents], { timeout: 120_000 }).toEqual([
+      'start', 'complete:dragged-upload.txt', 'start', 'complete:dragged-upload-second.txt',
+      'start', 'complete:large-upload.bin'
     ]);
     expect(await readFile(join(remoteRoot, 'dragged-upload.txt'))).toEqual(dropUploadContents[0]);
     expect(await readFile(join(remoteRoot, 'dragged-upload-second.txt'))).toEqual(dropUploadContents[1]);
-    await expect(contextualFiles.getByText(/Uploaded dragged-upload-second\.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await hashFile(join(remoteRoot, 'large-upload.bin'))).toEqual(expectedLargeUploadDigest);
+    await expect(contextualFiles.getByText(/Uploaded large-upload\.bin/u)).toBeVisible({ timeout: 15_000 });
 
     await contextualFiles.getByRole('button', { name: 'Upload file', exact: true }).click();
     await expect(contextualFiles.getByText(/Uploaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
