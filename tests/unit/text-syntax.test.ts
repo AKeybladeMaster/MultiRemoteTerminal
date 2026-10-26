@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
 import {
   highlightTextSyntax,
   MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS,
@@ -63,4 +64,32 @@ test('syntax preview stops at fixed character and token bounds without splitting
   const manyTokens = highlightTextSyntax('if '.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'shell');
   assert.equal(manyTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyTokens.isTruncated, true);
+});
+
+test('a malformed braced variable does not swallow a later expansion', () => {
+  const opener = String.fromCharCode(36, 123);
+  const source = `${opener}broken ${opener}HOME}`;
+  const variables = highlightTextSyntax(source, 'shell').tokens
+    .filter(token => token.kind === 'shell-variable')
+    .map(token => source.slice(token.start, token.end));
+  assert.deepEqual(variables, [`${opener}HOME}`]);
+});
+
+test('shell syntax preview keeps malformed expansion scans within a linear allowance', () => {
+  const opener = String.fromCharCode(36, 123);
+  function medianRuntime(codeUnits: number): number {
+    const input = opener.repeat(codeUnits / opener.length);
+    highlightTextSyntax(input, 'shell');
+    const samples = Array.from({ length: 5 }, () => {
+      const start = performance.now();
+      highlightTextSyntax(input, 'shell');
+      return performance.now() - start;
+    }).sort((left, right) => left - right);
+    return samples[2]!;
+  }
+
+  const smaller = medianRuntime(16_000);
+  const boundedPreview = medianRuntime(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.ok(boundedPreview <= smaller * 8 + 10,
+    `64,000 code units took ${boundedPreview.toFixed(1)}ms after 16,000 took ${smaller.toFixed(1)}ms`);
 });

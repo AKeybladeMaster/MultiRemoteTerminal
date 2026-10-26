@@ -167,8 +167,13 @@ function scanJson(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
 function scanShellVariable(text: string, start: number, limit: number): number {
   let index = start + 1;
   if (text[index] === '{') {
-    const closing = text.indexOf('}', index + 1);
-    return closing >= 0 && closing < limit ? closing + 1 : index;
+    index += 1;
+    while (index < limit) {
+      if (text[index] === '}') return index + 1;
+      if (text[index] === '$') return start + 1;
+      index += 1;
+    }
+    return start + 1;
   }
   if (isShellNameStart(text[index] ?? '') || isDigit(text[index] ?? '')) {
     index += 1;
