@@ -52,3 +52,12 @@ remain unverified. These limits keep P-22/F-011 PARTIAL.
 See [ADR-0032](../adr/ADR-0032-sftp-only-ssh-gateway-routes.md), [WP-04D
 evidence](WP-04D-ssh-gateway-routes-2026-10-24.md), and the
 [feature matrix](../FEATURE-MATRIX.md).
+
+## Independent review
+
+Reviewed against `origin/main...ea8ed8e` (the WP-04E implementation and cleanup
+follow-up commits). Standards review passed with no documented violations or
+remaining actionable smells. The first review's duplicated credential-cleanup
+note was resolved by shared per-process copy/clear helpers. Spec review passed:
+the saved SFTP route, no-shell guarantee and Windows E2E match the requirement;
+P-22/F-011 remain partial for the limits listed above.
