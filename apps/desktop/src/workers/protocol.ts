@@ -12,6 +12,7 @@ export type TerminalWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'wsl.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'wsl.cancel' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'write'; readonly sessionId: string; readonly data: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'paste'; readonly sessionId: string; readonly data: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'resize'; readonly sessionId: string; readonly size: TerminalSize }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'ack'; readonly sessionId: string; readonly sequence: number }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'close'; readonly sessionId: string }
@@ -54,6 +55,8 @@ export function parseTerminalWorkerRequest(value: unknown): TerminalWorkerReques
   if (value.command === 'wsl.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as TerminalWorkerRequest;
   if (value.command === 'wsl.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as TerminalWorkerRequest;
   if (value.command === 'write' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'data']) &&
+      isUuid(value.sessionId) && typeof value.data === 'string' && value.data.length <= 16_384) return value as unknown as TerminalWorkerRequest;
+  if (value.command === 'paste' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'data']) &&
       isUuid(value.sessionId) && typeof value.data === 'string' && value.data.length <= 16_384) return value as unknown as TerminalWorkerRequest;
   if (value.command === 'resize' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'size']) &&
       isUuid(value.sessionId) && isTerminalSize(value.size)) return value as unknown as TerminalWorkerRequest;

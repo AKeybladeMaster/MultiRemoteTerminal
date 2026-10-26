@@ -77,6 +77,10 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
     await this.request({ command: 'write', sessionId, data });
   }
 
+  async paste(sessionId: string, data: string): Promise<void> {
+    await this.request({ command: 'paste', sessionId, data });
+  }
+
   async resize(sessionId: string, size: TerminalSize): Promise<void> {
     await this.request({ command: 'resize', sessionId, size });
   }

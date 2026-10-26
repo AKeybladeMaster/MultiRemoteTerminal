@@ -37,6 +37,7 @@ parent.on('message', event => {
       } else if (request.command === 'wsl.list') result = { distributions: await provider.listWslDistributions() };
       else if (request.command === 'wsl.cancel') provider.cancelWslDistributionDiscovery();
       else if (request.command === 'write') await provider.write(request.sessionId, request.data);
+      else if (request.command === 'paste') await provider.paste(request.sessionId, request.data);
       else if (request.command === 'resize') await provider.resize(request.sessionId, request.size);
       else if (request.command === 'ack') await provider.acknowledgeOutput(request.sessionId, request.sequence);
       else if (request.command === 'close') await provider.close(request.sessionId);

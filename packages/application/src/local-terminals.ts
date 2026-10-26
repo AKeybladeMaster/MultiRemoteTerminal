@@ -16,6 +16,7 @@ export interface LocalTerminalProvider {
   listWslDistributions(): Promise<readonly WslDistribution[]>;
   cancelWslDistributionDiscovery(): void | Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
+  paste(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
   close(sessionId: string): Promise<void>;
@@ -41,6 +42,7 @@ export interface LocalTerminalController {
   listWslDistributions(): Promise<Outcome<readonly WslDistribution[]>>;
   cancelWslDistributionDiscovery(): Promise<Outcome<Record<string, never>>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
+  paste(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   applyPowerShellProfileScript(sessionId: string, script: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
@@ -128,7 +130,7 @@ export function createLocalTerminalController(
     return { ok: true, result: EMPTY_RESULT };
   }
 
-  async function write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {
+  async function sendInput(sessionId: string, data: string, paste: boolean): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
     if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
     if (typeof data !== 'string' || data.length > MAX_TERMINAL_INPUT_CHARS) return failure('INVALID_REQUEST');
@@ -136,13 +138,22 @@ export function createLocalTerminalController(
     if (data.length === 0) return { ok: true, result: EMPTY_RESULT };
     session.pendingInputChars += data.length;
     try {
-      await provider.write(sessionId, data);
+      if (paste) await provider.paste(sessionId, data);
+      else await provider.write(sessionId, data);
       return { ok: true, result: EMPTY_RESULT };
     } catch {
       return failure('UNAVAILABLE', 'terminal');
     } finally {
       session.pendingInputChars -= data.length;
     }
+  }
+
+  function write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {
+    return sendInput(sessionId, data, false);
+  }
+
+  function paste(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {
+    return sendInput(sessionId, data, true);
   }
 
   async function applyPowerShellProfileScript(sessionId: string, script: string): Promise<Outcome<Record<string, never>>> {
@@ -212,7 +223,7 @@ export function createLocalTerminalController(
   }
 
   return Object.freeze({
-    open, listWslDistributions, cancelWslDistributionDiscovery, write, applyPowerShellProfileScript, resize, acknowledgeOutput, close, closeAll,
+    open, listWslDistributions, cancelWslDistributionDiscovery, write, paste, applyPowerShellProfileScript, resize, acknowledgeOutput, close, closeAll,
     subscribe(listener: (event: LocalTerminalEvent) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
