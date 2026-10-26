@@ -62,6 +62,7 @@ interface Ssh2FixturePackage {
 interface SftpFixtureOptions {
   readonly readDelayMs?: number;
   readonly readDelayForPath?: (path: string) => number;
+  readonly readDelayForRequest?: (path: string, offset: number, length: number) => number | undefined;
   readonly writeDelayMs?: number;
   readonly writeDelayForPath?: (path: string) => number;
   readonly renameDelayMs?: number;
@@ -159,7 +160,8 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     const file = fileHandles.get(id);
     if (!file || !Number.isSafeInteger(length) || length < 0 || length > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
     void (async () => {
-      const delayMs = options.readDelayForPath?.(fileHandlePaths.get(id) ?? '') ?? options.readDelayMs ?? 0;
+      const path = fileHandlePaths.get(id) ?? '';
+      const delayMs = options.readDelayForRequest?.(path, offset, length) ?? options.readDelayForPath?.(path) ?? options.readDelayMs ?? 0;
       if (delayMs > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
       const buffer = Buffer.alloc(length);
       const result = await file.read(buffer, 0, length, offset);
@@ -614,6 +616,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const remoteScaleRoot = join(remoteRoot, 'scale');
   const largeRemoteFile = join(remoteRoot, 'large.bin');
   const largeTransferSize = 100 * 1024 * 1024;
+  const interruptedRemoteFile = join(remoteRoot, 'interrupted.bin');
+  const interruptedTransferSize = 4 * 1024 * 1024;
   const largeDropUploadSource = join(profile, 'large-upload.bin');
   const dropUploadContents = [Buffer.alloc(1_024, 0x41), Buffer.from('private dropped upload payload two')];
   const uploadSource = join(profile, 'upload.txt');
@@ -621,6 +625,9 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const dropFixtureEvents: string[] = [];
   let sftpDropUploadStartCount = 0;
   let largeDropUploadStarted = false;
+  let stallInterruptedDownload = true;
+  let activeFilesOnlyClient: Ssh2FixtureClient | undefined;
+  const terminalClients = new Set<Ssh2FixtureClient>();
   const downloadRoot = join(profile, 'downloads');
   let expectedLargeFileDigest: E2EFileDigest;
   let expectedLargeUploadDigest: E2EFileDigest;
@@ -632,7 +639,11 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     const client = rawClient as Ssh2FixtureClient;
     fixtureEvents.push('connection');
     clients.add(client);
-    client.once('close', () => clients.delete(client));
+    client.once('close', () => {
+      clients.delete(client);
+      terminalClients.delete(client);
+      if (activeFilesOnlyClient === client) activeFilesOnlyClient = undefined;
+    });
     client.on('error', error => fixtureEvents.push(`client-error:${error.message}`));
     client.on('authentication', (rawContext: unknown) => {
       const context = rawContext as Ssh2AuthenticationContext;
@@ -647,12 +658,17 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
       session.on('pty', (accept: () => void) => accept());
       session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
         fixtureEvents.push('shell');
+        terminalClients.add(client);
         const stream = acceptShell();
         stream.write(`MRT-SFTP-READY\r\n${hostileShellOutput}\r\n`);
       });
       session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
         fixtureEvents.push('sftp');
+        if (!terminalClients.has(client)) activeFilesOnlyClient = client;
         startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500,
+          readDelayForRequest: (path, offset) => path === '/home/mrt/interrupted.bin'
+            ? stallInterruptedDownload && offset >= 1024 * 1024 ? 10_000 : 0
+            : undefined,
           readDelayForPath: path => path === '/home/mrt/large.bin' ? 0 : 700,
           writeDelayForPath: () => largeDropUploadStarted ? 0 : 700,
           onUploadStart: path => {
@@ -684,6 +700,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
     await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
     expectedLargeFileDigest = await hashFile(largeRemoteFile);
+    await writePatternFile(interruptedRemoteFile, interruptedTransferSize, 0x28);
     await writePatternFile(largeDropUploadSource, largeTransferSize, 0x36);
     expectedLargeUploadDigest = await hashFile(largeDropUploadSource);
     await writeFile(uploadSource, 'private local upload payload');
@@ -821,6 +838,41 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     if (!reopenedSftpPanelId) throw new Error('Missing reopened standalone SFTP panel');
     await expect(page.locator(`#${reopenedSftpPanelId} [data-testid="remote-file-browser"]`).getByText('remote.txt', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
+    expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
+
+    const reopenedSftpPanel = page.locator(`#${reopenedSftpPanelId}`);
+    const reopenedRemoteBrowser = reopenedSftpPanel.getByTestId('remote-file-browser');
+    await reopenedRemoteBrowser.getByRole('button', { name: 'Download interrupted.bin', exact: true }).click();
+    const partialDownloadSize = async () => {
+      const stagedFiles = (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-'));
+      const sizes = await Promise.all(stagedFiles.map(async name => (await statFile(join(downloadRoot, name))).size));
+      return Math.max(0, ...sizes);
+    };
+    await expect.poll(partialDownloadSize, { timeout: 15_000 }).toBeGreaterThan(0);
+    expect(await partialDownloadSize()).toBeLessThan(interruptedTransferSize);
+    const interruptedClient = activeFilesOnlyClient;
+    const interruptedSocket = (interruptedClient as unknown as { readonly _sock?: Socket } | undefined)?._sock;
+    if (!interruptedSocket || interruptedSocket.destroyed) throw new Error('The SFTP files-only fixture has no live socket to reset');
+    interruptedSocket.resetAndDestroy();
+    await expect(reopenedRemoteBrowser.getByRole('button', { name: 'Reconnect to SFTP server', exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(await statFile(join(downloadRoot, 'interrupted.bin')).then(() => true, () => false)).toBe(false);
+    expect((await readDirectory(downloadRoot)).some(name => name.startsWith('.mrt-'))).toBe(false);
+
+    stallInterruptedDownload = false;
+    await reopenedRemoteBrowser.getByRole('button', { name: 'Reconnect to SFTP server', exact: true }).click();
+    const reconnectSftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await expect(reconnectSftpDialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
+    await reconnectSftpDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const recoveredSftpTab = page.getByRole('tab').filter({ hasText: 'SFTP loopback' }).last();
+    await expect(recoveredSftpTab).toBeVisible({ timeout: 20_000 });
+    const recoveredSftpPanelId = await recoveredSftpTab.getAttribute('aria-controls');
+    if (!recoveredSftpPanelId) throw new Error('Missing recovered standalone SFTP panel');
+    const recoveredRemoteBrowser = page.locator(`#${recoveredSftpPanelId} [data-testid="remote-file-browser"]`);
+    await expect(recoveredRemoteBrowser.getByText('interrupted.bin', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await recoveredRemoteBrowser.getByRole('button', { name: 'Download interrupted.bin', exact: true }).click();
+    await expect(recoveredRemoteBrowser.getByText('Downloaded interrupted.bin (4 MB).', { exact: true })).toBeVisible({ timeout: 15_000 });
+    expect(await hashFile(join(downloadRoot, 'interrupted.bin'))).toEqual(await hashFile(interruptedRemoteFile));
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
