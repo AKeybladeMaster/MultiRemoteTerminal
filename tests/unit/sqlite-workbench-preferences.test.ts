@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { backup, DatabaseSync } from 'node:sqlite';
 import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { SqliteWorkbenchPreferencesRepository } from '../../apps/desktop/src/adapters/sqlite-workbench-preferences-repository.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, WORKBENCH_PREFERENCES_SCHEMA_VERSION } from '../../packages/domain/src/workbench-preferences.ts';
+
+const validCustomLogoDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 
 test('SQLite stores and restores the Unicode startup greeting across database reopen', () => {
   const directory = mkdtempSync(join(tmpdir(), 'mrt-preferences-'));
@@ -19,7 +22,7 @@ test('SQLite stores and restores the Unicode startup greeting across database re
     const updated = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Привет 👋\nこんにちは',
       terminalHighlightEnabled: true, terminalHighlightRules: [{ pattern: '\\b(git|ssh)\\b', color: 'cyan' as const }],
       terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false,
-      customLogoDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' };
+      customLogoDataUrl: validCustomLogoDataUrl };
     assert.deepEqual(preferences.save(updated), updated);
     database.close();
 
@@ -28,6 +31,38 @@ test('SQLite stores and restores the Unicode startup greeting across database re
     assert.deepEqual(new SqliteWorkbenchPreferencesRepository(reopened).read(), updated);
     reopened.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('SQLite schema v8 custom-logo preferences survive a WAL database backup and restore', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-preferences-backup-'));
+  const sourcePath = join(directory, 'source.sqlite');
+  const backupPath = join(directory, 'backup.sqlite');
+  const expected = { ...DEFAULT_WORKBENCH_PREFERENCES, customLogoDataUrl: validCustomLogoDataUrl };
+  const database = new DatabaseSync(sourcePath, { timeout: 5_000, defensive: true });
+  try {
+    try {
+      database.exec('PRAGMA journal_mode = WAL;');
+      new SqliteHostTrustRepository(database).migrate();
+      const preferences = new SqliteWorkbenchPreferencesRepository(database);
+      assert.deepEqual(preferences.save(expected), expected);
+      assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+        WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+      assert.ok(await backup(database, backupPath) > 0);
+    } finally {
+      database.close();
+    }
+
+    const restored = new DatabaseSync(backupPath, { timeout: 5_000, defensive: true });
+    try {
+      new SqliteHostTrustRepository(restored).migrate();
+      assert.deepEqual(new SqliteWorkbenchPreferencesRepository(restored).read(), expected);
+      assert.equal((restored.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check, 'ok');
+    } finally {
+      restored.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('SQLite migrates schema v1 greeting settings to defaults for highlighting', () => {

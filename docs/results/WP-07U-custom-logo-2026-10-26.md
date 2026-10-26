@@ -12,7 +12,7 @@
 
 ## Validation
 
-- Focused unit, adapter, bridge, broker, IPC-contract and CSP tests: **113 passed, 0 failed** after review fixes. Coverage includes malformed and oversized sources, dimensions, normalization, path-free replies, schema-v7 migration, persistence, invalid preference values, selection authorization, and CSP policy.
+- Focused unit, adapter, bridge, broker, IPC-contract and CSP tests: **114 passed, 0 failed** after review fixes. Coverage includes malformed and oversized sources, dimensions, normalization, path-free replies, v7-to-v8 migration, WAL database backup/restore, restart persistence, invalid preference values, selection authorization, and CSP policy.
 - `corepack pnpm typecheck`: passed.
 - `corepack pnpm lint`: passed, including import-boundary checks.
 - Windows x64 `corepack pnpm build`: passed. Vite reported its existing advisory for a JavaScript chunk above 500 KiB.
@@ -23,6 +23,8 @@
 The first E2E attempt correctly rejected the initial fixture: its IHDR CRC was valid but its IDAT CRC was not. The test now uses a generated 1×1 PNG with valid chunk CRCs; the final E2E run passes.
 
 The independent Standards and General reviews found that a renderer could bypass the picker by submitting a forged PNG data URL directly to `preferences.save`. The main process now accepts a changed image only when it exactly matches the last bounded picker result; it still accepts the current stored value or `null`. The shared validator also checks decoded byte length and PNG IHDR dimensions before an IPC preference payload is accepted. Regression tests confirm oversized-IHDR and oversized-byte values are rejected and an unselected valid image is not persisted.
+
+The final review also found the Architecture schema table still described workbench preferences as v6 and called for a backup/restore scenario for persistent schema changes. Updated the table to v8 with v1-v7 migration defaults and added a WAL backup/restore test proving the normalized logo preference and SQLite integrity survive restoration.
 
 ## Remaining acceptance
 
