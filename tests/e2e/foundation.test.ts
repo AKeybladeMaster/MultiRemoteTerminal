@@ -11,7 +11,7 @@ import { connect as connectTcp, createServer } from 'node:net';
 import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { join, posix, resolve } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
@@ -32,8 +32,23 @@ interface Ssh2AuthenticationContext {
   readonly username: string;
   readonly password: string;
   readonly method: string;
+  readonly key?: { readonly algo: string; readonly data: Buffer };
+  readonly blob?: Buffer;
+  readonly signature?: Buffer;
+  readonly hashAlgo?: string;
   accept(): void;
   reject(): void;
+}
+interface Ssh2ParsedKey {
+  readonly type: string;
+  getPublicSSH(): string | Buffer;
+  sign(data: Buffer, options?: { readonly hash?: string }): Buffer | Error;
+  verify(data: Buffer, signature: Buffer, hashAlgo?: string): boolean | Error;
+}
+interface Ssh2AgentProtocol extends EventEmitter {
+  getIdentitiesReply(request: unknown, keys: readonly Ssh2ParsedKey[]): void;
+  signReply(request: unknown, signature: Buffer): void;
+  failureReply(request: unknown): void;
 }
 interface SftpFixtureAttributes { readonly mode: number; readonly uid: number; readonly gid: number; readonly size: number; readonly atime: number; readonly mtime: number; }
 interface Ssh2FixtureSftp extends EventEmitter {
@@ -50,8 +65,10 @@ interface Ssh2FixtureServer extends EventEmitter {
 }
 interface Ssh2FixturePackage {
   readonly Server: new (configuration: { readonly hostKeys: readonly string[] }, onConnect: (client: EventEmitter) => void) => Ssh2FixtureServer;
+  readonly AgentProtocol: new (isClient: boolean) => Ssh2AgentProtocol;
   readonly utils: {
-    generateKeyPairSync(type: 'ed25519'): { readonly private: string };
+    generateKeyPairSync(type: 'ed25519', options?: { readonly passphrase?: string; readonly cipher?: string }): { readonly private: string; readonly public: string };
+    parseKey(key: string | Buffer): Ssh2ParsedKey | Error;
     readonly sftp: {
       readonly OPEN_MODE: { readonly READ: number; readonly WRITE: number; readonly APPEND: number; readonly CREAT: number; readonly TRUNC: number; readonly EXCL: number };
       readonly STATUS_CODE: { readonly OK: number; readonly EOF: number; readonly NO_SUCH_FILE: number; readonly PERMISSION_DENIED: number; readonly FAILURE: number };
@@ -623,6 +640,230 @@ test('SSH quick connect validates the address before any credential prompt and r
     await expect(page.locator('.status-bar')).toContainText('Local');
   } finally {
     await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SSH private-key mode selects the key in main and authenticates a trusted loopback terminal', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-private-key-e2e-'));
+  const privateKeyPath = join(profile, 'id_ed25519');
+  const passphrase = 'mrt-e2e-key-passphrase';
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clientKeyPair = ssh2.utils.generateKeyPairSync('ed25519', { passphrase, cipher: 'aes256-cbc' });
+  const allowedClientKey = ssh2.utils.parseKey(clientKeyPair.public);
+  if (allowedClientKey instanceof Error) throw new Error('The key-auth fixture public key could not be parsed');
+  const allowedClientKeyBytes = Buffer.from(allowedClientKey.getPublicSSH());
+  const fixtureEvents: string[] = [];
+  const fixtureErrors: string[] = [];
+  const clients = new Set<Ssh2FixtureClient>();
+  const server = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      fixtureEvents.push(`auth:${context.method}:${context.username}`);
+      if (context.method === 'publickey' && context.username === 'mrt-e2e-key-user' && context.key?.algo === allowedClientKey.type &&
+          context.key.data.equals(allowedClientKeyBytes) && (!context.signature ||
+            Boolean(context.blob && allowedClientKey.verify(context.blob, context.signature, context.hashAlgo) === true))) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => {
+      fixtureEvents.push('authenticated');
+      client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SSH-PUBLICKEY-READY\r\n'));
+      });
+    });
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await writeFile(privateKeyPath, clientKeyPair.private, { encoding: 'utf8', mode: 0o600 });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The public-key SSH fixture did not bind a loopback port');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-key-auth',
+      `--mrt-e2e-ssh-private-key=${privateKeyPath}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    await dialog.getByLabel('Authentication method').selectOption('private-key');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}; errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`)
+      .toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing public-key SSH terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-SSH-PUBLICKEY-READY', { timeout: 15_000 });
+    expect(fixtureEvents).toContain('auth:publickey:mrt-e2e-key-user');
+    expect(fixtureEvents).toContain('authenticated');
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshKeyPromptCount'))).toBe(1);
+    const bodyText = await page.locator('body').innerText();
+    expect(bodyText).not.toContain(privateKeyPath);
+    expect(bodyText).not.toContain('PRIVATE KEY');
+    expect(bodyText).not.toContain(passphrase);
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SSH agent mode signs through a Windows named pipe and authenticates a trusted loopback terminal', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-agent-e2e-'));
+  const remoteRoot = join(profile, 'remote-files');
+  const agentPipePath = String.raw`\\.\pipe\mrt-ssh-agent-${randomUUID()}`;
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const agentKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const agentPublicKey = ssh2.utils.parseKey(agentKeyPair.public);
+  const agentPrivateKey = ssh2.utils.parseKey(agentKeyPair.private);
+  if (agentPublicKey instanceof Error || agentPrivateKey instanceof Error) throw new Error('The SSH agent fixture key could not be parsed');
+  const agentPublicKeyBytes = Buffer.from(agentPublicKey.getPublicSSH());
+  const fixtureEvents: string[] = [];
+  const fixtureErrors: string[] = [];
+  const clients = new Set<Ssh2FixtureClient>();
+  const agentSockets = new Set<Socket>();
+  let identityRequests = 0;
+  let signRequests = 0;
+  let shellRequests = 0;
+  let sftpRequests = 0;
+  const agentServer = createServer(socket => {
+    agentSockets.add(socket);
+    socket.once('close', () => agentSockets.delete(socket));
+    socket.on('error', error => fixtureErrors.push(`agent socket: ${error.message}`));
+    const protocol = new ssh2.AgentProtocol(false);
+    protocol.on('identities', request => {
+      identityRequests += 1;
+      protocol.getIdentitiesReply(request, [agentPublicKey]);
+    });
+    protocol.on('sign', (request, _key, data, options) => {
+      signRequests += 1;
+      const signature = agentPrivateKey.sign(data, options as { readonly hash?: string });
+      if (signature instanceof Error) protocol.failureReply(request);
+      else protocol.signReply(request, signature);
+    });
+    protocol.on('error', error => fixtureErrors.push(`agent protocol: ${error.message}`));
+    (protocol as unknown as Duplex).pipe(socket).pipe(protocol as unknown as Duplex);
+  });
+  const sshServer = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      fixtureEvents.push(`auth:${context.method}:${context.username}`);
+      const expectedKey = context.method === 'publickey' && context.username === 'mrt-e2e-agent-user' &&
+        context.key?.algo === agentPublicKey.type && context.key.data.equals(agentPublicKeyBytes);
+      if (expectedKey && !context.signature) context.accept();
+      else if (expectedKey && context.signature && context.blob &&
+          agentPublicKey.verify(context.blob, context.signature, context.hashAlgo) === true) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => {
+      fixtureEvents.push('authenticated');
+      client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          shellRequests += 1;
+          acceptShell().write('MRT-SSH-AGENT-READY\r\n');
+        });
+        session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
+          sftpRequests += 1;
+          startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp);
+        });
+      });
+    });
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let agentListening = false;
+  let sshListening = false;
+  try {
+    await mkdir(remoteRoot);
+    await writeFile(join(remoteRoot, 'agent-sftp.txt'), 'agent-authenticated SFTP payload');
+    await new Promise<void>((resolveListen, rejectListen) => {
+      agentServer.once('error', rejectListen);
+      agentServer.listen(agentPipePath, () => { agentListening = true; resolveListen(); });
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      sshServer.once('error', rejectListen);
+      sshServer.listen(0, '127.0.0.1', () => { sshListening = true; resolveListen(); });
+    });
+    const address = sshServer.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH agent fixture did not bind a loopback port');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-agent-auth',
+      `--mrt-e2e-ssh-agent-pipe=${agentPipePath}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    await dialog.getByLabel('Authentication method').selectOption('agent');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}; errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`)
+      .toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing SSH agent terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-SSH-AGENT-READY', { timeout: 15_000 });
+    expect(fixtureEvents).toContain('auth:publickey:mrt-e2e-agent-user');
+    expect(fixtureEvents).toContain('authenticated');
+    expect(identityRequests).toBeGreaterThan(0);
+    expect(signRequests).toBeGreaterThan(0);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(1);
+
+    const signRequestsBeforeSftp = signRequests;
+    const sftpRequestsBeforeStandalone = sftpRequests;
+    await page.getByRole('button', { name: 'Connect to SFTP files', exact: true }).first().click();
+    const sftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await sftpDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await sftpDialog.getByLabel('Port').fill(String(address.port));
+    await sftpDialog.getByLabel('Authentication method').selectOption('agent');
+    await sftpDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const sftpTab = page.getByRole('tab').filter({ hasText: /SFTP/ }).first();
+    await expect(sftpTab).toBeVisible({ timeout: 20_000 });
+    const sftpPanelId = await sftpTab.getAttribute('aria-controls');
+    if (!sftpPanelId) throw new Error('Missing standalone SFTP agent panel');
+    await expect(page.locator(`#${sftpPanelId}`).getByTestId('remote-file-browser').getByText('agent-sftp.txt', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(sftpRequests).toBeGreaterThan(sftpRequestsBeforeStandalone);
+    expect(shellRequests).toBe(1);
+    expect(signRequests).toBeGreaterThan(signRequestsBeforeSftp);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(2);
+    const bodyText = await page.locator('body').innerText();
+    expect(bodyText).not.toContain(agentPipePath);
+    expect(bodyText).not.toContain(agentKeyPair.private);
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    for (const socket of agentSockets) socket.destroy();
+    if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
+    if (agentListening) await new Promise<void>(resolveClose => agentServer.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
@@ -4399,7 +4640,8 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.require).toBe('undefined');
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
-    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
+      'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
@@ -4417,7 +4659,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(rendererProcesses.length).toBeGreaterThan(0);
     expect(rendererProcesses.every(renderer => renderer.sandboxed)).toBe(true);
 
-    const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(crypto.randomUUID(), 'sh' as never, 80, 24));
+    const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(crypto.randomUUID(), { shell: 'sh' } as never, 80, 24));
     expect(invalidShell.ok).toBe(false);
     if (!invalidShell.ok) expect(invalidShell.error.code).toBe('INVALID_REQUEST');
 
@@ -4561,7 +4803,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     const versionCommand = "printf 'MRT-BASH:%s\\n' \"$BASH_VERSION\"";
     await sendLine(page, 'Bash session 1', "printf 'MRT-BASH-OUTPUT:%s\\n' $'\\U0001F642'", `MRT-BASH-OUTPUT:${String.fromCodePoint(0x1f642)}`);
 
-    await sendLine(page, 'Bash session 1', "PS1='mrt$ '", 'mrt$');
+    await sendLine(page, 'Bash session 1', "PS1=$'mrt \\u276f '", 'mrt ❯');
     const syntaxPanel = await selectTerminal(page, 'Bash session 1');
     await syntaxPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();
@@ -4625,6 +4867,114 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(closeConfirmation).toContainText('Bash session');
     await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
     await expect(bashTabs).toHaveCount(1);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Git Bash supplementary Unicode paste survives a full command round trip', async () => {
+  test.skip(process.platform !== 'win32', 'ConPTY compatibility evidence is required on Windows');
+  test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash compatibility check');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-bash-unicode-e2e-'));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New Bash terminal');
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
+
+    const supplementarySample = String.fromCodePoint(0x1f642);
+    const pasteCommand = `printf 'MRT-OUT%s\\n' 'PUT:${supplementarySample}'`;
+    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);
+    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(pasteCommand);
+    const panel = await selectTerminal(page, 'Bash session 1');
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('Control+V');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OUT%s');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OUTPUT:', { timeout: 15_000 });
+
+    const terminalText = await panel.locator('.xterm-rows').innerText();
+    if (terminalText.includes('MRT-OUTPUT:\uFFFD')) {
+      test.fail(true, 'Git for Windows Bash 2.53.0 replaces a supplementary pasted character with U+FFFD through system ConPTY on this Windows host.');
+    }
+    await expect(panel.locator('.xterm-rows')).toContainText(`MRT-OUTPUT:${supplementarySample}`);
+  } finally {
+    try {
+      if (app) await app.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
+test('WSL terminals require an explicit distribution and saved profiles reopen the same target', async () => {
+  test.skip(process.platform !== 'win32', 'WSL integration flow requires the Windows E2E harness');
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-wsl-terminal-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-wsl-harness'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const paletteButton = page.getByRole('button', { name: /^Command palette/ });
+    const dialog = page.getByRole('dialog', { name: 'Open a WSL terminal' });
+    await paletteButton.click();
+    await page.getByRole('dialog', { name: 'Command palette' }).getByRole('button', { name: 'New WSL terminal', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    const ubuntu = dialog.getByRole('radio', { name: 'Ubuntu', exact: true });
+    const debian = dialog.getByRole('radio', { name: 'Debian Dev', exact: true });
+    await expect(ubuntu).toBeVisible();
+    await expect(debian).toBeVisible();
+    await expect(ubuntu).not.toBeChecked();
+    await expect(debian).not.toBeChecked();
+    await page.screenshot({ path: 'test-results/wsl-distribution-picker.png' });
+    const openSelected = dialog.getByRole('button', { name: 'Open selected distribution', exact: true });
+    await expect(openSelected).toBeDisabled();
+    await expect(dialog).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(dialog.getByRole('button', { name: 'Refresh', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(ubuntu).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(paletteButton).toBeFocused();
+    await paletteButton.click();
+    await page.getByRole('dialog', { name: 'Command palette' }).getByRole('button', { name: 'New WSL terminal', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await debian.check();
+    await expect(openSelected).toBeEnabled();
+    await openSelected.click();
+
+    const tabTitle = 'Debian Dev (WSL)';
+    const panel = await selectTerminal(page, tabTitle);
+    const expectedLaunch = JSON.stringify([win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe'),
+      '--distribution', 'Debian Dev', '--exec', 'bash', '--login']).toLocaleLowerCase('en-US');
+    const terminalRows = panel.locator('.xterm-rows');
+    await expect.poll(async () => (await terminalRows.innerText()).toLocaleLowerCase('en-US'), { timeout: 15_000 })
+      .toContain(`wsl harness: ${expectedLaunch}`);
+    await page.screenshot({ path: 'test-results/wsl-distribution-terminal.png' });
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Persisted Debian WSL');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const savedSession = page.getByRole('button', { name: 'Open Persisted Debian WSL', exact: true });
+    await expect(savedSession).toBeVisible();
+    await expect(page.getByText('WSL · Debian Dev', { exact: true })).toBeVisible();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Open Persisted Debian WSL', exact: true }).click();
+    const reopenedPanel = await selectTerminal(page, 'Persisted Debian WSL');
+    await expect.poll(async () => (await reopenedPanel.locator('.xterm-rows').innerText()).toLocaleLowerCase('en-US'),
+      { timeout: 15_000 }).toContain(`wsl harness: ${expectedLaunch}`);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -4856,6 +5206,130 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
   }
 });
 
+test('PowerShell profile text persists, stays idle on startup, and runs only after explicit preview and action', async () => {
+  test.skip(process.platform !== 'win32', 'PowerShell profile execution acceptance requires Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-powershell-profile-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  const marker = `MRT-PS-PROFILE-${randomUUID()}`;
+  const script = `Write-Output '${marker}'`;
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+    const firstPanel = await selectTerminal(page, 'PowerShell session 1');
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByLabel('Saved PowerShell script').fill(script);
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const panel = await selectTerminal(page, 'PowerShell session 2');
+    const rows = panel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: 'PowerShell session 2 running' })).toBeVisible({ timeout: 15_000 });
+    await expect(rows).not.toContainText(marker);
+    await expect(firstPanel.locator('.xterm-rows')).not.toContainText(marker);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByLabel('Saved PowerShell script')).toHaveValue(script);
+    const preview = settings.getByRole('button', { name: 'Preview saved script', exact: true });
+    await expect(preview).toBeEnabled();
+    await preview.click();
+    const previewPanel = settings.locator('.settings-profile-preview');
+    await expect(previewPanel).toBeVisible();
+    await expect(previewPanel.locator('pre')).toHaveText(script);
+    await expect(rows).not.toContainText(marker);
+    const runProfile = settings.getByRole('button', { name: 'Run in this PowerShell session', exact: true });
+    await runProfile.focus();
+    await runProfile.press('Enter');
+    await expect(settings.getByText('Script sent to the active PowerShell session.', { exact: true })).toBeVisible();
+    await expect(rows).toContainText(marker, { timeout: 15_000 });
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const restartedPanel = await selectTerminal(page, 'PowerShell session 1');
+    await expect(restartedPanel.locator('.xterm-rows')).not.toContainText(marker);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(restoredSettings.getByLabel('Saved PowerShell script')).toHaveValue(script);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('local shell tool visibility persists and controls command palette entries after restart', async () => {
+  test.skip(process.platform !== 'win32', 'Local shell tool preference acceptance requires Windows');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-local-shell-tools-e2e-'));
+  const launch = (delayPreferences = false) => electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`,
+      ...(delayPreferences ? ['--mrt-e2e-delay-first-workbench-preferences-read'] : [])],
+    env: delayPreferences ? { ...electronEnvironment(), MRT_E2E: '1' } : electronEnvironment()
+  });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await page.screenshot({ path: 'test-results/local-shell-tools-settings.png' });
+    const powershell = settings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
+    await expect(powershell).toBeChecked();
+    await powershell.uncheck();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.keyboard.press('Control+Shift+P');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(palette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await expect(palette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible();
+
+    await app.close();
+    app = await launch(true);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.keyboard.press('Control+Shift+P');
+    const delayedPalette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toHaveCount(0);
+    await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await delayedPalette.locator('#palette-search').focus();
+    await page.keyboard.press('ArrowDown');
+    const sftpCommand = delayedPalette.getByRole('button', { name: 'Connect to SFTP files', exact: true });
+    await expect(sftpCommand).toHaveAttribute('aria-current', 'true');
+    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await expect(sftpCommand).toHaveAttribute('aria-current', 'true');
+    await page.keyboard.press('Enter');
+    const sftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await expect(sftpDialog).toBeVisible();
+    await sftpDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(sftpDialog).toHaveCount(0);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const restoredPowerShell = restoredSettings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
+    await expect(restoredPowerShell).not.toBeChecked();
+    await restoredPowerShell.check();
+    await restoredSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(restoredSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await restoredSettings.getByRole('button', { name: 'Close', exact: true }).click();
+    const tabsBeforePowerShellLaunch = await page.getByRole('tab').count();
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    await expect(page.getByRole('tab')).toHaveCount(tabsBeforePowerShellLaunch + 1);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('opt-in automatically remembers opened terminal sessions and deduplicates them after restart', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-auto-save-sessions-e2e-'));
   const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
@@ -4966,6 +5440,62 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
       return start >= 0 && glyphs.slice(start, start + 'MRT-HIGHLIGHT-RESTART'.length)
         .every(glyph => glyph.color === 'rgb(84, 215, 212)');
     })).toBe(true);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('custom workbench logo is bounded, persists across restart, and resets to the built-in wordmark', async () => {
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-custom-logo-e2e-'));
+  const logoPath = join(profile, 'selected-logo.png');
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==', 'base64');
+  const launch = () => electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo', `--mrt-e2e-custom-logo-file=${logoPath}`],
+    env: { ...electronEnvironment(), MRT_E2E: '1' }
+  });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await writeFile(logoPath, validPng);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    const preview = settings.getByRole('img', { name: 'Selected workbench logo' });
+    await expect(preview).toBeVisible();
+    await expect(preview).toHaveJSProperty('naturalWidth', 1);
+    await page.screenshot({ path: 'test-results/custom-logo-settings.png' });
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('custom-workbench-logo')).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByTestId('custom-workbench-logo')).toBeVisible();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
+
+    await writeFile(logoPath, Buffer.from('not a PNG image'));
+    await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    await expect(settings.getByRole('alert')).toContainText('Choose a valid PNG image');
+    await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
+    await settings.getByRole('button', { name: 'Use built-in wordmark', exact: true }).click();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

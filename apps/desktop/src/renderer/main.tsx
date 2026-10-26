@@ -20,18 +20,19 @@ import type { MacroRecordingSnapshot, MacroRecordingWarning } from '../../../../
 import { createMultiExecRunner } from '../../../../packages/application/src/multi-exec.ts';
 import type { MultiExecRequest } from '../../../../packages/domain/src/multi-exec.ts';
 import type { MultiExecDisplayTarget, MultiExecView } from './MultiExecDialog.tsx';
-import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenSerialTerminalReply, OpenTerminalReply } from '../../../../packages/contracts/src/commands.ts';
+import type { OpenSftpFilesReply, OpenSshTerminalReply, OpenTelnetTerminalReply, OpenSerialTerminalReply, OpenTerminalReply, SshAuthenticationMethod } from '../../../../packages/contracts/src/commands.ts';
 import type { AppError } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts';
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
-import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalShell, LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
-import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { WorkbenchStartupPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
@@ -42,6 +43,7 @@ import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, VirtualizedList } from 
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
+import { TftpServerDialog } from './TftpServerDialog.tsx';
 import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import { MultiExecDialog } from './MultiExecDialog.tsx';
 import { HelpDialog } from './HelpDialog.tsx';
@@ -49,6 +51,7 @@ import { SettingsDialog } from './SettingsDialog.tsx';
 import { RdpConnectDialog } from './RdpConnectDialog.tsx';
 import { VncConnectDialog } from './VncConnectDialog.tsx';
 import { LocalTextEditorDialog } from './LocalTextEditorDialog.tsx';
+import { WslDistributionDialog } from './WslDistributionDialog.tsx';
 import { textEditorErrorMessage } from './text-editor-errors.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
@@ -69,7 +72,7 @@ function isMacroTerminal(session: WorkbenchSession | undefined): session is Inte
 }
 
 type OpeningTerminal =
-  | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
+  | { readonly transport: 'local'; readonly sessionId: string; readonly launch: LocalTerminalLaunch; readonly cancelling: boolean }
   | { readonly transport: 'ssh' | 'sftp' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean }
   | { readonly transport: 'serial'; readonly sessionId: string; readonly configuration: SerialConfiguration; readonly cancelling: boolean };
 
@@ -109,7 +112,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
+type CommandName = `new-${LocalShell}` | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'local-tftp-server' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -119,7 +122,8 @@ interface PaletteCommand {
 const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly badge: string; readonly mark: string }> = {
   powershell: { name: 'PowerShell', badge: 'PS', mark: '›_' },
   cmd: { name: 'cmd', badge: 'CMD', mark: 'C:\\' },
-  bash: { name: 'Bash', badge: 'BASH', mark: '$' }
+  bash: { name: 'Bash', badge: 'BASH', mark: '$' },
+  wsl: { name: 'WSL', badge: 'WSL', mark: '$' }
 };
 const SAVED_SESSION_SEARCH_DEBOUNCE_MS = 50;
 
@@ -132,13 +136,14 @@ function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell
 function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
 function macroTargetTitle(session: InteractiveTerminal): string {
-  if (session.transport === 'local') return `${session.title} · ${shellName(session.shell)} · local`;
+  if (session.transport === 'local') return `${session.title} · ${shellName(session.shell)}${session.shell === 'wsl' ? ` (${session.distribution})` : ''} · local`;
   const protocol = session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH';
   return `${session.title} · ${protocol} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)}`;
 }
 
 function openingName(opening: OpeningTerminal): string {
-  if (opening.transport === 'local') return `${shellName(opening.shell)} terminal`;
+  if (opening.transport === 'local') return opening.launch.shell === 'wsl'
+    ? `${opening.launch.distribution} (WSL)` : `${shellName(opening.launch.shell)} terminal`;
   if (opening.transport === 'serial') return `Serial connection to ${opening.configuration.path}`;
   const protocol = opening.transport === 'telnet' ? 'Telnet (plaintext)' : opening.transport === 'sftp' ? 'SFTP' : 'SSH';
   return `${protocol} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
@@ -201,7 +206,7 @@ function terminalStatus(session: WorkbenchSession | undefined): string {
   if (!session) return 'No active terminal';
   if (session.transport === 'ftp') return `${session.endpoint.secure ? 'FTPS' : 'FTP (plaintext)'} files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
   if (session.transport === 'sftp') return `SFTP files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
-  if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
+  if (session.transport === 'local') return `${shellName(session.shell)}${session.shell === 'wsl' ? ` · ${session.distribution}` : ''} · Local · ${session.state}`;
   if (session.transport === 'serial') return `Serial · ${session.configuration.path} · ${session.configuration.baudRate} baud · ${session.state}`;
   return `${session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
 }
@@ -314,12 +319,16 @@ function Workbench() {
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
+  const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
+  const [workbenchPreferencesSettled, setWorkbenchPreferencesSettled] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
-  const [selectedCommand, setSelectedCommand] = useState(0);
+  const [selectedCommandId, setSelectedCommandId] = useState<CommandName>();
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
   const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
+  const [sshAuthenticationMethod, setSshAuthenticationMethod] = useState<SshAuthenticationMethod>('password');
   const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' }>>();
   const [sshGatewayProfiles, setSshGatewayProfiles] = useState<readonly Extract<SavedSessionDefinition, { kind: 'ssh' }>[]>([]);
   const [sshGatewayOne, setSshGatewayOne] = useState('');
@@ -339,6 +348,7 @@ function Workbench() {
   const [serialPortsError, setSerialPortsError] = useState<string>();
   const [serialSavedTitle, setSerialSavedTitle] = useState<string>();
   const [serialSavedProfilePath, setSerialSavedProfilePath] = useState<string>();
+  const [wslDialogOpen, setWslDialogOpen] = useState(false);
   const [serialConfigurationDraft, setSerialConfigurationDraft] = useState<SerialConfiguration>({
     path: 'COM1', baudRate: 9600, dataBits: 8, parity: 'none', stopBits: 1, flowControl: 'none'
   });
@@ -368,6 +378,7 @@ function Workbench() {
   const [tunnelsLoading, setTunnelsLoading] = useState(false);
   const [tunnelBusyId, setTunnelBusyId] = useState<string>();
   const [tunnelError, setTunnelError] = useState<string>();
+  const [tftpServerOpen, setTftpServerOpen] = useState(false);
   const [multiExecOpen, setMultiExecOpen] = useState(false);
   const [multiExecView, setMultiExecView] = useState<MultiExecView>();
   const [macroManagerOpen, setMacroManagerOpen] = useState(false);
@@ -405,7 +416,7 @@ function Workbench() {
   const fileOnlySshSessionIds = useRef(new Set<string>());
   const visibleFileOnlySshSessionIds = useRef(new Set<string>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
-  const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0 });
+  const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0, wsl: 0 });
   const nextSshOrdinal = useRef(0);
   const nextTelnetOrdinal = useRef(0);
   const nextSerialOrdinal = useRef(0);
@@ -490,6 +501,7 @@ function Workbench() {
   const telnetConnectReturnFocus = useRef<HTMLElement | null>(null);
   const serialConnectDialog = useRef<HTMLElement>(null);
   const serialConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const wslDialogReturnFocus = useRef<HTMLElement | null>(null);
   const ftpConnectDialog = useRef<HTMLElement>(null);
   const ftpHostInput = useRef<HTMLInputElement>(null);
   const ftpPortInput = useRef<HTMLInputElement>(null);
@@ -1185,6 +1197,15 @@ function Workbench() {
 
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
+  const openWslDialog = useCallback(() => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    wslDialogReturnFocus.current = paletteOpen ? paletteReturnFocus.current ?? activeElement : activeElement;
+    if (paletteOpen) paletteReturnFocus.current = null;
+    setWslDialogOpen(true);
+  }, [paletteOpen]);
+
+  const closeWslDialog = useCallback(() => setWslDialogOpen(false), []);
+
   const openLocalTextEditor = useCallback(async () => {
     if (localTextEditorOpening || localTextEditorOpen) return;
     localTextEditorReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1221,18 +1242,22 @@ function Workbench() {
     if (file) void window.multiRemoteTerminal.closeLocalTextFile(file.selectionId);
   }, []);
 
-  const applyWorkbenchPreferences = useCallback((preferences: WorkbenchPreferences) => {
+  const applyWorkbenchPreferences = useCallback((preferences: WorkbenchStartupPreferences) => {
     setStartupGreeting(preferences.startupGreeting);
     setStartupGreetingVisible(preferences.startupGreeting.length > 0);
     setTerminalHighlightEnabled(preferences.terminalHighlightEnabled);
     setTerminalHighlightRules(preferences.terminalHighlightRules);
     setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
     setShowSftpBrowserBesideSsh(preferences.showSftpBrowserBesideSsh);
+    setVisibleLocalShells(preferences.visibleLocalShells);
+    setCustomLogoDataUrl(preferences.customLogoDataUrl);
+    setWorkbenchPreferencesSettled(true);
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSshConnectMode(mode);
+    setSshAuthenticationMethod('password');
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
     setSshGatewayOne('');
@@ -1493,34 +1518,40 @@ function Workbench() {
     if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
   }), []);
 
-  const openTerminal = useCallback(async (shell: LocalShell, savedTitle?: string, rememberWhenOpened = true) => {
+  const openTerminal = useCallback(async (launch: LocalTerminalLaunch, savedTitle?: string, rememberWhenOpened = true) => {
     setPaletteOpen(false);
     setQuery('');
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
-    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, shell, 80, 24);
+    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, launch, 80, 24);
     pendingOpenRequests.current.set(sessionId, { transport: 'local', cancelled: false, reply: replyPromise });
-    setOpeningSessions(current => [...current, { transport: 'local', sessionId, shell, cancelling: false }]);
+    setOpeningSessions(current => [...current, { transport: 'local', sessionId, launch, cancelling: false }]);
     const reply = await replyPromise;
     if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
     pendingOpenRequests.current.delete(sessionId);
     setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     if (!reply.ok) {
-      if (reply.error.code !== 'CANCELLED') setAlert(shell === 'bash'
+      if (reply.error.code !== 'CANCELLED') setAlert(launch.shell === 'bash'
         ? 'Could not start Bash. Check that Git for Windows is installed.'
-        : `Could not start ${shellName(shell)} (${reply.error.code}).`);
+        : launch.shell === 'wsl'
+          ? `Could not open ${launch.distribution}. It may have been removed from WSL; choose an installed distribution and try again.`
+          : `Could not start ${shellName(launch.shell)} (${reply.error.code}).`);
       return;
     }
-    const ordinal = ++nextOrdinal.current[shell];
-    const title = shellName(shell);
+    const ordinal = ++nextOrdinal.current[launch.shell];
+    const title = launch.shell === 'wsl' ? `${launch.distribution} · WSL` : shellName(launch.shell);
     if (rememberWhenOpened && reply.result.state === 'running') {
-      void rememberOpenedSession({ kind: 'local', name: savedTitle ?? title, shell });
+      const draft: SavedSessionDraft = launch.shell === 'wsl'
+        ? { kind: 'local', name: savedTitle ?? title, shell: 'wsl', distribution: launch.distribution }
+        : { kind: 'local', name: savedTitle ?? title, shell: launch.shell };
+      void rememberOpenedSession(draft);
     }
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, [rememberOpenedSession]);
 
-  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [], savedProfileId?: string) => {
+  const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [],
+    savedProfileId?: string, authenticationMethod: SshAuthenticationMethod = 'password') => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -1541,7 +1572,8 @@ function Workbench() {
     setPaletteOpen(false);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
-    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24, gatewayProfileIds, savedProfileId);
+    const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24,
+      gatewayProfileIds, savedProfileId, authenticationMethod);
     pendingOpenRequests.current.set(sessionId, { transport: 'ssh', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'ssh', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -1562,7 +1594,8 @@ function Workbench() {
     setActiveId(reply.result.sessionId);
   }, [rememberOpenedSession]);
 
-  const openSftpFiles = useCallback(async (hostInput: string, portInput: string, savedTitle?: string) => {
+  const openSftpFiles = useCallback(async (hostInput: string, portInput: string, savedTitle?: string,
+    authenticationMethod: SshAuthenticationMethod = 'password') => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -1580,7 +1613,7 @@ function Workbench() {
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
     fileOnlySshSessionIds.current.add(sessionId);
-    const replyPromise = window.multiRemoteTerminal.openSftpFiles(sessionId, endpoint.host, endpoint.port);
+    const replyPromise = window.multiRemoteTerminal.openSftpFiles(sessionId, endpoint.host, endpoint.port, authenticationMethod);
     pendingOpenRequests.current.set(sessionId, { transport: 'sftp', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'sftp', sessionId, host: endpoint.host, port: endpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -1839,7 +1872,7 @@ function Workbench() {
       if (!active) return;
       setStatus(reply.ok ? `Ready · ${reply.result.platform} · version ${reply.result.version}` : `Unavailable (${reply.error.code})`);
     });
-    void openTerminal('powershell', undefined, false);
+    void openTerminal({ shell: 'powershell' }, undefined, false);
     return () => { active = false; };
   }, [openTerminal]);
 
@@ -1849,9 +1882,15 @@ function Workbench() {
       if (!active) return;
       if (reply.ok) {
         applyWorkbenchPreferences(reply.result);
-      } else setAlert(workbenchPreferenceFailureMessage('load', reply.error.code));
+      } else {
+        setAlert(workbenchPreferenceFailureMessage('load', reply.error.code));
+        setWorkbenchPreferencesSettled(true);
+      }
     }).catch(() => {
-      if (active) setAlert(workbenchPreferenceFailureMessage('load', undefined));
+      if (active) {
+        setAlert(workbenchPreferenceFailureMessage('load', undefined));
+        setWorkbenchPreferencesSettled(true);
+      }
     });
     return () => { active = false; };
   }, [applyWorkbenchPreferences]);
@@ -1959,6 +1998,7 @@ function Workbench() {
       if (tunnelManagerOpen) {
         return;
       }
+      if (wslDialogOpen) return;
       if (saveSessionOpen) {
         if (event.key === 'Escape' && !catalogBusy) { event.preventDefault(); setSaveSessionOpen(false); }
         else if (event.key === 'Tab') {
@@ -2128,18 +2168,25 @@ function Workbench() {
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
     helpOpen, rdpConnectOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents,
-    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen]);
+    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen, wslDialogOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
       requestAnimationFrame(() => paletteInput.current?.focus());
-      setSelectedCommand(0);
+      setSelectedCommandId(undefined);
     } else if (paletteReturnFocus.current) {
       const target = paletteReturnFocus.current;
       paletteReturnFocus.current = null;
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
     }
   }, [paletteOpen]);
+
+  useEffect(() => {
+    if (wslDialogOpen || !wslDialogReturnFocus.current) return;
+    const target = wslDialogReturnFocus.current;
+    wslDialogReturnFocus.current = null;
+    requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+  }, [wslDialogOpen]);
 
   useEffect(() => {
     if (helpOpen || !helpReturnFocus.current) return;
@@ -2315,9 +2362,11 @@ function Workbench() {
   }, [pendingCloseId]);
 
   const commands: PaletteCommand[] = [
-    { id: 'new-powershell', label: 'New PowerShell terminal', run: () => { void openTerminal('powershell'); } },
-    { id: 'new-cmd', label: 'New cmd terminal', run: () => { void openTerminal('cmd'); } },
-    { id: 'new-bash', label: 'New Bash terminal', run: () => { void openTerminal('bash'); } },
+    ...LOCAL_SHELL_TOOL_REGISTRY.filter(tool => workbenchPreferencesSettled && visibleLocalShells.includes(tool.shell)).map(tool => ({
+      id: `new-${tool.shell}` as const,
+      label: tool.commandLabel,
+      run: () => { if (tool.shell === 'wsl') openWslDialog(); else void openTerminal({ shell: tool.shell }); }
+    })),
     { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
     { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
@@ -2325,6 +2374,7 @@ function Workbench() {
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
     { id: 'connect-rdp', label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() },
     { id: 'connect-vnc', label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() },
+    { id: 'local-tftp-server', label: 'Local TFTP server', run: () => setTftpServerOpen(true) },
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
@@ -2332,6 +2382,13 @@ function Workbench() {
     { id: 'open-settings', label: 'Workbench settings', run: openSettings }
   ];
   const filteredCommands = commands.filter(command => command.label.toLowerCase().includes(query.toLowerCase()));
+  const selectedCommandIndex = Math.max(0, filteredCommands.findIndex(command => command.id === selectedCommandId));
+  const selectedPaletteCommand = filteredCommands[selectedCommandIndex];
+  useEffect(() => {
+    if (paletteOpen && selectedCommandId === undefined && filteredCommands[0]) {
+      setSelectedCommandId(filteredCommands[0].id);
+    }
+  }, [filteredCommands, paletteOpen, selectedCommandId]);
   const active = sessions.find(session => session.sessionId === activeId);
   const multiExecTargets: MultiExecDisplayTarget[] = sessions.filter(isMacroTerminal)
     .filter(session => session.state === 'running' && handles.current.has(session.sessionId))
@@ -2390,7 +2447,7 @@ function Workbench() {
               : session.kind === 'serial' ? 'COM' : session.secure ? 'FTPS' : 'FTP'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
-        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell
+        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell === 'wsl' ? `WSL · ${session.distribution}` : session.shell
           : session.kind === 'serial' ? `${session.configuration.path} · ${session.configuration.baudRate} baud`
             : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind === 'rdp' ? 'RDP · external viewer' : session.kind === 'vnc' ? 'VNC · external viewer' : session.kind.toUpperCase()}`}</span>
       </button>
@@ -2500,7 +2557,8 @@ function Workbench() {
   }
 
   function openSavedSession(session: SavedSessionDefinition) {
-    if (session.kind === 'local') void openTerminal(session.shell, session.name);
+    if (session.kind === 'local') void openTerminal(session.shell === 'wsl'
+      ? { shell: 'wsl', distribution: session.distribution } : { shell: session.shell }, session.name);
     else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name, [], session.id);
     else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
@@ -2542,7 +2600,7 @@ function Workbench() {
     }
     const selected = [sshGatewayOne, sshGatewayTwo].filter(Boolean);
     const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
-    void openSshTerminal(sshHost, sshPort, [...names, sshGatewayTarget.name].join(' → '), selected, sshGatewayTarget.id);
+    void openSshTerminal(sshHost, sshPort, [...names, sshGatewayTarget.name].join(' → '), selected, sshGatewayTarget.id, sshAuthenticationMethod);
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string, credentialProfileId?: string): void {
@@ -2569,7 +2627,9 @@ function Workbench() {
   async function saveActiveSession() {
     if (!active || catalogBusy || uncertainSaveDraft) return;
     const draft: SavedSessionDraft = active.transport === 'local'
-      ? { kind: 'local', name: saveSessionName, shell: active.shell }
+      ? active.shell === 'wsl'
+        ? { kind: 'local', name: saveSessionName, shell: 'wsl', distribution: active.distribution }
+        : { kind: 'local', name: saveSessionName, shell: active.shell }
       : active.transport === 'serial'
         ? { kind: 'serial', name: saveSessionName, configuration: active.configuration }
       : active.transport === 'ssh'
@@ -2612,7 +2672,8 @@ function Workbench() {
     setUncertainSaveDraft(undefined);
     const alreadySaved = definitions.some(definition => {
       if (definition.kind !== draft.kind || definition.name !== draft.name) return false;
-      if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell;
+      if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell &&
+        (draft.shell !== 'wsl' || (definition.shell === 'wsl' && definition.distribution === draft.distribution));
       if (draft.kind === 'serial') return definition.kind === 'serial' && serialConfigurationsEqual(definition.configuration, draft.configuration);
       if (definition.kind === 'local' || definition.kind === 'serial') return false;
       return definition.host === draft.host && definition.port === draft.port;
@@ -2816,7 +2877,10 @@ function Workbench() {
     <h1 className="visually-hidden" translate="no">MultiRemoteTerminal terminal workspace</h1>
     <a className="skip" href="#workspace">Skip to terminal workspace</a>
     <header className="app-header">
-      <span className="wordmark" translate="no">MultiRemoteTerminal</span>
+      <div className="app-brand">
+        {customLogoDataUrl && <img className="app-custom-logo" src={customLogoDataUrl} alt="" aria-hidden="true" width={30} height={30} data-testid="custom-workbench-logo" />}
+        <span className="wordmark" translate="no">MultiRemoteTerminal</span>
+      </div>
       <div className="header-actions">
         <span className="build-label">Local and remote sessions</span>
         <button ref={localTextEditorTrigger} className="quiet-button" type="button" aria-haspopup="dialog"
@@ -2841,6 +2905,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
+        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tftp-server-open" onClick={() => setTftpServerOpen(true)}>Local TFTP server</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="multi-exec-open" onClick={openMultiExec}>MultiExec</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
@@ -3007,7 +3072,14 @@ function Workbench() {
     </div>
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
-    {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences} />}
+    {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences}
+      activePowerShellSessionId={active?.transport === 'local' && active.shell === 'powershell' && active.state === 'running' ? active.sessionId : undefined} />}
+    <TftpServerDialog open={tftpServerOpen} onClose={() => setTftpServerOpen(false)} />
+    <WslDistributionDialog open={wslDialogOpen} onClose={closeWslDialog} onSelect={distribution => {
+      wslDialogReturnFocus.current = null;
+      setWslDialogOpen(false);
+      void openTerminal({ shell: 'wsl', distribution }, `${distribution} (WSL)`);
+    }} />
     <LocalTextEditorDialog open={localTextEditorOpen} file={localTextFile} onClose={closeLocalTextEditor} />
     <footer className="status-bar">
       <div className="terminal-status">
@@ -3052,16 +3124,22 @@ function Workbench() {
         <h2 id="palette-heading" className="visually-hidden">Command palette</h2>
         <label className="visually-hidden" htmlFor="palette-search">Find a command</label>
         <input ref={paletteInput} id="palette-search" name="command" autoComplete="off" type="search" placeholder="Find a command…" value={query}
-          onChange={event => { setQuery(event.target.value); setSelectedCommand(0); }}
+          onChange={event => { setQuery(event.target.value); setSelectedCommandId(undefined); }}
           onKeyDown={event => {
-            if (event.key === 'ArrowDown') { event.preventDefault(); setSelectedCommand(value => Math.min(value + 1, filteredCommands.length - 1)); }
-            else if (event.key === 'ArrowUp') { event.preventDefault(); setSelectedCommand(value => Math.max(0, value - 1)); }
-            else if (event.key === 'Enter') { event.preventDefault(); runCommand(filteredCommands[selectedCommand]); }
+            if (event.key === 'ArrowDown' && filteredCommands.length > 0) {
+              event.preventDefault();
+              setSelectedCommandId(filteredCommands[Math.min(selectedCommandIndex + 1, filteredCommands.length - 1)]?.id);
+            }
+            else if (event.key === 'ArrowUp' && filteredCommands.length > 0) {
+              event.preventDefault();
+              setSelectedCommandId(filteredCommands[Math.max(0, selectedCommandIndex - 1)]?.id);
+            }
+            else if (event.key === 'Enter') { event.preventDefault(); runCommand(selectedPaletteCommand); }
           }} />
         <ul>
           {filteredCommands.map((command, index) => <li key={command.id}>
-            <button className={index === selectedCommand ? 'active' : ''} type="button" aria-current={index === selectedCommand ? 'true' : undefined}
-              onMouseEnter={() => setSelectedCommand(index)} onClick={() => runCommand(command)}>
+            <button className={index === selectedCommandIndex ? 'active' : ''} type="button" aria-current={index === selectedCommandIndex ? 'true' : undefined}
+              onMouseEnter={() => setSelectedCommandId(command.id)} onClick={() => runCommand(command)}>
               <span>{command.label}</span><span aria-hidden="true">{command.id.startsWith('new-') ? '↵' : ''}</span>
             </button>
           </li>)}
@@ -3134,15 +3212,18 @@ function Workbench() {
       <section ref={sshConnectDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
         aria-labelledby="ssh-connect-heading" aria-describedby="ssh-connect-description">
         <h2 id="ssh-connect-heading">{sshGatewayTarget ? `Connect ${sshGatewayTarget.name} through gateways` : sshConnectMode === 'sftp' ? 'Connect to SFTP files' : 'Connect to an SSH server'}</h2>
-        <p id="ssh-connect-description">{sshConnectMode === 'sftp'
-          ? 'Connect with SSH credentials and verified host identity. This opens the SFTP file browser without starting a remote shell.'
-          : sshGatewayTarget
-            ? 'Choose one or two saved SSH sessions as gateways. This route applies to this connection only; each gateway and the destination will have its own credential and host verification prompts.'
-            : 'Enter the server address. The Windows credential prompt will collect your username and password after you connect.'}</p>
+        <p id="ssh-connect-description">{sshAuthenticationMethod === 'agent'
+          ? 'After Connect, enter your SSH username. The Windows OpenSSH agent must be running with your key loaded.'
+          : sshAuthenticationMethod === 'private-key'
+          ? 'After Connect, choose a private key file, then enter your SSH username and optional key passphrase in the Windows credential prompt.'
+          : sshConnectMode === 'sftp'
+            ? 'Connect with SSH credentials and verified host identity. This opens the SFTP file browser without starting a remote shell.'
+            : 'Enter the server address. The Windows credential prompt will collect your username and password after you connect.'}
+          {sshGatewayTarget ? ' Each selected gateway will request its own password and host verification.' : ''}</p>
         <form onSubmit={event => { event.preventDefault();
-          if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle);
+          if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle, sshAuthenticationMethod);
           else if (sshGatewayTarget) connectThroughSelectedGateways();
-          else void openSshTerminal(sshHost, sshPort, sshSavedTitle);
+          else void openSshTerminal(sshHost, sshPort, sshSavedTitle, [], undefined, sshAuthenticationMethod);
         }}>
           <label htmlFor="ssh-host">Host name or IP address</label>
           <input ref={sshHostInput} id="ssh-host" name="host" type="text" autoComplete="off" spellCheck={false}
@@ -3150,6 +3231,13 @@ function Workbench() {
           <label htmlFor="ssh-port">Port</label>
           <input ref={sshPortInput} id="ssh-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
             disabled={Boolean(sshGatewayTarget)} value={sshPort} onChange={event => setSshPort(event.target.value)} />
+          <label htmlFor="ssh-authentication-method">Authentication method</label>
+          <select id="ssh-authentication-method" value={sshAuthenticationMethod}
+            onChange={event => setSshAuthenticationMethod(event.target.value === 'private-key' || event.target.value === 'agent' ? event.target.value : 'password')}>
+            <option value="password">Password</option>
+            <option value="private-key">Private key file</option>
+            <option value="agent">Windows OpenSSH agent</option>
+          </select>
           {sshGatewayTarget && <>
             <label htmlFor="ssh-gateway-one">SSH gateway 1</label>
             <select id="ssh-gateway-one" value={sshGatewayOne} onChange={event => { setSshGatewayOne(event.target.value); setSshGatewayTwo(''); }}>

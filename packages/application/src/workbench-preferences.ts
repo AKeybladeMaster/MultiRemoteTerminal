@@ -1,7 +1,7 @@
 import { failure } from '../../domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../domain/src/errors.ts';
-import { normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
-import type { WorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import { normalizeWorkbenchPreferences, toWorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
+import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
 import type { CancellationSignal } from './cancellation.ts';
 import { StorageOperationError } from './storage-errors.ts';
 
@@ -22,6 +22,7 @@ export interface WorkbenchPreferencesStore {
 
 export interface WorkbenchPreferencesManager {
   read(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>>;
+  readStartup(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchStartupPreferences>>;
   save(value: unknown, cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>>;
 }
 
@@ -30,6 +31,11 @@ export function createWorkbenchPreferencesManager(store: WorkbenchPreferencesSto
     async read(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>> {
       if (cancellation?.aborted) return failure('CANCELLED');
       try { return { ok: true, result: await store.readWorkbenchPreferences(cancellation) }; }
+      catch (error) { return failure(storageErrorCode(error)); }
+    },
+    async readStartup(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchStartupPreferences>> {
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try { return { ok: true, result: toWorkbenchStartupPreferences(await store.readWorkbenchPreferences(cancellation)) }; }
       catch (error) { return failure(storageErrorCode(error)); }
     },
     async save(value: unknown, cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>> {

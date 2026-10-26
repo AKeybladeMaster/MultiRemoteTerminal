@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
-  parseRdpLaunchGestureRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
+  parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
-import { MAX_STARTUP_GREETING_CODE_POINTS } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
 
@@ -12,6 +12,26 @@ test('accepts only the versioned read-only command', () => {
   assert.deepEqual(describeWorkbench({ version: '0.0.0', platform: 'win32' }), {
     name: 'MultiRemoteTerminal', version: '0.0.0', platform: 'win32', stage: 'foundation'
   });
+});
+
+test('PowerShell profile preview and apply IPC carry only a bounded preview result and opaque IDs', () => {
+  const preview = { command: 'powershell.profile.preview', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId } };
+  const parsedPreview = parseRequest(preview);
+  assert.equal(parsedPreview.ok, true);
+  if (!parsedPreview.ok) return;
+  const previewReply = { requestId: request.requestId, ok: true,
+    result: { previewId: 'c1f3ace8-9464-449b-9459-a41b642dc2a7', script: 'Write-Output "ready"' } };
+  assert.equal(isCommandReply(previewReply, parsedPreview.result), true);
+  assert.equal(isCommandReply({ ...previewReply, result: { ...previewReply.result, script: 'bad\u0000script' } }, parsedPreview.result), false);
+  assert.equal(parseRequest({ ...preview, payload: { ...preview.payload, extra: true } }).ok, false);
+
+  const apply = { command: 'powershell.profile.apply', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId, previewId: previewReply.result.previewId } };
+  assert.equal(parseRequest(apply).ok, true);
+  assert.equal(parseRequest({ ...apply, payload: { ...apply.payload, script: 'Write-Output "arbitrary"' } }).ok, false);
+  const parsedApply = parseRequest(apply);
+  if (parsedApply.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {} }, parsedApply.result), true);
 });
 
 test('rejects malformed, extra, oversized, and incompatible request fields', () => {
@@ -24,9 +44,11 @@ test('rejects malformed, extra, oversized, and incompatible request fields', () 
     if (!result.ok) assert.equal(result.error.code, 'INVALID_REQUEST');
   }
   const open = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
-    payload: { sessionId: request.requestId, shell: 'powershell', columns: 80, rows: 24 } };
+    payload: { sessionId: request.requestId, launch: { shell: 'powershell' }, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, shell: 'bash' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'bash' } } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'wsl' } } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'wsl', distribution: 'Ubuntu' } } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, sessionId: 'bad' } }).ok, false);
   const paste = { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1, payload: { sessionId: request.requestId } };
   assert.equal(parseRequest(paste).ok, true);
@@ -70,6 +92,9 @@ test('validates SSH connection requests and keeps host approval as a typed event
   const open = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'private-key' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'agent' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload,
@@ -281,6 +306,46 @@ test('FTP commands accept exact endpoints and safe directory replies without ret
     payload: { sessionId, operationId, reason: 'anything' } }).ok, false);
 });
 
+test('TFTP commands keep selected filesystem paths in main and validate loopback server state', () => {
+  const choose = { command: 'tftp.root.choose', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsedChoose = parseRequest(choose);
+  assert.equal(parsedChoose.ok, true);
+  assert.equal(parseRequest({ ...choose, payload: { absolutePath: 'C:\\private' } }).ok, false);
+  if (parsedChoose.ok) {
+    const selected = { selectionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', folderName: 'firmware' };
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: selected }, parsedChoose.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...selected, absolutePath: 'C:\\private' } }, parsedChoose.result), false);
+  }
+  const start = { command: 'tftp.start', requestId: request.requestId, contractVersion: 1,
+    payload: { selectionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', port: 0 } };
+  const parsedStart = parseRequest(start);
+  assert.equal(parsedStart.ok, true);
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, port: 65_536 } }).ok, false);
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, rootDirectory: 'C:\\private' } }).ok, false);
+  if (parsedStart.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+    result: { state: 'running', address: '127.0.0.1', port: 52_001, folderName: 'firmware' }
+  }, parsedStart.result), true);
+  const status = { command: 'tftp.status', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsedStatus = parseRequest(status);
+  assert.equal(parsedStatus.ok, true);
+  if (parsedStatus.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+    result: { state: 'running', address: '0.0.0.0', port: 69, folderName: 'firmware' }
+  }, parsedStatus.result), false);
+  assert.equal(parseRequest({ command: 'tftp.stop', requestId: request.requestId, contractVersion: 1, payload: { force: true } }).ok, false);
+});
+
+test('TFTP start gestures accept only a scoped action, opaque selection token, and valid port', () => {
+  const token = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  assert.deepEqual(parseTftpServerActionGestureRequest({ action: 'choose-root' }), { action: 'choose-root' });
+  assert.deepEqual(parseTftpServerActionGestureRequest({ action: 'start', selectionId: token, port: 0 }), { action: 'start', selectionId: token, port: 0 });
+  for (const value of [
+    { action: 'choose-root', path: 'C:\\private' },
+    { action: 'start', selectionId: token, port: 65_536 },
+    { action: 'start', selectionId: 'not-a-token', port: 69 },
+    { action: 'stop' }
+  ]) assert.equal(parseTftpServerActionGestureRequest(value), undefined);
+});
+
 test('saved-session IPC accepts only supported non-secret definitions and validated catalog actions', () => {
   const create = { command: 'session.create', requestId: request.requestId, contractVersion: 1,
     payload: { kind: 'ssh', name: 'Build host', host: 'server.example.com', port: 2222 } };
@@ -455,9 +520,12 @@ test('macro IPC accepts only typed steps and credential-free replies', () => {
 
 test('workbench preference IPC accepts bounded plain Unicode greeting text only', () => {
   const get = { command: 'preferences.get', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const settingsGet = { command: 'preferences.settings.get', requestId: request.requestId, contractVersion: 1, payload: {} };
   const save = { command: 'preferences.save', requestId: request.requestId, contractVersion: 1,
     payload: { preferences: { startupGreeting: 'Terminal ready — こんにちは 👋' } } };
+  const normalizedPreferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Terminal ready — こんにちは 👋' };
   assert.equal(parseRequest(get).ok, true);
+  assert.equal(parseRequest(settingsGet).ok, true);
   const parsed = parseRequest(save);
   assert.equal(parsed.ok, true);
   assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'bad\u0000text' } } }).ok, false);
@@ -468,10 +536,39 @@ test('workbench preference IPC accepts bounded plain Unicode greeting text only'
   assert.equal(parseRequest({ ...get, payload: { unexpected: true } }).ok, false);
   if (parsed.ok) {
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
-      result: { startupGreeting: 'Terminal ready — こんにちは 👋' } }, parsed.result), true);
+      result: normalizedPreferences }, parsed.result), true);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
       result: { startupGreeting: 'safe', command: 'whoami' } }, parsed.result), false);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: false,
       error: { code: 'CORRUPT', target: 'application', retryable: false } }, parsed.result), true);
+  }
+  const parsedGet = parseRequest(get);
+  const parsedSettingsGet = parseRequest(settingsGet);
+  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, powerShellProfileScript: 'Write-Output "private setting"' };
+  if (parsedGet.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: toWorkbenchStartupPreferences(preferences) }, parsedGet.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: preferences }, parsedGet.result), false);
+  }
+  if (parsedSettingsGet.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: preferences }, parsedSettingsGet.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: toWorkbenchStartupPreferences(preferences) }, parsedSettingsGet.result), false);
+  }
+});
+
+test('custom logo IPC accepts only the typed selection request and bounded PNG result', () => {
+  const choose = { command: 'branding.logo.select', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsed = parseRequest(choose);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...choose, payload: { path: 'C:\\Users\\logo.png' } }).ok, false);
+  if (parsed.ok) {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { dataUrl } }, parsed.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { dataUrl, path: 'C:\\logo.png' } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: false,
+      error: { code: 'CANCELLED', target: 'application', retryable: false } }, parsed.result), true);
   }
 });

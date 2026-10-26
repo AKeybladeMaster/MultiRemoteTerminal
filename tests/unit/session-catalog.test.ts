@@ -28,6 +28,7 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     const serial = await catalog.createSession({ kind: 'serial', name: 'Controller', configuration: serialConfiguration });
     const local = await catalog.createSession({ kind: 'local', name: 'Local PowerShell', shell: 'powershell' });
     const bash = await catalog.createSession({ kind: 'local', name: 'Local Bash', shell: 'bash' });
+    const wsl = await catalog.createSession({ kind: 'local', name: 'Ubuntu', shell: 'wsl', distribution: 'Ubuntu' });
     assert.equal(ssh.kind, 'ssh');
     assert.equal(sftp.kind, 'sftp');
     assert.equal(telnet.kind, 'telnet');
@@ -42,6 +43,13 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
     assert.equal(bash.kind, 'local');
     if (bash.kind !== 'local') throw new Error('Expected Bash definition');
     assert.equal(bash.shell, 'bash');
+    assert.deepEqual(wsl.kind === 'local' && wsl.shell === 'wsl' ? { shell: wsl.shell, distribution: wsl.distribution } : undefined,
+      { shell: 'wsl', distribution: 'Ubuntu' });
+    assert.equal((await catalog.getSessionDefinition(wsl.id))?.kind, 'local');
+    const persistedWsl = database.prepare('SELECT host, port, credential_ref, options_json FROM session_definitions WHERE id = ?').get(wsl.id) as {
+      readonly host: string | null; readonly port: number | null; readonly credential_ref: string | null; readonly options_json: string;
+    };
+    assert.deepEqual({ ...persistedWsl }, { host: null, port: null, credential_ref: null, options_json: '{"shell":"wsl","distribution":"Ubuntu"}' });
     if (ssh.kind !== 'ssh') throw new Error('Expected SSH definition');
     assert.deepEqual({ host: ssh.host, port: ssh.port }, { host: 'ssh.example.com', port: 2222 });
     const applicationCatalog = createSessionCatalog(catalog, unusedBundleDialog);
@@ -65,9 +73,9 @@ test('SQLite catalog creates, searches, favorites and deletes over one thousand 
       await catalog.createSession({ kind: 'local', name: `Connection ${String(index).padStart(4, '0')}`, shell: index % 2 === 0 ? 'powershell' : 'cmd' });
     }
     assert.equal((await catalog.listSessions('Connection')).length, 1_000);
-    assert.equal((await catalog.listSessions('')).length, 1_009);
-    assert.equal(await catalog.countSessions(), 1_009);
-    assert.deepEqual(await applicationCatalog.count(), { ok: true, result: 1_009 });
+    assert.equal((await catalog.listSessions('')).length, 1_010);
+    assert.equal(await catalog.countSessions(), 1_010);
+    assert.deepEqual(await applicationCatalog.count(), { ok: true, result: 1_010 });
     assert.equal((await catalog.listSessions('Local Bash')).some(item => item.id === bash.id), true);
     assert.equal(await catalog.setFavorite(ssh.id, true), true);
     assert.equal(await catalog.setFavorite(telnet.id, true), true);
@@ -383,6 +391,7 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     const vnc = await source.createSession({ kind: 'vnc', name: 'Linux desktop', host: 'linux.example.com', port: 5901 });
     const serialConfiguration = { path: 'COM7', baudRate: 115_200, dataBits: 7, parity: 'odd', stopBits: 2, flowControl: 'xonxoff' } as const;
     const serial = await source.createSession({ kind: 'serial', name: 'Control board', configuration: serialConfiguration });
+    const wsl = await source.createSession({ kind: 'local', name: 'Ubuntu', shell: 'wsl', distribution: 'Ubuntu-24.04' });
     await source.moveSession(session.id, child.id);
     await source.moveSession(telnet.id, root.id);
     await source.moveSession(ftp.id, child.id);
@@ -390,22 +399,26 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     await source.moveSession(rdp.id, child.id);
     await source.moveSession(vnc.id, child.id);
     await source.moveSession(serial.id, child.id);
+    await source.moveSession(wsl.id, child.id);
     await source.setFavorite(session.id, true);
     const path = join(directory, 'project.mrt-session-folder.json');
 
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 7 });
-    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 7 },
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 8 });
+    assert.deepEqual(await source.exportFolderToFile(root.id, path), { folderCount: 4, sessionCount: 8 },
       'exporting again to the selected file replaces it atomically');
     const text = await readFile(path, 'utf8');
     assert.match(text, /"format": "multiremote-terminal\/session-folder"/);
     assert.doesNotMatch(text, /password|credential|privateKey/i);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 7, createdFolderCount: 4, createdSessionCount: 7
+      folderCount: 4, sessionCount: 8, createdFolderCount: 4, createdSessionCount: 8
     });
+    assert.deepEqual((await destination.listSessions('Ubuntu')).map(session =>
+      session.kind === 'local' && session.shell === 'wsl' ? { shell: session.shell, distribution: session.distribution } : undefined),
+    [{ shell: 'wsl', distribution: 'Ubuntu-24.04' }]);
     assert.deepEqual(new Set((await destination.listFolders()).map(folder => folder.name)),
       new Set([root.name, child.name, unicodeUpper.name, unicodeLower.name]));
     const importedSessions = await destination.listSessions('');
-    assert.equal(importedSessions.length, 7);
+    assert.equal(importedSessions.length, 8);
     const importedSession = importedSessions.find(item => item.kind === 'ssh');
     assert.ok(importedSession?.kind === 'ssh');
     if (importedSession?.kind !== 'ssh') throw new Error('Expected an imported SSH definition');
@@ -444,7 +457,7 @@ test('SQLite folder bundle export/import round-trips a subtree without credentia
     assert.ok(importedSerial?.kind === 'serial' && sourceSerial?.kind === 'serial');
     assert.deepEqual(importedSerial, sourceSerial);
     assert.deepEqual(await destination.importFolderFromFile(path), {
-      folderCount: 4, sessionCount: 7, createdFolderCount: 0, createdSessionCount: 0
+      folderCount: 4, sessionCount: 8, createdFolderCount: 0, createdSessionCount: 0
     });
   } finally {
     sourceDatabase.close();

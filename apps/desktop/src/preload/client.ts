@@ -1,18 +1,20 @@
 import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
-  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
+  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
+  ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply, SshAuthenticationMethod } from '../../../../packages/contracts/src/commands.ts';
+import type { PowerShellProfileScriptPreviewReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { SshTextFileReply, SshTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
-import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
+import type { WorkbenchPreferencesReply, WorkbenchStartupPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { CredentialVaultStateReply, SessionCredentialPresenceReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSerialTerminalResult } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTextFileReply, LocalTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
-import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
@@ -27,6 +29,8 @@ import type { SshTrustEvent } from '../../../../packages/application/src/ssh-ter
 import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
+import { isTftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
 import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
@@ -37,9 +41,12 @@ type ConsumeTelnetConsent = (sessionId: string, host: string, port: number) => b
 type ConsumeFtpConsent = (sessionId: string, host: string, port: number, secure: boolean) => boolean | Promise<boolean>;
 type ConsumeRdpLaunch = (host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeVncLaunch = (host: string, port: number) => boolean | Promise<boolean>;
+type ConsumeTftpServerAction = (action: 'choose-root' | 'start', selectionId?: string, port?: number) => boolean | Promise<boolean>;
+type ConsumePowerShellProfileScript = (sessionId: string) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
+type ListenTftpServerStatus = Listen;
 type ListenRemoteFilesDropped = (listener: (value: unknown) => boolean) => () => void;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
@@ -54,6 +61,7 @@ const LOCAL_TEXT_FILE_TIMEOUT_MS = 20_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const SERIAL_OPEN_TIMEOUT_MS = 20_000;
 const SERIAL_LIST_TIMEOUT_MS = 10_000;
+const WSL_DISCOVERY_TIMEOUT_MS = 10_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
 const FTP_LIST_TIMEOUT_MS = 25_000;
 const FTP_CANCEL_TIMEOUT_MS = 45_000;
@@ -72,7 +80,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   consumeTelnetConsent: ConsumeTelnetConsent = () => false, consumeFtpConsent: ConsumeFtpConsent = () => false,
   listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {},
   listenTunnelStatus: ListenTunnelStatus = () => () => {}, consumeRdpLaunch: ConsumeRdpLaunch = () => false,
-  consumeVncLaunch: ConsumeVncLaunch = () => false, listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}): DesktopBridge {
+  consumeVncLaunch: ConsumeVncLaunch = () => false, consumeTftpServerAction: ConsumeTftpServerAction = () => false,
+  listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}, listenTftpServerStatus: ListenTftpServerStatus = () => () => {},
+  consumePowerShellProfileScript: ConsumePowerShellProfileScript = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -97,7 +107,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return Promise.race([received, new Promise<CommandReply<T>>(resolve => {
         timer = setTimeout(() => {
           if (request.command.startsWith('session.') || request.command.startsWith('macro.') || request.command.startsWith('preferences.') ||
-              request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.')) {
+              request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.') || request.command === 'tftp.start') {
             const reportTimeout = () => resolve({ requestId, ...failure('TIMEOUT') });
             try { void Promise.resolve(cancelCatalogRequest(requestId)).then(reportTimeout, reportTimeout); }
             catch { reportTimeout(); }
@@ -280,8 +290,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'serial.write' | 'serial.paste' | 'serial.resize' | 'serial.ack' | 'serial.close' |
-    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
-    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
+    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'wsl.distributions.cancel' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
+    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tftp.stop' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
     payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
@@ -290,11 +300,26 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     describe(): Promise<DescribeReply> {
       return send({ command: 'app.describe', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 3_000);
     },
-    openTerminal(sessionId: string, shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply> {
-      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, shell, columns, rows } }, 20_000);
+    openTerminal(sessionId: string, launch: LocalTerminalLaunch, columns: number, rows: number): Promise<OpenTerminalReply> {
+      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, launch, columns, rows } }, 20_000);
+    },
+    listWslDistributions(): Promise<ListWslDistributionsReply> {
+      return send({ command: 'wsl.distributions.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, WSL_DISCOVERY_TIMEOUT_MS);
+    },
+    cancelWslDistributionDiscovery(): Promise<TerminalActionReply> {
+      return send(voidRequest('wsl.distributions.cancel', {}), 5_000);
     },
     writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'terminal.write');
+    },
+    previewPowerShellProfileScript(sessionId: string): Promise<PowerShellProfileScriptPreviewReply> {
+      return send({ command: 'powershell.profile.preview', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId } }, 8_000);
+    },
+    applyPowerShellProfileScript(sessionId: string, previewId: string): Promise<TerminalActionReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumePowerShellProfileScript(sessionId)).then(authorized => authorized
+        ? send({ command: 'powershell.profile.apply', requestId: id, contractVersion: CONTRACT_VERSION, payload: { sessionId, previewId } }, 15_000)
+        : { requestId: id, ...failure('FORBIDDEN') });
     },
     pasteTerminal(sessionId: string): Promise<TerminalActionReply> {
       return pasteTerminalInput(sessionId, 'terminal.paste');
@@ -310,14 +335,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-      gatewayProfileIds?: readonly string[], savedProfileId?: string): Promise<OpenSshTerminalReply> {
+      gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply> {
       return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }),
-          ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }) } },
+          ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }),
+          ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } },
       sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
-    openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply> {
-      return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port } }, SSH_OPEN_TIMEOUT_MS);
+    openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSftpFilesReply> {
+      return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, host, port, ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } }, SSH_OPEN_TIMEOUT_MS);
     },
     writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'ssh.write');
@@ -479,6 +506,24 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     closeFtpFiles(sessionId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ftp.close', { sessionId }), 8_000);
     },
+    chooseTftpRoot(): Promise<ChooseTftpRootReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumeTftpServerAction('choose-root')).then(authorized => authorized
+        ? send({ command: 'tftp.root.choose', requestId: id, contractVersion: CONTRACT_VERSION, payload: {} })
+        : { requestId: id, ...failure('FORBIDDEN') }, () => ({ requestId: id, ...failure('FORBIDDEN') }));
+    },
+    startTftpServer(selectionId: string, port: number): Promise<TftpServerStatusReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumeTftpServerAction('start', selectionId, port)).then(authorized => authorized
+        ? send({ command: 'tftp.start', requestId: id, contractVersion: CONTRACT_VERSION, payload: { selectionId, port } }, 15_000)
+        : { requestId: id, ...failure('FORBIDDEN') }, () => ({ requestId: id, ...failure('FORBIDDEN') }));
+    },
+    getTftpServerStatus(): Promise<TftpServerStatusReply> {
+      return send({ command: 'tftp.status', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    stopTftpServer(): Promise<TerminalActionReply> {
+      return send(voidRequest('tftp.stop', {}), 15_000);
+    },
     launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply> {
       const id = requestId();
       return Promise.resolve().then(() => consumeRdpLaunch(host, port)).then(authorized => authorized
@@ -518,8 +563,14 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     deleteMacroShortcut(macroId: string): Promise<TerminalActionReply> {
       return send(voidRequest('macro.shortcut.delete', { macroId }), 8_000);
     },
-    getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply> {
+    selectCustomLogo(): Promise<SelectCustomLogoReply> {
+      return send({ command: 'branding.logo.select', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} });
+    },
+    getWorkbenchPreferences(): Promise<WorkbenchStartupPreferencesReply> {
       return send({ command: 'preferences.get', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    getWorkbenchSettingsPreferences(): Promise<WorkbenchPreferencesReply> {
+      return send({ command: 'preferences.settings.get', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
     },
     saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply> {
       return send({ command: 'preferences.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { preferences } }, 8_000);
@@ -628,6 +679,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         return listenTunnelStatus(value => {
           if (isTunnelStatusEvent(value)) {
             try { listener(value); } catch { /* Runtime observers cannot affect forwarding cleanup. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onTftpServerStatus(listener: (status: TftpServerStatus) => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenTftpServerStatus(value => {
+          if (isTftpServerStatus(value)) {
+            try { listener(value); } catch { /* Status observers cannot interrupt worker lifecycle cleanup. */ }
           }
         });
       } catch { return () => {}; }

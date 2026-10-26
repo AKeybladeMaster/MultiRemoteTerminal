@@ -2,8 +2,12 @@ import type * as NodePty from 'node-pty';
 import { existsSync } from 'node:fs';
 import { win32 } from 'node:path';
 import { failure } from '../../../../packages/domain/src/errors.ts';
-import type { LocalShell, TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalShell, LocalTerminalLaunch, TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
+import { isWslDistributionName } from '../../../../packages/domain/src/wsl-distributions.ts';
+import type { WslDistribution } from '../../../../packages/domain/src/wsl-distributions.ts';
 import type { LocalTerminalEvent, LocalTerminalProvider } from '../../../../packages/application/src/local-terminals.ts';
+import { createWslDistributionDiscovery } from './wsl-distribution-discovery.ts';
+import type { WslDistributionDiscovery } from './wsl-distribution-discovery.ts';
 
 const OUTPUT_LIMIT_BYTES = 1_048_576;
 const OUTPUT_PAUSE_BYTES = 65_536;
@@ -11,7 +15,7 @@ const OUTPUT_RESUME_BYTES = 32_768;
 const OUTPUT_CHUNK_CHARS = 16_384;
 const CLOSE_TIMEOUT_MS = 2_000;
 
-export function resolveShellExecutable(shell: LocalShell, environment: NodeJS.ProcessEnv = process.env,
+export function resolveShellExecutable(shell: Exclude<LocalShell, 'wsl'>, environment: NodeJS.ProcessEnv = process.env,
   fileExists: (path: string) => boolean = existsSync): string {
   if (shell === 'bash') {
     // Windows' System32 bash.exe is a WSL launcher, so discover Git Bash only in known install roots.
@@ -34,6 +38,17 @@ export function resolveShellExecutable(shell: LocalShell, environment: NodeJS.Pr
   return shell === 'powershell'
     ? win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
     : win32.join(systemRoot, 'System32', 'cmd.exe');
+}
+
+export function resolveWslExecutable(systemDirectory: string): string {
+  if (!win32.isAbsolute(systemDirectory)) throw new Error('Windows system directory is unavailable');
+  return win32.join(systemDirectory, 'wsl.exe');
+}
+
+interface LocalPtyProviderOptions {
+  readonly systemDirectory?: string;
+  readonly wslHarnessEnabled?: boolean;
+  readonly wslDiscovery?: WslDistributionDiscovery;
 }
 
 interface OutputChunk {
@@ -70,22 +85,46 @@ export class LocalPtyProvider implements LocalTerminalProvider {
   private readonly sessions = new Map<string, PtySession>();
   private readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   private readonly ptySpawn: typeof NodePty.spawn;
+  private readonly systemDirectory: string;
+  private readonly wslDiscovery: WslDistributionDiscovery;
+  private readonly wslHarnessEnabled: boolean;
 
-  constructor(ptySpawn: typeof NodePty.spawn) { this.ptySpawn = ptySpawn; }
+  constructor(ptySpawn: typeof NodePty.spawn, options: LocalPtyProviderOptions = {}) {
+    this.ptySpawn = ptySpawn;
+    this.systemDirectory = options.systemDirectory ?? '';
+    this.wslHarnessEnabled = options.wslHarnessEnabled === true;
+    this.wslDiscovery = options.wslDiscovery ?? (this.wslHarnessEnabled
+      ? { async list() { return Object.freeze([{ name: 'Ubuntu' }, { name: 'Debian Dev' }]); }, cancel() {} }
+      : createWslDistributionDiscovery(this.systemDirectory));
+  }
 
-  async open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<void> {
+  async open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<void> {
     if (process.platform !== 'win32') throw new Error('ConPTY is only available on Windows');
     if (this.sessions.has(sessionId)) throw new Error('Terminal session already exists');
-    const executable = resolveShellExecutable(shell);
-    const args = shell === 'powershell' ? ['-NoLogo', '-NoProfile'] :
-      shell === 'cmd' ? ['/Q', '/D', '/K', 'chcp 65001'] : ['--login', '-i'];
+    let executable: string;
+    let args: string[];
+    if (launch.shell === 'wsl') {
+      if (!isWslDistributionName(launch.distribution)) throw new Error('Invalid WSL distribution name');
+      const distributions = await this.wslDiscovery.list();
+      if (!distributions.some(distribution => distribution.name === launch.distribution)) {
+        throw new Error('The selected WSL distribution is no longer installed');
+      }
+      executable = resolveWslExecutable(this.systemDirectory);
+      args = ['--distribution', launch.distribution, '--exec', 'bash', '--login'];
+    } else {
+      executable = resolveShellExecutable(launch.shell);
+      args = launch.shell === 'powershell' ? ['-NoLogo', '-NoProfile'] :
+        launch.shell === 'cmd' ? ['/Q', '/D', '/K', 'chcp 65001'] : ['--login', '-i'];
+    }
     const home = process.env.USERPROFILE || process.env.HOME;
-    const terminal = this.ptySpawn(executable, args, {
+    const terminal = launch.shell === 'wsl' && this.wslHarnessEnabled
+      ? createWslHarnessPty(executable, args, size)
+      : this.ptySpawn(executable, args, {
       name: 'xterm-256color', cols: size.columns, rows: size.rows,
       ...(home ? { cwd: home } : {}),
       env: process.env,
       useConpty: true, useConptyDll: false, conptyInheritCursor: true
-    });
+      });
 
     let resolveExit = () => {};
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
@@ -153,6 +192,7 @@ export class LocalPtyProvider implements LocalTerminalProvider {
   }
 
   async shutdown(): Promise<void> {
+    this.wslDiscovery.cancel();
     const results = await Promise.allSettled([...this.sessions.keys()].map(sessionId => this.close(sessionId)));
     const failed = results.some(result => result.status === 'rejected');
     this.listeners.clear();
@@ -162,6 +202,14 @@ export class LocalPtyProvider implements LocalTerminalProvider {
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  async listWslDistributions(): Promise<readonly WslDistribution[]> {
+    return this.wslDiscovery.list();
+  }
+
+  cancelWslDistributionDiscovery(): void {
+    this.wslDiscovery.cancel();
   }
 
   private requireSession(sessionId: string): PtySession {
@@ -218,4 +266,29 @@ export class LocalPtyProvider implements LocalTerminalProvider {
       try { listener(event); } catch { /* A subscriber cannot interrupt PTY cleanup. */ }
     }
   }
+}
+
+function createWslHarnessPty(executable: string, args: readonly string[], size: TerminalSize): NodePty.IPty {
+  let exitListener: ((event: { readonly exitCode: number; readonly signal?: number }) => void) | undefined;
+  let disposed = false;
+  let columns = size.columns;
+  let rows = size.rows;
+  const terminal = {
+    pid: process.pid,
+    get cols() { return columns; },
+    get rows() { return rows; },
+    onData(listener: (data: string) => void) {
+      setImmediate(() => { if (!disposed) listener(`WSL harness: ${JSON.stringify([executable, ...args])}\r\n$ `); });
+      return { dispose() { disposed = true; } };
+    },
+    onExit(listener: (event: { readonly exitCode: number; readonly signal?: number }) => void) {
+      exitListener = listener;
+      return { dispose() { exitListener = undefined; } };
+    },
+    write() {},
+    resize(nextColumns: number, nextRows: number) { columns = nextColumns; rows = nextRows; },
+    clear() {}, pause() {}, resume() {},
+    kill() { disposed = true; setImmediate(() => exitListener?.({ exitCode: 0 })); }
+  };
+  return terminal as unknown as NodePty.IPty;
 }

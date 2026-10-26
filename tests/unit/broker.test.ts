@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { dispatchCommand } from '../../apps/desktop/src/main/broker.ts';
+import { createCustomLogoPreferenceAccess } from '../../apps/desktop/src/main/custom-logo-preferences.ts';
 import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/broker.ts';
 import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
-import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
+import type { SshAuthenticationSelection } from '../../packages/application/src/ssh-terminals.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
+import { failure } from '../../packages/domain/src/errors.ts';
 import type { SerialConfiguration } from '../../packages/domain/src/serial.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -19,15 +22,20 @@ const emptyMacro = { id: '7c08b18a-57cc-4b44-a8b3-2d404850e81c', schemaVersion: 
   createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
+  authorizePowerShellProfileScript: () => false,
   authorizeFtpConsent: () => false, authorizeRdpLaunch: () => false,
-  authorizeVncLaunch: () => false,
+  authorizeVncLaunch: () => false, authorizeTftpServerAction: () => false,
+  chooseTftpRoot: async () => failure('UNAVAILABLE'), startTftpServer: async () => failure('UNAVAILABLE'),
   confirmMultilinePaste: async () => false,
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
-  reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
+  reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined,
+  selectSshPrivateKey: async () => failure('CANCELLED'), selectSshDownloadPath: async () => undefined,
   resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
+  selectCustomLogo: async () => ({ ok: true, result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } }),
   discardDroppedUploadHandles: () => {}, terminals: {
-    async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
-    write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+    async open(sessionId, launch) { return { ok: true, result: { sessionId, ...launch, state: 'running' } }; },
+    async listWslDistributions() { return { ok: true, result: [{ name: 'Ubuntu' }] }; }, cancelWslDistributionDiscovery: noOp,
+    write: noOp, applyPowerShellProfileScript: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     async openFiles(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
@@ -93,10 +101,52 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
     async stop(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; }
+  }, powerShellProfileScripts: {
+    async preview() { return { ok: true, result: { previewId: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', script: 'Write-Output "ready"' } }; },
+    apply: noOp
   }, preferences: {
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
+    readStartup: async () => ({ ok: true, result: toWorkbenchStartupPreferences(DEFAULT_WORKBENCH_PREFERENCES) }),
     save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
-  }
+  }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
+});
+
+test('PowerShell profile application requires the trusted main-process gesture before using a saved preview', async () => {
+  let authorized = false;
+  let applied = 0;
+  let activity = 0;
+  const base = actions(snapshot, () => { activity++; });
+  const guarded: CommandActions = {
+    ...base,
+    authorizePowerShellProfileScript: () => authorized,
+    powerShellProfileScripts: {
+      ...base.powerShellProfileScripts,
+      async apply(sessionId, previewId) {
+        applied++;
+        assert.equal(sessionId, request.requestId);
+        assert.equal(previewId, '18f2f903-7b6f-4c8d-9c42-b63a58c4b087');
+        return { ok: true, result: {} };
+      }
+    }
+  };
+  const input = { command: 'powershell.profile.apply', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId, previewId: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087' } };
+
+  const denied = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(applied, 0, 'unauthorized renderer requests cannot reach profile execution');
+  assert.equal(activity, 0, 'unauthorized profile applies must not count as user activity');
+
+  authorized = true;
+  const accepted = await dispatchCommand(owner, input, guarded, () => {});
+  assert.deepEqual(accepted, { requestId: request.requestId, ok: true, result: {} });
+  assert.equal(applied, 1);
+  assert.equal(activity, 1, 'an authorized profile apply records user activity once');
+
+  await dispatchCommand(owner, { command: 'powershell.profile.preview', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId } }, guarded, () => {});
+  assert.equal(activity, 2, 'a profile preview records user activity once');
 });
 
 test('session auto-save requires the persisted opt-in preference at the main-process broker', async () => {
@@ -125,6 +175,84 @@ test('session auto-save requires the persisted opt-in preference at the main-pro
   assert.equal(activity, 2);
 });
 
+test('custom logo selection uses only the native main-process picker action', async () => {
+  let activity = 0;
+  const reply = await dispatchCommand(owner, { command: 'branding.logo.select', requestId: request.requestId, contractVersion: 1, payload: {} },
+    actions(snapshot, () => { activity++; }), () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: true,
+    result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } });
+  assert.equal(activity, 1);
+});
+
+test('preferences broker accepts changed logos only from the bounded main-process picker', async () => {
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==';
+  let stored = DEFAULT_WORKBENCH_PREFERENCES;
+  let saveCount = 0;
+  const manager = {
+    async read() { return { ok: true as const, result: stored }; },
+    async readStartup() { return { ok: true as const, result: toWorkbenchStartupPreferences(stored) }; },
+    async save(value: unknown) {
+      saveCount++;
+      stored = value as typeof DEFAULT_WORKBENCH_PREFERENCES;
+      return { ok: true as const, result: stored };
+    }
+  };
+  const logoAccess = createCustomLogoPreferenceAccess(manager, { async select() { return { ok: true, result: { dataUrl } }; } });
+  const guardedActions: CommandActions = { ...actions(), preferences: logoAccess.preferences, selectCustomLogo: logoAccess.select };
+  const saveRequest = (customLogoDataUrl: string | null) => ({ command: 'preferences.save', requestId: request.requestId,
+    contractVersion: 1, payload: { preferences: { ...DEFAULT_WORKBENCH_PREFERENCES, customLogoDataUrl } } });
+
+  const oversized = Buffer.alloc(524_290);
+  oversized.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 0);
+  oversized.writeUInt32BE(1, 16);
+  oversized.writeUInt32BE(1, 20);
+  const tooLargeDataUrl = `data:image/png;base64,${oversized.toString('base64')}`;
+  const overLimit = await dispatchCommand(owner, saveRequest(tooLargeDataUrl), guardedActions, () => {});
+  assert.equal(overLimit.ok, false);
+  if (!overLimit.ok) assert.equal(overLimit.error.code, 'INVALID_REQUEST');
+  assert.equal(saveCount, 0);
+
+  const forged = await dispatchCommand(owner, saveRequest(dataUrl), guardedActions, () => {});
+  assert.equal(forged.ok, false);
+  if (!forged.ok) assert.equal(forged.error.code, 'INVALID_REQUEST');
+  assert.equal(saveCount, 0);
+
+  const selection = await dispatchCommand(owner, { command: 'branding.logo.select', requestId: request.requestId, contractVersion: 1, payload: {} },
+    guardedActions, () => {});
+  assert.equal(selection.ok, true);
+  const accepted = await dispatchCommand(owner, saveRequest(dataUrl), guardedActions, () => {});
+  assert.equal(accepted.ok, true);
+  assert.equal(saveCount, 1);
+
+  const unchanged = await dispatchCommand(owner, saveRequest(dataUrl), guardedActions, () => {});
+  assert.equal(unchanged.ok, true);
+  const cleared = await dispatchCommand(owner, saveRequest(null), guardedActions, () => {});
+  assert.equal(cleared.ok, true);
+  assert.equal(saveCount, 3);
+  assert.equal(stored.customLogoDataUrl, null);
+});
+
+test('startup preference command omits the PowerShell script and Settings can read it explicitly', async () => {
+  const stored = { ...DEFAULT_WORKBENCH_PREFERENCES, powerShellProfileScript: 'Write-Output "private setting"' };
+  const base = actions();
+  const guarded: CommandActions = { ...base, preferences: {
+    ...base.preferences,
+    async read() { return { ok: true, result: stored }; },
+    async readStartup() { return { ok: true, result: toWorkbenchStartupPreferences(stored) }; }
+  } };
+  const startup = await dispatchCommand(owner, { command: 'preferences.get', requestId: request.requestId, contractVersion: 1, payload: {} }, guarded, () => {});
+  assert.equal(startup.ok, true);
+  if (startup.ok) {
+    const result = startup.result as Record<string, unknown>;
+    assert.equal(Object.hasOwn(result, 'powerShellProfileScript'), false);
+    assert.equal(result.startupGreeting, stored.startupGreeting);
+  }
+  const settings = await dispatchCommand(owner, { command: 'preferences.settings.get', requestId: request.requestId,
+    contractVersion: 1, payload: {} }, guarded, () => {});
+  assert.equal(settings.ok, true);
+  if (settings.ok) assert.equal((settings.result as Record<string, unknown>).powerShellProfileScript, stored.powerShellProfileScript);
+});
+
 test('saved SSH opens resolve the profile credential in main and clear it after provider handoff', async () => {
   const profileId = '11111111-1111-4111-8111-111111111111';
   const secret = { username: 'alice', password: 'must-not-reach-renderer' };
@@ -138,8 +266,8 @@ test('saved SSH opens resolve the profile credential in main and clear it after 
       assert.equal(port, 22);
       return { ok: true, result: secret };
     } },
-    sshTerminals: { ...base.sshTerminals, async open(sessionId, host, port, _size, _gateways, credentials) {
-      received = credentials;
+    sshTerminals: { ...base.sshTerminals, async open(sessionId, host, port, _size, _gateways, authentication) {
+      received = authentication?.method === 'password' ? authentication.savedCredentials : undefined;
       return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
     } }
   };
@@ -149,6 +277,68 @@ test('saved SSH opens resolve the profile credential in main and clear it after 
   assert.equal(received?.password, '');
   assert.deepEqual(secret, { username: '', password: '' });
   assert.equal(JSON.stringify(reply).includes('must-not-reach-renderer'), false);
+});
+
+test('SSH key selection is held in main, passed once to the controller and cleared before the reply', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const selected = { data: Buffer.from('one-time-private-key'), fileName: 'id_ed25519' };
+  const expected = Buffer.from(selected.data);
+  let received: Buffer | undefined;
+  let receivedFileName: string | undefined;
+  const base = actions();
+  const wired: CommandActions = { ...base,
+    async selectSshPrivateKey() { return { ok: true, result: selected }; },
+    sshTerminals: { ...base.sshTerminals, async open(id, host, port, _size, _gateways, authentication) {
+      assert.equal(id, sessionId);
+      const privateKey = authentication?.method === 'private-key' ? authentication.privateKey : undefined;
+      received = Buffer.from(privateKey?.data ?? []);
+      receivedFileName = privateKey?.fileName;
+      return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, authenticationMethod: 'private-key' } }, wired, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(received, expected);
+  assert.equal(receivedFileName, 'id_ed25519');
+  assert.deepEqual([...selected.data], new Array(expected.length).fill(0));
+  assert.equal(JSON.stringify(reply).includes('one-time-private-key'), false);
+  assert.equal(JSON.stringify(reply).includes('id_ed25519'), false);
+});
+
+test('SSH agent selection stays a semantic auth mode and does not resolve saved passwords', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let received: SshAuthenticationSelection | undefined;
+  let resolvedSavedCredential = false;
+  let selectedPrivateKey = false;
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    async selectSshPrivateKey() { selectedPrivateKey = true; return failure('CANCELLED'); },
+    sessionCredentials: { ...base.sessionCredentials, async resolveSshCredential() {
+      resolvedSavedCredential = true;
+      return failure('UNAVAILABLE');
+    } },
+    sshTerminals: { ...base.sshTerminals, async open(_id, _host, _port, _size, _gateways, authentication) {
+      received = authentication;
+      return { ok: true, result: { sessionId, endpoint: { host: 'server.example.net', port: 22 }, state: 'running' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, profileId: '11111111-1111-4111-8111-111111111111',
+      authenticationMethod: 'agent' } }, wired, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(received, { method: 'agent' });
+  assert.equal(selectedPrivateKey, false);
+  assert.equal(resolvedSavedCredential, false);
+
+  const fileOnly = await dispatchCommand(owner, { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: 'd8f87744-bd2c-4c0d-9a18-a4a324dd71fd', host: 'server.example.net', port: 22, authenticationMethod: 'agent' } }, {
+    ...wired, sshTerminals: { ...wired.sshTerminals, async openFiles(_id, _host, _port, authentication) { received = authentication; return { ok: true,
+      result: { sessionId: _id, endpoint: { host: 'server.example.net', port: 22 }, state: 'running' } }; } }
+  }, () => {});
+  assert.equal(fileOnly.ok, true);
+  assert.deepEqual(received, { method: 'agent' });
 });
 
 test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {
@@ -399,7 +589,7 @@ test('valid sender reaches the application through its interface', async () => {
 test('terminal open forwards the preallocated id for close-during-startup cancellation', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const input = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
-    payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 } };
+    payload: { sessionId, launch: { shell: 'cmd' }, columns: 80, rows: 24 } };
   assert.deepEqual(await dispatchCommand(owner, input, actions(), () => {}), {
     requestId: request.requestId, ok: true, result: { sessionId, shell: 'cmd', state: 'running' }
   });
@@ -652,7 +842,7 @@ test('only validated local, SSH or Telnet terminal open, write and close command
 
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const commands = [
-    { command: 'terminal.open', payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 } },
+    { command: 'terminal.open', payload: { sessionId, launch: { shell: 'cmd' }, columns: 80, rows: 24 } },
     { command: 'terminal.write', payload: { sessionId, data: 'echo ready' } },
     { command: 'terminal.close', payload: { sessionId } }
   ];

@@ -28,6 +28,8 @@ test('real static asset adapter serves only allowed resources with strict header
     assert.match(csp, /script-src 'self';/u);
     assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/u);
     assert.match(csp, /style-src 'self' 'unsafe-inline';/u);
+    assert.match(csp, /img-src 'self' data:;/u);
+    assert.doesNotMatch(csp, /script-src[^;]*data:/u);
     assert.match(csp, /connect-src 'none'/u);
     assert.equal(response.headers.get('X-Content-Type-Options'), 'nosniff');
     assert.equal((await serveAsset(root, new Request('mrt://app/index.html', { method: 'POST' }))).status, 403);

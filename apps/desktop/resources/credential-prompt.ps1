@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('ssh-password', 'ssh-key-passphrase', 'ftp-account', 'master-password')]
+    [ValidateSet('ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'master-password')]
     [string] $Purpose,
     [ValidateLength(0, 256)]
     [string] $Context = ''
@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $purposeMessages = @{
     'ssh-password' = 'Enter the SSH account credential.'
     'ssh-key-passphrase' = 'Unlock the selected SSH private key.'
+    'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'
     'ftp-account' = 'Enter the FTP account credential.'
     'master-password' = 'Enter the vault master password.'
 }

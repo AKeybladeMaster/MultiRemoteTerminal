@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWorkbenchPreferencesManager } from '../../packages/application/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
-import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences,
+  toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS } from '../../packages/domain/src/local-shell-tools.ts';
+import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../packages/domain/src/powershell-profile.ts';
 
 test('workbench greeting validation preserves Unicode, normalizes newlines, and accepts clearing the greeting', () => {
   assert.deepEqual(normalizeWorkbenchPreferences({ startupGreeting: 'Привет 👋\r\nこんにちは' }), {
@@ -63,6 +66,61 @@ test('workbench preferences migrate shell-coloring schema with contextual SFTP p
   assert.equal(normalizeWorkbenchPreferences({ ...previous, showSftpBrowserBesideSsh: 'no' }), undefined);
 });
 
+test('workbench preferences migrate shell visibility defaults and reject unknown or duplicate tools', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: true, terminalHighlightRules: [],
+    autoSaveSessions: true, terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...previous
+  });
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['bash', 'powershell'] })?.visibleLocalShells,
+    ['powershell', 'bash']);
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: [] })?.visibleLocalShells, []);
+  assert.deepEqual(DEFAULT_VISIBLE_LOCAL_SHELLS, ['powershell', 'cmd', 'bash', 'wsl']);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['powershell', 'unknown'] }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['bash', 'bash'] }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: 'bash' }), undefined);
+});
+
+test('workbench preferences migrate schema v7 and validate bounded normalized logos', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+    autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: ['powershell', 'bash'] };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous, 7), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...previous
+  });
+  const logo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: logo }), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...previous, customLogoDataUrl: logo
+  });
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 'data:image/png;base64,../../bad' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 42 }), undefined);
+});
+
+test('workbench preferences migrate schema v8 logos with an empty profile script and reject malformed scripts', () => {
+  const logo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const schemaV8 = { startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+    autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: ['powershell', 'bash', 'wsl'], customLogoDataUrl: logo };
+  assert.deepEqual(normalizeWorkbenchPreferences(schemaV8, 8), { ...DEFAULT_WORKBENCH_PREFERENCES, ...schemaV8 });
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'bad\u0000script' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'x'.repeat(16_001) }), undefined);
+});
+
+test('PowerShell profile text normalizes newlines and rejects unreviewable controls and oversized scripts', () => {
+  assert.equal(normalizePowerShellProfileScript('function Say-Hello {\r\n  "hello"\r\n}'),
+    'function Say-Hello {\n  "hello"\n}');
+  assert.equal(normalizePowerShellProfileScript('Write-Output "bad\u0000text"'), undefined);
+  assert.equal(normalizePowerShellProfileScript('Write-Output "bad\u0085text"'), undefined);
+  assert.equal(normalizePowerShellProfileScript('Write-Output "safe"\u202E; Remove-Item *'), undefined,
+    'bidi overrides must not visually disguise reviewed script text');
+  assert.equal(normalizePowerShellProfileScript('Write-Output "safe"\u2066; Remove-Item *\u2069'), undefined,
+    'bidi isolates must not visually disguise reviewed script text');
+  assert.equal(normalizePowerShellProfileScript('Write-Output "safe"\u2028; Remove-Item *'), undefined,
+    'Unicode line separators must not obscure command boundaries');
+  assert.equal(normalizePowerShellProfileScript('x'.repeat(MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS + 1)), undefined);
+});
+
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {
   const originalReplace = String.prototype.replace;
   let scannedOversizedInput = false;
@@ -93,6 +151,19 @@ test('preferences manager validates before storage and returns saved values', as
   assert.deepEqual(await manager.save({ startupGreeting: 'bad\u0007value' }),
     { ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
   assert.deepEqual(writes, ['Terminal ready — こんにちは']);
+});
+
+test('startup preferences omit the saved PowerShell script while settings retain it', async () => {
+  const stored = { ...DEFAULT_WORKBENCH_PREFERENCES, powerShellProfileScript: 'Write-Output "private setting"' };
+  const manager = createWorkbenchPreferencesManager({
+    async readWorkbenchPreferences() { return stored; },
+    async saveWorkbenchPreferences(preferences) { return preferences; }
+  });
+
+  const startup = await manager.readStartup();
+  assert.deepEqual(startup, { ok: true, result: toWorkbenchStartupPreferences(stored) });
+  assert.equal(startup.ok && Object.hasOwn(startup.result, 'powerShellProfileScript'), false);
+  assert.deepEqual(await manager.read(), { ok: true, result: stored });
 });
 
 test('preferences manager preserves the corrupt-storage error category', async () => {

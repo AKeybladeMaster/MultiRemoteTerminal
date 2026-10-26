@@ -138,6 +138,22 @@ coloring rather than full shell syntax highlighting.
 
 Use the theme button or command palette to switch between light and dark themes.
 
+### PowerShell profile script
+
+In **Workbench settings**, enter a script in **Saved PowerShell script** and
+choose **Save changes**. The app stores up to 8,000 UTF-16 code units as local
+plain text. Do not put passwords, tokens, or other secrets in this field.
+
+The app keeps PowerShell startup at `-NoProfile`; this setting does not edit the
+normal PowerShell `$PROFILE` file and does not run when the app starts or when a
+terminal opens. To run the saved script, select a running local PowerShell tab,
+open Settings, choose **Preview saved script**, review the exact saved text, then
+choose **Run in this PowerShell session**. Run it only when PowerShell is at an
+idle prompt: the script is sent as terminal input, so another foreground program
+or prompt may receive it instead. Scripts run with your Windows account's normal
+permissions and can change files or contact network services. This does not
+apply to cmd, Bash, WSL, SSH, Telnet, or other sessions.
+
 ## Troubleshooting
 
 - **SSH connection fails:** check the host, port, network route, server status,

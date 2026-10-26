@@ -2,24 +2,30 @@ import { basename } from 'node:path';
 import { isAppDocument, parseRequest, requestIdOf } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
-import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationSelection, SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { SerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import type { RdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import type { VncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
+import type { TftpServerController } from '../../../../packages/application/src/tftp-server.ts';
 import type { LocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { MacroCatalog } from '../../../../packages/application/src/macros.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
+import type { PowerShellProfileScriptController } from '../../../../packages/application/src/powershell-profile.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
+import type { SshPrivateKeySelection } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
+import type { TftpRootSelection, TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
+import type { CustomLogoSelection } from '../../../../packages/domain/src/custom-logo.ts';
+import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import type { DroppedUploadSelection } from './dropped-upload-registry.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
@@ -52,23 +58,31 @@ export interface CommandActions {
   readonly noteUserActivity: () => void;
   readonly readClipboardText: () => Promise<string>;
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
+  readonly authorizePowerShellProfileScript: (sessionId: string) => boolean;
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
   readonly authorizeRdpLaunch: (host: string, port: number) => boolean;
   readonly authorizeVncLaunch: (host: string, port: number) => boolean;
+  readonly authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) => boolean;
+  readonly chooseTftpRoot: (cancellation?: CancellationSignal) => Promise<Outcome<TftpRootSelection>>;
+  readonly startTftpServer: (selectionId: string, port: number, cancellation?: CancellationSignal) => Promise<Outcome<TftpServerStatus>>;
   readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly selectFtpUploadFile: () => Promise<FtpUploadSelection | undefined>;
   readonly selectFtpDownloadPath: (fileName: string) => Promise<string | undefined>;
   readonly resolveFtpTransferConflict: (direction: FtpTransferDirection, fileName: string) => Promise<FtpTransferConflictPolicy | undefined>;
   readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
+  readonly selectSshPrivateKey: () => Promise<Outcome<SshPrivateKeySelection>>;
   readonly consumeDroppedUpload: (context: RemoteFileDropContext, token: string) => DroppedUploadSelection | undefined;
   readonly discardDroppedUploadHandles: (context: RemoteFileDropContext, tokens: readonly string[]) => void;
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
   readonly resolveSshTransferConflict: (direction: FileTransferDirection, fileName: string) => Promise<FileTransferConflictPolicy | undefined>;
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
+  readonly selectCustomLogo: () => Promise<Outcome<CustomLogoSelection>>;
   readonly cancellation?: CancellationSignal;
-  readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'applyPowerShellProfileScript' |
+    'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly powerShellProfileScripts: Pick<PowerShellProfileScriptController, 'preview' | 'apply'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
     'downloadRemoteFile' | 'readRemoteTextFile' | 'saveRemoteTextFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
@@ -81,8 +95,9 @@ export interface CommandActions {
   readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'enableMasterPassword' | 'disableMasterPassword' | 'resetVault' |
     'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
-  readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
+  readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'readStartup' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
+  readonly tftpServer: Pick<TftpServerController, 'getStatus' | 'stop'>;
 }
 
 async function pasteFromClipboard(
@@ -127,20 +142,33 @@ export async function dispatchCommand(
         parsed.result.command === 'ssh.files.write-text' || parsed.result.command === 'ssh.files.cancel' ||
         parsed.result.command === 'session.remember' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
+        parsed.result.command === 'wsl.distributions.list' ||
         parsed.result.command === 'serial.open' || parsed.result.command === 'serial.write' || parsed.result.command === 'serial.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
+        parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start' || parsed.result.command === 'tftp.stop' ||
+        parsed.result.command === 'branding.logo.select' ||
         parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
-        const { sessionId, shell, columns, rows } = parsed.result.payload;
-        return { requestId, ...await actions.terminals.open(sessionId, shell, { columns, rows }) };
+        const { sessionId, launch, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.terminals.open(sessionId, launch, { columns, rows }) };
       }
       case 'terminal.write': {
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.terminals.write(sessionId, data) };
+      }
+      case 'powershell.profile.preview': {
+        actions.noteUserActivity();
+        return { requestId, ...await actions.powerShellProfileScripts.preview(parsed.result.payload.sessionId) };
+      }
+      case 'powershell.profile.apply': {
+        const { sessionId, previewId } = parsed.result.payload;
+        if (!actions.authorizePowerShellProfileScript(sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return { requestId, ...await actions.powerShellProfileScripts.apply(sessionId, previewId) };
       }
       case 'terminal.paste': {
         if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
@@ -158,8 +186,14 @@ export async function dispatchCommand(
       case 'terminal.close': {
         return { requestId, ...await actions.terminals.close(parsed.result.payload.sessionId) };
       }
+      case 'wsl.distributions.list': {
+        actions.noteUserActivity();
+        return { requestId, ...await actions.terminals.listWslDistributions() };
+      }
+      case 'wsl.distributions.cancel': return { requestId, ...await actions.terminals.cancelWslDistributionDiscovery() };
       case 'ssh.open': {
         const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId } = parsed.result.payload;
+        const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
         const endpoints: SshHostEndpoint[] = [];
         for (const gatewayProfileId of gatewayProfileIds) {
           const result = await actions.sessionCatalog.get(gatewayProfileId, actions.cancellation);
@@ -169,24 +203,46 @@ export async function dispatchCommand(
         }
         const route = normalizeSshGatewayRoute(endpoints, { host, port });
         if (!route) return { requestId, ...failure('INVALID_REQUEST') };
+        let authentication: SshAuthenticationSelection | undefined;
+        if (authenticationMethod === 'private-key') {
+          const selected = await actions.selectSshPrivateKey();
+          if (!selected.ok) return { requestId, ...selected };
+          authentication = { method: 'private-key', privateKey: selected.result };
+        } else if (authenticationMethod === 'agent') {
+          authentication = { method: 'agent' };
+        }
         let savedCredentials;
-        if (profileId) {
+        if (profileId && authenticationMethod === 'password') {
           const credential = await actions.sessionCredentials.resolveSshCredential(profileId, host, port, actions.cancellation);
-          if (!credential.ok) return { requestId, ...credential };
+          if (!credential.ok) {
+            if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
+            return { requestId, ...credential };
+          }
           savedCredentials = credential.result;
+          authentication = savedCredentials ? { method: 'password', savedCredentials } : { method: 'password' };
         }
         try {
-          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route, savedCredentials) };
+          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route, authentication) };
         } finally {
           if (savedCredentials) {
             savedCredentials.username = '';
             savedCredentials.password = '';
           }
+          if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
         }
       }
       case 'sftp.open': {
         const { sessionId, host, port } = parsed.result.payload;
-        return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
+        const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
+        if (authenticationMethod === 'password') return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
+        if (authenticationMethod === 'agent') {
+          return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, { method: 'agent' }) };
+        }
+        const selected = await actions.selectSshPrivateKey();
+        if (!selected.ok) return { requestId, ...selected };
+        const authentication: SshAuthenticationSelection = { method: 'private-key', privateKey: selected.result };
+        try { return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, authentication) }; }
+        finally { selected.result.data.fill(0); }
       }
       case 'sftp.close': return { requestId, ...await actions.sshTerminals.close(parsed.result.payload.sessionId) };
       case 'ssh.write': {
@@ -373,6 +429,17 @@ export async function dispatchCommand(
         if (!actions.authorizeVncLaunch(host, port)) return { requestId, ...failure('FORBIDDEN') };
         return { requestId, ...await actions.vncViewer.launch(host, port, actions.cancellation) };
       }
+      case 'tftp.root.choose': {
+        if (!actions.authorizeTftpServerAction('choose-root')) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.chooseTftpRoot(actions.cancellation) };
+      }
+      case 'tftp.start': {
+        const { selectionId, port } = parsed.result.payload;
+        if (!actions.authorizeTftpServerAction('start', selectionId, port)) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.startTftpServer(selectionId, port, actions.cancellation) };
+      }
+      case 'tftp.status': return { requestId, ok: true, result: actions.tftpServer.getStatus() };
+      case 'tftp.stop': return { requestId, ...await actions.tftpServer.stop() };
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.count': return { requestId, ...await actions.sessionCatalog.count(actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };
@@ -413,7 +480,9 @@ export async function dispatchCommand(
       case 'macro.shortcut.list': return { requestId, ...await actions.macros.listShortcuts(actions.cancellation) };
       case 'macro.shortcut.set': return { requestId, ...await actions.macros.setShortcut(parsed.result.payload.macroId, parsed.result.payload.code, actions.cancellation) };
       case 'macro.shortcut.delete': return { requestId, ...await actions.macros.removeShortcut(parsed.result.payload.macroId, actions.cancellation) };
-      case 'preferences.get': return { requestId, ...await actions.preferences.read(actions.cancellation) };
+      case 'branding.logo.select': return { requestId, ...await actions.selectCustomLogo() };
+      case 'preferences.get': return { requestId, ...await actions.preferences.readStartup(actions.cancellation) };
+      case 'preferences.settings.get': return { requestId, ...await actions.preferences.read(actions.cancellation) };
       case 'preferences.save': return { requestId, ...await actions.preferences.save(parsed.result.payload.preferences, actions.cancellation) };
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };

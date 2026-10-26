@@ -4,7 +4,9 @@ const GESTURE_TTL_MS = 750;
 const MAX_PENDING_GESTURES = 64;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent' | 'external-viewer-launch';
+export type TftpServerAction = 'choose-root' | 'start';
+export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent' | 'external-viewer-launch' |
+  'tftp-server-action' | 'powershell-profile-script';
 
 export class RendererGestureGate {
   private readonly expiresAtByGesture = new Map<string, number>();
@@ -26,6 +28,17 @@ export class RendererGestureGate {
   consumeExternalViewerLaunch(senderId: number, protocol: 'rdp' | 'vnc', host: string, port: number): boolean {
     const endpoint = canonicalizeRemoteEndpoint({ host, port });
     return endpoint !== undefined && this.consumeScope(senderId, `${protocol}\u0000${endpoint.host}\u0000${endpoint.port}`, 'external-viewer-launch');
+  }
+
+  issueTftpServerAction(senderId: number, action: TftpServerAction, selectionId?: string, port?: number): void {
+    if (!Number.isSafeInteger(senderId) || senderId < 1) return;
+    const scope = this.tftpScope(action, selectionId, port);
+    if (scope) this.issueScope(senderId, scope, 'tftp-server-action');
+  }
+
+  consumeTftpServerAction(senderId: number, action: TftpServerAction, selectionId?: string, port?: number): boolean {
+    const scope = this.tftpScope(action, selectionId, port);
+    return scope !== undefined && this.consumeScope(senderId, scope, 'tftp-server-action');
   }
 
   private issueScope(senderId: number, scope: string, purpose: RendererGesturePurpose): void {
@@ -58,6 +71,12 @@ export class RendererGestureGate {
   }
 
   private key(senderId: number, scope: string, purpose: RendererGesturePurpose): string { return `${senderId}/${purpose}/${scope}`; }
+
+  private tftpScope(action: TftpServerAction, selectionId?: string, port?: number): string | undefined {
+    if (action === 'choose-root') return 'choose-root';
+    if (action !== 'start' || !selectionId || !SESSION_ID.test(selectionId) || !Number.isSafeInteger(port) || (port as number) < 0 || (port as number) > 65_535) return undefined;
+    return `start/${selectionId}/${port}`;
+  }
 
   private prune(): void {
     const now = this.now();

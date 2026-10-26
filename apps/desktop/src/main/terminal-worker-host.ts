@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { utilityProcess } from 'electron';
 import type { UtilityProcess } from 'electron';
 import type { LocalTerminalEvent, LocalTerminalProvider } from '../../../../packages/application/src/local-terminals.ts';
-import type { LocalShell, TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalTerminalLaunch, TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
+import type { WslDistribution } from '../../../../packages/domain/src/wsl-distributions.ts';
 import { parseTerminalWorkerMessage, WORKER_PROTOCOL_VERSION } from '../workers/protocol.ts';
 import type { TerminalWorkerRequest } from '../workers/protocol.ts';
 
@@ -19,6 +20,11 @@ interface PendingRequest {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly command: TerminalWorkerRequest['command'];
+}
+
+interface TerminalWorkerHostOptions {
+  readonly systemDirectory: string;
+  readonly wslHarnessEnabled?: boolean;
 }
 
 const MAX_PENDING_REQUESTS = 256;
@@ -38,14 +44,15 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
   constructor(
     private readonly workerPath: string,
     private readonly appRoot: string,
-    private readonly openReplyBarrier?: (sessionId: string) => Promise<void>
+    private readonly openReplyBarrier?: (sessionId: string) => Promise<void>,
+    private readonly options: TerminalWorkerHostOptions = { systemDirectory: '' }
   ) {}
 
-  async open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<void> {
+  async open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<void> {
     this.opening.add(sessionId);
     this.exitedDuringOpen.delete(sessionId);
     try {
-      const result = await this.request({ command: 'open', sessionId, shell, size });
+      const result = await this.request({ command: 'open', sessionId, launch, size });
       await this.openReplyBarrier?.(sessionId);
       if (!Number.isSafeInteger(result.pid) || (result.pid as number) < 1) throw new Error('Terminal worker returned an invalid process ID');
       if (!this.exitedDuringOpen.has(sessionId)) this.processIds.set(sessionId, result.pid as number);
@@ -54,6 +61,16 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
       this.exitedDuringOpen.delete(sessionId);
       this.earlyEvents.delete(sessionId);
     }
+  }
+
+  async listWslDistributions(): Promise<readonly WslDistribution[]> {
+    const result = await this.request({ command: 'wsl.list' });
+    if (!Array.isArray(result.distributions)) throw new Error('Terminal worker returned an invalid WSL distribution list');
+    return result.distributions as unknown as readonly WslDistribution[];
+  }
+
+  async cancelWslDistributionDiscovery(): Promise<void> {
+    await this.request({ command: 'wsl.cancel' });
   }
 
   async write(sessionId: string, data: string): Promise<void> {
@@ -115,7 +132,8 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
     const worker = this.ensureWorker();
     const requestId = randomUUID();
     const request = { version: WORKER_PROTOCOL_VERSION, type: 'request', requestId, ...command } as TerminalWorkerRequest;
-    const timeoutMs = request.command === 'open' ? 15_000 : request.command === 'close' || request.command === 'shutdown' ? 5_000 : 3_000;
+    const timeoutMs = request.command === 'open' ? 15_000 : request.command === 'wsl.list' ? 8_000 :
+      request.command === 'close' || request.command === 'shutdown' ? 5_000 : 3_000;
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -138,7 +156,8 @@ export class TerminalWorkerHost implements LocalTerminalProvider {
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
     const worker = utilityProcess.fork(this.workerPath, [], {
       cwd: process.resourcesPath ?? this.appRoot,
-      env: { ...process.env, MRT_APP_ROOT: this.appRoot },
+      env: { ...process.env, MRT_APP_ROOT: this.appRoot, MRT_WINDOWS_SYSTEM_DIRECTORY: this.options.systemDirectory,
+        MRT_E2E_WSL_HARNESS: this.options.wslHarnessEnabled === true ? '1' : '0' },
       serviceName: 'MultiRemoteTerminal local terminal provider',
       stdio: 'ignore'
     });

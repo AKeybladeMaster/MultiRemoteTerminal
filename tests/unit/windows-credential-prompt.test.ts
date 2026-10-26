@@ -159,11 +159,11 @@ test('real Windows helper accepts contextual SSH and context-free FTP prompt req
     const harness = [
       'function global:Get-Credential {',
       '  param([string]$Message)',
-      "  $expectedMessages = @{ 'ssh-password' = 'Enter the SSH account credential.'; 'ssh-key-passphrase' = 'Unlock the selected SSH private key.'; 'ftp-account' = 'Enter the FTP account credential.'; 'master-password' = 'Enter the vault master password.' }",
+      "  $expectedMessages = @{ 'ssh-password' = 'Enter the SSH account credential.'; 'ssh-key-passphrase' = 'Unlock the selected SSH private key.'; 'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'; 'ftp-account' = 'Enter the FTP account credential.'; 'master-password' = 'Enter the vault master password.' }",
       '  $expectedMessage = $expectedMessages[$env:MRT_TEST_HELPER_PURPOSE]',
       '  if (-not [string]::IsNullOrEmpty($env:MRT_TEST_HELPER_CONTEXT)) { $expectedMessage = "$expectedMessage`r`n`r`n$env:MRT_TEST_HELPER_CONTEXT" }',
       "  if ($Message -ne $expectedMessage) { throw 'Credential prompt message mismatch' }",
-      "  $secure = ConvertTo-SecureString 'mrt-test-placeholder' -AsPlainText -Force",
+      "  if ($env:MRT_TEST_HELPER_PURPOSE -eq 'ssh-agent-username') { $secure = [System.Security.SecureString]::new() } else { $secure = ConvertTo-SecureString 'mrt-test-placeholder' -AsPlainText -Force }",
       "  [System.Management.Automation.PSCredential]::new('mrt-test-user', $secure)",
       '}',
       'if ([string]::IsNullOrEmpty($env:MRT_TEST_HELPER_CONTEXT)) {',
@@ -194,6 +194,14 @@ test('real Windows helper accepts contextual SSH and context-free FTP prompt req
   });
   assert.deepEqual(JSON.parse(helperOutput), {
     kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
+  });
+
+  helperOutput = '';
+  assert.deepEqual(await prompt.prompt('ssh-agent-username', undefined, 'SSH destination: 127.0.0.1:2222'), {
+    kind: 'provided', username: 'mrt-test-user', secret: ''
+  });
+  assert.deepEqual(JSON.parse(helperOutput), {
+    kind: 'provided', username: 'mrt-test-user', secret: ''
   });
 
   helperOutput = '';

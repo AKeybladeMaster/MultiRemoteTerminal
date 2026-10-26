@@ -7,7 +7,7 @@ import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
-import type { SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
 import { awaitWithCancellation } from '../../../../packages/application/src/cancellation.ts';
@@ -19,6 +19,7 @@ import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS 
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import { createSftpFileTransfers } from './sftp-file-transfers.ts';
+import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 
 const CONNECT_TIMEOUT_MS = 130_000;
 const MAX_TERMINAL_EVENT_CHARS = 16_384;
@@ -88,10 +89,10 @@ export interface SshTransportClientFactory {
 }
 
 export interface SshTransportProvider {
-  open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, size: TerminalSize,
+  open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, size: TerminalSize,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops?: readonly SshConnectionGatewayCredentials[]): Promise<void>;
-  openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+  openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
@@ -139,7 +140,7 @@ interface RuntimeSession {
   readonly outputBytesBySequence: Map<number, number>;
   outputPaused: boolean;
   failureCode?: 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED' | 'TIMEOUT' | 'UNAVAILABLE';
-  clearPasswords: () => void;
+  clearAuthenticationSecrets: () => void;
   openTimer: ReturnType<typeof setTimeout> | undefined;
   resolveOpen: (() => void) | undefined;
   rejectOpen: ((error: Error) => void) | undefined;
@@ -149,7 +150,9 @@ export function createSshTransportProvider(
   clients: SshTransportClientFactory,
   publish: (event: LocalTerminalEvent) => void,
   connectToDestination: (port: number, host: string) => Socket = connectTcp,
+  opensshAgentPipePath = WINDOWS_OPENSSH_AGENT_PIPE_PATH,
 ): SshTransportProvider {
+  if (!isWindowsOpenSshAgentPipePath(opensshAgentPipePath)) throw new SshTerminalProviderError('INVALID_REQUEST');
   const sessions = new Map<string, RuntimeSession>();
   const disconnectedUploadsByScope = new Map<string, Set<Promise<void>>>();
   const fileTransfers = createSftpFileTransfers();
@@ -417,7 +420,7 @@ export function createSshTransportProvider(
     session.sftpOpenAttempt?.cancel(new SshTerminalProviderError('CANCELLED'));
     session.sftpOpenAttempt = undefined;
     session.sftpBusy = false;
-    session.clearPasswords();
+    session.clearAuthenticationSecrets();
     clearTimeout(session.openTimer);
     session.pendingText = '';
     session.outputBytesBySequence.clear();
@@ -519,7 +522,7 @@ export function createSshTransportProvider(
     }
   }
 
-  function openConnection(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+  function openConnection(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     mode: RuntimeSession['mode'], size: TerminalSize | undefined,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
@@ -530,18 +533,30 @@ export function createSshTransportProvider(
       sftp: undefined, localForwards: new Map(), remoteForwards: new Map(), sftpBusy: false, sftpOpenAttempt: undefined,
       sftpRecoveryCheckedChannel: undefined, fileRecoveryScope: undefined, pendingUploadSettlement: undefined,
       nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
-      outputBytesBySequence: new Map(), outputPaused: false, clearPasswords: () => {},
+      outputBytesBySequence: new Map(), outputPaused: false, clearAuthenticationSecrets: () => {},
       openTimer: undefined, resolveOpen: undefined, rejectOpen: undefined
     };
     sessions.set(sessionId, session);
 
     const clientConfigs = new Map<Client, ConnectConfig>();
     const verifiedHostFingerprints: string[] = [];
-    session.clearPasswords = () => {
+    session.clearAuthenticationSecrets = () => {
       for (const [client, config] of clientConfigs) {
+        if (config.privateKey instanceof Uint8Array) config.privateKey.fill(0);
         delete config.password;
-        const internal = (client as unknown as { config?: { password?: string } }).config;
-        if (internal) delete internal.password;
+        delete config.privateKey;
+        delete config.passphrase;
+        delete config.agent;
+        const clientState = client as unknown as { config?: { password?: string; privateKey?: Buffer | string; passphrase?: string; agent?: unknown }; _agent?: unknown };
+        const internal = clientState.config;
+        if (internal?.privateKey instanceof Uint8Array) internal.privateKey.fill(0);
+        if (internal) {
+          delete internal.password;
+          delete internal.privateKey;
+          delete internal.passphrase;
+          delete internal.agent;
+        }
+        delete clientState._agent;
       }
     };
 
@@ -560,14 +575,12 @@ export function createSshTransportProvider(
         acceptRemoteForwardConnection(session, details, accept, rejectConnection));
     }
 
-    function connectHop(client: Client, hopEndpoint: SshHostEndpoint, hopCredentials: SshTerminalCredentials,
+    function connectHop(client: Client, hopEndpoint: SshHostEndpoint, hopCredentials: SshAuthenticationCredentials,
       socket: ClientChannel | undefined, isDestination: boolean, routeIndex: number): Promise<void> {
       const config: ConnectConfig = {
         host: hopEndpoint.host,
         port: hopEndpoint.port,
         username: hopCredentials.username,
-        password: hopCredentials.password,
-        authHandler: ['password'],
         readyTimeout: CONNECT_TIMEOUT_MS,
         keepaliveInterval: 10_000,
         keepaliveCountMax: 3,
@@ -589,6 +602,18 @@ export function createSshTransportProvider(
           });
         }
       };
+      if ('privateKey' in hopCredentials) {
+        config.privateKey = Buffer.from(hopCredentials.privateKey);
+        config.passphrase = hopCredentials.passphrase;
+        config.authHandler = ['publickey'];
+      } else if ('method' in hopCredentials) {
+        config.agent = opensshAgentPipePath;
+        config.authHandler = ['agent'];
+        config.agentForward = false;
+      } else {
+        config.password = hopCredentials.password;
+        config.authHandler = ['password'];
+      }
       if (socket) config.sock = socket;
       clientConfigs.set(client, config);
       addClient(client, isDestination);
@@ -604,7 +629,7 @@ export function createSshTransportProvider(
           else resolve();
         };
         const onReady = (): void => {
-          session.clearPasswords();
+          session.clearAuthenticationSecrets();
           finish(session.closing ? new SshTerminalProviderError('CANCELLED') : undefined);
         };
         const onError = (error: Error): void => finish(new SshTerminalProviderError(classifyClientError(error)));

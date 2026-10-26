@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createBridge } from '../../apps/desktop/src/preload/client.ts';
 import { parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
-import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
 const id = () => '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
 const valid = { requestId: id(), ok: true, result: describeWorkbench({ version: '0.0.0', platform: 'win32' }) };
@@ -13,21 +13,31 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile',
     'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer', 'openLocalTextFile', 'reloadLocalTextFile', 'saveLocalTextFile', 'closeLocalTextFile',
-    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer', 'launchVncViewer',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'chooseTftpRoot',
+    'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-    'getWorkbenchPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+    'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
     'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload exposes a path-free custom logo picker command', async () => {
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const bridge = createBridge(async request => {
+    assert.deepEqual(request, { command: 'branding.logo.select', requestId: id(), contractVersion: 1, payload: {} });
+    return { requestId: id(), ok: true, result: { dataUrl } };
+  }, id);
+  assert.deepEqual(await bridge.selectCustomLogo(), { requestId: id(), ok: true, result: { dataUrl } });
 });
 
 test('preload routes tunnel manager requests and validates runtime status events', async () => {
@@ -61,6 +71,31 @@ test('preload routes tunnel manager requests and validates runtime status events
   unsubscribe();
   assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
   assert.equal(statuses, 1);
+});
+
+test('preload routes TFTP operations and validates loopback status events', async () => {
+  const selectionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const status = { state: 'running', address: '127.0.0.1', port: 52_001, folderName: 'firmware' } as const;
+  const seen: string[] = [];
+  let deliverStatus: ((value: unknown) => void) | undefined;
+  const bridge = createBridge(async request => {
+    seen.push(request.command);
+    const result = request.command === 'tftp.root.choose' ? { selectionId, folderName: 'firmware' }
+      : request.command === 'tftp.start' || request.command === 'tftp.status' ? status : {};
+    return { requestId: request.requestId, ok: true, result };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+  async () => true, undefined, listener => { deliverStatus = listener; return () => { deliverStatus = undefined; }; });
+  assert.equal((await bridge.chooseTftpRoot()).ok, true);
+  assert.equal((await bridge.startTftpServer(selectionId, 0)).ok, true);
+  assert.deepEqual(await bridge.getTftpServerStatus(), { requestId: id(), ok: true, result: status });
+  assert.equal((await bridge.stopTftpServer()).ok, true);
+  let updates = 0;
+  const unsubscribe = bridge.onTftpServerStatus(() => { updates++; });
+  deliverStatus?.(status);
+  deliverStatus?.({ ...status, address: '0.0.0.0' });
+  unsubscribe();
+  assert.deepEqual(seen, ['tftp.root.choose', 'tftp.start', 'tftp.status', 'tftp.stop']);
+  assert.equal(updates, 1);
 });
 
 test('preload sends standalone SFTP commands with only the endpoint and session id', async () => {
@@ -403,17 +438,21 @@ test('preload routes VNC launches only after its trusted dialog gesture', async 
 
 test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
   const greeting = 'Terminal ready — こんにちは 👋';
-  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: greeting };
+  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: greeting, powerShellProfileScript: 'Write-Output "private setting"' };
+  const startupPreferences = toWorkbenchStartupPreferences(preferences);
   const seen: unknown[] = [];
   const bridge = createBridge(async request => {
     seen.push(request);
-    return { requestId: request.requestId, ok: true, result: preferences };
+    return { requestId: request.requestId, ok: true,
+      result: request.command === 'preferences.get' ? startupPreferences : preferences };
   }, id);
-  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: preferences });
+  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: startupPreferences });
+  assert.deepEqual(await bridge.getWorkbenchSettingsPreferences(), { requestId: id(), ok: true, result: preferences });
   assert.deepEqual(await bridge.saveWorkbenchPreferences(preferences),
     { requestId: id(), ok: true, result: preferences });
   assert.deepEqual(seen, [
     { command: 'preferences.get', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'preferences.settings.get', requestId: id(), contractVersion: 1, payload: {} },
     { command: 'preferences.save', requestId: id(), contractVersion: 1, payload: { preferences } }
   ]);
 });
@@ -540,11 +579,11 @@ test('preload carries a caller-known session id so an opening terminal can be ca
   const bridge = createBridge(async request => {
     assert.deepEqual(request, {
       command: 'terminal.open', requestId: id(), contractVersion: 1,
-      payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 }
+      payload: { sessionId, launch: { shell: 'cmd' }, columns: 80, rows: 24 }
     });
     return { requestId: id(), ok: true, result: { sessionId, shell: 'cmd', state: 'running' } };
   }, id);
-  assert.equal((await bridge.openTerminal(sessionId, 'cmd', 80, 24)).ok, true);
+  assert.equal((await bridge.openTerminal(sessionId, { shell: 'cmd' }, 80, 24)).ok, true);
 });
 
 test('preload redacts rejected and malformed transport responses', async () => {

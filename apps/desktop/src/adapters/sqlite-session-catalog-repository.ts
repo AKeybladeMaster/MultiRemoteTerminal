@@ -11,6 +11,7 @@ import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../../../pa
 import { createSessionFolderBundle, MAX_SESSION_FOLDER_BUNDLE_BYTES, MAX_SESSION_FOLDER_BUNDLE_RECORDS, normalizeSessionFolderBundle } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import type { SessionFolderBundle, SessionFolderExportResult, SessionFolderImportResult } from '../../../../packages/domain/src/session-folder-bundle.ts';
 import { isLocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import { isWslDistributionName } from '../../../../packages/domain/src/wsl-distributions.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
@@ -366,7 +367,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     for (const session of bundle.sessions) {
       const row = this.findSession.get(session.id) as unknown as SavedSessionRow | undefined;
       if (row) {
-        if (!sameSessionDefinition(decodeSessionRow(row), session)) throw new StorageOperationError('conflict');
+      if (!sameSessionDefinition(decodeSessionRow(row), session)) throw new StorageOperationError('conflict');
         continue;
       }
       const local = session.kind === 'local';
@@ -374,7 +375,7 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       const storedKind = session.kind === 'sftp' ? 'ssh' : session.kind;
       this.insertImportedSession.run(session.id, session.folderId, storedKind, session.name,
         local || serial ? null : session.host, local || serial ? null : session.port,
-        local ? JSON.stringify({ shell: session.shell }) : serial ? JSON.stringify(session.configuration)
+        local ? JSON.stringify(session.shell === 'wsl' ? { shell: session.shell, distribution: session.distribution } : { shell: session.shell }) : serial ? JSON.stringify(session.configuration)
           : session.kind === 'ftp' ? JSON.stringify({ secure: session.secure })
           : session.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}',
         session.favorite ? 1 : 0, session.createdAt, session.updatedAt);
@@ -439,7 +440,8 @@ function orderBundleFolders(bundle: SessionFolderBundle): SavedSessionFolder[] {
 function sameSessionDefinition(left: SavedSessionDefinition, right: SavedSessionDefinition): boolean {
   if (left.id !== right.id || left.folderId !== right.folderId || left.kind !== right.kind || left.name !== right.name ||
       left.favorite !== right.favorite || left.createdAt !== right.createdAt || left.updatedAt !== right.updatedAt) return false;
-  if (left.kind === 'local' && right.kind === 'local') return left.shell === right.shell;
+  if (left.kind === 'local' && right.kind === 'local') return left.shell === right.shell &&
+    (left.shell !== 'wsl' || (right.shell === 'wsl' && left.distribution === right.distribution));
   if (left.kind === 'ssh' && right.kind === 'ssh') return left.host === right.host && left.port === right.port;
   if (left.kind === 'sftp' && right.kind === 'sftp') return left.host === right.host && left.port === right.port;
   if (left.kind === 'telnet' && right.kind === 'telnet') return left.host === right.host && left.port === right.port;
@@ -522,7 +524,7 @@ function storedSessionFields(draft: SavedSessionDraft): { readonly kind: string;
     kind: draft.kind === 'sftp' ? 'ssh' : draft.kind,
     host: local || serial ? null : draft.host,
     port: local || serial ? null : draft.port,
-    options: local ? JSON.stringify({ shell: draft.shell }) : serial ? JSON.stringify(draft.configuration)
+    options: local ? JSON.stringify(draft.shell === 'wsl' ? { shell: draft.shell, distribution: draft.distribution } : { shell: draft.shell }) : serial ? JSON.stringify(draft.configuration)
       : draft.kind === 'ftp' ? JSON.stringify({ secure: draft.secure })
       : draft.kind === 'sftp' ? JSON.stringify({ sftpOnly: true }) : '{}'
   };
@@ -530,7 +532,9 @@ function storedSessionFields(draft: SavedSessionDraft): { readonly kind: string;
 
 function savedSessionFromDraft(draft: SavedSessionDraft, id: string, timestamp: string): SavedSessionDefinition {
   const base = { id, folderId: null, name: draft.name, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
-  if (draft.kind === 'local') return { ...base, kind: 'local', shell: draft.shell };
+  if (draft.kind === 'local') return draft.shell === 'wsl'
+    ? { ...base, kind: 'local', shell: 'wsl', distribution: draft.distribution }
+    : { ...base, kind: 'local', shell: draft.shell };
   if (draft.kind === 'serial') return { ...base, kind: 'serial', configuration: draft.configuration };
   if (draft.kind === 'ssh') return { ...base, kind: 'ssh', host: draft.host, port: draft.port };
   if (draft.kind === 'sftp') return { ...base, kind: 'sftp', host: draft.host, port: draft.port };
@@ -562,7 +566,14 @@ function decodeSessionRow(row: SavedSessionRow): SavedSessionDefinition {
 
   if (row.kind === 'local') {
     const shell = options.shell;
-    if (row.host !== null || row.port !== null || !exactKeys(options, ['shell']) || !isLocalShell(shell)) throw new StorageOperationError('corrupt');
+    if (row.host !== null || row.port !== null) throw new StorageOperationError('corrupt');
+    if (shell === 'wsl') {
+      if (!exactKeys(options, ['shell', 'distribution']) || !isWslDistributionName(options.distribution)) throw new StorageOperationError('corrupt');
+      return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'local', name: row.name,
+        shell: 'wsl', distribution: options.distribution, favorite: row.favorite === 1,
+        createdAt: row.created_at, updatedAt: row.updated_at };
+    }
+    if (!exactKeys(options, ['shell']) || !isLocalShell(shell) || shell === 'wsl') throw new StorageOperationError('corrupt');
     return { id: row.id as string, folderId: row.folder_id as string | null, kind: 'local', name: row.name, shell, favorite: row.favorite === 1,
       createdAt: row.created_at, updatedAt: row.updated_at };
   }

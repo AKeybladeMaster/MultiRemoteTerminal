@@ -1,15 +1,13 @@
-const windowsRuntimeVariables = ['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP'] as const;
+import { createUtilityWorkerEnvironment } from '../adapters/utility-worker-environment.ts';
 
 export function createNetworkWorkerEnvironment(
   appRoot: string,
   parentEnvironment: Readonly<Record<string, string | undefined>>,
-  testExtraCaPath?: string
+  testExtraCaPath?: string,
+  opensshAgentPipePath?: string
 ): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { MRT_APP_ROOT: appRoot };
-  for (const name of windowsRuntimeVariables) {
-    const value = parentEnvironment[name];
-    if (value !== undefined) environment[name] = value;
-  }
+  const environment = createUtilityWorkerEnvironment(appRoot, parentEnvironment);
   if (testExtraCaPath !== undefined) environment.MRT_E2E_FTP_CA = testExtraCaPath;
+  if (opensshAgentPipePath !== undefined) environment.MRT_OPENSSH_AGENT_PIPE = opensshAgentPipePath;
   return environment;
 }

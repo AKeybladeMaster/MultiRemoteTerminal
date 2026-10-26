@@ -132,11 +132,16 @@ class RemoteTextUtilityProcess extends FakeUtilityProcess {
 
 test('worker host consumes the raw message payload emitted by Electron utilityProcess', async () => {
   const worker = new FakeUtilityProcess();
-  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  let workerPipe: string | undefined;
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', (_path, _args, options) => {
+    workerPipe = options.env.MRT_OPENSSH_AGENT_PIPE;
+    return worker as unknown as UtilityProcess;
+  }, String.raw`\\.\pipe\mrt-test-agent`);
   const sessionId = '11111111-1111-4111-8111-111111111111';
 
   await host.open(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' },
     { columns: 80, rows: 24 }, async () => true);
+  assert.equal(workerPipe, String.raw`\\.\pipe\mrt-test-agent`);
   assert.equal(worker.requests[0]?.command, 'open');
   await host.shutdown();
   assert.equal(worker.requests.at(-1)?.command, 'shutdown');

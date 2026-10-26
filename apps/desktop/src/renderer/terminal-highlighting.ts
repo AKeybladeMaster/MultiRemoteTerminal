@@ -61,7 +61,8 @@ export interface TerminalHighlightOptions {
 export function isShellPromptAtCursor(promptText: string): boolean {
   const trimmed = promptText.trimEnd();
   const lastCharacter = trimmed.at(-1);
-  return lastCharacter === '$' || lastCharacter === '#' || lastCharacter === '%' || lastCharacter === '>';
+  return lastCharacter === '$' || lastCharacter === '#' || lastCharacter === '%' || lastCharacter === '>' ||
+    lastCharacter === '❯' || lastCharacter === '➜';
 }
 
 export function clearTerminalShellInputAnchor(anchorRef: TerminalShellInputAnchorRef): void {

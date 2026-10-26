@@ -5,6 +5,7 @@ import { canonicalizeRdpEndpoint } from './rdp.ts';
 import { canonicalizeVncEndpoint } from './vnc.ts';
 import { isLocalShell } from './local-terminal.ts';
 import type { LocalShell } from './local-terminal.ts';
+import { isWslDistributionName } from './wsl-distributions.ts';
 import { isSerialConfiguration, normalizeSerialConfiguration } from './serial.ts';
 import type { SerialConfiguration } from './serial.ts';
 
@@ -18,7 +19,8 @@ export interface SavedSessionBase {
 }
 
 export type SavedSessionDefinition =
-  | (SavedSessionBase & { readonly kind: 'local'; readonly shell: LocalShell })
+  | (SavedSessionBase & ({ readonly kind: 'local'; readonly shell: Exclude<LocalShell, 'wsl'> } |
+      { readonly kind: 'local'; readonly shell: 'wsl'; readonly distribution: string }))
   | (SavedSessionBase & { readonly kind: 'ssh'; readonly host: string; readonly port: number })
   | (SavedSessionBase & { readonly kind: 'sftp'; readonly host: string; readonly port: number })
   | (SavedSessionBase & { readonly kind: 'telnet'; readonly host: string; readonly port: number })
@@ -28,7 +30,8 @@ export type SavedSessionDefinition =
   | (SavedSessionBase & { readonly kind: 'serial'; readonly configuration: SerialConfiguration });
 
 export type SavedSessionDraft =
-  | { readonly kind: 'local'; readonly name: string; readonly shell: LocalShell }
+  | ({ readonly kind: 'local'; readonly name: string; readonly shell: Exclude<LocalShell, 'wsl'> } |
+      { readonly kind: 'local'; readonly name: string; readonly shell: 'wsl'; readonly distribution: string })
   | { readonly kind: 'ssh'; readonly name: string; readonly host: string; readonly port: number }
   | { readonly kind: 'sftp'; readonly name: string; readonly host: string; readonly port: number }
   | { readonly kind: 'telnet'; readonly name: string; readonly host: string; readonly port: number }
@@ -42,7 +45,11 @@ export function normalizeSavedSessionDraft(value: unknown): SavedSessionDraft | 
   const name = normalizeName(value.name);
   if (!name) return undefined;
   if (value.kind === 'local') {
-    if (!hasExactKeys(value, ['kind', 'name', 'shell']) || !isLocalShell(value.shell)) return undefined;
+    if (value.shell === 'wsl') {
+      if (!hasExactKeys(value, ['kind', 'name', 'shell', 'distribution']) || !isWslDistributionName(value.distribution)) return undefined;
+      return { kind: 'local', name, shell: 'wsl', distribution: value.distribution };
+    }
+    if (!hasExactKeys(value, ['kind', 'name', 'shell']) || !isLocalShell(value.shell) || value.shell === 'wsl') return undefined;
     return { kind: 'local', name, shell: value.shell };
   }
   if (value.kind === 'serial') {
@@ -98,7 +105,11 @@ export function isSavedSessionDefinition(value: unknown): value is SavedSessionD
   if (!isPlainRecord(value) || typeof value.kind !== 'string' || typeof value.id !== 'string' || !UUID.test(value.id) ||
       !(value.folderId === null || (typeof value.folderId === 'string' && UUID.test(value.folderId))) ||
       normalizeName(value.name) !== value.name || typeof value.favorite !== 'boolean' || !isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt)) return false;
-  if (value.kind === 'local') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'shell', 'favorite', 'createdAt', 'updatedAt']) && isLocalShell(value.shell);
+  if (value.kind === 'local') {
+    if (value.shell === 'wsl') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'shell', 'distribution', 'favorite', 'createdAt', 'updatedAt']) &&
+      isWslDistributionName(value.distribution);
+    return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'shell', 'favorite', 'createdAt', 'updatedAt']) && isLocalShell(value.shell) && value.shell !== 'wsl';
+  }
   if (value.kind === 'serial') return hasExactKeys(value, ['id', 'folderId', 'kind', 'name', 'configuration', 'favorite', 'createdAt', 'updatedAt']) &&
     isSerialConfiguration(value.configuration);
   if (value.kind === 'ssh') {

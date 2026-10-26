@@ -3,7 +3,8 @@ import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { isTerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
-import type { SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import { MAX_SSH_PRIVATE_KEY_BYTES } from '../../../../packages/application/src/ssh-terminals.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -24,8 +25,8 @@ export const MAX_SSH_USERNAME_LENGTH = 512;
 
 export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open'; readonly sessionId: string; readonly endpoint: SshHostEndpoint;
-      readonly credentials: SshTerminalCredentials; readonly size: TerminalSize; readonly gatewayHops?: readonly SshConnectionGatewayCredentials[] }
-  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open-files'; readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshTerminalCredentials }
+      readonly credentials: SshAuthenticationCredentials; readonly size: TerminalSize; readonly gatewayHops?: readonly SshConnectionGatewayCredentials[] }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open-files'; readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshAuthenticationCredentials }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'write'; readonly sessionId: string; readonly data: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'resize'; readonly sessionId: string; readonly size: TerminalSize }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'ack'; readonly sessionId: string; readonly sequence: number }
@@ -78,17 +79,29 @@ function isCanonicalEndpoint(value: unknown): value is SshHostEndpoint {
   return endpoint !== undefined && record(value) && endpoint.host === value.host && endpoint.port === value.port;
 }
 
-function isCredentials(value: unknown): value is SshTerminalCredentials {
+function isUsername(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_SSH_USERNAME_LENGTH && value.trim() === value && !value.includes('\0');
+}
+
+function isPasswordCredentials(value: unknown): value is SshTerminalCredentials {
   return record(value) && exactKeys(value, ['username', 'password']) && typeof value.username === 'string' &&
-    value.username.length > 0 && value.username.length <= MAX_SSH_USERNAME_LENGTH && value.username.trim() === value.username && !value.username.includes('\0') &&
+    isUsername(value.username) &&
     typeof value.password === 'string' && value.password.length <= MAX_SSH_PASSWORD_LENGTH && !value.password.includes('\0');
+}
+
+function isAuthenticationCredentials(value: unknown): value is SshAuthenticationCredentials {
+  if (isPasswordCredentials(value)) return true;
+  if (record(value) && exactKeys(value, ['username', 'method']) && isUsername(value.username) && value.method === 'agent') return true;
+  return record(value) && exactKeys(value, ['username', 'privateKey', 'passphrase']) && isUsername(value.username) &&
+    value.privateKey instanceof Uint8Array && value.privateKey.byteLength > 0 && value.privateKey.byteLength <= MAX_SSH_PRIVATE_KEY_BYTES &&
+    typeof value.passphrase === 'string' && value.passphrase.length <= MAX_SSH_PASSWORD_LENGTH && !value.passphrase.includes('\0');
 }
 
 function isGatewayHops(value: unknown, target: unknown): value is readonly SshConnectionGatewayCredentials[] {
   if (!isCanonicalEndpoint(target) || !Array.isArray(value) || value.length > 2) return false;
   const endpoints: SshHostEndpoint[] = [];
   for (const hop of value) {
-    if (!record(hop) || !exactKeys(hop, ['endpoint', 'credentials']) || !isCanonicalEndpoint(hop.endpoint) || !isCredentials(hop.credentials)) return false;
+    if (!record(hop) || !exactKeys(hop, ['endpoint', 'credentials']) || !isCanonicalEndpoint(hop.endpoint) || !isPasswordCredentials(hop.credentials)) return false;
     endpoints.push(hop.endpoint);
   }
   return normalizeSshGatewayRoute(endpoints, target) !== undefined;
@@ -102,11 +115,11 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
   if (value.command === 'open' && (exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials', 'size']) ||
       (exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials', 'size', 'gatewayHops']) &&
         isGatewayHops(value.gatewayHops, value.endpoint))) && isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) &&
-      isCredentials(value.credentials) && isTerminalSize(value.size)) {
+      isAuthenticationCredentials(value.credentials) && isTerminalSize(value.size)) {
     return value as unknown as SshWorkerRequest;
   }
   if (value.command === 'open-files' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials']) &&
-      isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) && isCredentials(value.credentials)) return value as unknown as SshWorkerRequest;
+      isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) && isAuthenticationCredentials(value.credentials)) return value as unknown as SshWorkerRequest;
   if (value.command === 'write' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'data']) &&
       isUuid(value.sessionId) && typeof value.data === 'string' && value.data.length <= 16_384) return value as unknown as SshWorkerRequest;
   if (value.command === 'resize' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'size']) &&

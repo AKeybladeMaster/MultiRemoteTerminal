@@ -1,6 +1,7 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { DEFAULT_WORKBENCH_PREFERENCES, isWorkbenchPreferences, normalizeWorkbenchPreferences,
-  LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS, WORKBENCH_PREFERENCES_SCHEMA_VERSION } from '../../../../packages/domain/src/workbench-preferences.ts';
+  LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS, MAX_WORKBENCH_PREFERENCES_JSON_LENGTH,
+  WORKBENCH_PREFERENCES_SCHEMA_VERSION } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 
@@ -28,15 +29,15 @@ export class SqliteWorkbenchPreferencesRepository {
     try {
       const row = this.readStatement.get(SETTINGS_KEY) as unknown as StoredPreferencesRow | undefined;
       if (!row) return DEFAULT_WORKBENCH_PREFERENCES;
-      if ((!LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS.includes(row.schema_version as 1 | 2 | 3 | 4) &&
+      if ((!LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS.includes(row.schema_version as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) &&
            row.schema_version !== WORKBENCH_PREFERENCES_SCHEMA_VERSION) ||
-          typeof row.value_json !== 'string' || row.value_json.length > 8_192) {
+          typeof row.value_json !== 'string' || row.value_json.length > MAX_WORKBENCH_PREFERENCES_JSON_LENGTH) {
         throw new StorageOperationError('corrupt');
       }
       let value: unknown;
       try { value = JSON.parse(row.value_json) as unknown; }
       catch { throw new StorageOperationError('corrupt'); }
-      const preferences = normalizeWorkbenchPreferences(value);
+      const preferences = normalizeWorkbenchPreferences(value, row.schema_version as number);
       if (!preferences) throw new StorageOperationError('corrupt');
       if (row.schema_version !== WORKBENCH_PREFERENCES_SCHEMA_VERSION) {
         this.saveStatement.run(SETTINGS_KEY, JSON.stringify(preferences), WORKBENCH_PREFERENCES_SCHEMA_VERSION, new Date().toISOString());

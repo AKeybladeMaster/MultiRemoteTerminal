@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createSshTerminalController, SshTerminalProviderError } from '../../packages/application/src/ssh-terminals.ts';
-import type { SshTerminalCredentials, SshTerminalProvider } from '../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationCredentials, SshPrivateKeySelection, SshTerminalProvider } from '../../packages/application/src/ssh-terminals.ts';
 import type { CredentialPrompt, CredentialPromptCancellation, CredentialPromptResult } from '../../packages/application/src/credential-prompt.ts';
 import type { HostTrustManager, HostTrustDecision, HostTrustResolution } from '../../packages/application/src/host-trust.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../packages/domain/src/host-trust.ts';
@@ -75,7 +75,11 @@ class FakeTrust implements HostTrustManager {
 }
 
 class FakeProvider implements SshTerminalProvider {
-  readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshTerminalCredentials }> = [];
+  readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshAuthenticationCredentials }> = [];
+  readonly privateKeyCopies: Buffer[] = [];
+  readonly privateKeyPassphrases: string[] = [];
+  readonly agentMethods: string[] = [];
+  readonly passwords: string[] = [];
   readonly gatewayRoutes: SshHostEndpoint[][] = [];
   readonly gatewayCredentialRefs: Array<{ username: string; password: string }> = [];
   readonly closed: string[] = [];
@@ -88,18 +92,28 @@ class FakeProvider implements SshTerminalProvider {
   transferStarted: (() => void) | undefined;
   readonly transferCancellations: Array<CancellationSignal | undefined> = [];
 
-  async open(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, _size: { columns: number; rows: number },
+  async open(session: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, _size: { columns: number; rows: number },
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops: readonly { readonly endpoint: SshHostEndpoint; readonly credentials: { username: string; password: string } }[] = []) {
     this.opened.push({ sessionId: session, endpoint, credentials });
+    if ('privateKey' in credentials) {
+      this.privateKeyCopies.push(Buffer.from(credentials.privateKey));
+      this.privateKeyPassphrases.push(credentials.passphrase);
+    } else if ('method' in credentials) this.agentMethods.push(credentials.method);
+    else this.passwords.push(credentials.password);
     this.gatewayRoutes.push(gatewayHops.map(hop => ({ ...hop.endpoint })));
     this.gatewayCredentialRefs.push(...gatewayHops.map(hop => hop.credentials));
     for (const hop of gatewayHops) if (!await verifyHost(hop.endpoint, evidence)) throw new Error('Gateway host verification failed');
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
-  async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+  async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>) {
     this.opened.push({ sessionId: session, endpoint, credentials });
+    if ('privateKey' in credentials) {
+      this.privateKeyCopies.push(Buffer.from(credentials.privateKey));
+      this.privateKeyPassphrases.push(credentials.passphrase);
+    } else if ('method' in credentials) this.agentMethods.push(credentials.method);
+    else this.passwords.push(credentials.password);
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
   async write(): Promise<void> {}
@@ -287,12 +301,117 @@ test('saved SSH credentials bypass the native prompt and the application clears 
   const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'unexpected', secret: 'unexpected' }, prompts), trust);
   const credential = { username: 'alice', password: 'saved-secret' };
 
-  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], credential);
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], { method: 'password', savedCredentials: credential });
 
   assert.equal(result.ok, true);
   assert.deepEqual(prompts, []);
-  assert.equal(provider.opened[0]?.credentials.password, 'saved-secret');
+  const savedAuthentication = provider.opened[0]?.credentials;
+  assert.ok(savedAuthentication && 'password' in savedAuthentication);
+  assert.deepEqual(provider.passwords, ['saved-secret']);
+  assert.ok(savedAuthentication && 'password' in savedAuthentication);
+  if (savedAuthentication && 'password' in savedAuthentication) assert.equal(savedAuthentication.password, '');
   assert.deepEqual(credential, { username: '', password: '' });
+  await controller.dispose();
+});
+
+test('SSH private-key auth uses the protected passphrase prompt and clears selected key material after open', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const prompts: string[] = [];
+  const prompt: CredentialPrompt = { async prompt(purpose, _signal, context) {
+    prompts.push(`${purpose}:${context ?? ''}`);
+    return { kind: 'provided', username: 'alice', secret: 'private-key-passphrase' };
+  } };
+  const controller = createSshTerminalController(provider, prompt, trust);
+  const selectedKey: SshPrivateKeySelection = { data: Buffer.from('temporary-private-key-bytes'), fileName: 'id_ed25519' };
+  const expectedKey = Buffer.from(selectedKey.data);
+
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [],
+    { method: 'private-key', privateKey: selectedKey });
+
+  assert.equal(result.ok, true);
+  assert.match(prompts[0] ?? '', /^ssh-key-passphrase:/u);
+  assert.match(prompts[0] ?? '', /Selected key: id_ed25519/u);
+  assert.deepEqual(provider.privateKeyCopies[0], expectedKey);
+  assert.deepEqual(provider.privateKeyPassphrases, ['private-key-passphrase']);
+  const credentials = provider.opened[0]?.credentials;
+  assert.ok(credentials && 'privateKey' in credentials);
+  if (credentials && 'privateKey' in credentials) {
+    assert.deepEqual([...credentials.privateKey], new Array(selectedKey.data.length).fill(0));
+    assert.equal(credentials.username, '');
+    assert.equal(credentials.passphrase, '');
+  }
+  assert.deepEqual([...selectedKey.data], new Array(selectedKey.data.length).fill(0));
+  await controller.dispose();
+});
+
+test('standalone SFTP accepts private-key credentials through the protected prompt', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider,
+    promptWith({ kind: 'provided', username: 'alice', secret: 'private-key-passphrase' }), trust);
+  const selectedKey: SshPrivateKeySelection = { data: Buffer.from('temporary-sftp-private-key'), fileName: 'id_ed25519' };
+
+  const result = await controller.openFiles(sessionId, 'server.example.net', 22, { method: 'private-key', privateKey: selectedKey });
+
+  assert.equal(result.ok, true);
+  const credentials = provider.opened[0]?.credentials;
+  assert.ok(credentials && 'privateKey' in credentials);
+  if (credentials && 'privateKey' in credentials) {
+    assert.deepEqual(provider.privateKeyCopies[0], Buffer.from('temporary-sftp-private-key'));
+    assert.equal(provider.privateKeyPassphrases[0], 'private-key-passphrase');
+    assert.deepEqual([...credentials.privateKey], new Array(selectedKey.data.length).fill(0));
+  }
+  assert.deepEqual([...selectedKey.data], new Array(selectedKey.data.length).fill(0));
+  await controller.dispose();
+});
+
+test('SSH private-key bytes are cleared when controller validation rejects the open request', async () => {
+  const provider = new FakeProvider();
+  const controller = createSshTerminalController(provider,
+    promptWith({ kind: 'provided', username: 'alice', secret: 'private-key-passphrase' }), new FakeTrust());
+  const selectedKey: SshPrivateKeySelection = { data: Buffer.from('temporary-private-key-bytes'), fileName: 'id_ed25519' };
+
+  const result = await controller.open('invalid-session-id', 'server.example.net', 22,
+    { columns: 80, rows: 24 }, [], { method: 'private-key', privateKey: selectedKey });
+
+  assert.deepEqual(result, { ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
+  assert.deepEqual([...selectedKey.data], new Array(selectedKey.data.length).fill(0));
+  assert.deepEqual(provider.opened, []);
+  await controller.dispose();
+});
+
+test('SSH agent authentication asks only for a username and passes an agent credential without OS endpoint details', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const prompts: string[] = [];
+  const controller = createSshTerminalController(provider, {
+    async prompt(purpose, _signal, context) {
+      prompts.push(`${purpose}:${context ?? ''}`);
+      return { kind: 'provided', username: 'alice', secret: '' };
+    }
+  }, trust);
+  const selection = { method: 'agent' as const };
+
+  const opened = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], selection);
+
+  assert.equal(opened.ok, true);
+  assert.deepEqual(prompts, ['ssh-agent-username:SSH destination: server.example.net:22']);
+  assert.deepEqual(provider.agentMethods, ['agent']);
+  const credentials = provider.opened[0]?.credentials;
+  assert.ok(credentials && 'method' in credentials);
+  if (credentials && 'method' in credentials) {
+    assert.equal(credentials.method, 'agent');
+    assert.equal(credentials.username, '');
+  }
+  const invalidSelection = { method: 'agent' as const, socketPath: String.raw`C:\Users\alice\agent.sock` };
+  const invalidPath = await controller.openFiles('22222222-2222-4222-8222-222222222222', 'server.example.net', 22,
+    invalidSelection);
+  assert.equal(invalidPath.ok, false);
+  assert.deepEqual(provider.agentMethods, ['agent']);
   await controller.dispose();
 });
 
@@ -336,7 +455,10 @@ test('SSH open prompts only on explicit action and blocks on unknown host until 
   assert.equal((await controller.approveHostKey(challenge.challenge.token)).ok, true);
   const opened = await pending;
   assert.equal(opened.ok, true);
-  assert.equal(provider.opened[0]?.credentials.password, 'not-for-renderer');
+  const authentication = provider.opened[0]?.credentials;
+  assert.ok(authentication && 'password' in authentication);
+  assert.deepEqual(provider.passwords, ['not-for-renderer']);
+  if (authentication && 'password' in authentication) assert.equal(authentication.password, '');
   assert.equal(JSON.stringify({ opened, challenge }).includes('not-for-renderer'), false,
     'SSH credentials stay out of the session result and host-trust challenge');
   await controller.dispose();

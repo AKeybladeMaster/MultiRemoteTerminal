@@ -37,10 +37,20 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   assert.equal(parseSshWorkerInput({ ...open, endpoint: { host: 'Server.Example.Net.', port: 22 } }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, credentials: { username: 'alice', password: 'x'.repeat(65_537) } }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, credentials: { username: 'alice', password: 'x', apiKey: 'secret' } }), undefined);
+  const privateKeyCredentials = { username: 'alice', privateKey: new Uint8Array([1, 2, 3]), passphrase: 'key passphrase' };
+  assert.equal(parseSshWorkerInput({ ...open, credentials: privateKeyCredentials })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, credentials: { ...privateKeyCredentials, privateKey: new Uint8Array(1_048_577) } }), undefined,
+    'private-key contents are bounded before use');
+  assert.equal(parseSshWorkerInput({ ...open, credentials: { ...privateKeyCredentials, unexpected: 'secret' } }), undefined);
+  const agentCredentials = { username: 'alice', method: 'agent' };
+  assert.equal(parseSshWorkerInput({ ...open, credentials: agentCredentials })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, credentials: { ...agentCredentials, socketPath: String.raw`C:\agent.sock` } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...open, credentials: { username: 'alice', method: 'password' } }), undefined);
 
   const openFiles = { ...open, command: 'open-files' } as Record<string, unknown>;
   delete openFiles.size;
   assert.equal(parseSshWorkerInput(openFiles)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...openFiles, credentials: privateKeyCredentials })?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...openFiles, size: open.size }), undefined, 'file-only requests cannot smuggle terminal configuration');
 
   const key = hostKey();

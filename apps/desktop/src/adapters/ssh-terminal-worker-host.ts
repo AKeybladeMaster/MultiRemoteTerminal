@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { UtilityProcess } from 'electron';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
-import type { SshConnectionGatewayCredentials, SshTerminalCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -17,6 +17,7 @@ import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packa
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { parseSshWorkerMessage, SSH_WORKER_PROTOCOL_VERSION } from '../workers/ssh-protocol.ts';
 import type { SshWorkerErrorCode, SshWorkerRequest } from '../workers/ssh-protocol.ts';
+import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from './windows-openssh-agent.ts';
 
 interface PendingRequest {
   readonly resolve: (result: unknown) => void;
@@ -38,6 +39,20 @@ const MAX_PENDING_REQUESTS = 128;
 const OPEN_TIMEOUT_MS = 140_000;
 // 15s setup + 10s listing + 1s channel-close grace leaves 4s for worker IPC within this deadline.
 const FILE_LIST_TIMEOUT_MS = 30_000;
+
+function copyAuthenticationCredentials(credentials: SshAuthenticationCredentials): SshAuthenticationCredentials {
+  if ('privateKey' in credentials) return { username: credentials.username, privateKey: new Uint8Array(credentials.privateKey), passphrase: credentials.passphrase };
+  if ('method' in credentials) return { username: credentials.username, method: 'agent' };
+  return { username: credentials.username, password: credentials.password };
+}
+
+function clearAuthenticationCredentials(credentials: SshAuthenticationCredentials): void {
+  credentials.username = '';
+  if ('privateKey' in credentials) {
+    credentials.privateKey.fill(0);
+    credentials.passphrase = '';
+  } else if (!('method' in credentials)) credentials.password = '';
+}
 const FILE_TRANSFER_TIMEOUT_MS = 60 * 60_000;
 const REMOTE_TEXT_TIMEOUT_MS = 60_000;
 const FILE_TRANSFER_CLEANUP_GRACE_MS = 10_000;
@@ -53,7 +68,9 @@ function isCommitAwareFileRequest(request: Extract<SshWorkerRequest, { readonly 
   { readonly command: 'files.upload' | 'files.download' | 'files.write-text' }> {
   return request.command === 'files.upload' || request.command === 'files.download' || request.command === 'files.write-text';
 }
-export type SshWorkerLaunchOptions = { readonly cwd: string; readonly env: { readonly MRT_APP_ROOT: string }; readonly serviceName: string; readonly stdio: 'ignore' };
+export type SshWorkerLaunchOptions = { readonly cwd: string;
+  readonly env: { readonly MRT_APP_ROOT: string; readonly MRT_OPENSSH_AGENT_PIPE: string };
+  readonly serviceName: string; readonly stdio: 'ignore' };
 export type SshWorkerLauncher = (workerPath: string, args: string[], options: SshWorkerLaunchOptions) => UtilityProcess;
 
 function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCode {
@@ -69,6 +86,7 @@ function hasMatchingRemoteTextRevision(value: unknown, remotePath: string): valu
 export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForwardProvider {
   private readonly workerPath: string;
   private readonly appRoot: string;
+  private readonly opensshAgentPipePath: string;
   private readonly launchWorker: SshWorkerLauncher;
   private worker: UtilityProcess | undefined;
   private readonly pending = new Map<string, PendingRequest>();
@@ -76,17 +94,20 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
   private readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   private shuttingDown: Promise<void> | undefined;
 
-  constructor(workerPath: string, appRoot: string, launchWorker: SshWorkerLauncher) {
+  constructor(workerPath: string, appRoot: string, launchWorker: SshWorkerLauncher,
+    opensshAgentPipePath: string = WINDOWS_OPENSSH_AGENT_PIPE_PATH) {
+    if (!isWindowsOpenSshAgentPipePath(opensshAgentPipePath)) throw new SshTerminalProviderError('INVALID_REQUEST');
     this.workerPath = workerPath;
     this.appRoot = appRoot;
     this.launchWorker = launchWorker;
+    this.opensshAgentPipePath = opensshAgentPipePath;
   }
 
-  async open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials, size: TerminalSize,
+  async open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, size: TerminalSize,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
-    const credentialsCopy = { username: credentials.username, password: credentials.password };
+    const credentialsCopy = copyAuthenticationCredentials(credentials);
     const gatewayCopies = gatewayHops.map(hop => ({ endpoint: { ...hop.endpoint }, credentials: { ...hop.credentials } }));
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open',
       sessionId, endpoint, credentials: credentialsCopy, size, gatewayHops: gatewayCopies } as const satisfies SshWorkerRequest;
@@ -96,16 +117,15 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
       this.sessions.delete(sessionId);
       throw error;
     } finally {
-      credentialsCopy.username = '';
-      credentialsCopy.password = '';
+      clearAuthenticationCredentials(credentialsCopy);
       for (const hop of gatewayCopies) { hop.credentials.username = ''; hop.credentials.password = ''; }
     }
   }
 
-  async openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshTerminalCredentials,
+  async openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
-    const credentialsCopy = { username: credentials.username, password: credentials.password };
+    const credentialsCopy = copyAuthenticationCredentials(credentials);
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open-files',
       sessionId, endpoint, credentials: credentialsCopy } as const satisfies SshWorkerRequest;
     this.sessions.set(sessionId, { endpoints: [{ host: endpoint.host, port: endpoint.port }], verifyHost });
@@ -114,8 +134,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
       this.sessions.delete(sessionId);
       throw error;
     } finally {
-      credentialsCopy.username = '';
-      credentialsCopy.password = '';
+      clearAuthenticationCredentials(credentialsCopy);
     }
   }
 
@@ -285,7 +304,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     if (this.worker) return this.worker;
     const worker = this.launchWorker(this.workerPath, [], {
       cwd: process.resourcesPath ?? this.appRoot,
-      env: { MRT_APP_ROOT: this.appRoot },
+      env: { MRT_APP_ROOT: this.appRoot, MRT_OPENSSH_AGENT_PIPE: this.opensshAgentPipePath },
       serviceName: 'MultiRemoteTerminal SSH network provider',
       stdio: 'ignore'
     });

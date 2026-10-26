@@ -9,6 +9,7 @@ const TELNET_SUBMIT_SELECTOR = 'button[data-mrt-telnet-consent-trigger]';
 
 interface HostElement {
   getAttribute(name: string): string | null;
+  closest(selector: string): HostElement | null;
 }
 
 interface EventTargetElement {
@@ -67,6 +68,28 @@ export interface ExternalViewerLaunchGestureStore {
 export interface ExternalViewerLaunchGestureDocument {
   addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
   removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+}
+
+export interface TftpServerActionGestureStore {
+  consume(action: 'choose-root' | 'start', selectionId?: string, port?: number): Promise<boolean>;
+  dispose(): void;
+}
+
+export interface TftpServerActionGestureDocument {
+  addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  addEventListener(type: 'submit', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'submit', listener: (event: Event) => void, capture: true): void;
+}
+
+export interface PowerShellProfileGestureDocument {
+  addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+}
+
+export interface PowerShellProfileGestureStore {
+  consume(sessionId: string): Promise<boolean>;
+  dispose(): void;
 }
 
 export function installTerminalPasteGestureStore(documentTarget: PasteGestureDocument,
@@ -160,6 +183,85 @@ export function installExternalViewerLaunchGestureStore(documentTarget: External
     dispose(): void {
       documentTarget.removeEventListener('click', observeClick, true);
       gesture = undefined;
+    }
+  });
+}
+
+export function installTftpServerActionGestureStore(documentTarget: TftpServerActionGestureDocument,
+  authorize: (action: 'choose-root' | 'start', selectionId?: string, port?: number) => Promise<boolean>,
+  now: () => number = () => performance.now()): TftpServerActionGestureStore {
+  let gesture: { readonly action: 'choose-root' | 'start'; readonly selectionId?: string; readonly port?: number; readonly expiresAt: number } | undefined;
+  const captureStart = (form: TelnetConnectForm): void => {
+    const selectionId = form.getAttribute('data-mrt-tftp-selection-id') ?? '';
+    const port = Number(form.querySelector('input[name="port"]')?.value);
+    if (!SESSION_ID.test(selectionId) || !Number.isSafeInteger(port) || port < 0 || port > 65_535) { gesture = undefined; return; }
+    gesture = { action: 'start', selectionId, port, expiresAt: now() + GESTURE_TTL_MS };
+  };
+  const observeClick = (event: Event): void => {
+    const click = event as unknown as { readonly type: string; readonly isTrusted: boolean; readonly target: EventTargetElement | null };
+    if (click.type !== 'click' || !click.isTrusted) return;
+    const button = click.target?.closest('button[data-mrt-tftp-server-action-trigger]');
+    const action = button?.getAttribute('data-mrt-tftp-server-action-trigger');
+    if (action === 'choose-root') { gesture = { action, expiresAt: now() + GESTURE_TTL_MS }; return; }
+    if (action !== 'start') return;
+    const form = button?.closest('form') as TelnetConnectForm | null | undefined;
+    if (form) captureStart(form);
+  };
+  const observeSubmit = (event: Event): void => {
+    const submit = event as unknown as TrustedSubmitEvent;
+    if (submit.type !== 'submit' || !submit.isTrusted) return;
+    const form = submit.target?.closest('form[data-mrt-tftp-selection-id]');
+    if (form) captureStart(form as TelnetConnectForm);
+  };
+  documentTarget.addEventListener('click', observeClick, true);
+  documentTarget.addEventListener('submit', observeSubmit, true);
+  return Object.freeze({
+    async consume(action: 'choose-root' | 'start', selectionId?: string, port?: number): Promise<boolean> {
+      const current = gesture;
+      gesture = undefined;
+      if (!current || current.expiresAt < now() || current.action !== action) return false;
+      if (action === 'start' && (selectionId !== current.selectionId || port !== current.port)) return false;
+      if (action === 'choose-root' && (selectionId !== undefined || port !== undefined)) return false;
+      try { return await authorize(action, current.selectionId, current.port) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('click', observeClick, true);
+      documentTarget.removeEventListener('submit', observeSubmit, true);
+      gesture = undefined;
+    }
+  });
+}
+
+export function installPowerShellProfileGestureStore(documentTarget: PowerShellProfileGestureDocument,
+  authorize: (sessionId: string) => Promise<boolean>, now: () => number = () => performance.now()): PowerShellProfileGestureStore {
+  const gestures = new Map<string, number>();
+  const observeClick = (event: Event): void => {
+    const click = event as unknown as { readonly type: string; readonly isTrusted: boolean; readonly target: EventTargetElement | null };
+    if (click.type !== 'click' || !click.isTrusted) return;
+    const button = click.target?.closest('button[data-mrt-powershell-profile-trigger]');
+    const sessionId = button?.getAttribute('data-mrt-powershell-profile-trigger');
+    if (!sessionId || !SESSION_ID.test(sessionId)) return;
+    for (const [pendingSessionId, expiresAt] of gestures) if (expiresAt < now()) gestures.delete(pendingSessionId);
+    if (!gestures.has(sessionId) && gestures.size >= MAX_PENDING_GESTURES) {
+      const oldest = gestures.keys().next().value as string | undefined;
+      if (oldest !== undefined) gestures.delete(oldest);
+    }
+    gestures.delete(sessionId);
+    gestures.set(sessionId, now() + GESTURE_TTL_MS);
+  };
+  documentTarget.addEventListener('click', observeClick, true);
+  return Object.freeze({
+    async consume(sessionId: string): Promise<boolean> {
+      const expiresAt = gestures.get(sessionId);
+      gestures.delete(sessionId);
+      if (!SESSION_ID.test(sessionId) || expiresAt === undefined || expiresAt < now()) return false;
+      try { return await authorize(sessionId) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('click', observeClick, true);
+      gestures.clear();
     }
   });
 }

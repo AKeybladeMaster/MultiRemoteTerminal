@@ -1,7 +1,9 @@
 import type { AppError, ErrorCode, Outcome } from '../../domain/src/errors.ts';
 import { failure } from '../../domain/src/errors.ts';
-import { isLocalShell, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT_CHARS, MAX_TERMINAL_ROWS } from '../../domain/src/local-terminal.ts';
-import type { LocalShell } from '../../domain/src/local-terminal.ts';
+import { isLocalTerminalLaunch, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_INPUT_CHARS, MAX_TERMINAL_ROWS } from '../../domain/src/local-terminal.ts';
+import type { LocalTerminalLaunch } from '../../domain/src/local-terminal.ts';
+import { normalizeWslDistributionList } from '../../domain/src/wsl-distributions.ts';
+import type { WslDistribution } from '../../domain/src/wsl-distributions.ts';
 import { MAX_SERIAL_INPUT_CHARS, isSerialConfiguration, normalizeSerialConfiguration, normalizeSerialPortList } from '../../domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../domain/src/serial.ts';
 import type { LocalTerminalEvent, LocalTerminalSession } from '../../application/src/local-terminals.ts';
@@ -21,6 +23,8 @@ import { canonicalizeFtpEndpoint, isFtpTransferProgress, isFtpTransferResult } f
 import { isCanonicalFtpEndpoint } from '../../domain/src/ftp.ts';
 import { isFtpDirectoryListing, isFtpRemotePath } from '../../domain/src/ftp.ts';
 import type { FtpTransferProgress, FtpTransferResult } from '../../domain/src/ftp.ts';
+import { isTftpPort, isTftpRootSelection, isTftpServerStatus } from '../../domain/src/tftp.ts';
+import type { TftpRootSelection, TftpServerStatus } from '../../domain/src/tftp.ts';
 import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
 import { isSessionFolderId } from '../../domain/src/session-definition.ts';
@@ -42,19 +46,25 @@ import { isMacroId, isMacroDefinition, normalizeMacroDraft } from '../../domain/
 import type { MacroDefinition, MacroDraft } from '../../domain/src/macro.ts';
 import { isMacroShortcutBinding, isMacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
-import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
-import type { WorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import { isCurrentWorkbenchPreferences, isWorkbenchStartupPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
+import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
+import { isCustomLogoDataUrl } from '../../domain/src/custom-logo.ts';
+import type { CustomLogoSelection } from '../../domain/src/custom-logo.ts';
 
 export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
 export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
+export const POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL = 'mrt:powershell-profile-script-gesture:v1';
 export const REMOTE_FILE_DROP_CHANNEL = 'mrt:remote-file-drop:v1';
 export const REMOTE_FILE_DROP_TEST_CHANNEL = 'mrt:e2e-remote-file-drop:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
 export const VNC_LAUNCH_GESTURE_CHANNEL = 'mrt:vnc-launch-gesture:v1';
+export const TFTP_SERVER_ACTION_GESTURE_CHANNEL = 'mrt:tftp-server-action-gesture:v1';
+export const TFTP_SERVER_STATUS_EVENT_CHANNEL = 'mrt:tftp-server-status:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
@@ -89,15 +99,19 @@ interface Request<C extends string, P extends Record<string, unknown>> {
 }
 
 export type DescribeRequest = Request<'app.describe', Record<string, never>>;
-export type OpenTerminalRequest = Request<'terminal.open', { readonly sessionId: string; readonly shell: LocalShell; readonly columns: number; readonly rows: number }>;
+export type OpenTerminalRequest = Request<'terminal.open', { readonly sessionId: string; readonly launch: LocalTerminalLaunch; readonly columns: number; readonly rows: number }>;
 export type WriteTerminalRequest = Request<'terminal.write', { readonly sessionId: string; readonly data: string }>;
+export type PreviewPowerShellProfileScriptRequest = Request<'powershell.profile.preview', { readonly sessionId: string }>;
+export type ApplyPowerShellProfileScriptRequest = Request<'powershell.profile.apply', { readonly sessionId: string; readonly previewId: string }>;
 export type PasteTerminalRequest = Request<'terminal.paste', { readonly sessionId: string }>;
 export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
+export type SshAuthenticationMethod = 'password' | 'private-key' | 'agent';
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
-  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string }>;
-export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number }>;
+  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod }>;
+export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number;
+  readonly authenticationMethod?: SshAuthenticationMethod }>;
 export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
 export type WriteSshTerminalRequest = Request<'ssh.write', { readonly sessionId: string; readonly data: string }>;
 export type PasteSshTerminalRequest = Request<'ssh.paste', { readonly sessionId: string }>;
@@ -111,6 +125,8 @@ export type ResizeTelnetTerminalRequest = Request<'telnet.resize', { readonly se
 export type AcknowledgeTelnetTerminalRequest = Request<'telnet.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTelnetTerminalRequest = Request<'telnet.close', { readonly sessionId: string }>;
 export type ListSerialPortsRequest = Request<'serial.ports.list', Record<string, never>>;
+export type ListWslDistributionsRequest = Request<'wsl.distributions.list', Record<string, never>>;
+export type CancelWslDistributionDiscoveryRequest = Request<'wsl.distributions.cancel', Record<string, never>>;
 export type OpenSerialTerminalRequest = Request<'serial.open', { readonly sessionId: string; readonly configuration: SerialConfiguration; readonly columns: number; readonly rows: number }>;
 export type WriteSerialTerminalRequest = Request<'serial.write', { readonly sessionId: string; readonly data: string }>;
 export type PasteSerialTerminalRequest = Request<'serial.paste', { readonly sessionId: string }>;
@@ -140,6 +156,10 @@ export type UploadDroppedFtpFileRequest = Request<'ftp.files.upload-dropped', { 
 export type DownloadFtpFileRequest = Request<'ftp.files.download', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
 export type CancelFtpTransferRequest = Request<'ftp.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
 export type CloseFtpFilesRequest = Request<'ftp.close', { readonly sessionId: string }>;
+export type ChooseTftpRootRequest = Request<'tftp.root.choose', Record<string, never>>;
+export type StartTftpServerRequest = Request<'tftp.start', { readonly selectionId: string; readonly port: number }>;
+export type GetTftpServerStatusRequest = Request<'tftp.status', Record<string, never>>;
+export type StopTftpServerRequest = Request<'tftp.stop', Record<string, never>>;
 export type LaunchRdpViewerRequest = Request<'rdp.launch', { readonly host: string; readonly port: number }>;
 export type LaunchVncViewerRequest = Request<'vnc.launch', { readonly host: string; readonly port: number }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
@@ -179,16 +199,20 @@ export type DeleteMacroRequest = Request<'macro.delete', { readonly id: string }
 export type ListMacroShortcutsRequest = Request<'macro.shortcut.list', Record<string, never>>;
 export type SetMacroShortcutRequest = Request<'macro.shortcut.set', { readonly macroId: string; readonly code: MacroShortcutCode }>;
 export type DeleteMacroShortcutRequest = Request<'macro.shortcut.delete', { readonly macroId: string }>;
+export type SelectCustomLogoRequest = Request<'branding.logo.select', Record<string, never>>;
 export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<string, never>>;
+export type GetWorkbenchSettingsPreferencesRequest = Request<'preferences.settings.get', Record<string, never>>;
 export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
-export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
+export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PreviewPowerShellProfileScriptRequest | ApplyPowerShellProfileScriptRequest |
+  PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | UploadDroppedSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
   DiscardRemoteFileDropHandlesRequest |
   OpenLocalTextFileRequest | ReloadLocalTextFileRequest | SaveLocalTextFileRequest | CloseLocalTextFileRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
-  ListSerialPortsRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
+  ListSerialPortsRequest | ListWslDistributionsRequest | CancelWslDistributionDiscoveryRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | UploadDroppedFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
+  ChooseTftpRootRequest | StartTftpServerRequest | GetTftpServerStatusRequest | StopTftpServerRequest |
   LaunchRdpViewerRequest | LaunchVncViewerRequest |
   ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
@@ -196,11 +220,11 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   EnableCredentialVaultMasterPasswordRequest | DisableCredentialVaultMasterPasswordRequest | ResetCredentialVaultRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
-  GetWorkbenchPreferencesRequest | SaveWorkbenchPreferencesRequest;
+  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
-export type OpenTerminalResult = Pick<LocalTerminalSession, 'sessionId' | 'shell' | 'state'>;
+export type OpenTerminalResult = LocalTerminalSession;
 export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenSerialTerminalResult = Pick<SerialTerminalSession, 'sessionId' | 'configuration' | 'state'>;
@@ -209,6 +233,7 @@ export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
 export type OpenSftpFilesReply = CommandReply<OpenSshTerminalResult>;
 export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSerialPortsReply = CommandReply<readonly SerialPortInfo[]>;
+export type ListWslDistributionsReply = CommandReply<readonly WslDistribution[]>;
 export type OpenSerialTerminalReply = CommandReply<OpenSerialTerminalResult>;
 export type ListSshDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type SshTransferReply = CommandReply<FileTransferResult>;
@@ -219,6 +244,8 @@ export type LocalTextFileSaveReply = CommandReply<LocalTextFileSaveResult>;
 export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type FtpTransferReply = CommandReply<FtpTransferResult>;
+export type ChooseTftpRootReply = CommandReply<TftpRootSelection>;
+export type TftpServerStatusReply = CommandReply<TftpServerStatus>;
 
 export interface RemoteFileDropContext {
   readonly sessionId: string;
@@ -256,6 +283,10 @@ export type MacroDefinitionReply = CommandReply<MacroDefinition>;
 export type ListMacroShortcutsReply = CommandReply<readonly MacroShortcutBinding[]>;
 export type MacroShortcutReply = CommandReply<MacroShortcutBinding>;
 export type WorkbenchPreferencesReply = CommandReply<WorkbenchPreferences>;
+export type WorkbenchStartupPreferencesReply = CommandReply<WorkbenchStartupPreferences>;
+export interface PowerShellProfileScriptPreview { readonly previewId: string; readonly script: string; }
+export type PowerShellProfileScriptPreviewReply = CommandReply<PowerShellProfileScriptPreview>;
+export type SelectCustomLogoReply = CommandReply<CustomLogoSelection>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 export type CredentialVaultStatus = 'uninitialized' | 'available' | 'locked' | 'unavailable';
 export type CredentialVaultMode = 'windows-account' | 'master-password';
@@ -265,15 +296,19 @@ export type SessionCredentialPresenceReply = CommandReply<boolean>;
 
 export interface DesktopBridge {
   describe(): Promise<DescribeReply>;
-  openTerminal(sessionId: string, shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply>;
+  openTerminal(sessionId: string, launch: LocalTerminalLaunch, columns: number, rows: number): Promise<OpenTerminalReply>;
+  listWslDistributions(): Promise<ListWslDistributionsReply>;
+  cancelWslDistributionDiscovery(): Promise<TerminalActionReply>;
   writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
+  previewPowerShellProfileScript(sessionId: string): Promise<PowerShellProfileScriptPreviewReply>;
+  applyPowerShellProfileScript(sessionId: string, previewId: string): Promise<TerminalActionReply>;
   pasteTerminal(sessionId: string): Promise<TerminalActionReply>;
   resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-    gatewayProfileIds?: readonly string[], savedProfileId?: string): Promise<OpenSshTerminalReply>;
-  openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply>;
+    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply>;
+  openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   pasteSshTerminal(sessionId: string): Promise<TerminalActionReply>;
   resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
@@ -315,6 +350,10 @@ export interface DesktopBridge {
   downloadFtpFile(sessionId: string, operationId: string, remotePath: string): Promise<FtpTransferReply>;
   cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
   closeFtpFiles(sessionId: string): Promise<TerminalActionReply>;
+  chooseTftpRoot(): Promise<ChooseTftpRootReply>;
+  startTftpServer(selectionId: string, port: number): Promise<TftpServerStatusReply>;
+  getTftpServerStatus(): Promise<TftpServerStatusReply>;
+  stopTftpServer(): Promise<TerminalActionReply>;
   launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply>;
   launchVncViewer(host: string, port: number): Promise<LaunchVncViewerReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
@@ -352,11 +391,14 @@ export interface DesktopBridge {
   listMacroShortcuts(): Promise<ListMacroShortcutsReply>;
   setMacroShortcut(macroId: string, code: MacroShortcutCode): Promise<MacroShortcutReply>;
   deleteMacroShortcut(macroId: string): Promise<TerminalActionReply>;
-  getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply>;
+  selectCustomLogo(): Promise<SelectCustomLogoReply>;
+  getWorkbenchPreferences(): Promise<WorkbenchStartupPreferencesReply>;
+  getWorkbenchSettingsPreferences(): Promise<WorkbenchPreferencesReply>;
   saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
+  onTftpServerStatus(listener: (status: TftpServerStatus) => void): () => void;
   onFtpTransferProgress(listener: (event: FtpTransferProgress) => void): () => void;
   onSshTransferProgress(listener: (event: FileTransferProgress) => void): () => void;
   onRemoteFilesDropped(listener: (event: RemoteFileDropEvent) => boolean): () => void;
@@ -391,6 +433,20 @@ export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: s
 export function parseVncLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
   if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
   return canonicalizeVncEndpoint(value);
+}
+
+export type TftpServerActionGestureRequest =
+  | { readonly action: 'choose-root' }
+  | { readonly action: 'start'; readonly selectionId: string; readonly port: number };
+
+export function parseTftpServerActionGestureRequest(value: unknown): TftpServerActionGestureRequest | undefined {
+  if (!record(value) || typeof value.action !== 'string') return undefined;
+  if (value.action === 'choose-root' && exactKeys(value, ['action'])) return value as unknown as TftpServerActionGestureRequest;
+  if (value.action === 'start' && exactKeys(value, ['action', 'selectionId', 'port']) &&
+      typeof value.selectionId === 'string' && UUID.test(value.selectionId) && isTftpPort(value.port)) {
+    return value as unknown as TftpServerActionGestureRequest;
+  }
+  return undefined;
 }
 
 function validSize(columns: unknown, rows: unknown): boolean {
@@ -433,12 +489,19 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
       value.contractVersion !== CONTRACT_VERSION || !record(value.payload)) return failure('INVALID_REQUEST');
   const payload = value.payload;
   if (value.command === 'app.describe' && exactKeys(payload, [])) return { ok: true, result: value as unknown as DescribeRequest };
-  if (value.command === 'terminal.open' && exactKeys(payload, ['sessionId', 'shell', 'columns', 'rows']) &&
-      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && isLocalShell(payload.shell) && validSize(payload.columns, payload.rows)) {
+  if (value.command === 'terminal.open' && exactKeys(payload, ['sessionId', 'launch', 'columns', 'rows']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && isLocalTerminalLaunch(payload.launch) && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenTerminalRequest };
   }
   if (value.command === 'terminal.write' && exactKeys(payload, ['sessionId', 'data']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
       typeof payload.data === 'string' && payload.data.length <= MAX_TERMINAL_INPUT_CHARS) return { ok: true, result: value as unknown as WriteTerminalRequest };
+  if (value.command === 'powershell.profile.preview' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as PreviewPowerShellProfileScriptRequest };
+  }
+  if (value.command === 'powershell.profile.apply' && exactKeys(payload, ['sessionId', 'previewId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      typeof payload.previewId === 'string' && UUID.test(payload.previewId)) {
+    return { ok: true, result: value as unknown as ApplyPowerShellProfileScriptRequest };
+  }
   if (value.command === 'terminal.paste' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as PasteTerminalRequest };
   }
@@ -452,20 +515,28 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   const sshOpenBaseKeys = ['sessionId', 'host', 'port', 'columns', 'rows'] as const;
   const sshOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
   const sshOpenHasProfile = Object.hasOwn(payload, 'profileId');
-  const validSshOpenKeys = sshOpenHasGateways && sshOpenHasProfile
-    ? exactKeys(payload, [...sshOpenBaseKeys, 'gatewayProfileIds', 'profileId']) && isSshGatewayProfileIds(payload.gatewayProfileIds) && isSessionDefinitionId(payload.profileId)
-    : sshOpenHasGateways
-      ? exactKeys(payload, [...sshOpenBaseKeys, 'gatewayProfileIds']) && isSshGatewayProfileIds(payload.gatewayProfileIds)
-      : sshOpenHasProfile
-        ? exactKeys(payload, [...sshOpenBaseKeys, 'profileId']) && isSessionDefinitionId(payload.profileId)
-        : exactKeys(payload, [...sshOpenBaseKeys]);
+  const sshOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
+  const sshOpenOptionalKeys = [
+    ...(sshOpenHasGateways ? ['gatewayProfileIds'] : []),
+    ...(sshOpenHasProfile ? ['profileId'] : []),
+    ...(sshOpenHasAuthenticationMethod ? ['authenticationMethod'] : [])
+  ];
+  const validSshOpenKeys = exactKeys(payload, [...sshOpenBaseKeys, ...sshOpenOptionalKeys]) &&
+    (!sshOpenHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
+    (!sshOpenHasProfile || isSessionDefinitionId(payload.profileId)) &&
+    (!sshOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
+      payload.authenticationMethod === 'agent');
   if (value.command === 'ssh.open' && validSshOpenKeys &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };
   }
-  if (value.command === 'sftp.open' && exactKeys(payload, ['sessionId', 'host', 'port']) &&
+  const sftpOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
+  if (value.command === 'sftp.open' && exactKeys(payload, sftpOpenHasAuthenticationMethod
+    ? ['sessionId', 'host', 'port', 'authenticationMethod'] : ['sessionId', 'host', 'port']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      (!sftpOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
+        payload.authenticationMethod === 'agent') &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as OpenSftpFilesRequest };
   }
@@ -502,6 +573,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     return { ok: true, result: value as unknown as CloseTelnetTerminalRequest };
   }
   if (value.command === 'serial.ports.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSerialPortsRequest };
+  if (value.command === 'wsl.distributions.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListWslDistributionsRequest };
+  if (value.command === 'wsl.distributions.cancel' && exactKeys(payload, [])) return { ok: true, result: value as unknown as CancelWslDistributionDiscoveryRequest };
   if (value.command === 'serial.open' && exactKeys(payload, ['sessionId', 'configuration', 'columns', 'rows']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && isSerialConfiguration(payload.configuration) && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSerialTerminalRequest };
@@ -543,6 +616,11 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'ftp.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseFtpFilesRequest };
   }
+  if (value.command === 'tftp.root.choose' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ChooseTftpRootRequest };
+  if (value.command === 'tftp.start' && exactKeys(payload, ['selectionId', 'port']) && typeof payload.selectionId === 'string' &&
+      UUID.test(payload.selectionId) && isTftpPort(payload.port)) return { ok: true, result: value as unknown as StartTftpServerRequest };
+  if (value.command === 'tftp.status' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetTftpServerStatusRequest };
+  if (value.command === 'tftp.stop' && exactKeys(payload, [])) return { ok: true, result: value as unknown as StopTftpServerRequest };
   if (value.command === 'rdp.launch' && exactKeys(payload, ['host', 'port']) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeRdpEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as LaunchRdpViewerRequest };
@@ -672,23 +750,27 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'macro.shortcut.delete' && exactKeys(payload, ['macroId']) && isMacroId(payload.macroId)) {
     return { ok: true, result: value as unknown as DeleteMacroShortcutRequest };
   }
+  if (value.command === 'branding.logo.select' && exactKeys(payload, [])) return { ok: true, result: value as unknown as SelectCustomLogoRequest };
   if (value.command === 'preferences.get' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetWorkbenchPreferencesRequest };
+  if (value.command === 'preferences.settings.get' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetWorkbenchSettingsPreferencesRequest };
   if (value.command === 'preferences.save' && exactKeys(payload, ['preferences']) && normalizeWorkbenchPreferences(payload.preferences)) {
     return { ok: true, result: value as unknown as SaveWorkbenchPreferencesRequest };
   }
-  if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
+  if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'powershell.profile.preview', 'powershell.profile.apply',
+    'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.upload-dropped', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel', 'files.drop.discard',
     'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
-    'serial.ports.list', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
-    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.upload-dropped', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
+    'serial.ports.list', 'wsl.distributions.list', 'wsl.distributions.cancel', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
+    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.upload-dropped', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
+    'tftp.root.choose', 'tftp.start', 'tftp.status', 'tftp.stop', 'rdp.launch', 'vnc.launch',
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
     'vault.master.enable', 'vault.master.disable', 'vault.reset',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
-    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'preferences.get', 'preferences.save'].includes(value.command)) {
+    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -705,10 +787,12 @@ function validSnapshot(value: unknown): value is WorkbenchSnapshot {
     typeof value.platform === 'string' && value.platform.length <= 32 && value.stage === 'foundation';
 }
 
-function validOpenResult(value: unknown, shell: LocalShell): value is OpenTerminalResult {
-  if (!record(value) || !exactKeys(value, ['sessionId', 'shell', 'state'])) return false;
-  return typeof value.sessionId === 'string' && UUID.test(value.sessionId) && value.shell === shell &&
-    ['running', 'exited', 'failed'].includes(value.state as string);
+function validOpenResult(value: unknown, launch: LocalTerminalLaunch): value is OpenTerminalResult {
+  if (!record(value) || typeof value.sessionId !== 'string' || !UUID.test(value.sessionId) ||
+      !['running', 'exited', 'failed'].includes(value.state as string)) return false;
+  if (launch.shell === 'wsl') return exactKeys(value, ['sessionId', 'shell', 'distribution', 'state']) &&
+    value.shell === 'wsl' && value.distribution === launch.distribution;
+  return exactKeys(value, ['sessionId', 'shell', 'state']) && value.shell === launch.shell;
 }
 
 function validSshOpenResult(value: unknown, request: OpenSshTerminalRequest | OpenSftpFilesRequest): value is OpenSshTerminalResult {
@@ -747,6 +831,15 @@ function isCanonicalSerialPortList(value: unknown): boolean {
   });
 }
 
+function isCanonicalWslDistributionList(value: unknown): value is readonly WslDistribution[] {
+  const normalized = normalizeWslDistributionList(value);
+  return normalized !== undefined && Array.isArray(value) && normalized.length === value.length &&
+    normalized.every((distribution, index) => {
+      const candidate = value[index];
+      return record(candidate) && exactKeys(candidate, ['name']) && candidate.name === distribution.name;
+    });
+}
+
 function validFtpOpenResult(value: unknown, request: OpenFtpFilesRequest): value is FtpFilesSession {
   if (!record(value) || !exactKeys(value, ['sessionId', 'endpoint', 'state']) || value.sessionId !== request.payload.sessionId || value.state !== 'running') return false;
   if (!isCanonicalFtpEndpoint(value.endpoint)) return false;
@@ -760,11 +853,16 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
   if (value.ok) {
     if (!exactKeys(value, ['requestId', 'ok', 'result'])) return false;
     if (request.command === 'app.describe') return validSnapshot(value.result);
-    if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.shell);
+    if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.launch);
+    if (request.command === 'powershell.profile.preview') return record(value.result) && exactKeys(value.result, ['previewId', 'script']) &&
+      typeof value.result.previewId === 'string' && UUID.test(value.result.previewId) && typeof value.result.script === 'string' &&
+      normalizePowerShellProfileScript(value.result.script) === value.result.script && value.result.script.length > 0;
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
     if (request.command === 'sftp.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
     if (request.command === 'serial.ports.list') return isCanonicalSerialPortList(value.result);
+    if (request.command === 'wsl.distributions.list') return isCanonicalWslDistributionList(value.result);
+    if (request.command === 'wsl.distributions.cancel') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'serial.open') return validSerialOpenResult(value.result, request);
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'ssh.files.upload') return isFileTransferResult(value.result) && value.result.direction === 'upload';
@@ -783,6 +881,9 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ftp.files.upload') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ftp.files.upload-dropped') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ftp.files.download') return isFtpTransferResult(value.result) && value.result.direction === 'download';
+    if (request.command === 'tftp.root.choose') return isTftpRootSelection(value.result);
+    if (request.command === 'tftp.start' || request.command === 'tftp.status') return isTftpServerStatus(value.result);
+    if (request.command === 'tftp.stop') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.count') return isCount(value.result);
     if (request.command === 'session.create' || request.command === 'session.remember') return isSavedSessionDefinition(value.result);
@@ -820,7 +921,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'macro.shortcut.set') return isMacroShortcutBinding(value.result) && value.result.macroId === request.payload.macroId &&
       value.result.code === request.payload.code;
     if (request.command === 'macro.shortcut.delete') return record(value.result) && exactKeys(value.result, []);
-    if (request.command === 'preferences.get' || request.command === 'preferences.save') return isWorkbenchPreferences(value.result);
+    if (request.command === 'branding.logo.select') return record(value.result) && exactKeys(value.result, ['dataUrl']) &&
+      isCustomLogoDataUrl(value.result.dataUrl);
+    if (request.command === 'preferences.get') return isWorkbenchStartupPreferences(value.result);
+    if (request.command === 'preferences.settings.get' || request.command === 'preferences.save') return isCurrentWorkbenchPreferences(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

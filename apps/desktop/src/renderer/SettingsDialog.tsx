@@ -1,26 +1,40 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, FormEvent } from 'react';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
+import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../../../packages/domain/src/powershell-profile.ts';
+import { MAX_CUSTOM_LOGO_DIMENSION, MAX_CUSTOM_LOGO_SOURCE_BYTES } from '../../../../packages/domain/src/custom-logo.ts';
 import { MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS, MAX_TERMINAL_HIGHLIGHT_RULES,
   normalizeTerminalHighlightRules, TERMINAL_HIGHLIGHT_COLORS } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { TerminalHighlightColor, TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 
-export function SettingsDialog({ onClose, onPreferencesSaved }: {
+export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSessionId }: {
   readonly onClose: () => void;
   readonly onPreferencesSaved: (preferences: WorkbenchPreferences) => void;
+  readonly activePowerShellSessionId?: string | undefined;
 }) {
   const [greeting, setGreeting] = useState('');
+  const [powerShellProfileScript, setPowerShellProfileScript] = useState('');
+  const [savedPowerShellProfileScript, setSavedPowerShellProfileScript] = useState('');
+  const [profilePreview, setProfilePreview] = useState<{ readonly sessionId: string; readonly previewId: string; readonly script: string }>();
+  const [profilePreviewBusy, setProfilePreviewBusy] = useState(false);
+  const [profileApplyBusy, setProfileApplyBusy] = useState(false);
+  const [profileStatus, setProfileStatus] = useState('');
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [autoSaveSessions, setAutoSaveSessions] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
+  const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [logoPicking, setLogoPicking] = useState(false);
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState('');
   const [credentialVaultState, setCredentialVaultState] = useState<'uninitialized' | 'available' | 'locked' | 'unavailable'>('uninitialized');
@@ -33,9 +47,12 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const greetingInput = useRef<HTMLTextAreaElement>(null);
   const normalizedRules = normalizeTerminalHighlightRules(terminalHighlightRules);
   const greetingIsValid = Boolean(normalizeWorkbenchPreferences({ startupGreeting: greeting }));
+  const profileScriptIsValid = normalizePowerShellProfileScript(powerShellProfileScript) !== undefined;
+  const profileScriptDirty = powerShellProfileScript !== savedPowerShellProfileScript;
+  const profileActionBusy = profilePreviewBusy || profileApplyBusy;
   const validatedPreferences = normalizeWorkbenchPreferences({
-    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh
+    startupGreeting: greeting, powerShellProfileScript, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled,
+    showSftpBrowserBesideSsh, visibleLocalShells, customLogoDataUrl
   });
   const characterCount = Array.from(greeting).length;
 
@@ -45,15 +62,19 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
     setLoadFailed(false);
     setError(undefined);
     closeButton.current?.focus();
-    void window.multiRemoteTerminal.getWorkbenchPreferences().then(reply => {
+    void window.multiRemoteTerminal.getWorkbenchSettingsPreferences().then(reply => {
       if (!active) return;
       if (reply.ok) {
         setGreeting(reply.result.startupGreeting);
+        setPowerShellProfileScript(reply.result.powerShellProfileScript);
+        setSavedPowerShellProfileScript(reply.result.powerShellProfileScript);
         setTerminalHighlightEnabled(reply.result.terminalHighlightEnabled);
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
         setAutoSaveSessions(reply.result.autoSaveSessions);
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
+        setVisibleLocalShells(reply.result.visibleLocalShells);
+        setCustomLogoDataUrl(reply.result.customLogoDataUrl);
       }
       else {
         setLoadFailed(true);
@@ -87,13 +108,18 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   }, [loadGeneration]);
 
   useEffect(() => {
+    setProfilePreview(undefined);
+    setProfileStatus('');
+  }, [activePowerShellSessionId]);
+
+  useEffect(() => {
     if (loadFailed) retryButton.current?.focus();
     else if (!loading) greetingInput.current?.focus();
   }, [loadFailed, loading]);
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === 'Escape') {
-      if (!saving) { event.preventDefault(); onClose(); }
+      if (!saving && !logoPicking && !profileActionBusy) { event.preventDefault(); onClose(); }
       return;
     }
     if (event.key !== 'Tab') return;
@@ -113,7 +139,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (loading || loadFailed || saving || !validatedPreferences) return;
+    if (loading || loadFailed || saving || logoPicking || profileActionBusy || !validatedPreferences) return;
     setSaving(true);
     setError(undefined);
     setStatus('Saving…');
@@ -126,11 +152,16 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setStatus('');
       } else {
         setGreeting(reply.result.startupGreeting);
+        setPowerShellProfileScript(reply.result.powerShellProfileScript);
+        setSavedPowerShellProfileScript(reply.result.powerShellProfileScript);
+        setProfilePreview(undefined);
         setTerminalHighlightEnabled(reply.result.terminalHighlightEnabled);
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
         setAutoSaveSessions(reply.result.autoSaveSessions);
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
+        setVisibleLocalShells(reply.result.visibleLocalShells);
+        setCustomLogoDataUrl(reply.result.customLogoDataUrl);
         onPreferencesSaved(reply.result);
         setStatus('Settings saved.');
       }
@@ -138,6 +169,67 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
       setError(workbenchPreferenceFailureMessage('save', undefined));
       setStatus('');
     } finally { setSaving(false); }
+  }
+
+  async function chooseCustomLogo(): Promise<void> {
+    if (loading || loadFailed || saving || logoPicking) return;
+    setLogoPicking(true);
+    setError(undefined);
+    setStatus('');
+    try {
+      const reply = await window.multiRemoteTerminal.selectCustomLogo();
+      if (reply.ok) {
+        setCustomLogoDataUrl(reply.result.dataUrl);
+        setStatus('Logo selected. Save changes to apply it.');
+      } else if (reply.error.code !== 'CANCELLED') {
+        setError(reply.error.code === 'INVALID_REQUEST'
+          ? `Choose a valid PNG image no larger than 1 MiB or ${MAX_CUSTOM_LOGO_DIMENSION} × ${MAX_CUSTOM_LOGO_DIMENSION} pixels.`
+          : 'The logo could not be read. Choose another PNG image and try again.');
+      }
+    } catch {
+      setError('The logo could not be selected. Try again.');
+    } finally { setLogoPicking(false); }
+  }
+
+  async function previewPowerShellProfileScript(): Promise<void> {
+    if (!activePowerShellSessionId || loading || loadFailed || saving || profilePreviewBusy || profileApplyBusy ||
+        profileScriptDirty || !profileScriptIsValid || savedPowerShellProfileScript.length === 0) return;
+    setProfilePreviewBusy(true);
+    setProfilePreview(undefined);
+    setProfileStatus('Loading the saved script preview…');
+    setError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.previewPowerShellProfileScript(activePowerShellSessionId);
+      if (!reply.ok) {
+        setProfileStatus(reply.error.code === 'INVALID_REQUEST' ? 'Save a non-empty script before previewing it.'
+          : `The saved script could not be previewed (${reply.error.code}).`);
+      } else {
+        setProfilePreview({ sessionId: activePowerShellSessionId, ...reply.result });
+        setProfileStatus('Preview loaded. Review it before running it in this PowerShell session.');
+      }
+    } catch {
+      setProfileStatus('The saved script could not be previewed. Try again.');
+    } finally { setProfilePreviewBusy(false); }
+  }
+
+  async function applyPowerShellProfileScript(): Promise<void> {
+    const preview = profilePreview;
+    if (!preview || profileScriptDirty || !activePowerShellSessionId || preview.sessionId !== activePowerShellSessionId ||
+        loading || loadFailed || saving || profilePreviewBusy || profileApplyBusy) return;
+    setProfileApplyBusy(true);
+    setProfileStatus('Sending the reviewed script to the active PowerShell session…');
+    setError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.applyPowerShellProfileScript(preview.sessionId, preview.previewId);
+      setProfilePreview(undefined);
+      setProfileStatus(reply.ok ? 'Script sent to the active PowerShell session.'
+        : reply.error.code === 'CONFLICT' ? 'The saved script changed after preview. Load a new preview before running it.'
+          : reply.error.code === 'FORBIDDEN' ? 'Run authorization expired. Load a new preview, review it, then click Run again.'
+            : `The script could not be sent to this PowerShell session (${reply.error.code}).`);
+    } catch {
+      setProfilePreview(undefined);
+      setProfileStatus('The script could not be sent to this PowerShell session. Try again.');
+    } finally { setProfileApplyBusy(false); }
   }
 
   async function updateVaultFromReply(reply: Awaited<ReturnType<typeof window.multiRemoteTerminal.unlockCredentialVault>>, action: string) {
@@ -203,18 +295,34 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   }
 
   return <div className="settings-backdrop" onMouseDown={event => {
-    if (event.target === event.currentTarget && !saving) onClose();
+    if (event.target === event.currentTarget && !saving && !logoPicking && !profileActionBusy) onClose();
   }}>
     <section ref={dialog} className="settings-dialog" role="dialog" aria-modal="true"
       aria-labelledby="settings-heading" aria-describedby="settings-description" onKeyDown={handleKeyDown}>
       <header className="settings-header">
         <div>
           <h2 id="settings-heading">Workbench settings</h2>
-          <p id="settings-description">Choose which connections to remember, control SSH file panes, set a greeting, and color terminal text.</p>
+          <p id="settings-description">Choose which connections to remember, set your workbench logo and greeting, and control terminal tools and colors.</p>
         </div>
-        <button ref={closeButton} type="button" className="quiet-button" disabled={saving} onClick={onClose}>Close</button>
+        <button ref={closeButton} type="button" className="quiet-button" disabled={saving || logoPicking || profileActionBusy} onClick={onClose}>Close</button>
       </header>
       <form className="settings-form" onSubmit={event => { void save(event); }}>
+        <section className="settings-highlights" aria-labelledby="custom-logo-heading">
+          <h3 id="custom-logo-heading">Workbench logo</h3>
+          <p className="settings-highlight-help">
+            Choose a PNG up to {MAX_CUSTOM_LOGO_SOURCE_BYTES / 1_048_576} MiB and {MAX_CUSTOM_LOGO_DIMENSION} × {MAX_CUSTOM_LOGO_DIMENSION} pixels. The app saves a normalized copy with your settings.
+          </p>
+          {customLogoDataUrl && <img className="settings-custom-logo-preview" src={customLogoDataUrl} alt="Selected workbench logo" width={96} height={96} />}
+          <div className="ssh-connect-actions">
+            <button type="button" disabled={loading || loadFailed || saving || logoPicking} onClick={() => void chooseCustomLogo()}>
+              {logoPicking ? 'Reading image…' : 'Choose PNG logo'}
+            </button>
+            <button type="button" disabled={loading || loadFailed || saving || logoPicking || !customLogoDataUrl}
+              onClick={() => { setCustomLogoDataUrl(null); setError(undefined); setStatus('The built-in wordmark will be used after you save.'); }}>
+              Use built-in wordmark
+            </button>
+          </div>
+        </section>
         <div className="settings-highlights">
           <h3>Credential vault</h3>
           <p className="settings-highlight-help">
@@ -226,15 +334,15 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
           <p role="status" aria-live="polite">Status: {credentialVaultState === 'available' ? 'Unlocked'
             : credentialVaultState === 'locked' ? 'Locked' : credentialVaultState === 'uninitialized' ? 'Starting' : 'Unavailable'}</p>
           {credentialVaultError && <p className="dialog-error" role="alert">{credentialVaultError}</p>}
-          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy}
+          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy || saving || logoPicking}
             onClick={() => void changeCredentialVaultLock()}>
             {credentialVaultBusy ? 'Updating…' : credentialVaultState === 'available' ? 'Lock credentials' : 'Unlock credentials'}
           </button>
-          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy || credentialVaultState === 'unavailable' || credentialVaultState === 'uninitialized'}
+          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy || saving || logoPicking || credentialVaultState === 'unavailable' || credentialVaultState === 'uninitialized'}
             onClick={() => void changeCredentialVaultMode()}>
             {credentialVaultBusy ? 'Updating…' : credentialVaultMode === 'windows-account' ? 'Use a master password' : 'Use Windows account protection'}
           </button>
-          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy}
+          <button type="button" className="settings-highlight-add" disabled={credentialVaultBusy || saving || logoPicking}
             onClick={() => void resetCredentialVault()}>
             Delete saved passwords
           </button>
@@ -250,6 +358,34 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             Turn this off to keep SSH terminals full width. You can still connect to SFTP in a files-only tab.
           </p>
         </div>
+        <section className="settings-highlights" role="group" aria-labelledby="local-shell-tools-heading"
+          aria-describedby="local-shell-tools-description">
+          <h3 id="local-shell-tools-heading">Local terminal tools</h3>
+          <p className="settings-highlight-help" id="local-shell-tools-description">
+            Choose which shell actions appear in the command palette. This does not install shells or change saved sessions.
+          </p>
+          {LOCAL_SHELL_TOOL_REGISTRY.map(tool => {
+            const inputId = `visible-local-shell-${tool.shell}`;
+            const descriptionId = `${inputId}-description`;
+            return <div key={tool.shell}>
+              <label className="settings-highlight-toggle" htmlFor={inputId}>
+                <input id={inputId} name={`visibleLocalShells.${tool.shell}`} type="checkbox" checked={visibleLocalShells.includes(tool.shell)}
+                  disabled={loading || loadFailed || saving} aria-describedby={descriptionId}
+                  onChange={event => {
+                    const shouldShow = event.target.checked;
+                    setVisibleLocalShells(current => shouldShow
+                      ? LOCAL_SHELL_TOOL_REGISTRY.filter(candidate => candidate.shell === tool.shell || current.includes(candidate.shell))
+                        .map(candidate => candidate.shell)
+                      : current.filter(shell => shell !== tool.shell));
+                    setError(undefined);
+                    setStatus('');
+                  }} />
+                <span>Show {tool.label} in command palette</span>
+              </label>
+              <p className="settings-highlight-help" id={descriptionId}>{tool.description}</p>
+            </div>;
+          })}
+        </section>
         <div className="settings-highlights">
           <label className="settings-highlight-toggle" htmlFor="auto-save-sessions">
             <input id="auto-save-sessions" type="checkbox" checked={autoSaveSessions}
@@ -270,6 +406,52 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             ? <span className="dialog-error" role="alert">Use no more than {MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters.</span>
             : !greetingIsValid && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
         </div>
+        <section className="settings-highlights" aria-labelledby="powershell-profile-heading"
+          aria-describedby="powershell-profile-description powershell-profile-warning">
+          <h3 id="powershell-profile-heading">PowerShell profile script</h3>
+          <p id="powershell-profile-description" className="settings-highlight-help">
+            Save a local script here, then preview the saved text and explicitly run it in an already open local PowerShell tab.
+          </p>
+          <label htmlFor="powershell-profile-script">Saved PowerShell script</label>
+          <textarea id="powershell-profile-script" name="powerShellProfileScript" rows={7}
+            maxLength={MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS} spellCheck={false}
+            disabled={loading || loadFailed || saving || profileActionBusy}
+            value={powerShellProfileScript} onChange={event => {
+              setPowerShellProfileScript(event.target.value);
+              setProfilePreview(undefined);
+              setProfileStatus('');
+              setError(undefined);
+              setStatus('');
+            }} />
+          <div className="settings-form-meta">
+            <span>{powerShellProfileScript.length} / {MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS} UTF-16 code units</span>
+            {!profileScriptIsValid && <span className="dialog-error" role="alert">Remove control, bidirectional formatting, and Unicode line separator characters, and keep the script within the size limit.</span>}
+          </div>
+          <p id="powershell-profile-warning" className="settings-profile-warning">
+            Scripts are stored locally as plain text. PowerShell can change files and contact network services. Review the exact saved script before each run. It never runs at app startup or when a terminal opens.
+          </p>
+          {profileScriptDirty && <p className="settings-highlight-help" role="status">Save changes before previewing this script.</p>}
+          <div className="ssh-connect-actions settings-profile-actions">
+            <button type="button" disabled={loading || loadFailed || saving || profileActionBusy || !activePowerShellSessionId ||
+              profileScriptDirty || !profileScriptIsValid || savedPowerShellProfileScript.length === 0}
+              onClick={() => void previewPowerShellProfileScript()}>
+              {profilePreviewBusy ? 'Loading preview…' : 'Preview saved script'}
+            </button>
+            <button type="button" className="ssh-primary" data-mrt-powershell-profile-trigger={activePowerShellSessionId}
+              disabled={loading || loadFailed || saving || profileActionBusy || !activePowerShellSessionId || profileScriptDirty ||
+                !profilePreview || profilePreview.sessionId !== activePowerShellSessionId}
+              onClick={() => void applyPowerShellProfileScript()}>
+              {profileApplyBusy ? 'Sending…' : 'Run in this PowerShell session'}
+            </button>
+          </div>
+          {!activePowerShellSessionId && <p className="settings-highlight-help">Open and select a running local PowerShell tab to preview or run the script.</p>}
+          {profilePreview && profilePreview.sessionId === activePowerShellSessionId && <div className="settings-profile-preview" aria-labelledby="powershell-profile-preview-heading">
+            <h4 id="powershell-profile-preview-heading">Exact saved script preview</h4>
+            <pre tabIndex={0} aria-label="Exact saved PowerShell script preview">{profilePreview.script}</pre>
+            <p className="settings-highlight-help">Run only when PowerShell is at an idle prompt. This sends the script as terminal input; if another program is running or waiting for input, it may receive the text instead.</p>
+          </div>}
+          {profileStatus && <p className="settings-save-status" role="status" aria-live="polite">{profileStatus}</p>}
+        </section>
         <div className="settings-highlights">
           <label className="settings-highlight-toggle" htmlFor="terminal-shell-syntax-enabled">
             <input id="terminal-shell-syntax-enabled" type="checkbox" checked={terminalShellSyntaxEnabled}
@@ -278,7 +460,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             <span>Color shell commands at prompts</span>
           </label>
           <p id="terminal-shell-syntax-description" className="settings-highlight-help">
-            Colors common command tokens while you type at prompts ending in $, #, %, or &gt;. It does not change terminal input or output.
+            Colors common command tokens while you type at prompts ending in $, #, %, &gt;, ❯, or ➜. It does not change terminal input or output.
           </p>
           <label className="settings-highlight-toggle" htmlFor="terminal-highlight-enabled">
             <input id="terminal-highlight-enabled" type="checkbox" checked={terminalHighlightEnabled}
@@ -329,8 +511,8 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         {loadFailed && <button ref={retryButton} type="button" disabled={saving} onClick={() => setLoadGeneration(value => value + 1)}>Try loading settings again</button>}
         {status && <p className="settings-save-status" role="status">{status}</p>}
         <div className="ssh-connect-actions">
-          <button type="button" disabled={saving} onClick={onClose}>Cancel</button>
-          <button type="submit" className="ssh-primary" disabled={loading || loadFailed || saving || !validatedPreferences}>
+          <button type="button" disabled={saving || logoPicking || profileActionBusy} onClick={onClose}>Cancel</button>
+          <button type="submit" className="ssh-primary" disabled={loading || loadFailed || saving || logoPicking || profileActionBusy || !validatedPreferences}>
             {loading ? 'Loading…' : saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>
