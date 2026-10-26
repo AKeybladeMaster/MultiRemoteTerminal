@@ -46,6 +46,10 @@ export interface TerminalShellInputAnchor {
   readonly startColumn: number;
 }
 
+export interface TerminalShellInputAnchorRef {
+  current: TerminalShellInputAnchor | undefined;
+}
+
 export interface TerminalHighlightOptions {
   readonly keywordHighlightingEnabled: boolean;
   readonly keywordRules: readonly TerminalHighlightRule[];
@@ -58,6 +62,12 @@ export function isShellPromptAtCursor(promptText: string): boolean {
   const trimmed = promptText.trimEnd();
   const lastCharacter = trimmed.at(-1);
   return lastCharacter === '$' || lastCharacter === '#' || lastCharacter === '%' || lastCharacter === '>';
+}
+
+export function clearTerminalShellInputAnchor(anchorRef: TerminalShellInputAnchorRef): void {
+  const anchor = anchorRef.current;
+  anchorRef.current = undefined;
+  if (anchor && !anchor.marker.isDisposed) anchor.marker.dispose();
 }
 
 export function extractBoundedTerminalHighlightLine(
@@ -87,6 +97,17 @@ export function extractBoundedTerminalHighlightLine(
   return { text: fullText.slice(0, trimmedTextLength), cellSpans };
 }
 
+function extractBoundedTerminalBufferLine(terminal: Terminal, lineNumber: number): BoundedTerminalHighlightLine | undefined {
+  const buffer = terminal.buffer.active;
+  const line = buffer.getLine(lineNumber);
+  if (!line) return undefined;
+  const cellScratch = buffer.getNullCell();
+  return extractBoundedTerminalHighlightLine(Math.min(line.length, terminal.cols), column => {
+    const cell = line.getCell(column, cellScratch);
+    return cell ? { text: cell.getChars(), width: cell.getWidth() } : undefined;
+  });
+}
+
 export function attachTerminalHighlights(
   terminal: Terminal,
   options: TerminalHighlightOptions
@@ -112,8 +133,6 @@ export function attachTerminalHighlights(
     if (buffer.type !== 'normal') return;
 
     const cursorLine = buffer.baseY + buffer.cursorY;
-    const cellScratch = buffer.getNullCell();
-
     if (matcher) {
       const scanCount = Math.min(terminal.rows, MAX_TERMINAL_HIGHLIGHT_ROWS);
       const firstLine = buffer.viewportY + Math.max(0, terminal.rows - scanCount);
@@ -121,12 +140,7 @@ export function attachTerminalHighlights(
       let remainingMatches = MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_REFRESH;
 
       for (let lineNumber = firstLine; lineNumber < lastLineExclusive && remainingMatches > 0; lineNumber += 1) {
-        const line = buffer.getLine(lineNumber);
-        if (!line) continue;
-        const extracted = extractBoundedTerminalHighlightLine(Math.min(line.length, terminal.cols), column => {
-          const cell = line.getCell(column, cellScratch);
-          return cell ? { text: cell.getChars(), width: cell.getWidth() } : undefined;
-        });
+        const extracted = extractBoundedTerminalBufferLine(terminal, lineNumber);
         if (!extracted) continue;
         const { text, cellSpans } = extracted;
         const matches = matcher.findMatches(text, Math.min(remainingMatches, MAX_TERMINAL_HIGHLIGHT_MATCHES_PER_LINE));
@@ -160,12 +174,7 @@ export function attachTerminalHighlights(
     if (options.shellSyntaxEnabled) {
       const inputAnchor = options.getShellInputAnchor();
       if (!inputAnchor || inputAnchor.marker.isDisposed || inputAnchor.marker.line !== cursorLine) return;
-      const line = buffer.getLine(cursorLine);
-      if (!line) return;
-      const extracted = extractBoundedTerminalHighlightLine(Math.min(line.length, terminal.cols), column => {
-        const cell = line.getCell(column, cellScratch);
-        return cell ? { text: cell.getChars(), width: cell.getWidth() } : undefined;
-      });
+      const extracted = extractBoundedTerminalBufferLine(terminal, cursorLine);
       if (!extracted) return;
       const startSpan = extracted.cellSpans.find(span => span.column >= inputAnchor.startColumn);
       if (!startSpan) return;

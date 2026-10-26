@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
-import { attachTerminalHighlights, isShellPromptAtCursor } from './terminal-highlighting.ts';
+import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellPromptAtCursor } from './terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from './terminal-highlighting.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
@@ -86,11 +86,6 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   canWriteRef.current = canWrite;
   shellSyntaxEnabledRef.current = terminalShellSyntaxEnabled;
 
-  function clearShellInputAnchor(): void {
-    shellInputAnchor.current?.marker.dispose();
-    shellInputAnchor.current = undefined;
-  }
-
   function beginShellInputAnchor(instance: Terminal): void {
     if (!shellSyntaxEnabledRef.current || transport === 'serial') return;
     const buffer = instance.buffer.active;
@@ -98,7 +93,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     const cursorLine = buffer.baseY + buffer.cursorY;
     const existing = shellInputAnchor.current;
     if (existing && !existing.marker.isDisposed && existing.marker.line === cursorLine) return;
-    clearShellInputAnchor();
+    clearTerminalShellInputAnchor(shellInputAnchor);
     const line = buffer.getLine(cursorLine);
     const promptText = line?.translateToString(true, 0, buffer.cursorX) ?? '';
     if (!isShellPromptAtCursor(promptText)) return;
@@ -118,7 +113,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     instance.loadAddon(fitAddon);
     instance.onData(data => {
       if (!canWriteRef.current) return;
-      if (/[\r\n\x03\x04\x0c]/u.test(data)) clearShellInputAnchor();
+      if (/[\r\n\x03\x04\x0c]/u.test(data)) clearTerminalShellInputAnchor(shellInputAnchor);
       else beginShellInputAnchor(instance);
       onInput(sessionId, data);
       const sent = commands.write(sessionId, data);
@@ -131,7 +126,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       beginShellInputAnchor(instance);
       const pasted = commands.paste(sessionId);
       void pasted.then(reply => {
-        if (!reply.ok) clearShellInputAnchor();
+        if (!reply.ok) clearTerminalShellInputAnchor(shellInputAnchor);
         if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
       });
     };
@@ -184,7 +179,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     return () => {
       observer.disconnect();
       host.current?.removeEventListener('paste', onPaste);
-      clearShellInputAnchor();
+      clearTerminalShellInputAnchor(shellInputAnchor);
       onReady(sessionId, undefined);
       instance.dispose();
       terminal.current = undefined;
@@ -195,6 +190,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   useLayoutEffect(() => {
     const instance = terminal.current;
     if (!instance) return;
+    if (!terminalShellSyntaxEnabled) clearTerminalShellInputAnchor(shellInputAnchor);
     const highlights = attachTerminalHighlights(instance, {
       keywordHighlightingEnabled: terminalHighlightEnabled, keywordRules: terminalHighlightRules,
       shellSyntaxEnabled: terminalShellSyntaxEnabled && transport !== 'serial',

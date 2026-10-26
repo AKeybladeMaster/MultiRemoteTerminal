@@ -4103,6 +4103,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     })).toBe(true);
     await page.screenshot({ path: 'test-results/bash-shell-syntax-prompt.png' });
     await page.keyboard.press('Control+C');
+    await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').count()).toBe(0);
 
     const bashPanel = await selectTerminal(page, 'Bash session 1');
     const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
