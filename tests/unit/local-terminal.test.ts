@@ -12,6 +12,7 @@ class FakeTerminalProvider implements LocalTerminalProvider {
   readonly opened: string[] = [];
   readonly launches: LocalTerminalLaunch[] = [];
   readonly writes: Array<{ readonly sessionId: string; readonly data: string }> = [];
+  readonly pastes: Array<{ readonly sessionId: string; readonly data: string }> = [];
   readonly closed: string[] = [];
   openGate?: Promise<void>;
   writeGate?: Promise<void>;
@@ -26,6 +27,7 @@ class FakeTerminalProvider implements LocalTerminalProvider {
   async listWslDistributions() { return [{ name: 'Ubuntu' }]; }
   cancelWslDistributionDiscovery() {}
   async write(sessionId: string, data: string): Promise<void> { this.writes.push({ sessionId, data }); await this.writeGate; }
+  async paste(sessionId: string, data: string): Promise<void> { this.pastes.push({ sessionId, data }); await this.writeGate; }
   async resize(): Promise<void> {}
   async acknowledgeOutput(): Promise<void> {}
   async close(id: string): Promise<void> { this.closed.push(id); }
@@ -60,6 +62,24 @@ test('terminal lifecycle validates dimensions, bounds pending input and closes o
   assert.equal((await controller.close('c1f3ace8-9464-449b-9459-a41b642dc2a7')).ok, false);
   assert.deepEqual(await controller.close(sessionId), { ok: true, result: {} });
   assert.deepEqual(provider.closed, [sessionId]);
+  await controller.dispose();
+});
+
+test('clipboard paste uses the provider paste path and keeps terminal input bounds', async () => {
+  const provider = new FakeTerminalProvider();
+  const controller = createLocalTerminalController(provider);
+  await controller.open(sessionId, { shell: 'bash' }, size);
+
+  assert.deepEqual(await controller.paste(sessionId, 'printf "🙂"'), { ok: true, result: {} });
+  assert.deepEqual(provider.pastes, [{ sessionId, data: 'printf "🙂"' }]);
+  assert.deepEqual(provider.writes, []);
+
+  const oversized = await controller.paste(sessionId, 'x'.repeat(16_385));
+  assert.equal(oversized.ok, false);
+  if (!oversized.ok) assert.equal(oversized.error.code, 'INVALID_REQUEST');
+
+  await controller.close(sessionId);
+  assert.equal((await controller.paste(sessionId, 'no longer running')).ok, false);
   await controller.dispose();
 });
 

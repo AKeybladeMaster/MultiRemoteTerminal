@@ -80,7 +80,7 @@ export interface CommandActions {
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
   readonly selectCustomLogo: () => Promise<Outcome<CustomLogoSelection>>;
   readonly cancellation?: CancellationSignal;
-  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'applyPowerShellProfileScript' |
+  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'paste' | 'applyPowerShellProfileScript' |
     'resize' | 'acknowledgeOutput' | 'close'>;
   readonly powerShellProfileScripts: Pick<PowerShellProfileScriptController, 'preview' | 'apply'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
@@ -173,7 +173,7 @@ export async function dispatchCommand(
       case 'terminal.paste': {
         if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
         actions.noteUserActivity();
-        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.terminals.write);
+        return pasteFromClipboard(requestId, parsed.result.payload.sessionId, actions, actions.terminals.paste);
       }
       case 'terminal.resize': {
         const { sessionId, columns, rows } = parsed.result.payload;

@@ -35,7 +35,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   discardDroppedUploadHandles: () => {}, terminals: {
     async open(sessionId, launch) { return { ok: true, result: { sessionId, ...launch, state: 'running' } }; },
     async listWslDistributions() { return { ok: true, result: [{ name: 'Ubuntu' }] }; }, cancelWslDistributionDiscovery: noOp,
-    write: noOp, applyPowerShellProfileScript: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+    write: noOp, paste: noOp, applyPowerShellProfileScript: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     async openFiles(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
@@ -880,7 +880,7 @@ test('only validated local, SSH or Telnet terminal open, write and close command
   assert.equal(activityCount, 9);
 });
 
-test('clipboard paste reads only in the broker, bounds text, and writes to the requested terminal', async () => {
+test('clipboard paste reads only in the broker, bounds text, and uses the requested local terminal paste operation', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const operations: { readonly sessionId: string; readonly data: string }[] = [];
   let clipboardReads = 0;
@@ -888,7 +888,7 @@ test('clipboard paste reads only in the broker, bounds text, and writes to the r
   const withClipboard: CommandActions = { ...base,
     authorizeClipboardPaste: () => true,
     readClipboardText: async () => { clipboardReads++; return 'clipboard-secret Ж雪'; },
-    terminals: { ...base.terminals, async write(id, data) { operations.push({ sessionId: id, data }); return { ok: true, result: {} }; } }
+    terminals: { ...base.terminals, async paste(id, data) { operations.push({ sessionId: id, data }); return { ok: true, result: {} }; } }
   };
   const requestId = request.requestId;
   const pasted = await dispatchCommand(owner, { command: 'terminal.paste', requestId, contractVersion: 1, payload: { sessionId } }, withClipboard, () => {});
@@ -923,7 +923,7 @@ test('multiline clipboard paste is not written until the user confirms it', asyn
   const base = actions();
   const withClipboard: CommandActions = { ...base, readClipboardText: async () => 'echo first\r\necho second',
     authorizeClipboardPaste: () => true,
-    terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
+    terminals: { ...base.terminals, async paste() { writes++; return { ok: true, result: {} }; } } };
   await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId } }, withClipboard, () => {});
   assert.equal(writes, 0, 'a multiline clipboard payload must wait for an explicit confirmation');
@@ -937,7 +937,7 @@ test('confirmed multiline clipboard paste is sent only after the native confirma
   const withClipboard: CommandActions = { ...base, authorizeClipboardPaste: () => true,
     readClipboardText: async () => 'echo first\r\necho second',
     confirmMultilinePaste: async () => { prompts++; return true; },
-    terminals: { ...base.terminals, async write(_id, data) { writes.push(data); return { ok: true, result: {} }; } } };
+    terminals: { ...base.terminals, async paste(_id, data) { writes.push(data); return { ok: true, result: {} }; } } };
   const reply = await dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId } }, withClipboard, () => {});
   assert.equal(reply.ok, true);
@@ -960,7 +960,7 @@ test('renderer teardown cancels pending multiline paste before any terminal writ
   const withClipboard: CommandActions = { ...base, cancellation: cancellation.signal, authorizeClipboardPaste: () => true,
     readClipboardText: async () => 'echo first\necho second',
     confirmMultilinePaste: async () => { confirmationRequested(); return confirmation; },
-    terminals: { ...base.terminals, async write() { writes++; return { ok: true, result: {} }; } } };
+    terminals: { ...base.terminals, async paste() { writes++; return { ok: true, result: {} }; } } };
   const pending = dispatchCommand(owner, { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId } }, withClipboard, () => {});
   await requested;

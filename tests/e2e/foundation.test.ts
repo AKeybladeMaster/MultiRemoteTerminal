@@ -4922,40 +4922,19 @@ test('Git Bash supplementary Unicode paste survives a full command round trip', 
     await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
 
     const supplementarySample = String.fromCodePoint(0x1f642);
-    const panel = await selectTerminal(page, 'Bash session 1');
-    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
-    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
-
-    await page.keyboard.type('cat');
-    await page.keyboard.press('Enter');
-    await expect(panel.locator('.xterm-rows')).toContainText('cat');
-    const catPaste = `MRT-RAW:${supplementarySample}`;
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), catPaste);
-    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(catPaste);
-    await page.keyboard.press('Control+V');
-    await page.keyboard.press('Enter');
-    await expect(panel.locator('.xterm-rows')).toContainText('MRT-RAW:', { timeout: 5_000 });
-    const catInputText = await panel.locator('.xterm-rows').innerText();
-    if (catInputText.includes('MRT-RAW:\uFFFD')) {
-      test.fail(true, 'Git Bash replaces supplementary input in cat before Bash line editing through system ConPTY on this Windows host.');
-    }
-    await expect(panel.locator('.xterm-rows')).toContainText(catPaste);
-    await page.keyboard.press('Control+C');
-    await expect(panel.locator('.xterm-rows')).toContainText('^C', { timeout: 5_000 });
-
-    const pasteCommand = `printf 'MRT-OUT%s\\n' 'PUT:${supplementarySample}'`;
+    const { rows } = await sendLine(page, 'Bash session 1', "printf 'MRT-READY\\n'", 'MRT-READY');
+    const pasteCommand = `printf 'MRT-OUTPUT:%s\\n' '${supplementarySample}'`;
     await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(pasteCommand);
     await page.keyboard.press('Control+V');
-    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OUT%s');
+    await expect(rows).toContainText(pasteCommand);
     await page.keyboard.press('Enter');
-    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OUTPUT:', { timeout: 15_000 });
+    await expect(rows).toContainText(`MRT-OUTPUT:${supplementarySample}`, { timeout: 15_000 });
 
-    const terminalText = await panel.locator('.xterm-rows').innerText();
-    if (terminalText.includes('MRT-OUTPUT:\uFFFD')) {
-      test.fail(true, 'Git for Windows Bash 2.53.0 replaces a supplementary pasted character with U+FFFD through system ConPTY on this Windows host.');
-    }
-    await expect(panel.locator('.xterm-rows')).toContainText(`MRT-OUTPUT:${supplementarySample}`);
+    const terminalText = await rows.innerText();
+    const commandOutput = terminalText.slice(terminalText.lastIndexOf('MRT-OUTPUT:'));
+    expect(commandOutput.startsWith(`MRT-OUTPUT:${supplementarySample}`)).toBe(true);
+    expect(commandOutput).not.toContain('MRT-OUTPUT:\uFFFD');
   } finally {
     try {
       if (app) await app.close();

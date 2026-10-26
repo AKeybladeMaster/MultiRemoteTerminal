@@ -8,6 +8,7 @@ import type { WslDistribution } from '../../../../packages/domain/src/wsl-distri
 import type { LocalTerminalEvent, LocalTerminalProvider } from '../../../../packages/application/src/local-terminals.ts';
 import { createWslDistributionDiscovery } from './wsl-distribution-discovery.ts';
 import type { WslDistributionDiscovery } from './wsl-distribution-discovery.ts';
+import { encodeSupplementaryCharactersForWin32Input, Win32InputModeTracker } from './win32-input-mode.ts';
 
 const OUTPUT_LIMIT_BYTES = 1_048_576;
 const OUTPUT_PAUSE_BYTES = 65_536;
@@ -58,6 +59,7 @@ interface OutputChunk {
 
 interface PtySession {
   readonly pty: NodePty.IPty;
+  readonly win32InputMode: Win32InputModeTracker;
   readonly chunks: OutputChunk[];
   disposeData: NodePty.IDisposable;
   disposeExit: NodePty.IDisposable;
@@ -129,7 +131,7 @@ export class LocalPtyProvider implements LocalTerminalProvider {
     let resolveExit = () => {};
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
     const state: PtySession = {
-      pty: terminal, chunks: [], disposeData: { dispose() {} }, disposeExit: { dispose() {} }, exited, resolveExit,
+      pty: terminal, win32InputMode: new Win32InputModeTracker(), chunks: [], disposeData: { dispose() {} }, disposeExit: { dispose() {} }, exited, resolveExit,
       queuedBytes: 0, sequence: 0, inFlight: undefined, exitCode: undefined, closing: false
     };
     state.disposeData = terminal.onData(data => this.queueOutput(sessionId, state, data));
@@ -154,6 +156,12 @@ export class LocalPtyProvider implements LocalTerminalProvider {
     const state = this.requireSession(sessionId);
     if (state.closing) throw new Error('Terminal is closing');
     state.pty.write(data);
+  }
+
+  async paste(sessionId: string, data: string): Promise<void> {
+    const state = this.requireSession(sessionId);
+    if (state.closing) throw new Error('Terminal is closing');
+    state.pty.write(state.win32InputMode.enabled ? encodeSupplementaryCharactersForWin32Input(data) : data);
   }
 
   async resize(sessionId: string, size: TerminalSize): Promise<void> {
@@ -220,6 +228,7 @@ export class LocalPtyProvider implements LocalTerminalProvider {
 
   private queueOutput(sessionId: string, state: PtySession, data: string): void {
     if (state.closing || state.exitCode !== undefined || !data) return;
+    state.win32InputMode.observeOutput(data);
     const addedBytes = Buffer.byteLength(data, 'utf8');
     if (state.queuedBytes + addedBytes > OUTPUT_LIMIT_BYTES) {
       state.chunks.length = 0;
