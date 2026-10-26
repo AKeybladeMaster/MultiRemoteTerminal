@@ -3,6 +3,7 @@ import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.
 import { canonicalizeSshHostEndpoint, hostEndpointKey } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SavedSessionDefinition } from '../../../../packages/domain/src/session-definition.ts';
+import { sshEndpointLabel } from './ssh-endpoint-label.ts';
 
 type SshGatewayProfile = Extract<SavedSessionDefinition, { readonly kind: 'ssh' }>;
 
@@ -24,8 +25,7 @@ export interface SshGatewayRoutePickerProps {
 const NO_GATEWAY_LABELS = ['Choose a saved SSH profile', 'No second gateway', 'No third gateway'] as const;
 
 export function formatSshGatewayProfileLabel(profile: SshGatewayProfileLabelInput): string {
-  const host = profile.host.includes(':') ? `[${profile.host}]` : profile.host;
-  return `${profile.name}  ·  ${host}:${profile.port}`;
+  return `${profile.name}  ·  ${sshEndpointLabel(profile.host, profile.port)}`;
 }
 
 export function SshGatewayRoutePicker({ idPrefix, profiles, targetEndpoint, selectedProfileIds, disabled = false, onChange }: SshGatewayRoutePickerProps): ReactElement {

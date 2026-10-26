@@ -56,6 +56,7 @@ import { VncConnectDialog } from './VncConnectDialog.tsx';
 import { LocalTextEditorDialog } from './LocalTextEditorDialog.tsx';
 import { WslDistributionDialog } from './WslDistributionDialog.tsx';
 import { SshGatewayRoutePicker } from './SshGatewayRoutePicker.tsx';
+import { sshEndpointLabel } from './ssh-endpoint-label.ts';
 import { textEditorErrorMessage } from './text-editor-errors.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
@@ -152,8 +153,6 @@ function openingName(opening: OpeningTerminal): string {
   const protocol = opening.transport === 'telnet' ? 'Telnet (plaintext)' : opening.transport === 'sftp' ? 'SFTP' : 'SSH';
   return `${protocol} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
 }
-
-function sshEndpointLabel(host: string, port: number): string { return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`; }
 
 function folderDescendants(folders: readonly SavedSessionFolder[], folderId: string): Set<string> {
   const descendants = new Set<string>([folderId]);
