@@ -1797,13 +1797,40 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const agentPipePath = String.raw`\\.\pipe\mrt-ssh-route-agent-${randomUUID()}`;
+  const agentKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const agentPublicKey = ssh2.utils.parseKey(agentKeyPair.public);
+  const agentPrivateKey = ssh2.utils.parseKey(agentKeyPair.private);
+  if (agentPublicKey instanceof Error || agentPrivateKey instanceof Error) throw new Error('The routed SSH agent fixture key could not be parsed');
+  const agentPublicKeyBytes = Buffer.from(agentPublicKey.getPublicSSH());
   const clients = new Set<Ssh2FixtureClient>();
   const relaySockets = new Set<Socket>();
   const tunneledSockets = new Set<Socket>();
   const remoteSockets = new Set<Socket>();
+  const agentSockets = new Set<Socket>();
   const remoteBindings = new Map<Ssh2FixtureClient, Map<number, Server>>();
   const remoteBindRequests: string[] = [];
   const fixtureEvents: string[] = [];
+  let agentIdentityRequests = 0;
+  let agentSignatureRequests = 0;
+  const agentServer = createServer(socket => {
+    agentSockets.add(socket);
+    socket.once('close', () => agentSockets.delete(socket));
+    socket.on('error', error => fixtureEvents.push(`agent-socket-error:${error.message}`));
+    const protocol = new ssh2.AgentProtocol(false);
+    protocol.on('identities', request => {
+      agentIdentityRequests += 1;
+      protocol.getIdentitiesReply(request, [agentPublicKey]);
+    });
+    protocol.on('sign', (request, _key, data, options) => {
+      agentSignatureRequests += 1;
+      const signature = agentPrivateKey.sign(data, options as { readonly hash?: string });
+      if (signature instanceof Error) protocol.failureReply(request);
+      else protocol.signReply(request, signature);
+    });
+    protocol.on('error', error => fixtureEvents.push(`agent-protocol-error:${error.message}`));
+    (protocol as unknown as Duplex).pipe(socket).pipe(protocol as unknown as Duplex);
+  });
   const sftpRoot = join(profile, 'remote-sftp');
   let sftpRequests = 0;
   let targetEchoPort: number | undefined;
@@ -1843,7 +1870,14 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       client.on('authentication', (rawContext: unknown) => {
         const context = rawContext as Ssh2AuthenticationContext;
         fixtureEvents.push(`${name}:auth:${context.username}`);
+        fixtureEvents.push(`${name}:auth-method:${context.method}`);
+        const agentTarget = name === 'target' || name === 'sftp-target';
+        const matchingAgentKey = agentTarget && context.method === 'publickey' && context.username === 'mrt-e2e-agent-user' &&
+          context.key?.algo === agentPublicKey.type && context.key.data.equals(agentPublicKeyBytes);
         if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+        else if (matchingAgentKey && !context.signature) context.accept();
+        else if (matchingAgentKey && context.blob && context.signature &&
+            agentPublicKey.verify(context.blob, context.signature, context.hashAlgo) === true) context.accept();
         else context.reject();
       });
       client.on('ready', () => {
@@ -1969,10 +2003,15 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     return server;
   };
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let agentListening = false;
   let targetEchoListening = false;
   try {
     await mkdir(sftpRoot);
     await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through three SSH gateways');
+    await new Promise<void>((resolveListen, rejectListen) => {
+      agentServer.once('error', rejectListen);
+      agentServer.listen(agentPipePath, () => { agentListening = true; resolveListen(); });
+    });
     await new Promise<void>((resolveListen, rejectListen) => {
       targetEchoServer.once('error', rejectListen);
       targetEchoServer.listen(0, '127.0.0.1', () => {
@@ -2017,7 +2056,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       throw new Error('The SSH route fixture did not expose all ports');
     }
 
-    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
+      '--mrt-e2e-ssh-agent-auth', `--mrt-e2e-ssh-agent-pipe=${agentPipePath}`],
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
@@ -2046,13 +2086,15 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     await page.reload();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
 
-    const openRoute = async (gatewayCount: 1 | 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
+    const openRoute = async (gatewayCount: 1 | 2 | 3, expectedTrustPorts: readonly number[] = [],
+      authenticationMethod: 'password' | 'agent' = 'password'): Promise<void> => {
       await page.getByRole('button', { name: 'Actions for saved session Target profile' }).click();
       await page.getByRole('button', { name: 'Connect Target profile through gateways' }).click();
       const dialog = page.getByRole('dialog', { name: 'Connect Target profile through gateways' });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
       await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
+      await dialog.getByLabel('Authentication method').selectOption(authenticationMethod);
       await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
       if (gatewayCount >= 2) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
       if (gatewayCount >= 3) await dialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[7]!);
@@ -2071,13 +2113,15 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       const routeNames = ['Gateway one', ...(gatewayCount >= 2 ? ['Gateway two'] : []), ...(gatewayCount >= 3 ? ['Gateway three'] : []), 'Target profile'];
       await confirmCloseActiveTerminal(page, routeNames.join(' → '));
     };
-    const openSftpRoute = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
+    const openSftpRoute = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = [],
+      authenticationMethod: 'password' | 'agent' = 'password'): Promise<void> => {
       await page.getByRole('button', { name: 'Actions for saved session SFTP target profile' }).click();
       await page.getByRole('button', { name: 'Connect SFTP target profile through gateways' }).click();
       const dialog = page.getByRole('dialog', { name: 'Connect SFTP target profile through gateways' });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
       await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
+      await dialog.getByLabel('Authentication method').selectOption(authenticationMethod);
       await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
       if (gatewayCount >= 2) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
       if (gatewayCount >= 3) await dialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[7]!);
@@ -2241,6 +2285,39 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
+
+    const identityRequestsBeforeRoutedTerminal = agentIdentityRequests;
+    const signatureRequestsBeforeRoutedTerminal = agentSignatureRequests;
+    await openRoute(3, [], 'agent');
+    await expect.poll(() => fixtureEvents.filter(event => event === 'target:authenticated').length).toBe(4);
+    expect(fixtureEvents).toContain('target:auth-method:publickey');
+    expect(agentIdentityRequests).toBeGreaterThan(identityRequestsBeforeRoutedTerminal);
+    expect(agentSignatureRequests).toBeGreaterThan(signatureRequestsBeforeRoutedTerminal);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(1);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + gatewayThreePort);
+    expect(fixtureEvents).toContain('gateway-three:relay:' + targetPort);
+    await expect.poll(() => clients.size).toBe(0);
+    await expect.poll(() => agentSockets.size).toBe(0);
+    await waitForRelayCleanup();
+
+    const identityRequestsBeforeRoutedSftp = agentIdentityRequests;
+    const signatureRequestsBeforeRoutedSftp = agentSignatureRequests;
+    await openSftpRoute(3, [], 'agent');
+    await expect.poll(() => sftpRequests).toBe(3);
+    expect(fixtureEvents).toContain('sftp-target:auth-method:publickey');
+    expect(agentIdentityRequests).toBeGreaterThan(identityRequestsBeforeRoutedSftp);
+    expect(agentSignatureRequests).toBeGreaterThan(signatureRequestsBeforeRoutedSftp);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(2);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + gatewayThreePort);
+    expect(fixtureEvents).toContain('gateway-three:relay:' + sftpTargetPort);
+    await expect.poll(() => clients.size).toBe(0);
+    await expect.poll(() => agentSockets.size).toBe(0);
+    await waitForRelayCleanup();
+    const visibleAgentRouteText = await page.locator('body').innerText();
+    expect(visibleAgentRouteText).not.toContain(agentPipePath);
+    expect(visibleAgentRouteText).not.toContain(agentKeyPair.private);
 
     if (!targetEchoPort) throw new Error('The tunnel target fixture did not bind');
     const localTunnelName = 'Three-hop local TCP check';
@@ -2406,12 +2483,14 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     for (const socket of relaySockets) socket.destroy();
     for (const socket of tunneledSockets) socket.destroy();
     for (const socket of remoteSockets) socket.destroy();
+    for (const socket of agentSockets) socket.destroy();
     for (const bindings of remoteBindings.values()) {
       for (const server of bindings.values()) {
         if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
       }
     }
     for (const fixture of servers) await new Promise<void>(resolveClose => fixture.server.close(() => resolveClose()));
+    if (agentListening) await new Promise<void>(resolveClose => agentServer.close(() => resolveClose()));
     if (targetEchoListening) await new Promise<void>(resolveClose => targetEchoServer.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
