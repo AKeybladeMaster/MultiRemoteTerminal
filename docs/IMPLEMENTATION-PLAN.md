@@ -212,6 +212,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07X — Renderer accessibility and copy audit (partial):** Reviewed the 26 renderer source files against the current Web Interface Guidelines. The audit confirmed semantic controls, labels, focus-visible styles, keyboard paths, live updates, list virtualization, and the workbench skip link; it corrected status ellipses and example placeholders. Existing Windows E2E verifies help-dialog keyboard filtering/focus restoration and macro editing. No audit dependency was added. This is static source evidence, not a WCAG or screen-reader certification; physical 200% DPI, Windows 10 and assistive-technology acceptance remain open, so N-006/M4 stay partial. See [WP-07X results](results/WP-07X-renderer-accessibility-audit-2026-10-26.md).
 
+**WP-07Y — Windows compatibility matrix (partial):** Added [a Windows compatibility matrix](release/WINDOWS-COMPATIBILITY.md) with the exact Windows 11 x64 workstation and installed/portable package coverage. It marks Windows 10, ARM64, physical DPI, assistive technology, unsigned artifacts and untested external interoperability explicitly, with links from verified rows to acceptance evidence. Windows 10 and full M4 acceptance remain open.
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  

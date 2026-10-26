@@ -1,6 +1,6 @@
 # Windows release plan
 
-**Current state:** The available Windows 11 x64 workstation can build and smoke-test unsigned `0.0.0` packages. No publisher certificate or final product version is configured. Do not describe the current artifacts as a signed release or an M4 build.
+**Current state:** The available Windows 11 x64 workstation can build and smoke-test unsigned `0.0.0` packages. No publisher certificate or final product version is configured. Do not describe the current artifacts as a signed release or an M4 build. See the [Windows compatibility matrix](WINDOWS-COMPATIBILITY.md) for tested environments and open platform gates.
 
 **Latest packaged smoke (2026-10-26):** x64 NSIS and portable packages were rebuilt and their SBOM/hash metadata generated. After fixing a stale status locator in the installer E2E, all four packaged-app tests passed against those artifacts, including PowerShell and Git Bash commands in the installed and portable apps. See [WP-07W results](../results/WP-07W-package-smoke-revalidation-2026-10-26.md). Windows 10, Authenticode signing and the rest of the M4 release gate remain open.
 
