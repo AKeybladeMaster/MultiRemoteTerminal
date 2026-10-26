@@ -122,6 +122,26 @@ async function expectLocalPowerShellTerminal(page: Page): Promise<void> {
   await expect(panel.locator('.xterm-rows')).toContainText('MRT-PACKAGED-LOCAL-SHELL', { timeout: 20_000 });
 }
 
+async function expectLocalBashTerminal(page: Page): Promise<void> {
+  const existingTabCount = await page.getByRole('tab').count();
+  await page.keyboard.press('Control+Shift+P');
+  const palette = page.getByRole('dialog', { name: 'Command palette' });
+  await expect(palette).toBeVisible();
+  await palette.getByRole('button', { name: 'New Bash terminal', exact: true }).click();
+  await expect.poll(() => page.getByRole('tab').count(), { timeout: 20_000 }).toBeGreaterThan(existingTabCount);
+  const tab = page.getByRole('tab').last();
+  await expect(tab).toBeVisible();
+  const panelId = await tab.getAttribute('aria-controls');
+  if (!panelId) throw new Error('Packaged Bash terminal has no panel');
+  const panel = page.locator(`#${panelId}`);
+  await tab.click();
+  await expect(panel.locator('.terminal-host')).toBeVisible();
+  await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+  await page.keyboard.type("printf 'MRT-PACKAGED-%s\\n' 'BASH-OK'");
+  await page.keyboard.press('Enter');
+  await expect(panel.locator('.xterm-rows')).toContainText('MRT-PACKAGED-BASH-OK', { timeout: 20_000 });
+}
+
 async function expectPackagedWindow(page: Page, userData: string, resourcesPath: string, options: {
   readonly deviceScaleFactor?: number;
   readonly emulateOffline?: boolean;
@@ -151,6 +171,7 @@ async function expectPackagedWindow(page: Page, userData: string, resourcesPath:
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
   }
   await expectLocalPowerShellTerminal(page);
+  await expectLocalBashTerminal(page);
   const serialPorts = await page.evaluate(() => window.multiRemoteTerminal.listSerialPorts());
   expect(serialPorts.ok).toBe(true);
   if (serialPorts.ok) expect(Array.isArray(serialPorts.result)).toBe(true);
@@ -333,6 +354,7 @@ test('portable app opens a usable terminal and keeps profile data beside the exe
       { timeout: 60_000, intervals: [200, 500, 1_000] }).toBe(true);
     await expect(app.page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
     await expectLocalPowerShellTerminal(app.page);
+    await expectLocalBashTerminal(app.page);
     expect(app.process.exitCode).toBeNull();
     const profileStat = await stat(expected);
     expect(profileStat.isDirectory()).toBe(true);
