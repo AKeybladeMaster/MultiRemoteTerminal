@@ -76,6 +76,21 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
   const fileHandles = new Map<number, Awaited<ReturnType<typeof openFile>>>();
   const fileHandlePaths = new Map<number, string>();
   const directoryHandles = new Map<number, DirectoryHandle>();
+  const pendingDelays = new Set<() => void>();
+  let closed = false;
+  const waitForDelay = (delayMs: number): Promise<void> => new Promise(resolveDelay => {
+    if (closed || delayMs <= 0) { resolveDelay(); return; }
+    const timer = setTimeout(() => {
+      pendingDelays.delete(cancelDelay);
+      resolveDelay();
+    }, delayMs);
+    const cancelDelay = () => {
+      clearTimeout(timer);
+      pendingDelays.delete(cancelDelay);
+      resolveDelay();
+    };
+    pendingDelays.add(cancelDelay);
+  });
   let nextHandleId = 1;
   const handleBytes = (id: number) => { const value = Buffer.alloc(4); value.writeUInt32BE(id); return value; };
   const handleId = (value: Buffer) => value.length === 4 ? value.readUInt32BE(0) : -1;
@@ -162,12 +177,14 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     void (async () => {
       const path = fileHandlePaths.get(id) ?? '';
       const delayMs = options.readDelayForRequest?.(path, offset, length) ?? options.readDelayForPath?.(path) ?? options.readDelayMs ?? 0;
-      if (delayMs > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
+      await waitForDelay(delayMs);
+      if (closed) return;
       const buffer = Buffer.alloc(length);
       const result = await file.read(buffer, 0, length, offset);
+      if (closed) return;
       if (result.bytesRead === 0) sftp.status(requestId, api.STATUS_CODE.EOF);
       else sftp.data(requestId, buffer.subarray(0, result.bytesRead));
-    })().catch(error => sftp.status(requestId, statusForError(error)));
+    })().catch(error => { if (!closed) sftp.status(requestId, statusForError(error)); });
   });
   sftp.on('WRITE', (requestId: number, handle: Buffer, offset: number, data: Buffer) => {
     const id = handleId(handle);
@@ -175,9 +192,10 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     if (!file || data.byteLength > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
     const delayMs = options.writeDelayForPath?.(fileHandlePaths.get(id) ?? '') ?? options.writeDelayMs ?? 0;
     void file.write(data, 0, data.length, offset).then(async () => {
-      if (delayMs > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
+      await waitForDelay(delayMs);
+      if (closed) return;
       sftp.status(requestId, api.STATUS_CODE.OK);
-    }, error => sftp.status(requestId, statusForError(error)));
+    }, error => { if (!closed) sftp.status(requestId, statusForError(error)); });
   });
   sftp.on('FSTAT', (requestId: number, handle: Buffer) => {
     const file = fileHandles.get(handleId(handle));
@@ -198,7 +216,8 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
   });
   sftp.on('RENAME', (requestId: number, source: string, destination: string) => {
     void (async () => {
-      if (options.renameDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, options.renameDelayMs));
+      await waitForDelay(options.renameDelayMs ?? 0);
+      if (closed) return;
       const from = remoteLocation(source).local;
       const to = remoteLocation(destination).local;
       try { await lstatFile(to); sftp.status(requestId, api.STATUS_CODE.FAILURE); }
@@ -209,13 +228,15 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
         options.onRename?.(remoteLocation(destination).remote);
         sftp.status(requestId, api.STATUS_CODE.OK);
       }
-    })().catch(error => sftp.status(requestId, statusForError(error)));
+    })().catch(error => { if (!closed) sftp.status(requestId, statusForError(error)); });
   });
   sftp.on('REMOVE', (requestId: number, path: string) => {
     void unlinkFile(remoteLocation(path).local).then(() => sftp.status(requestId, api.STATUS_CODE.OK),
       error => sftp.status(requestId, statusForError(error)));
   });
   sftp.once('close', () => {
+    closed = true;
+    for (const finishDelay of pendingDelays) finishDelay();
     for (const file of fileHandles.values()) void file.close().catch(() => undefined);
     fileHandles.clear();
     fileHandlePaths.clear();
@@ -842,14 +863,18 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
 
     const reopenedSftpPanel = page.locator(`#${reopenedSftpPanelId}`);
     const reopenedRemoteBrowser = reopenedSftpPanel.getByTestId('remote-file-browser');
+    const stagedFilesBeforeInterruptedDownload = (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-'));
+    expect(stagedFilesBeforeInterruptedDownload).toEqual([]);
     await reopenedRemoteBrowser.getByRole('button', { name: 'Download interrupted.bin', exact: true }).click();
-    const partialDownloadSize = async () => {
+    const interruptedDownloadStagingFiles = async () => {
       const stagedFiles = (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-'));
-      const sizes = await Promise.all(stagedFiles.map(async name => (await statFile(join(downloadRoot, name))).size));
-      return Math.max(0, ...sizes);
+      return Promise.all(stagedFiles.map(async name => ({ name, size: (await statFile(join(downloadRoot, name))).size })));
     };
-    await expect.poll(partialDownloadSize, { timeout: 15_000 }).toBeGreaterThan(0);
-    expect(await partialDownloadSize()).toBeLessThan(interruptedTransferSize);
+    await expect.poll(async () => (await interruptedDownloadStagingFiles()).some(file => file.size > 0), { timeout: 15_000 }).toBe(true);
+    const partialDownloadFiles = await interruptedDownloadStagingFiles();
+    expect(partialDownloadFiles).toHaveLength(1);
+    expect(partialDownloadFiles[0]?.size).toBeGreaterThan(0);
+    expect(partialDownloadFiles[0]?.size).toBeLessThan(interruptedTransferSize);
     const interruptedClient = activeFilesOnlyClient;
     const interruptedSocket = (interruptedClient as unknown as { readonly _sock?: Socket } | undefined)?._sock;
     if (!interruptedSocket || interruptedSocket.destroyed) throw new Error('The SFTP files-only fixture has no live socket to reset');
