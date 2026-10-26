@@ -2375,7 +2375,9 @@ function Workbench() {
     }
   }, [pendingCloseId]);
 
-  const tftpProviderEnabled = workbenchPreferencesLoaded && enabledOptionalConnections.includes('tftp');
+  const isOptionalConnectionEnabled = (id: OptionalConnectionId): boolean =>
+    workbenchPreferencesLoaded && enabledOptionalConnections.includes(id);
+  const tftpProviderEnabled = isOptionalConnectionEnabled('tftp');
   const canManageTftpServer = workbenchPreferencesLoaded && (tftpProviderEnabled || tftpServerStatus === null ||
     tftpServerStatus.state === 'running');
   const tftpServerActionLabel = tftpProviderEnabled ? 'Local TFTP server' : 'Manage local TFTP server';
@@ -2387,15 +2389,15 @@ function Workbench() {
     })),
     { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
-    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('telnet')
+    ...(isOptionalConnectionEnabled('telnet')
       ? [{ id: 'connect-telnet' as const, label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() }] : []),
-    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('serial')
+    ...(isOptionalConnectionEnabled('serial')
       ? [{ id: 'connect-serial' as const, label: 'Connect to serial port', run: openSerialConnect }] : []),
-    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('ftp')
+    ...(isOptionalConnectionEnabled('ftp')
       ? [{ id: 'connect-ftp' as const, label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() }] : []),
-    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('rdp')
+    ...(isOptionalConnectionEnabled('rdp')
       ? [{ id: 'connect-rdp' as const, label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() }] : []),
-    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc')
+    ...(isOptionalConnectionEnabled('vnc')
       ? [{ id: 'connect-vnc' as const, label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() }] : []),
     ...(canManageTftpServer
       ? [{ id: 'local-tftp-server' as const, label: tftpServerActionLabel, run: () => setTftpServerOpen(true) }] : []),
@@ -2922,11 +2924,11 @@ function Workbench() {
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect()}><span aria-hidden="true">↗</span> Connect to SSH</button>
-        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('serial') && <button className="connect-ssh-button" type="button" onClick={() => openSerialConnect()}>Connect to serial port</button>}
-        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('telnet') && <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>}
-        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('ftp') && <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>}
-        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('rdp') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>}
-        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
+        {isOptionalConnectionEnabled('serial') && <button className="connect-ssh-button" type="button" onClick={() => openSerialConnect()}>Connect to serial port</button>}
+        {isOptionalConnectionEnabled('telnet') && <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>}
+        {isOptionalConnectionEnabled('ftp') && <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>}
+        {isOptionalConnectionEnabled('rdp') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>}
+        {isOptionalConnectionEnabled('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         {canManageTftpServer && <button className="connect-ssh-button" type="button" aria-haspopup="dialog"
@@ -3085,16 +3087,16 @@ function Workbench() {
             <p>Open a local terminal, connect to a terminal server, or browse files over FTP or FTPS.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect()}>Connect to SSH</button>
-            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('serial') &&
+            {isOptionalConnectionEnabled('serial') &&
               <button type="button" className="connect-ssh-button" onClick={() => openSerialConnect()}>Connect to serial port</button>}
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
-            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('telnet') &&
+            {isOptionalConnectionEnabled('telnet') &&
               <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>}
-            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('ftp') &&
+            {isOptionalConnectionEnabled('ftp') &&
               <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>}
-            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('rdp') &&
+            {isOptionalConnectionEnabled('rdp') &&
               <button type="button" className="connect-ssh-button" onClick={() => openRdpConnect()}>Connect to RDP desktop</button>}
-            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
+            {isOptionalConnectionEnabled('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
           </div>}
         </div>
       </main>
