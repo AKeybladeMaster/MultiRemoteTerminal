@@ -77,7 +77,11 @@ function curlText(result: SpawnSyncReturns<Buffer>): string {
 }
 
 test('local TFTP server transfers files, rejects unsafe requests, and stops cleanly', async () => {
-  test.setTimeout(90_000);
+  const longLifetimeAcceptance = process.env.MRT_TFTP_LIFETIME_ACCEPTANCE === '1';
+  test.setTimeout(longLifetimeAcceptance ? 420_000 : 90_000);
+  if (longLifetimeAcceptance) {
+    test.info().annotations.push({ type: 'acceptance', description: 'Keep TFTP running beyond 360 seconds before transfer and explicit stop checks.' });
+  }
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-tftp-e2e-'));
   const sharedRoot = join(temporaryRoot, 'shared');
   const profile = join(temporaryRoot, 'profile');
@@ -143,6 +147,13 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
     const status = await serverStatus.innerText();
     const listenerPort = Number(status.match(/127\.0\.0\.1:(\d+)/u)?.[1]);
     expect(Number.isInteger(listenerPort) && listenerPort > 0).toBe(true);
+
+    if (longLifetimeAcceptance) {
+      const waitStartedAt = Date.now();
+      await new Promise<void>(resolveLifetime => setTimeout(resolveLifetime, 360_500));
+      expect(Date.now() - waitStartedAt).toBeGreaterThan(360_000);
+      await expect(serverStatus).toContainText('Running at 127.0.0.1:');
+    }
 
     const writeRejection = spawnSync(curlPath, ['--disable', '--tftp-no-options', '--verbose', '--max-time', '5',
       '--upload-file', writeFixturePath, `tftp://127.0.0.1:${listenerPort}/should-not-exist.bin`], { timeout: 8_000, maxBuffer: 1_048_576 });
