@@ -17,6 +17,9 @@ The exact clipboard value is unchanged before the broker writes to the session. 
 | Probe | Result |
 |---|---|
 | `MSYS=disable_pcon` | Same replacement. |
+| `MSYS=enable_pcon` | Same replacement when explicitly forcing ConPTY support for the MSYS runtime. |
+| `LANG=C.UTF-8` | Same replacement with a scoped UTF-8 locale environment passed to the E2E-launched app and worker. |
+| `LC_ALL=C.UTF-8` | Same replacement with the locale override set for the E2E-launched app and worker. |
 | `node-pty` string write vs `Buffer.from(text, 'utf8')` | Same replacement. |
 | Readline bracketed paste enabled with `bind`, then paste markers sent | Same replacement. |
 | Bash `--noediting` | Same input replacement and degraded interactive behavior; rejected. |
