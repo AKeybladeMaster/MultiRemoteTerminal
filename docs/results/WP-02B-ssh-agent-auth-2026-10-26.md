@@ -27,7 +27,7 @@ The review follow-up keeps the Windows pipe endpoint out of the application auth
 
 ## Status and limitations
 
-P-03/F-003 remains PARTIAL. The actual Windows OpenSSH agent service, a disposable OpenSSH server, packaged native credential prompting, agent authentication through gateway routes, and broader interoperability remain unverified. The separate [WP-02A evidence](WP-02A-ssh-private-key-auth-2026-10-26.md) covers private-key authentication for standalone SFTP. Do not treat the same-library mock fixture as OpenSSH acceptance.
+P-03/F-003 remains PARTIAL. WP-04I adds same-library mock-agent acceptance through three password-authenticated gateway hops for terminal and SFTP-only destinations. The actual Windows OpenSSH agent service, a disposable OpenSSH server, packaged native credential prompting, real agent authentication through gateway routes, and broader interoperability remain unverified. The separate [WP-02A evidence](WP-02A-ssh-private-key-auth-2026-10-26.md) covers private-key authentication for standalone SFTP. Do not treat the same-library mock fixtures as OpenSSH acceptance.
 
 ## Review results
 
