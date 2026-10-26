@@ -3004,10 +3004,10 @@ function Workbench() {
         </div>
         {openingSessions.length > 0 && <div className="opening-notices" role="group" aria-label="Opening terminals">
           {openingSessions.map(opening => <div className="opening-notice" key={opening.sessionId}>
-            <span role="status">{opening.cancelling ? 'Cancelling' : 'Opening'} {openingName(opening)}...</span>
+            <span role="status">{opening.cancelling ? 'Cancelling' : 'Opening'} {openingName(opening)}…</span>
             <button type="button" className="quiet-button" disabled={opening.cancelling}
               aria-label={`${opening.cancelling ? 'Cancelling' : 'Cancel opening'} ${openingName(opening)}`}
-              onClick={() => cancelOpening(opening.sessionId)}>{opening.cancelling ? 'Cancelling...' : 'Cancel'}</button>
+              onClick={() => cancelOpening(opening.sessionId)}>{opening.cancelling ? 'Cancelling…' : 'Cancel'}</button>
           </div>)}
         </div>}
         {startupGreetingVisible && startupGreeting.length > 0 && <section className="startup-greeting-banner" aria-label="Startup greeting">
@@ -3168,7 +3168,7 @@ function Workbench() {
                 void checkUncertainSavedSession();
                 setSaveSessionOpen(false);
               }}>Check saved sessions</button>
-              : <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving...' : 'Save session'}</button>}
+              : <button type="submit" className="ssh-primary" disabled={catalogBusy}>{catalogBusy ? 'Saving…' : 'Save session'}</button>}
           </div>
         </form>
       </section>
@@ -3272,7 +3272,7 @@ function Workbench() {
         <form onSubmit={event => { event.preventDefault(); void openTelnetTerminal(telnetHost, telnetPort, telnetSavedTitle); }}>
           <label htmlFor="telnet-host">Host name or IP address</label>
           <input ref={telnetHostInput} id="telnet-host" name="host" type="text" autoComplete="off" spellCheck={false}
-            placeholder="server.example.com" value={telnetHost} onChange={event => setTelnetHost(event.target.value)} />
+            placeholder="server.example.com…" value={telnetHost} onChange={event => setTelnetHost(event.target.value)} />
           <label htmlFor="telnet-port">Port</label>
           <input ref={telnetPortInput} id="telnet-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
             value={telnetPort} onChange={event => setTelnetPort(event.target.value)} />
@@ -3361,7 +3361,7 @@ function Workbench() {
         <form onSubmit={event => { event.preventDefault(); void openFtpFiles(ftpHost, ftpPort, ftpSecurity === 'ftps', ftpSavedTitle); }}>
           <label htmlFor="ftp-host">Host name or IP address</label>
           <input ref={ftpHostInput} id="ftp-host" name="host" type="text" autoComplete="off" spellCheck={false}
-            placeholder="files.example.com" disabled={ftpConnecting} value={ftpHost} onChange={event => setFtpHost(event.target.value)} />
+            placeholder="files.example.com…" disabled={ftpConnecting} value={ftpHost} onChange={event => setFtpHost(event.target.value)} />
           <label htmlFor="ftp-port">Port</label>
           <input ref={ftpPortInput} id="ftp-port" name="port" type="number" inputMode="numeric" min="1" max="65535" step="1"
             disabled={ftpConnecting} value={ftpPort} onChange={event => setFtpPort(event.target.value)} />
@@ -3379,7 +3379,7 @@ function Workbench() {
           <div className="ssh-connect-actions">
             <button type="button" disabled={ftpConnecting} onClick={() => setFtpConnectOpen(false)}>Cancel</button>
             <button type="submit" className="ssh-primary" data-mrt-ftp-consent-trigger disabled={ftpConnecting}>
-              {ftpConnecting ? 'Connecting...' : 'Connect'}
+              {ftpConnecting ? 'Connecting…' : 'Connect'}
             </button>
           </div>
         </form>

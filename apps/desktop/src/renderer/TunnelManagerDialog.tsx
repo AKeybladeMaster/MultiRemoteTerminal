@@ -182,7 +182,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
             {mode !== 'dynamic' && <>
               <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
               <input id="tunnel-target-host" name="targetHost" type="text" required maxLength={255} autoComplete="off" spellCheck={false} disabled={locked || busy}
-                placeholder={mode === 'local' ? 'database.internal…' : '127.0.0.1'} value={targetHost} onChange={event => setTargetHost(event.target.value)} />
+                placeholder={mode === 'local' ? 'database.internal…' : '127.0.0.1…'} value={targetHost} onChange={event => setTargetHost(event.target.value)} />
               <label htmlFor="tunnel-target-port">{mode === 'local' ? 'Remote destination port' : 'Local destination port'}</label>
               <input id="tunnel-target-port" name="targetPort" type="number" required min="1" max="65535" step="1" disabled={locked || busy}
                 value={targetPort} onChange={event => setTargetPort(event.target.value)} />

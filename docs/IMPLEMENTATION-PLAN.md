@@ -210,6 +210,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07W — Packaged smoke revalidation:** The exact save-status text locator replaces an ambiguous role-only selector in the NSIS acceptance. On Windows 11, the freshly built unsigned installer and portable executable pass all four package E2Es for fuses/ASAR integrity, SBOM and SHA-256 metadata, offline 200% scale NSIS persistence/tamper/uninstall, and portable PowerShell/Git Bash/profile placement; both package formats execute commands in both shells. This confirms the documented package flow for this Windows 11 host only; Windows 10, signing and other M4 acceptance remain open. See [WP-07W results](results/WP-07W-package-smoke-revalidation-2026-10-26.md).
 
+**WP-07X — Renderer accessibility and copy audit (partial):** Reviewed the 26 renderer source files against the current Web Interface Guidelines. The audit confirmed semantic controls, labels, focus-visible styles, keyboard paths, live updates, list virtualization, and the workbench skip link; it corrected status ellipses and example placeholders. Existing Windows E2E verifies help-dialog keyboard filtering/focus restoration and macro editing. No audit dependency was added. This is static source evidence, not a WCAG or screen-reader certification; physical 200% DPI, Windows 10 and assistive-technology acceptance remain open, so N-006/M4 stay partial. See [WP-07X results](results/WP-07X-renderer-accessibility-audit-2026-10-26.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
