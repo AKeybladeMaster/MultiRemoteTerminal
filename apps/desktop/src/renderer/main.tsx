@@ -31,6 +31,7 @@ import type { LocalShell, LocalTerminalLaunch } from '../../../../packages/domai
 import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
+import type { TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -385,6 +386,7 @@ function Workbench() {
   const [tunnelBusyId, setTunnelBusyId] = useState<string>();
   const [tunnelError, setTunnelError] = useState<string>();
   const [tftpServerOpen, setTftpServerOpen] = useState(false);
+  const [tftpServerStatus, setTftpServerStatus] = useState<TftpServerStatus | null>(null);
   const [multiExecOpen, setMultiExecOpen] = useState(false);
   const [multiExecView, setMultiExecView] = useState<MultiExecView>();
   const [macroManagerOpen, setMacroManagerOpen] = useState(false);
@@ -2373,6 +2375,10 @@ function Workbench() {
     }
   }, [pendingCloseId]);
 
+  const tftpProviderEnabled = workbenchPreferencesLoaded && enabledOptionalConnections.includes('tftp');
+  const canManageTftpServer = workbenchPreferencesLoaded && (tftpProviderEnabled || tftpServerStatus === null ||
+    tftpServerStatus.state === 'running');
+  const tftpServerActionLabel = tftpProviderEnabled ? 'Local TFTP server' : 'Manage local TFTP server';
   const commands: PaletteCommand[] = [
     ...LOCAL_SHELL_TOOL_REGISTRY.filter(tool => workbenchPreferencesSettled && visibleLocalShells.includes(tool.shell)).map(tool => ({
       id: `new-${tool.shell}` as const,
@@ -2391,8 +2397,8 @@ function Workbench() {
       ? [{ id: 'connect-rdp' as const, label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() }] : []),
     ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc')
       ? [{ id: 'connect-vnc' as const, label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() }] : []),
-    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('tftp')
-      ? [{ id: 'local-tftp-server' as const, label: 'Local TFTP server', run: () => setTftpServerOpen(true) }] : []),
+    ...(canManageTftpServer
+      ? [{ id: 'local-tftp-server' as const, label: tftpServerActionLabel, run: () => setTftpServerOpen(true) }] : []),
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
@@ -2923,7 +2929,8 @@ function Workbench() {
         {workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
-        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tftp-server-open" onClick={() => setTftpServerOpen(true)}>Local TFTP server</button>
+        {canManageTftpServer && <button className="connect-ssh-button" type="button" aria-haspopup="dialog"
+          data-testid="tftp-server-open" onClick={() => setTftpServerOpen(true)}>{tftpServerActionLabel}</button>}
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="multi-exec-open" onClick={openMultiExec}>MultiExec</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
@@ -3096,7 +3103,8 @@ function Workbench() {
     {helpOpen && <HelpDialog onClose={closeHelp} />}
     {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences}
       activePowerShellSessionId={active?.transport === 'local' && active.shell === 'powershell' && active.state === 'running' ? active.sessionId : undefined} />}
-    <TftpServerDialog open={tftpServerOpen} onClose={() => setTftpServerOpen(false)} />
+    <TftpServerDialog open={tftpServerOpen} enabled={tftpProviderEnabled} onStatusChange={setTftpServerStatus}
+      onClose={() => setTftpServerOpen(false)} />
     <WslDistributionDialog open={wslDialogOpen} onClose={closeWslDialog} onSelect={distribution => {
       wslDialogReturnFocus.current = null;
       setWslDialogOpen(false);

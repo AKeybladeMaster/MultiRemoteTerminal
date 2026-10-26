@@ -14,7 +14,12 @@ function failureMessage(code: ErrorCode): string {
   return `The TFTP server could not complete the request (${code}). Try again.`;
 }
 
-export function TftpServerDialog({ open, onClose }: { readonly open: boolean; readonly onClose: () => void }) {
+export function TftpServerDialog({ open, enabled, onStatusChange, onClose }: {
+  readonly open: boolean;
+  readonly enabled: boolean;
+  readonly onStatusChange: (status: TftpServerStatus) => void;
+  readonly onClose: () => void;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const chooseButtonRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
@@ -31,29 +36,34 @@ export function TftpServerDialog({ open, onClose }: { readonly open: boolean; re
     if (!dialog) return;
     if (open && !dialog.open) {
       dialog.showModal();
-      requestAnimationFrame(() => chooseButtonRef.current?.focus());
+      requestAnimationFrame(() => {
+        if (enabled) chooseButtonRef.current?.focus();
+        else dialog.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+      });
     } else if (!open && dialog.open) dialog.close();
-  }, [open]);
+  }, [enabled, open]);
 
   useEffect(() => {
     let active = true;
     const unsubscribe = window.multiRemoteTerminal.onTftpServerStatus(next => {
       if (!active) return;
       setStatus(next);
+      onStatusChange(next);
       if (next.state === 'running') setSelection(undefined);
     });
     void window.multiRemoteTerminal.getTftpServerStatus().then(reply => {
       if (!active) return;
       if (reply.ok) {
         setStatus(reply.result);
+        onStatusChange(reply.result);
         if (reply.result.state === 'running') setSelection(undefined);
       } else setError(`Could not read TFTP server status (${reply.error.code}).`);
     }).catch(() => { if (active) setError('Could not read TFTP server status.'); });
     return () => { active = false; unsubscribe(); };
-  }, []);
+  }, [onStatusChange]);
 
   async function chooseFolder(): Promise<void> {
-    if (busy) return;
+    if (!enabled || busy) return;
     setBusy('choose');
     setError(undefined);
     try {
@@ -70,7 +80,7 @@ export function TftpServerDialog({ open, onClose }: { readonly open: boolean; re
 
   async function startServer(): Promise<void> {
     const portNumber = Number(port);
-    if (!selection || busy) return;
+    if (!enabled || !selection || busy) return;
     if (!port.trim() || !isTftpPort(portNumber)) {
       setError('Enter a whole-number port from 0 to 65535.');
       return;
@@ -85,6 +95,7 @@ export function TftpServerDialog({ open, onClose }: { readonly open: boolean; re
         return;
       }
       setStatus(reply.result);
+      onStatusChange(reply.result);
       setSelection(undefined);
     } catch { setError('The TFTP server could not start. Check the folder and port, then try again.'); }
     finally { setBusy(undefined); }
@@ -101,7 +112,9 @@ export function TftpServerDialog({ open, onClose }: { readonly open: boolean; re
         if (message) setError(message);
         return;
       }
-      setStatus({ state: 'stopped' });
+      const stoppedStatus = { state: 'stopped' } as const;
+      setStatus(stoppedStatus);
+      onStatusChange(stoppedStatus);
       setSelection(undefined);
     } catch { setError('The TFTP server could not stop. Try again.'); }
     finally { setBusy(undefined); }
@@ -122,17 +135,18 @@ export function TftpServerDialog({ open, onClose }: { readonly open: boolean; re
       <button className="tunnel-close" type="button" aria-label="Close local TFTP server" disabled={Boolean(busy)} onClick={requestClose}>×</button>
     </header>
     <p className="tftp-server-description" id={descriptionId}>Share top-level files from a folder on this computer.</p>
+    {!enabled && <p className="tftp-server-hint" role="note">Starting a local TFTP server is disabled in Workbench settings. An existing server can still be stopped here.</p>}
     <div className="tftp-server-body">
       <div className="tftp-server-folder-row">
         <span className="tftp-server-label">Folder</span>
         <span className="tftp-server-folder" aria-label="Selected folder" aria-live="polite">{isRunning ? status.folderName : selection?.folderName ?? 'No folder selected'}</span>
-        <button ref={chooseButtonRef} type="button" data-mrt-tftp-server-action-trigger="choose-root" disabled={Boolean(busy) || isRunning}
+        <button ref={chooseButtonRef} type="button" data-mrt-tftp-server-action-trigger="choose-root" disabled={!enabled || Boolean(busy) || isRunning}
           onClick={() => void chooseFolder()}>{busy === 'choose' ? 'Choosing…' : 'Browse…'}</button>
       </div>
       <form data-mrt-tftp-selection-id={selection?.selectionId ?? ''} onSubmit={event => { event.preventDefault(); void startServer(); }}>
         <label htmlFor="tftp-server-port">UDP port</label>
         <input id="tftp-server-port" name="port" type="number" inputMode="numeric" autoComplete="off" min={0} max={65_535} step={1}
-          value={port} disabled={Boolean(busy) || isRunning} aria-describedby={portHintId}
+          value={port} disabled={!enabled || Boolean(busy) || isRunning} aria-describedby={portHintId}
           onChange={event => { setPort(event.target.value); setError(undefined); }} />
         <span id={portHintId} className="tftp-server-hint">Use 69, or 0 to let Windows choose an available port.</span>
         <span className="tftp-server-label">Bind address</span>
@@ -151,7 +165,7 @@ export function TftpServerDialog({ open, onClose }: { readonly open: boolean; re
           {isRunning
             ? <button type="button" className="ssh-primary" disabled={Boolean(busy)} onClick={() => void stopServer()}>{busy === 'stop' ? 'Stopping…' : 'Stop server'}</button>
             : <button type="submit" className="ssh-primary" data-mrt-tftp-server-action-trigger="start"
-              disabled={!selection || !validPort || Boolean(busy)}>{busy === 'start' ? 'Starting…' : 'Start server'}</button>}
+              disabled={!enabled || !selection || !validPort || Boolean(busy)}>{busy === 'start' ? 'Starting…' : 'Start server'}</button>}
         </footer>
       </form>
     </div>
