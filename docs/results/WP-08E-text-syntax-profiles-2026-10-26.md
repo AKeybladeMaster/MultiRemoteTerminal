@@ -38,4 +38,9 @@
 
 ## Review
 
-Independent Spec review found no missing or incorrect requirements and confirmed that P-30 terminal grammar remains explicitly out of this editor slice. The Standards review found no hard violations; it requested accurate UTF-16-bound wording and a remote-editor smoke assertion, both completed. Its final pass then found an unbounded suffix search for malformed `${...}` expansions. The initial performance repro measured 58.9 ms at 64,000 code units versus 5.5 ms at 16,000, and one malformed outer expansion swallowed a later valid variable. The scanner now stops at nested `$` and walks forward within the existing preview bound. Both regressions pass; final two-axis review of the complete committed range is pending.
+Independent final review of base `994b943` through `374c9ff` is complete:
+
+- **Spec:** no findings. The reviewers confirmed the local/SFTP editor scope, honest partial status for F-014/P-27, and distinction from open P-30 terminal shell grammar. Full nested parameter-expansion coloring remains outside this lexical preview.
+- **Standards:** no findings. Earlier feedback led to exact UTF-16 bound wording and remote-editor E2E coverage. The final pass confirmed the unbounded suffix search was removed and the malformed-expansion recovery/scaling regressions pass.
+
+During diagnosis, the initial implementation measured 58.9 ms at 64,000 code units versus 5.5 ms at 16,000, and one malformed outer expansion swallowed a later valid variable. The scanner now stops at nested `$` and walks forward within the existing preview bound. The final regression tests pass on the fixed implementation.
