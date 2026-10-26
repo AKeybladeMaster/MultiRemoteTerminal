@@ -10,6 +10,7 @@ import { SshTerminalProviderError } from '../../../../packages/application/src/s
 import type { SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
+import { awaitWithCancellation } from '../../../../packages/application/src/cancellation.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -1045,7 +1046,10 @@ export function createSshTransportProvider(
     const channel = await getSftp(session, cancellation);
     if (session.sftpRecoveryCheckedChannel !== channel) {
       const pendingUploads = session.fileRecoveryScope ? disconnectedUploadsByScope.get(session.fileRecoveryScope) : undefined;
-      if (pendingUploads?.size) await Promise.all([...pendingUploads]);
+      if (pendingUploads?.size) {
+        await awaitWithCancellation(Promise.all([...pendingUploads]).then(() => undefined), cancellation,
+          () => new SshTerminalProviderError('CANCELLED'));
+      }
       await fileTransfers.cleanupOrphanedUploads(channel, session.fileRecoveryScope, cancellation);
       session.sftpRecoveryCheckedChannel = channel;
     }

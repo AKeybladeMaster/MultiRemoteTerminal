@@ -13,11 +13,11 @@
 
 ## Validation
 
-- `corepack pnpm test` — **406 passed, 0 failed**.
-- `corepack pnpm typecheck` — passed.
+- `corepack pnpm test` — **407 passed, 0 failed**.
+- `corepack pnpm exec tsc -b --clean` followed by `corepack pnpm typecheck` — passed; the clean build reset generated project-reference outputs after the packaging build.
 - `corepack pnpm lint` — passed; static import-boundary checks passed.
 - `corepack pnpm build` — passed on Windows x64, including the native addon build. Vite reported its existing advisory that the renderer chunk exceeds 500 kB.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers" --reporter=line` — **1 passed** after the final source build (35.1 seconds).
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers" --reporter=line` — **1 passed** after the final source build (36.2 seconds).
 - `git diff --check` — passed before commit.
 
 ## Scope and remaining work
