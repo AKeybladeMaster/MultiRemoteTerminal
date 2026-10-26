@@ -13,7 +13,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
@@ -566,11 +566,11 @@ test('preload carries a caller-known session id so an opening terminal can be ca
   const bridge = createBridge(async request => {
     assert.deepEqual(request, {
       command: 'terminal.open', requestId: id(), contractVersion: 1,
-      payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 }
+      payload: { sessionId, launch: { shell: 'cmd' }, columns: 80, rows: 24 }
     });
     return { requestId: id(), ok: true, result: { sessionId, shell: 'cmd', state: 'running' } };
   }, id);
-  assert.equal((await bridge.openTerminal(sessionId, 'cmd', 80, 24)).ok, true);
+  assert.equal((await bridge.openTerminal(sessionId, { shell: 'cmd' }, 80, 24)).ok, true);
 });
 
 test('preload redacts rejected and malformed transport responses', async () => {

@@ -3,8 +3,8 @@ import type { TerminalHighlightRule } from './terminal-highlights.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS, normalizeVisibleLocalShells } from './local-shell-tools.ts';
 import type { LocalShell } from './local-terminal.ts';
 
-export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 6;
-export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5] as const);
+export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 7;
+export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5, 6] as const);
 export const MAX_STARTUP_GREETING_CODE_POINTS = 512;
 
 export interface WorkbenchPreferences {
@@ -22,7 +22,7 @@ export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = Object.freeze
   terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS
 });
 
-export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferences | undefined {
+export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersion?: number): WorkbenchPreferences | undefined {
   if (!isRecord(value) || !Object.hasOwn(value, 'startupGreeting') || typeof value.startupGreeting !== 'string') return undefined;
 
   const keys = Object.keys(value);
@@ -70,7 +70,14 @@ export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferen
   if (isSftpPaneShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
     showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
-  const visibleLocalShells = normalizeVisibleLocalShells(value.visibleLocalShells);
+  let visibleLocalShells: readonly LocalShell[] | undefined;
+  if (sourceSchemaVersion === 6) {
+    const previousShells = normalizeVisibleLocalShells(value.visibleLocalShells, false);
+    if (!previousShells) return undefined;
+    visibleLocalShells = Object.freeze([...previousShells, 'wsl']);
+  } else {
+    visibleLocalShells = normalizeVisibleLocalShells(value.visibleLocalShells);
+  }
   if (!visibleLocalShells) return undefined;
   return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled, terminalHighlightRules,
     autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,

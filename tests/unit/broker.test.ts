@@ -28,7 +28,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
   resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
   discardDroppedUploadHandles: () => {}, terminals: {
-    async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
+    async open(sessionId, launch) { return { ok: true, result: { sessionId, ...launch, state: 'running' } }; },
+    async listWslDistributions() { return { ok: true, result: [{ name: 'Ubuntu' }] }; }, cancelWslDistributionDiscovery: noOp,
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
@@ -401,7 +402,7 @@ test('valid sender reaches the application through its interface', async () => {
 test('terminal open forwards the preallocated id for close-during-startup cancellation', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const input = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
-    payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 } };
+    payload: { sessionId, launch: { shell: 'cmd' }, columns: 80, rows: 24 } };
   assert.deepEqual(await dispatchCommand(owner, input, actions(), () => {}), {
     requestId: request.requestId, ok: true, result: { sessionId, shell: 'cmd', state: 'running' }
   });
@@ -654,7 +655,7 @@ test('only validated local, SSH or Telnet terminal open, write and close command
 
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const commands = [
-    { command: 'terminal.open', payload: { sessionId, shell: 'cmd', columns: 80, rows: 24 } },
+    { command: 'terminal.open', payload: { sessionId, launch: { shell: 'cmd' }, columns: 80, rows: 24 } },
     { command: 'terminal.write', payload: { sessionId, data: 'echo ready' } },
     { command: 'terminal.close', payload: { sessionId } }
   ];

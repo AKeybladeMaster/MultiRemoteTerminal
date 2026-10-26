@@ -226,6 +226,18 @@ function boot(): void {
     });
   }
 
+  const systemDirectory = {
+    getSystemDirectory(): string {
+      const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
+      return bridge.getSystemDirectory();
+    },
+    getProgramFilesDirectories(): readonly string[] {
+      const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getProgramFilesDirectories(): readonly string[] };
+      return bridge.getProgramFilesDirectories();
+    }
+  };
+  const windowsSystemDirectory = systemDirectory.getSystemDirectory();
+  const e2eWslHarness = isE2ETestHookEnabled('--mrt-e2e-wsl-harness', app.isPackaged, process.env, process.argv);
   let delayFirstOpenReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-terminal-open', app.isPackaged, process.env, process.argv);
   let delayFirstSessionCreateReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-session-create-reply', app.isPackaged, process.env, process.argv);
   let delayFirstWorkbenchPreferencesRead = isE2ETestHookEnabled('--mrt-e2e-delay-first-workbench-preferences-read', app.isPackaged, process.env, process.argv);
@@ -236,7 +248,8 @@ function boot(): void {
     await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 5_000));
   } : undefined;
   const terminalHost = new TerminalWorkerHost(
-    join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath(), openReplyBarrier
+    join(dist, 'host/apps/desktop/src/workers/terminal-worker.js'), app.getAppPath(), openReplyBarrier,
+    { systemDirectory: windowsSystemDirectory, wslHarnessEnabled: e2eWslHarness }
   );
   const terminals: LocalTerminalController = createLocalTerminalController(terminalHost);
   const sshTrustRuntime: HostTrustRuntime = {
@@ -273,16 +286,6 @@ function boot(): void {
       const current = window;
       const result = current && !current.isDestroyed() ? await dialog.showOpenDialog(current, options) : await dialog.showOpenDialog(options);
       return result.canceled ? undefined : result.filePaths[0];
-    }
-  };
-  const systemDirectory = {
-    getSystemDirectory(): string {
-      const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
-      return bridge.getSystemDirectory();
-    },
-    getProgramFilesDirectories(): readonly string[] {
-      const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getProgramFilesDirectories(): readonly string[] };
-      return bridge.getProgramFilesDirectories();
     }
   };
   const e2eRdpViewer = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-rdp-viewer');

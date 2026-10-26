@@ -74,7 +74,7 @@ export interface CommandActions {
   readonly resolveSshTransferConflict: (direction: FileTransferDirection, fileName: string) => Promise<FileTransferConflictPolicy | undefined>;
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
   readonly cancellation?: CancellationSignal;
-  readonly terminals: Pick<LocalTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
     'downloadRemoteFile' | 'readRemoteTextFile' | 'saveRemoteTextFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
@@ -134,6 +134,7 @@ export async function dispatchCommand(
         parsed.result.command === 'ssh.files.write-text' || parsed.result.command === 'ssh.files.cancel' ||
         parsed.result.command === 'session.remember' ||
         parsed.result.command === 'telnet.open' || parsed.result.command === 'telnet.write' || parsed.result.command === 'telnet.close' ||
+        parsed.result.command === 'wsl.distributions.list' ||
         parsed.result.command === 'serial.open' || parsed.result.command === 'serial.write' || parsed.result.command === 'serial.close' ||
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
@@ -143,8 +144,8 @@ export async function dispatchCommand(
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
-        const { sessionId, shell, columns, rows } = parsed.result.payload;
-        return { requestId, ...await actions.terminals.open(sessionId, shell, { columns, rows }) };
+        const { sessionId, launch, columns, rows } = parsed.result.payload;
+        return { requestId, ...await actions.terminals.open(sessionId, launch, { columns, rows }) };
       }
       case 'terminal.write': {
         const { sessionId, data } = parsed.result.payload;
@@ -166,6 +167,11 @@ export async function dispatchCommand(
       case 'terminal.close': {
         return { requestId, ...await actions.terminals.close(parsed.result.payload.sessionId) };
       }
+      case 'wsl.distributions.list': {
+        actions.noteUserActivity();
+        return { requestId, ...await actions.terminals.listWslDistributions() };
+      }
+      case 'wsl.distributions.cancel': return { requestId, ...await actions.terminals.cancelWslDistributionDiscovery() };
       case 'ssh.open': {
         const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId } = parsed.result.payload;
         const endpoints: SshHostEndpoint[] = [];

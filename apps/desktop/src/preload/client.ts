@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
-  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, TerminalActionReply,
+  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
   ChooseTftpRootReply, TftpServerStatusReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
@@ -13,7 +13,7 @@ import type { CredentialVaultStateReply, SessionCredentialPresenceReply } from '
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSerialTerminalResult } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTextFileReply, LocalTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
-import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/session-folder.ts';
 import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
@@ -59,6 +59,7 @@ const LOCAL_TEXT_FILE_TIMEOUT_MS = 20_000;
 const TELNET_OPEN_TIMEOUT_MS = 20_000;
 const SERIAL_OPEN_TIMEOUT_MS = 20_000;
 const SERIAL_LIST_TIMEOUT_MS = 10_000;
+const WSL_DISCOVERY_TIMEOUT_MS = 10_000;
 const FTP_OPEN_TIMEOUT_MS = 180_000;
 const FTP_LIST_TIMEOUT_MS = 25_000;
 const FTP_CANCEL_TIMEOUT_MS = 45_000;
@@ -286,7 +287,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'serial.write' | 'serial.paste' | 'serial.resize' | 'serial.ack' | 'serial.close' |
-    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
+    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'wsl.distributions.cancel' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
     'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tftp.stop' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
     payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
@@ -296,8 +297,14 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     describe(): Promise<DescribeReply> {
       return send({ command: 'app.describe', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 3_000);
     },
-    openTerminal(sessionId: string, shell: LocalShell, columns: number, rows: number): Promise<OpenTerminalReply> {
-      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, shell, columns, rows } }, 20_000);
+    openTerminal(sessionId: string, launch: LocalTerminalLaunch, columns: number, rows: number): Promise<OpenTerminalReply> {
+      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, launch, columns, rows } }, 20_000);
+    },
+    listWslDistributions(): Promise<ListWslDistributionsReply> {
+      return send({ command: 'wsl.distributions.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, WSL_DISCOVERY_TIMEOUT_MS);
+    },
+    cancelWslDistributionDiscovery(): Promise<TerminalActionReply> {
+      return send(voidRequest('wsl.distributions.cancel', {}), 5_000);
     },
     writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'terminal.write');

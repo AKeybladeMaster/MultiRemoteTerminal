@@ -24,9 +24,11 @@ test('rejects malformed, extra, oversized, and incompatible request fields', () 
     if (!result.ok) assert.equal(result.error.code, 'INVALID_REQUEST');
   }
   const open = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
-    payload: { sessionId: request.requestId, shell: 'powershell', columns: 80, rows: 24 } };
+    payload: { sessionId: request.requestId, launch: { shell: 'powershell' }, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, shell: 'bash' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'bash' } } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'wsl' } } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'wsl', distribution: 'Ubuntu' } } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, sessionId: 'bad' } }).ok, false);
   const paste = { command: 'terminal.paste', requestId: request.requestId, contractVersion: 1, payload: { sessionId: request.requestId } };
   assert.equal(parseRequest(paste).ok, true);

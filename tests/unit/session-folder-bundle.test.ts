@@ -46,7 +46,7 @@ test('session-folder bundles include standalone SFTP profiles without credential
   assert.equal(normalizeSessionFolderBundle({ ...value, sessions: [...value.sessions.slice(0, 1), { ...sftpSession, privateKey: 'secret' }] }), undefined);
 });
 
-test('version-6 session-folder bundles include RDP, VNC, and serial profiles without credentials', () => {
+test('version-7 session-folder bundles include WSL profiles and preserve version-6 behavior', () => {
   const bundle = validBundle();
   const rdpSession = { id: '88888888-8888-4888-8888-888888888888', folderId: childId, kind: 'rdp', name: 'Windows desktop',
     host: 'desktop.example.net', port: 3390, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
@@ -71,15 +71,22 @@ test('version-6 session-folder bundles include RDP, VNC, and serial profiles wit
   assert.equal(normalizeSessionFolderBundle({ ...withSerial, sessions: [...withSerial.sessions.slice(0, -1),
     { ...serialSession, password: 'must-not-import' }] }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...withSerial, version: 5 }), undefined, 'version 5 predates serial profile support');
+  const wslSession = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', folderId: childId, kind: 'local', name: 'Ubuntu', shell: 'wsl',
+    distribution: 'Ubuntu', favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  const withWsl = { ...withSerial, sessions: [...withSerial.sessions, wslSession] };
+  assert.deepEqual(normalizeSessionFolderBundle(withWsl), withWsl);
+  assert.equal(normalizeSessionFolderBundle({ ...withWsl, version: 6 }), undefined, 'version 6 predates WSL profile support');
+  assert.equal(normalizeSessionFolderBundle({ ...withWsl, sessions: [...withWsl.sessions.slice(0, -1), { ...wslSession, distribution: ' Ubuntu' }] }), undefined);
 });
 
-test('version-6 bundles import versions 1 through 5 with their existing kind limits', () => {
+test('version-7 bundles import versions 1 through 6 with their existing kind limits', () => {
   const bundle = validBundle();
   const legacyV1 = { ...bundle, version: 1 };
   const legacyV2 = { ...bundle, version: 2 };
   const legacyV3 = { ...bundle, version: 3 };
   const legacyV4 = { ...bundle, version: 4 };
   const legacyV5 = { ...bundle, version: 5 };
+  const legacyV6 = { ...bundle, version: 6 };
   assert.equal(isSessionFolderBundle(legacyV1), false, 'the type guard narrows only current-version bundle objects');
   assert.equal(isSessionFolderBundle(bundle), true);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV1), bundle);
@@ -87,6 +94,7 @@ test('version-6 bundles import versions 1 through 5 with their existing kind lim
   assert.deepEqual(normalizeSessionFolderBundle(legacyV3), bundle);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV4), bundle);
   assert.deepEqual(normalizeSessionFolderBundle(legacyV5), bundle);
+  assert.deepEqual(normalizeSessionFolderBundle(legacyV6), bundle);
   const ftpSession = { id: '66666666-6666-4666-8666-666666666666', folderId: childId, kind: 'ftp', name: 'Archive server',
     host: 'files.example.net', port: 2121, secure: true, favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
   assert.equal(normalizeSessionFolderBundle({ ...legacyV1, sessions: [...bundle.sessions, ftpSession] }), undefined);
@@ -103,12 +111,13 @@ test('version-6 bundles import versions 1 through 5 with their existing kind lim
     configuration: { path: 'COM7', baudRate: 115_200, dataBits: 8, parity: 'even', stopBits: 1, flowControl: 'rtscts' },
     favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
   assert.equal(normalizeSessionFolderBundle({ ...legacyV5, sessions: [...bundle.sessions, serialSession] }), undefined);
+  assert.ok(normalizeSessionFolderBundle({ ...legacyV6, sessions: [...bundle.sessions, serialSession] }));
 });
 
 test('session-folder bundles reject unsupported shape, secret-bearing records and unknown fields', () => {
   const bundle = validBundle();
   assert.equal(normalizeSessionFolderBundle({ ...bundle, extra: 'value' }), undefined);
-  assert.equal(normalizeSessionFolderBundle({ ...bundle, version: 7 }), undefined);
+  assert.equal(normalizeSessionFolderBundle({ ...bundle, version: 8 }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, sessions: [{ ...bundle.sessions[0], password: 'must-not-import' }] }), undefined);
   assert.equal(normalizeSessionFolderBundle({ ...bundle, exportedAt: 'yesterday' }), undefined);
 });

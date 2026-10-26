@@ -98,6 +98,20 @@ test('SQLite migrates schema v5 preferences with all registered local shells vis
   database.close();
 });
 
+test('SQLite migrates schema v6 shell visibility and enables the new WSL action by default', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false,
+      terminalHighlightRules: [], autoSaveSessions: false, terminalShellSyntaxEnabled: false,
+      showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash'] }), 6, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.deepEqual(preferences.read().visibleLocalShells, ['powershell', 'bash', 'wsl']);
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
+});
+
 test('SQLite rejects corrupted or unsupported stored preference records', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();

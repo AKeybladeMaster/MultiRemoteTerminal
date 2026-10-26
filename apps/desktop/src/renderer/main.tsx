@@ -27,7 +27,7 @@ import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remo
 import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts';
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
-import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalShell, LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
@@ -51,6 +51,7 @@ import { SettingsDialog } from './SettingsDialog.tsx';
 import { RdpConnectDialog } from './RdpConnectDialog.tsx';
 import { VncConnectDialog } from './VncConnectDialog.tsx';
 import { LocalTextEditorDialog } from './LocalTextEditorDialog.tsx';
+import { WslDistributionDialog } from './WslDistributionDialog.tsx';
 import { textEditorErrorMessage } from './text-editor-errors.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
@@ -71,7 +72,7 @@ function isMacroTerminal(session: WorkbenchSession | undefined): session is Inte
 }
 
 type OpeningTerminal =
-  | { readonly transport: 'local'; readonly sessionId: string; readonly shell: LocalShell; readonly cancelling: boolean }
+  | { readonly transport: 'local'; readonly sessionId: string; readonly launch: LocalTerminalLaunch; readonly cancelling: boolean }
   | { readonly transport: 'ssh' | 'sftp' | 'telnet'; readonly sessionId: string; readonly host: string; readonly port: number; readonly cancelling: boolean }
   | { readonly transport: 'serial'; readonly sessionId: string; readonly configuration: SerialConfiguration; readonly cancelling: boolean };
 
@@ -121,7 +122,8 @@ interface PaletteCommand {
 const SHELL_PRESENTATION: Record<LocalShell, { readonly name: string; readonly badge: string; readonly mark: string }> = {
   powershell: { name: 'PowerShell', badge: 'PS', mark: '›_' },
   cmd: { name: 'cmd', badge: 'CMD', mark: 'C:\\' },
-  bash: { name: 'Bash', badge: 'BASH', mark: '$' }
+  bash: { name: 'Bash', badge: 'BASH', mark: '$' },
+  wsl: { name: 'WSL', badge: 'WSL', mark: '$' }
 };
 const SAVED_SESSION_SEARCH_DEBOUNCE_MS = 50;
 
@@ -134,13 +136,14 @@ function shellBadge(shell: LocalShell): string { return SHELL_PRESENTATION[shell
 function shellMark(shell: LocalShell): string { return SHELL_PRESENTATION[shell].mark; }
 
 function macroTargetTitle(session: InteractiveTerminal): string {
-  if (session.transport === 'local') return `${session.title} · ${shellName(session.shell)} · local`;
+  if (session.transport === 'local') return `${session.title} · ${shellName(session.shell)}${session.shell === 'wsl' ? ` (${session.distribution})` : ''} · local`;
   const protocol = session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH';
   return `${session.title} · ${protocol} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)}`;
 }
 
 function openingName(opening: OpeningTerminal): string {
-  if (opening.transport === 'local') return `${shellName(opening.shell)} terminal`;
+  if (opening.transport === 'local') return opening.launch.shell === 'wsl'
+    ? `${opening.launch.distribution} (WSL)` : `${shellName(opening.launch.shell)} terminal`;
   if (opening.transport === 'serial') return `Serial connection to ${opening.configuration.path}`;
   const protocol = opening.transport === 'telnet' ? 'Telnet (plaintext)' : opening.transport === 'sftp' ? 'SFTP' : 'SSH';
   return `${protocol} connection to ${sshEndpointLabel(opening.host, opening.port)}`;
@@ -203,7 +206,7 @@ function terminalStatus(session: WorkbenchSession | undefined): string {
   if (!session) return 'No active terminal';
   if (session.transport === 'ftp') return `${session.endpoint.secure ? 'FTPS' : 'FTP (plaintext)'} files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
   if (session.transport === 'sftp') return `SFTP files · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
-  if (session.transport === 'local') return `${shellName(session.shell)} · Local · ${session.state}`;
+  if (session.transport === 'local') return `${shellName(session.shell)}${session.shell === 'wsl' ? ` · ${session.distribution}` : ''} · Local · ${session.state}`;
   if (session.transport === 'serial') return `Serial · ${session.configuration.path} · ${session.configuration.baudRate} baud · ${session.state}`;
   return `${session.transport === 'telnet' ? 'Telnet (plaintext)' : 'SSH'} · ${sshEndpointLabel(session.endpoint.host, session.endpoint.port)} · ${session.state}`;
 }
@@ -343,6 +346,7 @@ function Workbench() {
   const [serialPortsError, setSerialPortsError] = useState<string>();
   const [serialSavedTitle, setSerialSavedTitle] = useState<string>();
   const [serialSavedProfilePath, setSerialSavedProfilePath] = useState<string>();
+  const [wslDialogOpen, setWslDialogOpen] = useState(false);
   const [serialConfigurationDraft, setSerialConfigurationDraft] = useState<SerialConfiguration>({
     path: 'COM1', baudRate: 9600, dataBits: 8, parity: 'none', stopBits: 1, flowControl: 'none'
   });
@@ -410,7 +414,7 @@ function Workbench() {
   const fileOnlySshSessionIds = useRef(new Set<string>());
   const visibleFileOnlySshSessionIds = useRef(new Set<string>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
-  const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0 });
+  const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0, wsl: 0 });
   const nextSshOrdinal = useRef(0);
   const nextTelnetOrdinal = useRef(0);
   const nextSerialOrdinal = useRef(0);
@@ -495,6 +499,7 @@ function Workbench() {
   const telnetConnectReturnFocus = useRef<HTMLElement | null>(null);
   const serialConnectDialog = useRef<HTMLElement>(null);
   const serialConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const wslDialogReturnFocus = useRef<HTMLElement | null>(null);
   const ftpConnectDialog = useRef<HTMLElement>(null);
   const ftpHostInput = useRef<HTMLInputElement>(null);
   const ftpPortInput = useRef<HTMLInputElement>(null);
@@ -1190,6 +1195,15 @@ function Workbench() {
 
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
+  const openWslDialog = useCallback(() => {
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    wslDialogReturnFocus.current = paletteOpen ? paletteReturnFocus.current ?? activeElement : activeElement;
+    if (paletteOpen) paletteReturnFocus.current = null;
+    setWslDialogOpen(true);
+  }, [paletteOpen]);
+
+  const closeWslDialog = useCallback(() => setWslDialogOpen(false), []);
+
   const openLocalTextEditor = useCallback(async () => {
     if (localTextEditorOpening || localTextEditorOpen) return;
     localTextEditorReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1500,28 +1514,33 @@ function Workbench() {
     if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
   }), []);
 
-  const openTerminal = useCallback(async (shell: LocalShell, savedTitle?: string, rememberWhenOpened = true) => {
+  const openTerminal = useCallback(async (launch: LocalTerminalLaunch, savedTitle?: string, rememberWhenOpened = true) => {
     setPaletteOpen(false);
     setQuery('');
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
-    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, shell, 80, 24);
+    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, launch, 80, 24);
     pendingOpenRequests.current.set(sessionId, { transport: 'local', cancelled: false, reply: replyPromise });
-    setOpeningSessions(current => [...current, { transport: 'local', sessionId, shell, cancelling: false }]);
+    setOpeningSessions(current => [...current, { transport: 'local', sessionId, launch, cancelling: false }]);
     const reply = await replyPromise;
     if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
     pendingOpenRequests.current.delete(sessionId);
     setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     if (!reply.ok) {
-      if (reply.error.code !== 'CANCELLED') setAlert(shell === 'bash'
+      if (reply.error.code !== 'CANCELLED') setAlert(launch.shell === 'bash'
         ? 'Could not start Bash. Check that Git for Windows is installed.'
-        : `Could not start ${shellName(shell)} (${reply.error.code}).`);
+        : launch.shell === 'wsl'
+          ? `Could not open ${launch.distribution}. It may have been removed from WSL; choose an installed distribution and try again.`
+          : `Could not start ${shellName(launch.shell)} (${reply.error.code}).`);
       return;
     }
-    const ordinal = ++nextOrdinal.current[shell];
-    const title = shellName(shell);
+    const ordinal = ++nextOrdinal.current[launch.shell];
+    const title = launch.shell === 'wsl' ? `${launch.distribution} · WSL` : shellName(launch.shell);
     if (rememberWhenOpened && reply.result.state === 'running') {
-      void rememberOpenedSession({ kind: 'local', name: savedTitle ?? title, shell });
+      const draft: SavedSessionDraft = launch.shell === 'wsl'
+        ? { kind: 'local', name: savedTitle ?? title, shell: 'wsl', distribution: launch.distribution }
+        : { kind: 'local', name: savedTitle ?? title, shell: launch.shell };
+      void rememberOpenedSession(draft);
     }
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
@@ -1846,7 +1865,7 @@ function Workbench() {
       if (!active) return;
       setStatus(reply.ok ? `Ready · ${reply.result.platform} · version ${reply.result.version}` : `Unavailable (${reply.error.code})`);
     });
-    void openTerminal('powershell', undefined, false);
+    void openTerminal({ shell: 'powershell' }, undefined, false);
     return () => { active = false; };
   }, [openTerminal]);
 
@@ -1972,6 +1991,7 @@ function Workbench() {
       if (tunnelManagerOpen) {
         return;
       }
+      if (wslDialogOpen) return;
       if (saveSessionOpen) {
         if (event.key === 'Escape' && !catalogBusy) { event.preventDefault(); setSaveSessionOpen(false); }
         else if (event.key === 'Tab') {
@@ -2141,7 +2161,7 @@ function Workbench() {
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
     helpOpen, rdpConnectOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents,
-    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen]);
+    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen, wslDialogOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -2153,6 +2173,13 @@ function Workbench() {
       requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
     }
   }, [paletteOpen]);
+
+  useEffect(() => {
+    if (wslDialogOpen || !wslDialogReturnFocus.current) return;
+    const target = wslDialogReturnFocus.current;
+    wslDialogReturnFocus.current = null;
+    requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+  }, [wslDialogOpen]);
 
   useEffect(() => {
     if (helpOpen || !helpReturnFocus.current) return;
@@ -2331,7 +2358,7 @@ function Workbench() {
     ...LOCAL_SHELL_TOOL_REGISTRY.filter(tool => workbenchPreferencesSettled && visibleLocalShells.includes(tool.shell)).map(tool => ({
       id: `new-${tool.shell}` as const,
       label: tool.commandLabel,
-      run: () => { void openTerminal(tool.shell); }
+      run: () => { if (tool.shell === 'wsl') openWslDialog(); else void openTerminal({ shell: tool.shell }); }
     })),
     { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
@@ -2413,7 +2440,7 @@ function Workbench() {
               : session.kind === 'serial' ? 'COM' : session.secure ? 'FTPS' : 'FTP'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
-        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell
+        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell === 'wsl' ? `WSL · ${session.distribution}` : session.shell
           : session.kind === 'serial' ? `${session.configuration.path} · ${session.configuration.baudRate} baud`
             : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind === 'rdp' ? 'RDP · external viewer' : session.kind === 'vnc' ? 'VNC · external viewer' : session.kind.toUpperCase()}`}</span>
       </button>
@@ -2523,7 +2550,8 @@ function Workbench() {
   }
 
   function openSavedSession(session: SavedSessionDefinition) {
-    if (session.kind === 'local') void openTerminal(session.shell, session.name);
+    if (session.kind === 'local') void openTerminal(session.shell === 'wsl'
+      ? { shell: 'wsl', distribution: session.distribution } : { shell: session.shell }, session.name);
     else if (session.kind === 'ssh') void openSshTerminal(session.host, String(session.port), session.name, [], session.id);
     else if (session.kind === 'sftp') void openSftpFiles(session.host, String(session.port), session.name);
     else if (session.kind === 'telnet') openTelnetConnect(session.host, session.port, session.name);
@@ -2592,7 +2620,9 @@ function Workbench() {
   async function saveActiveSession() {
     if (!active || catalogBusy || uncertainSaveDraft) return;
     const draft: SavedSessionDraft = active.transport === 'local'
-      ? { kind: 'local', name: saveSessionName, shell: active.shell }
+      ? active.shell === 'wsl'
+        ? { kind: 'local', name: saveSessionName, shell: 'wsl', distribution: active.distribution }
+        : { kind: 'local', name: saveSessionName, shell: active.shell }
       : active.transport === 'serial'
         ? { kind: 'serial', name: saveSessionName, configuration: active.configuration }
       : active.transport === 'ssh'
@@ -2635,7 +2665,8 @@ function Workbench() {
     setUncertainSaveDraft(undefined);
     const alreadySaved = definitions.some(definition => {
       if (definition.kind !== draft.kind || definition.name !== draft.name) return false;
-      if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell;
+      if (draft.kind === 'local') return definition.kind === 'local' && definition.shell === draft.shell &&
+        (draft.shell !== 'wsl' || (definition.shell === 'wsl' && definition.distribution === draft.distribution));
       if (draft.kind === 'serial') return definition.kind === 'serial' && serialConfigurationsEqual(definition.configuration, draft.configuration);
       if (definition.kind === 'local' || definition.kind === 'serial') return false;
       return definition.host === draft.host && definition.port === draft.port;
@@ -3033,6 +3064,11 @@ function Workbench() {
     {helpOpen && <HelpDialog onClose={closeHelp} />}
     {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences} />}
     <TftpServerDialog open={tftpServerOpen} onClose={() => setTftpServerOpen(false)} />
+    <WslDistributionDialog open={wslDialogOpen} onClose={closeWslDialog} onSelect={distribution => {
+      wslDialogReturnFocus.current = null;
+      setWslDialogOpen(false);
+      void openTerminal({ shell: 'wsl', distribution }, `${distribution} (WSL)`);
+    }} />
     <LocalTextEditorDialog open={localTextEditorOpen} file={localTextFile} onClose={closeLocalTextEditor} />
     <footer className="status-bar">
       <div className="terminal-status">

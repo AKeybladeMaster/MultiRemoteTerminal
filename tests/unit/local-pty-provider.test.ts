@@ -1,22 +1,28 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
+import type * as NodePty from 'node-pty';
+import test from 'node:test';
+import { LocalPtyProvider, resolveWslExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
-test('local shells resolve to absolute Windows system executables', () => {
-  assert.equal(resolveShellExecutable('powershell', { SystemRoot: 'C:\\Windows' }), 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-  assert.equal(resolveShellExecutable('cmd', { SystemRoot: 'D:\\Windows' }), 'D:\\Windows\\System32\\cmd.exe');
-  assert.throws(() => resolveShellExecutable('cmd', { SystemRoot: 'Windows' }), /system directory/);
+test('WSL executable resolution is pinned to the Windows system directory', () => {
+  assert.equal(resolveWslExecutable('C:\\Windows\\System32'), 'C:\\Windows\\System32\\wsl.exe');
+  assert.throws(() => resolveWslExecutable(''), /Windows system directory is unavailable/u);
 });
 
-test('Bash resolves only to Git for Windows and never to the WSL System32 launcher', () => {
-  const environment = { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files',
-    'ProgramFiles(x86)': 'C:\\Program Files (x86)', LOCALAPPDATA: 'C:\\Users\\Test\\AppData\\Local' };
-  const checked: string[] = [];
-  assert.equal(resolveShellExecutable('bash', environment, path => {
-    checked.push(path);
-    return path === 'C:\\Program Files (x86)\\Git\\bin\\bash.exe';
-  }), 'C:\\Program Files (x86)\\Git\\bin\\bash.exe');
-  assert.ok(!checked.includes('C:\\Windows\\System32\\bash.exe'));
-  assert.throws(() => resolveShellExecutable('bash', { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' },
-    path => path === 'C:\\Windows\\System32\\bash.exe'), /Git for Windows Bash/);
+test('a saved WSL distribution that disappeared fails before creating a PTY', {
+  skip: process.platform !== 'win32'
+}, async () => {
+  let spawnCount = 0;
+  const ptySpawn = (() => {
+    spawnCount++;
+    throw new Error('The PTY must not be created for a missing distribution');
+  }) as unknown as typeof NodePty.spawn;
+  const provider = new LocalPtyProvider(ptySpawn, {
+    systemDirectory: 'C:\\Windows\\System32',
+    wslDiscovery: { async list() { return [{ name: 'Ubuntu' }]; }, cancel() {} }
+  });
+
+  await assert.rejects(provider.open('stale-profile', { shell: 'wsl', distribution: 'Debian Dev' }, { columns: 80, rows: 24 }),
+    /selected WSL distribution is no longer installed/u);
+  assert.equal(spawnCount, 0);
+  await provider.shutdown();
 });

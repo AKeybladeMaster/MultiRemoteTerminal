@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createLocalTerminalController } from '../../packages/application/src/local-terminals.ts';
 import type { LocalTerminalEvent, LocalTerminalProvider } from '../../packages/application/src/local-terminals.ts';
-import type { TerminalSize } from '../../packages/domain/src/local-terminal.ts';
+import type { LocalTerminalLaunch, TerminalSize } from '../../packages/domain/src/local-terminal.ts';
 
 const size: TerminalSize = { columns: 100, rows: 30 };
 const sessionId = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -10,12 +10,20 @@ const sessionId = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
 class FakeTerminalProvider implements LocalTerminalProvider {
   readonly events: ((event: LocalTerminalEvent) => void)[] = [];
   readonly opened: string[] = [];
+  readonly launches: LocalTerminalLaunch[] = [];
   readonly closed: string[] = [];
   openGate?: Promise<void>;
   writeGate?: Promise<void>;
   onOpen?: (id: string) => void;
 
-  async open(id: string): Promise<void> { this.opened.push(id); this.onOpen?.(id); await this.openGate; }
+  async open(id: string, launch: LocalTerminalLaunch): Promise<void> {
+    this.opened.push(id);
+    this.launches.push(launch);
+    this.onOpen?.(id);
+    await this.openGate;
+  }
+  async listWslDistributions() { return [{ name: 'Ubuntu' }]; }
+  cancelWslDistributionDiscovery() {}
   async write(): Promise<void> { await this.writeGate; }
   async resize(): Promise<void> {}
   async acknowledgeOutput(): Promise<void> {}
@@ -33,11 +41,11 @@ test('terminal lifecycle validates dimensions, bounds pending input and closes o
   provider.writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
   const controller = createLocalTerminalController(provider);
 
-  const invalid = await controller.open(sessionId, 'powershell', { columns: 1, rows: 30 });
+  const invalid = await controller.open(sessionId, { shell: 'powershell' }, { columns: 1, rows: 30 });
   assert.equal(invalid.ok, false);
   if (!invalid.ok) assert.equal(invalid.error.code, 'INVALID_REQUEST');
 
-  const opened = await controller.open(sessionId, 'powershell', size);
+  const opened = await controller.open(sessionId, { shell: 'powershell' }, size);
   assert.deepEqual(opened, { ok: true, result: { sessionId, shell: 'powershell', state: 'running' } });
   assert.deepEqual(provider.opened, [sessionId]);
 
@@ -61,7 +69,7 @@ test('terminal events received during open are delivered in order and returned s
   const controller = createLocalTerminalController(provider);
   controller.subscribe(event => delivered.push(event));
 
-  assert.deepEqual(await controller.open(sessionId, 'cmd', size), {
+  assert.deepEqual(await controller.open(sessionId, { shell: 'cmd' }, size), {
     ok: true, result: { sessionId, shell: 'cmd', state: 'exited' }
   });
   assert.deepEqual(delivered, [{ kind: 'exit', sessionId, exitCode: 0 }]);
@@ -74,7 +82,7 @@ test('closing an opening terminal cancels the pending open and cleans up its pro
   provider.openGate = new Promise<void>(resolve => { releaseOpen = resolve; });
   const controller = createLocalTerminalController(provider);
 
-  const opening = controller.open(sessionId, 'powershell', size);
+  const opening = controller.open(sessionId, { shell: 'powershell' }, size);
   assert.deepEqual(provider.opened, [sessionId]);
   assert.deepEqual(await controller.close(sessionId), { ok: true, result: {} });
   releaseOpen();
@@ -84,5 +92,16 @@ test('closing an opening terminal cancels the pending open and cleans up its pro
   if (!result.ok) assert.equal(result.error.code, 'CANCELLED');
   assert.ok(provider.closed.length >= 1);
   assert.ok(provider.closed.every(id => id === sessionId));
+  await controller.dispose();
+});
+
+test('local terminal controller validates and returns an explicit WSL distribution launch', async () => {
+  const provider = new FakeTerminalProvider();
+  const controller = createLocalTerminalController(provider);
+  assert.deepEqual(await controller.listWslDistributions(), { ok: true, result: [{ name: 'Ubuntu' }] });
+  assert.deepEqual(await controller.open(sessionId, { shell: 'wsl', distribution: 'Ubuntu' }, size), {
+    ok: true, result: { sessionId, shell: 'wsl', distribution: 'Ubuntu', state: 'running' }
+  });
+  assert.deepEqual(provider.launches, [{ shell: 'wsl', distribution: 'Ubuntu' }]);
   await controller.dispose();
 });

@@ -11,7 +11,7 @@ import { connect as connectTcp, createServer } from 'node:net';
 import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { join, posix, resolve } from 'node:path';
+import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 
@@ -4417,7 +4417,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(rendererProcesses.length).toBeGreaterThan(0);
     expect(rendererProcesses.every(renderer => renderer.sandboxed)).toBe(true);
 
-    const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(crypto.randomUUID(), 'sh' as never, 80, 24));
+    const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(crypto.randomUUID(), { shell: 'sh' } as never, 80, 24));
     expect(invalidShell.ok).toBe(false);
     if (!invalidShell.ok) expect(invalidShell.error.code).toBe('INVALID_REQUEST');
 
@@ -4625,6 +4625,76 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(closeConfirmation).toContainText('Bash session');
     await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
     await expect(bashTabs).toHaveCount(1);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('WSL terminals require an explicit distribution and saved profiles reopen the same target', async () => {
+  test.skip(process.platform !== 'win32', 'WSL integration flow requires the Windows E2E harness');
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-wsl-terminal-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-wsl-harness'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const paletteButton = page.getByRole('button', { name: /^Command palette/ });
+    const dialog = page.getByRole('dialog', { name: 'Open a WSL terminal' });
+    await paletteButton.click();
+    await page.getByRole('dialog', { name: 'Command palette' }).getByRole('button', { name: 'New WSL terminal', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    const ubuntu = dialog.getByRole('radio', { name: 'Ubuntu', exact: true });
+    const debian = dialog.getByRole('radio', { name: 'Debian Dev', exact: true });
+    await expect(ubuntu).toBeVisible();
+    await expect(debian).toBeVisible();
+    await expect(ubuntu).not.toBeChecked();
+    await expect(debian).not.toBeChecked();
+    await page.screenshot({ path: 'test-results/wsl-distribution-picker.png' });
+    const openSelected = dialog.getByRole('button', { name: 'Open selected distribution', exact: true });
+    await expect(openSelected).toBeDisabled();
+    await expect(dialog).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(dialog.getByRole('button', { name: 'Refresh', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(ubuntu).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(paletteButton).toBeFocused();
+    await paletteButton.click();
+    await page.getByRole('dialog', { name: 'Command palette' }).getByRole('button', { name: 'New WSL terminal', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await debian.check();
+    await expect(openSelected).toBeEnabled();
+    await openSelected.click();
+
+    const tabTitle = 'Debian Dev (WSL)';
+    const panel = await selectTerminal(page, tabTitle);
+    const expectedLaunch = JSON.stringify([win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe'),
+      '--distribution', 'Debian Dev', '--exec', 'bash', '--login']).toLocaleLowerCase('en-US');
+    const terminalRows = panel.locator('.xterm-rows');
+    await expect.poll(async () => (await terminalRows.innerText()).toLocaleLowerCase('en-US'), { timeout: 15_000 })
+      .toContain(`wsl harness: ${expectedLaunch}`);
+    await page.screenshot({ path: 'test-results/wsl-distribution-terminal.png' });
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Persisted Debian WSL');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const savedSession = page.getByRole('button', { name: 'Open Persisted Debian WSL', exact: true });
+    await expect(savedSession).toBeVisible();
+    await expect(page.getByText('WSL · Debian Dev', { exact: true })).toBeVisible();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Open Persisted Debian WSL', exact: true }).click();
+    const reopenedPanel = await selectTerminal(page, 'Persisted Debian WSL');
+    await expect.poll(async () => (await reopenedPanel.locator('.xterm-rows').innerText()).toLocaleLowerCase('en-US'),
+      { timeout: 15_000 }).toContain(`wsl harness: ${expectedLaunch}`);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

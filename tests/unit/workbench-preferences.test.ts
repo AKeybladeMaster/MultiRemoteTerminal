@@ -73,7 +73,7 @@ test('workbench preferences migrate shell visibility defaults and reject unknown
   assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['bash', 'powershell'] })?.visibleLocalShells,
     ['powershell', 'bash']);
   assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: [] })?.visibleLocalShells, []);
-  assert.deepEqual(DEFAULT_VISIBLE_LOCAL_SHELLS, ['powershell', 'cmd', 'bash']);
+  assert.deepEqual(DEFAULT_VISIBLE_LOCAL_SHELLS, ['powershell', 'cmd', 'bash', 'wsl']);
   assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['powershell', 'unknown'] }), undefined);
   assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['bash', 'bash'] }), undefined);
   assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: 'bash' }), undefined);

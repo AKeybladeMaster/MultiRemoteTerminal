@@ -1,7 +1,9 @@
 import type { AppError, Outcome } from '../../domain/src/errors.ts';
 import { failure } from '../../domain/src/errors.ts';
-import { isLocalShell, isTerminalSize, MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../domain/src/local-terminal.ts';
-import type { LocalShell, TerminalSize } from '../../domain/src/local-terminal.ts';
+import { isLocalTerminalLaunch, isTerminalSize, MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../domain/src/local-terminal.ts';
+import type { LocalTerminalLaunch, TerminalSize } from '../../domain/src/local-terminal.ts';
+import type { WslDistribution } from '../../domain/src/wsl-distributions.ts';
+import { normalizeWslDistributionList } from '../../domain/src/wsl-distributions.ts';
 
 export type LocalTerminalEvent =
   | { readonly kind: 'data'; readonly sessionId: string; readonly sequence: number; readonly data: string }
@@ -9,7 +11,9 @@ export type LocalTerminalEvent =
   | { readonly kind: 'failure'; readonly sessionId: string; readonly error: AppError };
 
 export interface LocalTerminalProvider {
-  open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<void>;
+  open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<void>;
+  listWslDistributions(): Promise<readonly WslDistribution[]>;
+  cancelWslDistributionDiscovery(): void | Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
@@ -18,22 +22,23 @@ export interface LocalTerminalProvider {
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void;
 }
 
-export interface LocalTerminalSession {
+export type LocalTerminalSession = {
   readonly sessionId: string;
-  readonly shell: LocalShell;
   readonly state: 'starting' | 'running' | 'exited' | 'failed' | 'closing';
-}
+} & LocalTerminalLaunch;
 
 interface SessionState {
   readonly sessionId: string;
-  readonly shell: LocalShell;
+  readonly launch: LocalTerminalLaunch;
   state: LocalTerminalSession['state'];
   pendingInputChars: number;
   pendingEvents: LocalTerminalEvent[];
 }
 
 export interface LocalTerminalController {
-  open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<Outcome<LocalTerminalSession>>;
+  open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<Outcome<LocalTerminalSession>>;
+  listWslDistributions(): Promise<Outcome<readonly WslDistribution[]>>;
+  cancelWslDistributionDiscovery(): Promise<Outcome<Record<string, never>>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
@@ -65,16 +70,16 @@ export function createLocalTerminalController(
     publish(event);
   });
 
-  async function open(sessionId: string, shell: LocalShell, size: TerminalSize): Promise<Outcome<LocalTerminalSession>> {
+  async function open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<Outcome<LocalTerminalSession>> {
     if (disposed) return failure('CANCELLED', 'terminal');
     if (shutdownPromise) return failure('BUSY', 'terminal');
     if (typeof sessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId) ||
-        !isLocalShell(shell) || !isTerminalSize(size)) return failure('INVALID_REQUEST');
+        !isLocalTerminalLaunch(launch) || !isTerminalSize(size)) return failure('INVALID_REQUEST');
     if (sessions.has(sessionId)) return failure('UNAVAILABLE', 'terminal');
-    const session: SessionState = { sessionId, shell, state: 'starting', pendingInputChars: 0, pendingEvents: [] };
+    const session: SessionState = { sessionId, launch, state: 'starting', pendingInputChars: 0, pendingEvents: [] };
     sessions.set(sessionId, session);
     try {
-      await provider.open(sessionId, shell, size);
+      await provider.open(sessionId, launch, size);
       if (session.state === 'closing' || sessions.get(sessionId) !== session) {
         await provider.close(sessionId).catch(() => undefined);
         return failure('CANCELLED', 'terminal');
@@ -85,12 +90,40 @@ export function createLocalTerminalController(
         if (event.kind === 'failure') session.state = 'failed';
         publish(event);
       }
-      return { ok: true, result: { sessionId, shell, state: session.state } };
+      return { ok: true, result: { sessionId, ...launch, state: session.state } };
     } catch {
       session.pendingEvents.length = 0;
       sessions.delete(sessionId);
       return failure('UNAVAILABLE', 'terminal');
     }
+  }
+
+  let listingWslDistributions = false;
+  let discoveryCancelled = false;
+
+  async function listWslDistributions(): Promise<Outcome<readonly WslDistribution[]>> {
+    if (disposed) return failure('CANCELLED', 'terminal');
+    if (shutdownPromise || listingWslDistributions) return failure('BUSY', 'terminal');
+    listingWslDistributions = true;
+    discoveryCancelled = false;
+    try {
+      const distributions = normalizeWslDistributionList(await provider.listWslDistributions());
+      return distributions ? { ok: true, result: distributions } : failure('UNAVAILABLE', 'terminal');
+    } catch {
+      return failure(discoveryCancelled ? 'CANCELLED' : 'UNAVAILABLE', 'terminal');
+    } finally {
+      listingWslDistributions = false;
+      discoveryCancelled = false;
+    }
+  }
+
+  async function cancelWslDistributionDiscovery(): Promise<Outcome<Record<string, never>>> {
+    if (listingWslDistributions) {
+      discoveryCancelled = true;
+      try { await provider.cancelWslDistributionDiscovery(); }
+      catch { return failure('UNAVAILABLE', 'terminal'); }
+    }
+    return { ok: true, result: EMPTY_RESULT };
   }
 
   async function write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {
@@ -166,7 +199,7 @@ export function createLocalTerminalController(
   }
 
   return Object.freeze({
-    open, write, resize, acknowledgeOutput, close, closeAll,
+    open, listWslDistributions, cancelWslDistributionDiscovery, write, resize, acknowledgeOutput, close, closeAll,
     subscribe(listener: (event: LocalTerminalEvent) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
