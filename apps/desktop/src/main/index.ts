@@ -286,6 +286,13 @@ function boot(): void {
   const vncViewer = createVncViewerController(e2eVncViewer ? { async launch() {} } : new WindowsVncViewer(systemDirectory));
   const e2eSshCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-credentials');
   const e2eFtpCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ftp-credentials');
+  const e2eFtpExtraCaPath = e2eFtpCredentials
+    ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ftp-ca='))?.slice('--mrt-e2e-ftp-ca='.length)
+    : undefined;
+  let e2eFtpCredentialPromptCount = 0;
+  if (e2eFtpCredentials) Object.defineProperty(globalThis, '__mrtE2EFtpCredentialPromptCount', {
+    configurable: false, enumerable: false, get: () => e2eFtpCredentialPromptCount
+  });
   const e2eMasterPassword = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-master-password');
   let e2eSshCredentialPromptCount = 0;
   if (e2eSshCredentials) Object.defineProperty(globalThis, '__mrtE2ESshCredentialPromptCount', {
@@ -298,7 +305,10 @@ function boot(): void {
         e2eSshCredentialPromptCount += 1;
         return { kind: 'provided', username: 'mrt-e2e-user', secret: 'sftp-e2e-secret' };
       }
-      if (purpose === 'ftp-account' && e2eFtpCredentials) return { kind: 'provided', username: 'mrt-e2e-user', secret: 'ftp-e2e-secret' };
+      if (purpose === 'ftp-account' && e2eFtpCredentials) {
+        e2eFtpCredentialPromptCount += 1;
+        return { kind: 'provided', username: 'mrt-e2e-user', secret: 'ftp-e2e-secret' };
+      }
       return { kind: 'unavailable' };
     } }
     : createWindowsCredentialPrompt({
@@ -337,7 +347,7 @@ function boot(): void {
     join(dist, 'host/apps/desktop/src/workers/ftp-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, {
       ...options,
-      env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env)
+      env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env, e2eFtpExtraCaPath)
     })
   ), credentialPrompt);
   const localTextFilesWorker = new LocalTextFilesWorkerHost(

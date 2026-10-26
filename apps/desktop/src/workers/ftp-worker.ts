@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { join, posix } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import type * as BasicFtp from 'basic-ftp';
 import { FtpFilesProviderError } from '../../../../packages/application/src/ftp-files.ts';
@@ -31,6 +32,13 @@ function uniqueStorePath(message: string, currentDirectory: string, requestedDir
 }
 
 class MrtFtpClient extends basicFtp.Client {
+  override async access(options: BasicFtp.AccessOptions = {}): Promise<BasicFtp.FTPResponse> {
+    const testCaPath = process.env.MRT_E2E_FTP_CA;
+    if (!testCaPath || options.secure !== true) return super.access(options);
+    const ca = await readFile(testCaPath);
+    return super.access({ ...options, secureOptions: { ...options.secureOptions, ca } });
+  }
+
   async uploadUniqueFrom(source: Readable, remotePath: string, onUniquePath: (remotePath: string) => void): Promise<string> {
     let generatedPath: string | undefined;
     const requestedDirectory = remoteParentPath(remotePath);
