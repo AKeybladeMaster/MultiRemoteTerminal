@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type * as Ssh2 from 'ssh2';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
-import type { SshAuthenticationCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
@@ -141,7 +141,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
           (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? []);
       } finally {
         clearRequestCredentials(request.credentials);
-        for (const hop of request.gatewayHops ?? []) { hop.credentials.password = ''; hop.credentials.username = ''; }
+        clearGatewayCredentials(request.gatewayHops);
       }
     } else if (request.command === 'open-files') {
       try {
@@ -149,7 +149,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
           (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? []);
       } finally {
         clearRequestCredentials(request.credentials);
-        for (const hop of request.gatewayHops ?? []) { hop.credentials.password = ''; hop.credentials.username = ''; }
+        clearGatewayCredentials(request.gatewayHops);
       }
     } else if (request.command === 'tunnel.forward.start') {
       const bindPort = await provider.startForward(request.sessionId, request.definition);
@@ -180,6 +180,13 @@ function clearRequestCredentials(credentials: SshAuthenticationCredentials): voi
     credentials.privateKey.fill(0);
     credentials.passphrase = '';
   } else if (!('method' in credentials)) credentials.password = '';
+}
+
+function clearGatewayCredentials(gatewayHops: readonly SshConnectionGatewayCredentials[] | undefined): void {
+  for (const hop of gatewayHops ?? []) {
+    hop.credentials.username = '';
+    hop.credentials.password = '';
+  }
 }
 
 parent.on('message', event => {
