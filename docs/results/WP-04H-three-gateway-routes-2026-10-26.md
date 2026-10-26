@@ -25,3 +25,9 @@
 ## Limitations
 
 Routes longer than three gateways, real public-server interoperability, and Windows OpenSSH agent authentication through gateway routes remain unverified. This slice does not complete the broader MVP release gate.
+
+## Independent review follow-up (2026-10-27)
+
+The Standards, Spec and implementation reviews found no remaining Critical or Important findings. Follow-ups corrected the user guide's gateway count, added a three-gateway target-authentication failure test that asserts all four SSH clients and all three nested channels close, consolidated IPv6 endpoint formatting, and extended the Windows SFTP fixture to assert no PTY or shell request. The targeted E2E, typecheck, lint and `git diff --check` passed after these updates; the 124-test focused unit suite passed after the cleanup regression was added. The reviewers inspected the pinned changes read-only and did not rerun tests. All review findings are resolved; F-006/F-011 and P-22–P-25 remain partial only for their documented interoperability, route-length and forwarding-policy limitations.
+
+One `typecheck` invocation run concurrently with `build` reported TS6305 for generated `dist/types` declarations. Running `corepack pnpm typecheck` after the build completed passed; the final checks used this sequential order.
