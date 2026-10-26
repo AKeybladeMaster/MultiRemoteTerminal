@@ -1800,21 +1800,33 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
   const clients = new Set<Ssh2FixtureClient>();
   const relaySockets = new Set<Socket>();
   const tunneledSockets = new Set<Socket>();
+  const remoteSockets = new Set<Socket>();
+  const remoteBindings = new Map<Ssh2FixtureClient, Map<number, Server>>();
+  const remoteBindRequests: string[] = [];
   const fixtureEvents: string[] = [];
   const sftpRoot = join(profile, 'remote-sftp');
   let sftpRequests = 0;
   let targetEchoPort: number | undefined;
   let tunneledBytes = 0;
+  let tunneledRequestBytes = 0;
   const targetEchoServer = createServer(socket => {
     tunneledSockets.add(socket);
     socket.once('close', () => tunneledSockets.delete(socket));
     socket.on('error', () => {});
-    let forwardedPayload = Buffer.alloc(0);
+    let request = Buffer.alloc(0);
+    let responseSent = false;
     socket.on('data', data => {
-      tunneledBytes += data.length;
-      forwardedPayload = Buffer.concat([forwardedPayload, data]);
+      tunneledRequestBytes += data.length;
+      if (responseSent) return;
+      request = Buffer.concat([request, data]);
+      if (request.length < 4) return;
+      const payloadLength = request.readUInt32BE(0);
+      if (request.length < 4 + payloadLength) return;
+      const payload = request.subarray(4, 4 + payloadLength);
+      tunneledBytes += payload.length;
+      responseSent = true;
+      socket.end(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), payload]));
     });
-    socket.once('end', () => socket.end(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), forwardedPayload])));
   });
   const servers: Array<{ readonly name: string; readonly server: Ssh2FixtureServer; address?: AddressInfo }> = [];
   const createFixture = (name: string, role: 'gateway' | 'terminal' | 'sftp'): Ssh2FixtureServer => {
@@ -1822,7 +1834,11 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
       const client = rawClient as Ssh2FixtureClient;
       clients.add(client);
-      client.once('close', () => clients.delete(client));
+      client.once('close', () => {
+        clients.delete(client);
+        for (const remoteServer of remoteBindings.get(client)?.values() ?? []) remoteServer.close();
+        remoteBindings.delete(client);
+      });
       client.on('error', error => fixtureEvents.push(`${name}:client-error:${error.message}`));
       client.on('authentication', (rawContext: unknown) => {
         const context = rawContext as Ssh2AuthenticationContext;
@@ -1856,12 +1872,12 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         });
         if (role === 'terminal') client.on('tcpip', (acceptChannel: () => Duplex, rejectChannel: () => void, rawInfo: unknown) => {
           const info = rawInfo as { readonly destIP: string; readonly destPort: number };
-          if (info.destIP !== '127.0.0.1' || info.destPort !== targetEchoPort) {
+          if ((info.destIP !== '127.0.0.1' && info.destIP !== 'localhost') || info.destPort !== targetEchoPort) {
             fixtureEvents.push(`target:rejected:${info.destIP}:${info.destPort}`);
             rejectChannel();
             return;
           }
-          fixtureEvents.push('target:tunnel-forward');
+          fixtureEvents.push(info.destIP === 'localhost' ? `${name}:dynamic-destination` : 'target:tunnel-forward');
           const channel = acceptChannel();
           const socket = connectTcp(info.destPort, '127.0.0.1');
           tunneledSockets.add(socket);
@@ -1875,6 +1891,54 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
           channel.once('error', closeForward);
           channel.once('close', closeForward);
           channel.pipe(socket).pipe(channel);
+        });
+        if (role === 'terminal' && name === 'tunnel-target') client.on('request', (rawAccept: unknown, rawReject: unknown, requestName: string, rawInfo: unknown) => {
+          const accept = typeof rawAccept === 'function' ? rawAccept as (port?: number) => void : undefined;
+          const reject = typeof rawReject === 'function' ? rawReject as () => void : undefined;
+          const info = rawInfo as { readonly bindAddr: string; readonly bindPort: number };
+          if (requestName === 'tcpip-forward') {
+            if (info.bindAddr !== '127.0.0.1') { reject?.(); return; }
+            let assignedPort = info.bindPort;
+            const remoteServer = createServer({ allowHalfOpen: true }, remoteSocket => {
+              remoteSockets.add(remoteSocket);
+              remoteSocket.once('close', () => remoteSockets.delete(remoteSocket));
+              client.forwardOut('127.0.0.1', assignedPort, remoteSocket.remoteAddress ?? '127.0.0.1', remoteSocket.remotePort ?? 0,
+                (error, channel) => {
+                  if (error || !channel) { remoteSocket.destroy(); return; }
+                  remoteSocket.once('error', () => channel.destroy());
+                  remoteSocket.once('close', () => channel.destroy());
+                  channel.once('error', () => remoteSocket.destroy());
+                  channel.once('close', () => remoteSocket.destroy());
+                  channel.pipe(remoteSocket).pipe(channel);
+                });
+            });
+            remoteServer.once('error', error => { fixtureEvents.push(`tunnel-target:remote-listener-error:${error.message}`); reject?.(); });
+            remoteServer.listen(info.bindPort, '127.0.0.1', () => {
+              const address = remoteServer.address();
+              if (!address || typeof address === 'string') { remoteServer.close(); reject?.(); return; }
+              assignedPort = address.port;
+              const bindings = remoteBindings.get(client) ?? new Map<number, Server>();
+              bindings.set(assignedPort, remoteServer);
+              remoteBindings.set(client, bindings);
+              remoteBindRequests.push(`${info.bindAddr}:${info.bindPort}`);
+              fixtureEvents.push(`tunnel-target:remote-bound:${assignedPort}`);
+              if (info.bindPort === 0) accept?.(assignedPort);
+              else accept?.();
+            });
+            return;
+          }
+          if (requestName === 'cancel-tcpip-forward') {
+            const bindings = remoteBindings.get(client);
+            const remoteServer = bindings?.get(info.bindPort);
+            if (remoteServer) {
+              bindings?.delete(info.bindPort);
+              remoteServer.close();
+              fixtureEvents.push(`tunnel-target:remote-unbound:${info.bindPort}`);
+            }
+            accept?.();
+            return;
+          }
+          reject?.();
         });
         if (role !== 'gateway') client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
           const session = acceptSession();
@@ -2043,6 +2107,80 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       probe.once('connect', () => finish(false));
       probe.once('error', error => finish((error as NodeJS.ErrnoException).code === 'ECONNREFUSED'));
     });
+    const expectTunnelStartDidNotRequestInteractiveChannels = (expectedShellCount: number, expectedSftpRequests: number): void => {
+      expect(fixtureEvents.filter(event => event.endsWith(':shell'))).toHaveLength(expectedShellCount);
+      expect(sftpRequests).toBe(expectedSftpRequests);
+      expect(fixtureEvents.filter(event => ['tunnel-target:pty', 'tunnel-target:shell', 'tunnel-target:sftp'].includes(event))).toEqual([]);
+    };
+    const tunnelRequestLengthPrefixBytes = 4;
+    const encodeTunnelPayload = (payload: Buffer): Buffer => {
+      const request = Buffer.allocUnsafe(tunnelRequestLengthPrefixBytes + payload.length);
+      request.writeUInt32BE(payload.length, 0);
+      payload.copy(request, tunnelRequestLengthPrefixBytes);
+      return request;
+    };
+    const expectExactTunnelRequestBytes = (bytesBefore: number, payload: Buffer): void => {
+      expect(tunneledRequestBytes - bytesBefore).toBe(tunnelRequestLengthPrefixBytes + payload.byteLength);
+    };
+    const roundTripTunnelTraffic = (port: number, payload: Buffer): Promise<Buffer> => new Promise((resolveEcho, rejectEcho) => {
+      const socket = connectTcp(port, '127.0.0.1');
+      const received: Buffer[] = [];
+      const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for routed tunnel traffic')); }, 10_000);
+      socket.once('error', error => { clearTimeout(timer); rejectEcho(error); });
+      socket.once('connect', () => socket.write(encodeTunnelPayload(payload)));
+      socket.on('data', chunk => received.push(Buffer.from(chunk)));
+      socket.once('end', () => { clearTimeout(timer); resolveEcho(Buffer.concat(received)); });
+    });
+    const roundTripDynamicSocks = (proxyPort: number, destinationPort: number, payload: Buffer): Promise<Buffer> =>
+      new Promise((resolveEcho, rejectEcho) => {
+        const socket = connectTcp(proxyPort, '127.0.0.1');
+        const response: Buffer[] = [];
+        let received = Buffer.alloc(0);
+        let stage: 'method' | 'connect' | 'payload' = 'method';
+        let settled = false;
+        const timer = setTimeout(() => finish(new Error('Timed out waiting for the routed SOCKS5 forward')), 10_000);
+        const finish = (error?: Error, echoed?: Buffer): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (error) { socket.destroy(); rejectEcho(error); }
+          else if (echoed) { socket.destroy(); resolveEcho(echoed); }
+          else rejectEcho(new Error('The routed SOCKS5 forward ended without a response'));
+        };
+        socket.once('connect', () => socket.write(Buffer.from([5, 1, 0])));
+        socket.on('data', chunk => {
+          received = Buffer.concat([received, chunk]);
+          if (stage === 'method') {
+            if (received.length < 2) return;
+            if (received[0] !== 5 || received[1] !== 0) { finish(new Error('Routed SOCKS5 proxy did not select no-authentication')); return; }
+            received = received.subarray(2);
+            stage = 'connect';
+            const hostname = Buffer.from('localhost', 'ascii');
+            socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, hostname.length]), hostname,
+              Buffer.from([destinationPort >> 8, destinationPort & 0xff])]));
+          }
+          if (stage === 'connect') {
+            if (received.length < 10) return;
+            if (received[0] !== 5 || received[1] !== 0 || received[3] !== 1) {
+              finish(new Error(`Routed SOCKS5 CONNECT failed with reply ${received[1]}`));
+              return;
+            }
+            const remainder = received.subarray(10);
+            if (remainder.length > 0) response.push(remainder);
+            received = Buffer.alloc(0);
+            stage = 'payload';
+            socket.write(encodeTunnelPayload(payload));
+          }
+          if (stage === 'payload' && received.length > 0) {
+            response.push(received);
+            received = Buffer.alloc(0);
+          }
+        });
+        socket.once('error', error => finish(error));
+        socket.once('end', () => stage === 'payload'
+          ? finish(undefined, Buffer.concat(response))
+          : finish(new Error('Routed SOCKS5 proxy closed before the data roundtrip')));
+      });
 
     await openRoute(true);
     await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(1);
@@ -2075,9 +2213,27 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         bindPort: 0, targetHost: '127.0.0.1', targetPort: destinationPort }),
     { targetSessionId: profileIds[6]!, destinationPort: targetEchoPort });
     expect(savedTunnel.ok).toBe(true);
+    const remoteTunnelName = 'Two-hop remote TCP check';
+    const savedRemoteTunnel = await page.evaluate(async ({ targetSessionId, destinationPort, name }) =>
+      window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name, mode: 'remote', bindHost: '127.0.0.1',
+        bindPort: 0, targetHost: '127.0.0.1', targetPort: destinationPort }),
+    { targetSessionId: profileIds[6]!, destinationPort: targetEchoPort, name: remoteTunnelName });
+    expect(savedRemoteTunnel.ok).toBe(true);
+    const dynamicTunnelName = 'Two-hop SOCKS5 check';
+    const savedDynamicTunnel = await page.evaluate(async ({ targetSessionId, name }) =>
+      window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name, mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 0 }),
+    { targetSessionId: profileIds[6]!, name: dynamicTunnelName });
+    expect(savedDynamicTunnel.ok).toBe(true);
     await page.getByTestId('tunnel-manager-open').click();
     const tunnelDialog = page.getByRole('dialog', { name: 'Port forwarding' });
     await expect(tunnelDialog.getByRole('button', { name: 'Start tunnel' })).toBeVisible();
+    const stopSelectedTunnelAndVerifySharedCleanup = async (): Promise<void> => {
+      await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
+      await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
+      await expect.poll(() => clients.size).toBe(0);
+      await waitForRelayCleanup();
+      await expect.poll(() => tunneledSockets.size).toBe(0);
+    };
     await tunnelDialog.getByRole('button', { name: 'Start through gateways' }).click();
     await tunnelDialog.getByLabel('SSH gateway 1').selectOption(profileIds[4]!);
     await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
@@ -2101,9 +2257,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Active', { timeout: 25_000 });
     expect(fixtureEvents).toContain(`tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`);
     expect(fixtureEvents).toContain(`tunnel-gateway-two:relay:${tunnelTargetPort}`);
-    expect(fixtureEvents.filter(event => event.endsWith(':shell'))).toHaveLength(shellCountBeforeTunnel);
-    expect(sftpRequests).toBe(sftpRequestsBeforeTunnel);
-    expect(fixtureEvents.filter(event => ['tunnel-target:pty', 'tunnel-target:shell', 'tunnel-target:sftp'].includes(event))).toEqual([]);
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
 
     const tunnelPort = await page.evaluate(async () => {
       const reply = await window.multiRemoteTerminal.listSshTunnels();
@@ -2114,29 +2268,86 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     });
     const payload = Buffer.from('exact-forwarded-bytes');
     const expectedEcho = Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), payload]);
-    const echoed = await new Promise<Buffer>((resolveEcho, rejectEcho) => {
-      const socket = connectTcp(tunnelPort, '127.0.0.1');
-      const received: Buffer[] = [];
-      const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for the gateway-routed forward')); }, 10_000);
-      socket.once('error', error => { clearTimeout(timer); rejectEcho(error); });
-      socket.once('connect', () => socket.end(payload));
-      socket.on('data', chunk => received.push(Buffer.from(chunk)));
-      socket.once('end', () => { clearTimeout(timer); resolveEcho(Buffer.concat(received)); });
-    });
+    const requestBytesBeforeLocal = tunneledRequestBytes;
+    const echoed = await roundTripTunnelTraffic(tunnelPort, payload);
     expect(echoed).toEqual(expectedEcho);
     expect(tunneledBytes).toBe(payload.byteLength);
     expect(fixtureEvents).toContain('target:tunnel-forward');
-    await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
-    await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
-    await expect.poll(() => clients.size).toBe(0);
-    await expect.poll(() => relaySockets.size).toBe(0);
-    await expect.poll(() => tunneledSockets.size).toBe(0);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expectExactTunnelRequestBytes(requestBytesBeforeLocal, payload);
     expect(await localPortRefusesConnections(tunnelPort)).toBe(true);
+
+    const startSelectedTunnelThroughGateways = async (): Promise<void> => {
+      await tunnelDialog.getByRole('button', { name: 'Start through gateways' }).click();
+      await tunnelDialog.getByLabel('SSH gateway 1').selectOption(profileIds[4]!);
+      await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
+      await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
+      await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Active', { timeout: 25_000 });
+    };
+    const startSelectedTunnelAndVerifyGatewayRelays = async (): Promise<void> => {
+      const firstGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length;
+      const secondGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length;
+      await startSelectedTunnelThroughGateways();
+      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length)
+        .toBe(firstGatewayRelays + 1);
+      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length)
+        .toBe(secondGatewayRelays + 1);
+    };
+    const selectedStatusPort = async (pattern: RegExp): Promise<number> => {
+      const endpoint = await tunnelDialog.locator('.tunnel-status-card code').innerText();
+      const port = pattern.exec(endpoint)?.[1];
+      if (!port) throw new Error(`Could not read an active tunnel port from: ${endpoint}`);
+      return Number(port);
+    };
+    const remoteTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
+    await expect(remoteTunnelItem).toBeVisible();
+    await remoteTunnelItem.click();
+    await startSelectedTunnelAndVerifyGatewayRelays();
+    const remotePort = await selectedStatusPort(/SSH server 127\.0\.0\.1:(\d+)/u);
+    expect(remoteBindRequests.at(-1)).toBe('127.0.0.1:0');
+    expect(fixtureEvents).toContain(`tunnel-target:remote-bound:${remotePort}`);
+    const remotePayload = Buffer.from('two-hop-remote-forward-bytes');
+    const bytesBeforeRemote = tunneledBytes;
+    const requestBytesBeforeRemote = tunneledRequestBytes;
+    expect(await roundTripTunnelTraffic(remotePort, remotePayload))
+      .toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), remotePayload]));
+    expect(tunneledBytes - bytesBeforeRemote).toBe(remotePayload.byteLength);
+    await expect.poll(() => remoteSockets.size).toBe(0);
+    expect(fixtureEvents).toContain(`target:tunnel-forward`);
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expectExactTunnelRequestBytes(requestBytesBeforeRemote, remotePayload);
+    expect([...remoteBindings.values()].some(bindings => bindings.has(remotePort))).toBe(false);
+    expect(fixtureEvents).toContain(`tunnel-target:remote-unbound:${remotePort}`);
+    expect(await localPortRefusesConnections(remotePort)).toBe(true);
+
+    const dynamicTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(dynamicTunnelName, 'u') });
+    await expect(dynamicTunnelItem).toBeVisible();
+    await dynamicTunnelItem.click();
+    await startSelectedTunnelAndVerifyGatewayRelays();
+    const socksPort = await selectedStatusPort(/SOCKS5 proxy 127\.0\.0\.1:(\d+)/u);
+    const socksPayload = Buffer.from('two-hop-dynamic-socks-bytes');
+    const bytesBeforeSocks = tunneledBytes;
+    const requestBytesBeforeSocks = tunneledRequestBytes;
+    expect(await roundTripDynamicSocks(socksPort, targetEchoPort, socksPayload))
+      .toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), socksPayload]));
+    expect(tunneledBytes - bytesBeforeSocks).toBe(socksPayload.byteLength);
+    expect(fixtureEvents).toContain('tunnel-target:dynamic-destination');
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expectExactTunnelRequestBytes(requestBytesBeforeSocks, socksPayload);
+    expect(await localPortRefusesConnections(socksPort)).toBe(true);
   } finally {
     await app?.close();
     for (const client of clients) client.end();
     for (const socket of relaySockets) socket.destroy();
     for (const socket of tunneledSockets) socket.destroy();
+    for (const socket of remoteSockets) socket.destroy();
+    for (const bindings of remoteBindings.values()) {
+      for (const server of bindings.values()) {
+        if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+      }
+    }
     for (const fixture of servers) await new Promise<void>(resolveClose => fixture.server.close(() => resolveClose()));
     if (targetEchoListening) await new Promise<void>(resolveClose => targetEchoServer.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
