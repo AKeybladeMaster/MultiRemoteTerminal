@@ -49,6 +49,7 @@ import { SettingsDialog } from './SettingsDialog.tsx';
 import { RdpConnectDialog } from './RdpConnectDialog.tsx';
 import { VncConnectDialog } from './VncConnectDialog.tsx';
 import { LocalTextEditorDialog } from './LocalTextEditorDialog.tsx';
+import { textEditorErrorMessage } from './text-editor-errors.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
 import './tokens.css';
@@ -1190,11 +1191,7 @@ function Workbench() {
     try {
       const reply = await window.multiRemoteTerminal.openLocalTextFile();
       if (!reply.ok) {
-        if (reply.error.code !== 'CANCELLED') setAlert(reply.error.code === 'OUTPUT_LIMIT'
-          ? 'The selected file exceeds the 512 KB local editor limit.'
-          : reply.error.code === 'NOT_SUPPORTED' ? 'The selected file is not a supported regular UTF-8 text file.'
-            : reply.error.code === 'FORBIDDEN' ? 'Windows denied access to the selected file.'
-              : 'The selected local file could not be opened.');
+        if (reply.error.code !== 'CANCELLED') setAlert(textEditorErrorMessage(reply.error.code, 'local'));
         return;
       }
       localTextFileRef.current = reply.result;

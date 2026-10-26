@@ -10,7 +10,7 @@ const messages: Readonly<Record<EditorKind, ErrorMessages>> = {
     FORBIDDEN: 'Windows denied access to this file. Check the file permissions.',
     TIMEOUT: 'The local file operation timed out. Check the file before retrying.',
     CANCELLED: 'The local file operation was cancelled.',
-    default: 'The local text file could not be saved or loaded.'
+    default: 'The local text file could not be opened, saved or reloaded.'
   },
   remote: {
     CONFLICT: 'The remote file changed since it was opened. Your draft is preserved; reload the latest version before saving again.',
@@ -20,7 +20,7 @@ const messages: Readonly<Record<EditorKind, ErrorMessages>> = {
     FORBIDDEN: 'The server denied access. Check the file permissions.',
     TIMEOUT: 'The request timed out and may have reached the server. Reload the file to check its current contents before retrying.',
     CANCELLED: 'The request was cancelled.',
-    default: 'The remote text file could not be saved or loaded. Check the SFTP connection and permissions.'
+    default: 'The remote text file could not be opened, saved or reloaded. Check the SFTP connection and permissions.'
   }
 };
 
