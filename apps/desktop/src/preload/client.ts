@@ -342,9 +342,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
           ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } },
       sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
-    openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSftpFilesReply> {
+    openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod,
+      gatewayProfileIds?: readonly string[]): Promise<OpenSftpFilesReply> {
       return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
-        payload: { sessionId, host, port, ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } }, SSH_OPEN_TIMEOUT_MS);
+        payload: { sessionId, host, port, ...(authenticationMethod === undefined ? {} : { authenticationMethod }),
+          ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }) } },
+      sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
     writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'ssh.write');

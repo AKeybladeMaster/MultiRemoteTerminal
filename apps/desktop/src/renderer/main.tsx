@@ -336,7 +336,7 @@ function Workbench() {
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
   const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
   const [sshAuthenticationMethod, setSshAuthenticationMethod] = useState<SshAuthenticationMethod>('password');
-  const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' }>>();
+  const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' | 'sftp' }>>();
   const [sshGatewayProfiles, setSshGatewayProfiles] = useState<readonly Extract<SavedSessionDefinition, { kind: 'ssh' }>[]>([]);
   const [sshGatewayOne, setSshGatewayOne] = useState('');
   const [sshGatewayTwo, setSshGatewayTwo] = useState('');
@@ -1607,7 +1607,7 @@ function Workbench() {
   }, [rememberOpenedSession]);
 
   const openSftpFiles = useCallback(async (hostInput: string, portInput: string, savedTitle?: string,
-    authenticationMethod: SshAuthenticationMethod = 'password') => {
+    authenticationMethod: SshAuthenticationMethod = 'password', gatewayProfileIds: readonly string[] = []) => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -1621,11 +1621,15 @@ function Workbench() {
     setSshConnectError(undefined);
     sshTrustReturnFocus.current = sshConnectReturnFocus.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setSshConnectOpen(false);
+    setSshGatewayTarget(undefined);
+    setSshGatewayProfiles([]);
+    setSshGatewayOne('');
+    setSshGatewayTwo('');
     setPaletteOpen(false);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
     fileOnlySshSessionIds.current.add(sessionId);
-    const replyPromise = window.multiRemoteTerminal.openSftpFiles(sessionId, endpoint.host, endpoint.port, authenticationMethod);
+    const replyPromise = window.multiRemoteTerminal.openSftpFiles(sessionId, endpoint.host, endpoint.port, authenticationMethod, gatewayProfileIds);
     pendingOpenRequests.current.set(sessionId, { transport: 'sftp', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'sftp', sessionId, host: endpoint.host, port: endpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -1653,7 +1657,7 @@ function Workbench() {
     const state = queuedEvents.reduce<typeof reply.result.state>((current, event) => event.kind === 'exit' ? 'exited'
       : event.kind === 'failure' ? 'failed' : current, reply.result.state);
     if (queuedEvents.some(event => event.kind === 'failure')) setAlert('The SFTP connection failed while opening. Reconnect to continue.');
-    if (state === 'running') {
+    if (state === 'running' && gatewayProfileIds.length === 0) {
       void rememberOpenedSession({ kind: 'sftp', name: savedTitle ?? autoSavedProfileName('SFTP', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
     }
     visibleFileOnlySshSessionIds.current.add(sessionId);
@@ -2492,8 +2496,9 @@ function Workbench() {
               <button type="button" disabled={catalogBusy || credentialBusyId === session.id || credentialStatus !== 'saved'}
                 onClick={() => void forgetSshCredential(session)}>Forget saved password</button>
             </>}
-            {session.kind === 'ssh' && <button type="button" disabled={catalogBusy} aria-label={`Connect ${session.name} through gateways`}
-              onClick={() => { setOpenSavedActionsMenuId(undefined); void openSavedSshThroughGateways(session); }}>Connect through gateways…</button>}
+            {(session.kind === 'ssh' || session.kind === 'sftp') && <button type="button" disabled={catalogBusy}
+              aria-label={`Connect ${session.name} through gateways`}
+              onClick={() => { setOpenSavedActionsMenuId(undefined); void openSavedSessionThroughGateways(session); }}>Connect through gateways…</button>}
             <button type="button" disabled={catalogBusy} aria-label={`Move saved session ${session.name}`}
               onClick={() => { setOpenSavedActionsMenuId(undefined); openSavedFolderDialog({ mode: 'move-session', session }); }}>Move to folder</button>
             <button type="button" disabled={catalogBusy} aria-label={`Delete saved session ${session.name}`}
@@ -2594,7 +2599,7 @@ function Workbench() {
     else if (session.kind === 'vnc') openVncConnect(session.host, session.port, session.name);
   }
 
-  async function openSavedSshThroughGateways(session: Extract<SavedSessionDefinition, { kind: 'ssh' }>) {
+  async function openSavedSessionThroughGateways(session: Extract<SavedSessionDefinition, { kind: 'ssh' | 'sftp' }>) {
     const reply = await window.multiRemoteTerminal.listSavedSessions('');
     if (!reply.ok) {
       setAlert(`Saved SSH gateways could not be loaded (${reply.error.code}).`);
@@ -2606,7 +2611,7 @@ function Workbench() {
       setAlert('Save another SSH session to use it as a gateway.');
       return;
     }
-    openSshConnect('terminal', session.host, session.port, session.name);
+    openSshConnect(session.kind === 'sftp' ? 'sftp' : 'terminal', session.host, session.port, session.name);
     setSshGatewayTarget(session);
     setSshGatewayProfiles(profiles);
   }
@@ -2626,7 +2631,9 @@ function Workbench() {
     }
     const selected = [sshGatewayOne, sshGatewayTwo].filter(Boolean);
     const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
-    void openSshTerminal(sshHost, sshPort, [...names, sshGatewayTarget.name].join(' → '), selected, sshGatewayTarget.id, sshAuthenticationMethod);
+    const routedTitle = [...names, sshGatewayTarget.name].join(' → ');
+    if (sshGatewayTarget.kind === 'sftp') void openSftpFiles(sshHost, sshPort, routedTitle, sshAuthenticationMethod, selected);
+    else void openSshTerminal(sshHost, sshPort, routedTitle, selected, sshGatewayTarget.id, sshAuthenticationMethod);
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string, credentialProfileId?: string): void {
@@ -3253,8 +3260,8 @@ function Workbench() {
             : 'Enter the server address. The Windows credential prompt will collect your username and password after you connect.'}
           {sshGatewayTarget ? ' Each selected gateway will request its own password and host verification.' : ''}</p>
         <form onSubmit={event => { event.preventDefault();
-          if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle, sshAuthenticationMethod);
-          else if (sshGatewayTarget) connectThroughSelectedGateways();
+          if (sshGatewayTarget) connectThroughSelectedGateways();
+          else if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle, sshAuthenticationMethod);
           else void openSshTerminal(sshHost, sshPort, sshSavedTitle, [], undefined, sshAuthenticationMethod);
         }}>
           <label htmlFor="ssh-host">Host name or IP address</label>

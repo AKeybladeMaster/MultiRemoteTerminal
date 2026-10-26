@@ -146,9 +146,10 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     } else if (request.command === 'open-files') {
       try {
         await provider.openFiles(request.sessionId, request.endpoint, request.credentials,
-          (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence));
+          (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? []);
       } finally {
         clearRequestCredentials(request.credentials);
+        for (const hop of request.gatewayHops ?? []) { hop.credentials.password = ''; hop.credentials.username = ''; }
       }
     } else if (request.command === 'tunnel.forward.start') {
       const bindPort = await provider.startForward(request.sessionId, request.definition);

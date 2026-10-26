@@ -392,6 +392,31 @@ test('SSH broker resolves selected gateway profile IDs before opening the route'
   ]]);
 });
 
+test('SFTP broker resolves selected SSH gateway profiles without opening a terminal', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const gatewayId = '11111111-1111-4111-8111-111111111111';
+  const profiles = new Map([[gatewayId, { ...emptySavedSession, id: gatewayId, kind: 'ssh' as const,
+    name: 'Storage gateway', host: 'gateway.example.net', port: 2201 }]]);
+  const opened: unknown[] = [];
+  const base = actions();
+  const routed: CommandActions = { ...base,
+    sessionCatalog: { ...base.sessionCatalog, async get(id) {
+      const profile = profiles.get(id as string);
+      return profile ? { ok: true, result: profile } : { ok: false, error: { code: 'NOT_FOUND', target: 'application', retryable: false } };
+    } },
+    sshTerminals: { ...base.sshTerminals, async openFiles(id, host, port, _authentication, gateways) {
+      opened.push({ id, host, port, gateways });
+      return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } };
+    }, async open() { assert.fail('SFTP-only routes must not request a shell'); } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'sftp.open', requestId: request.requestId, contractVersion: 1, payload: {
+    sessionId, host: 'files.example.net', port: 22, gatewayProfileIds: [gatewayId]
+  } }, routed, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(opened, [{ id: sessionId, host: 'files.example.net', port: 22,
+    gateways: [{ host: 'gateway.example.net', port: 2201 }] }]);
+});
+
 test('macro catalog commands reach only the typed catalog and count as user activity', async () => {
   const calls: string[] = [];
   const updateCalls: unknown[] = [];

@@ -111,7 +111,7 @@ export type SshAuthenticationMethod = 'password' | 'private-key' | 'agent';
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
   readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number;
-  readonly authenticationMethod?: SshAuthenticationMethod }>;
+  readonly authenticationMethod?: SshAuthenticationMethod; readonly gatewayProfileIds?: readonly string[] }>;
 export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
 export type WriteSshTerminalRequest = Request<'ssh.write', { readonly sessionId: string; readonly data: string }>;
 export type PasteSshTerminalRequest = Request<'ssh.paste', { readonly sessionId: string }>;
@@ -308,7 +308,8 @@ export interface DesktopBridge {
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
     gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply>;
-  openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSftpFilesReply>;
+  openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod,
+    gatewayProfileIds?: readonly string[]): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
   pasteSshTerminal(sessionId: string): Promise<TerminalActionReply>;
   resizeSshTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
@@ -532,9 +533,14 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };
   }
   const sftpOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
-  if (value.command === 'sftp.open' && exactKeys(payload, sftpOpenHasAuthenticationMethod
-    ? ['sessionId', 'host', 'port', 'authenticationMethod'] : ['sessionId', 'host', 'port']) &&
+  const sftpOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
+  const sftpOpenOptionalKeys = [
+    ...(sftpOpenHasAuthenticationMethod ? ['authenticationMethod'] : []),
+    ...(sftpOpenHasGateways ? ['gatewayProfileIds'] : [])
+  ];
+  if (value.command === 'sftp.open' && exactKeys(payload, ['sessionId', 'host', 'port', ...sftpOpenOptionalKeys]) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      (!sftpOpenHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
       (!sftpOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
         payload.authenticationMethod === 'agent') &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined) {

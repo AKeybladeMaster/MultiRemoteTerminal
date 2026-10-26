@@ -93,7 +93,8 @@ export interface SshTransportProvider {
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops?: readonly SshConnectionGatewayCredentials[]): Promise<void>;
   openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
-    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>): Promise<void>;
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops?: readonly SshConnectionGatewayCredentials[]): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<void>;
@@ -792,8 +793,8 @@ export function createSshTransportProvider(
       return openConnection(sessionId, endpoint, credentials, 'terminal', size, verifyHost, gatewayHops);
     },
 
-    openFiles(sessionId, endpoint, credentials, verifyHost): Promise<void> {
-      return openConnection(sessionId, endpoint, credentials, 'files', undefined, verifyHost);
+    openFiles(sessionId, endpoint, credentials, verifyHost, gatewayHops = []): Promise<void> {
+      return openConnection(sessionId, endpoint, credentials, 'files', undefined, verifyHost, gatewayHops);
     },
 
     async write(sessionId, data): Promise<void> {
