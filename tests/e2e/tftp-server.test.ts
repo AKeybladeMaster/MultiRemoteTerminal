@@ -123,6 +123,9 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
 
     await dialog.getByRole('button', { name: 'Stop server' }).click();
     await expect(serverStatus).toHaveText('Stopped.');
+    const stoppedPortProbe = createSocket('udp4');
+    try { await bindUdpSocket(stoppedPortProbe, listenerPort); }
+    finally { try { stoppedPortProbe.close(); } catch { /* The bind itself reports cleanup failures. */ } }
 
     await dialog.getByRole('button', { name: 'Browse…' }).click();
     await expect(dialog.locator('.tftp-server-folder')).toHaveText(basename(sharedRoot));
