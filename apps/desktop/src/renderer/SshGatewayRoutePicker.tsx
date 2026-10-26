@@ -6,6 +6,12 @@ import type { SavedSessionDefinition } from '../../../../packages/domain/src/ses
 
 type SshGatewayProfile = Extract<SavedSessionDefinition, { readonly kind: 'ssh' }>;
 
+export interface SshGatewayProfileLabelInput {
+  readonly name: string;
+  readonly host: string;
+  readonly port: number;
+}
+
 export interface SshGatewayRoutePickerProps {
   readonly idPrefix: string;
   readonly profiles: readonly SshGatewayProfile[];
@@ -17,8 +23,9 @@ export interface SshGatewayRoutePickerProps {
 
 const NO_GATEWAY_LABELS = ['Choose a saved SSH profile', 'No second gateway', 'No third gateway'] as const;
 
-function profileLabel(profile: SshGatewayProfile): string {
-  return `${profile.name}  ·  ${profile.host}:${profile.port}`;
+export function formatSshGatewayProfileLabel(profile: SshGatewayProfileLabelInput): string {
+  const host = profile.host.includes(':') ? `[${profile.host}]` : profile.host;
+  return `${profile.name}  ·  ${host}:${profile.port}`;
 }
 
 export function SshGatewayRoutePicker({ idPrefix, profiles, targetEndpoint, selectedProfileIds, disabled = false, onChange }: SshGatewayRoutePickerProps): ReactElement {
@@ -53,7 +60,7 @@ export function SshGatewayRoutePicker({ idPrefix, profiles, targetEndpoint, sele
           <option value="">{placeholder}</option>
           {normalizedProfiles.filter(({ profile, endpointKey }) => endpointKey !== targetKey &&
             !priorProfileIds.includes(profile.id) && !priorEndpoints.has(endpointKey))
-            .map(({ profile }) => <option key={profile.id} value={profile.id}>{profileLabel(profile)}</option>)}
+            .map(({ profile }) => <option key={profile.id} value={profile.id}>{formatSshGatewayProfileLabel(profile)}</option>)}
         </select>
       </div>;
     })}

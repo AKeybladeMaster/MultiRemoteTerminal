@@ -299,6 +299,51 @@ test('SSH provider opens a three-gateway route over nested channels and closes t
   assert.ok(routeChannels.every(channel => channel.destroyed), 'closing the session destroys every inter-hop channel');
 });
 
+test('SSH provider closes all four clients and three route channels when a three-gateway target fails', async () => {
+  const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
+  const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
+  const gatewayThree = { host: 'gateway-three.example.net', port: 2203 };
+  const destination = { host: 'target.example.net', port: 22 };
+  const clients: RoutedFakeClient[] = [];
+  const provider = createSshTransportProvider({ create: () => {
+    const client = new RoutedFakeClient();
+    clients.push(client);
+    return client as unknown as Client;
+  }, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, destination, { username: 'target-user', password: 'target-secret' }, size,
+    async () => true, [
+      { endpoint: gatewayOne, credentials: { username: 'gateway-one-user', password: 'gateway-one-secret' } },
+      { endpoint: gatewayTwo, credentials: { username: 'gateway-two-user', password: 'gateway-two-secret' } },
+      { endpoint: gatewayThree, credentials: { username: 'gateway-three-user', password: 'gateway-three-secret' } }
+    ]);
+
+  const authorizeAndAdvance = async (index: number, expectedHost: string): Promise<void> => {
+    const client = clients[index];
+    assert.ok(client);
+    assert.equal(client.config?.host, expectedHost);
+    const verifier = client.config?.hostVerifier as (key: Buffer, callback: (accepted: boolean) => void) => void;
+    const accepted = new Promise<boolean>(resolve => verifier(hostKey(), resolve));
+    assert.equal(await accepted, true);
+    client.emit('ready');
+    await new Promise<void>(resolve => setImmediate(resolve));
+  };
+
+  await authorizeAndAdvance(0, gatewayOne.host);
+  await authorizeAndAdvance(1, gatewayTwo.host);
+  await authorizeAndAdvance(2, gatewayThree.host);
+  const targetClient = clients[3];
+  assert.ok(targetClient);
+  assert.equal(targetClient.config?.host, destination.host);
+  const routeChannels = clients.flatMap(client => client.routeChannels);
+  assert.equal(routeChannels.length, 3);
+
+  targetClient.emit('error', Object.assign(new Error('Target authentication failed'), { level: 'client-authentication' }));
+  await assert.rejects(opened, error => (error as { code?: string }).code === 'AUTHENTICATION_FAILED');
+  assert.equal(clients.length, 4);
+  assert.ok(clients.every(client => client.ended), 'failure closes all gateway and target SSH clients');
+  assert.ok(routeChannels.every(channel => channel.destroyed), 'failure destroys all nested forward channels');
+});
+
 test('SSH authentication failure is categorized and closes the transport', async () => {
   const client = new FakeClient();
   const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});

@@ -119,7 +119,7 @@ for an SSH host fingerprint prompt, `Esc` rejects the host and stops connecting.
 Open **Port forwarding** to create or manage SSH local, remote, and SOCKS TCP
 forwards. Review bind addresses and server policy before starting a forward.
 For a saved SSH connection, choose **Connect through gateways** from its action
-menu to route that connection through up to two saved SSH profiles.
+menu to route that connection through up to three saved SSH profiles.
 
 Use **Workbench settings** in the header or command palette to control automatic
 session saving, set a startup greeting, and configure terminal text colors.

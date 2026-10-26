@@ -5,7 +5,7 @@ import type { SavedSessionDefinition } from '../../../../packages/domain/src/ses
 import type { SshTunnelDraft, SshTunnelMode, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { canonicalizeSshHostEndpoint, hostEndpointKey } from '../../../../packages/domain/src/host-trust.ts';
 import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
-import { SshGatewayRoutePicker } from './SshGatewayRoutePicker.tsx';
+import { formatSshGatewayProfileLabel, SshGatewayRoutePicker } from './SshGatewayRoutePicker.tsx';
 
 export interface TunnelManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
@@ -23,7 +23,7 @@ export interface TunnelManagerDialogProps {
 
 function profileLabel(profile: SavedSessionDefinition): string {
   if (profile.kind === 'local') return profile.name;
-  if (profile.kind === 'ssh' || profile.kind === 'sftp') return `${profile.name}  ·  ${profile.host}:${profile.port}  ·  ${profile.kind.toUpperCase()}`;
+  if (profile.kind === 'ssh' || profile.kind === 'sftp') return `${formatSshGatewayProfileLabel(profile)}  ·  ${profile.kind.toUpperCase()}`;
   return profile.name;
 }
 

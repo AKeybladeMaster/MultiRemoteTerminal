@@ -52,7 +52,8 @@ interoperability, including real OpenSSH agent authentication through routes.
   endpoints, and reject repeated or target-overlapping endpoints.
 - Worker-protocol tests accept three gateway credential objects and reject a
   fourth; transport coverage verifies ordered host checks, target-only shell or
-  SFTP, and cleanup of all four clients/channels on failure and close.
+  SFTP, and cleanup of all four clients and three nested channels after failure
+  and normal close.
 - Windows Electron E2E routes a saved terminal and an SFTP-only session
   through three loopback gateways, verifies trust for every endpoint, terminal
   output or directory listing, target subsystem policy, and cleanup.
