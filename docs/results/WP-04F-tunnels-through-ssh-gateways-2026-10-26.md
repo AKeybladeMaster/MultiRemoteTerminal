@@ -35,3 +35,5 @@ Final Standards and Spec reviews found no standards violation, scope creep or in
 ## Remaining limits
 
 Routed remote-forward and dynamic SOCKS roundtrips are not independently exercised in Windows E2E. Routes remain limited to two gateways. Public SSH server interoperability and the broader F-006/F-011, Windows release smoke, signing and packaging gates remain open. Keep P-22, P-23, P-24, P-25, F-006 and F-011 partial.
+
+Follow-up: WP-04G later adds Windows loopback acceptance for routed remote-forward and dynamic SOCKS TCP roundtrips; see [WP-04G results](WP-04G-routed-tunnel-modes-2026-10-26.md). That evidence does not cover public SSH server interoperability or routes longer than two gateways.

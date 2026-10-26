@@ -54,5 +54,9 @@ SOCKS5 UDP/BIND and broader forwarding interoperability.
 - Windows Electron E2E starts a saved local forward through two loopback SSH
   gateways, approves each host independently, verifies a TCP roundtrip and
   confirms no shell or SFTP request and complete channel/listener cleanup.
+- WP-04G extends the controlled Windows fixture to routed remote-forward and
+  dynamic SOCKS TCP roundtrips, verifying exact bytes, no PTY/shell/SFTP
+  request, remote unbind, client/channel cleanup and listener release.
 
-See [WP-04F acceptance results](../results/WP-04F-tunnels-through-ssh-gateways-2026-10-26.md).
+See [WP-04F acceptance results](../results/WP-04F-tunnels-through-ssh-gateways-2026-10-26.md) and
+[WP-04G acceptance results](../results/WP-04G-routed-tunnel-modes-2026-10-26.md).
