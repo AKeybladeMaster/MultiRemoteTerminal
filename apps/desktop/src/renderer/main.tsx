@@ -29,6 +29,8 @@ import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts'
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell, LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
+import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS } from '../../../../packages/domain/src/optional-connection-tools.ts';
+import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -233,6 +235,7 @@ function sshCredentialError(code: string): string {
 
 function telnetOpenError(code: string): string {
   if (code === 'CANCELLED') return 'The Telnet connection was cancelled.';
+  if (code === 'NOT_SUPPORTED') return 'Telnet connections are disabled in Workbench settings. Enable them to start or reopen a session.';
   if (code === 'TIMEOUT') return 'The Telnet connection timed out.';
   return `Could not connect to the Telnet server (${code}).`;
 }
@@ -240,20 +243,21 @@ function telnetOpenError(code: string): string {
 function ftpOpenError(code: string, secure: boolean): string {
   if (code === 'AUTHENTICATION_FAILED') return 'The FTP server rejected these credentials.';
   if (code === 'FORBIDDEN') return 'Plain FTP needs a fresh confirmation from the visible warning form.';
+  if (code === 'NOT_SUPPORTED') return 'FTP and FTPS connections are disabled in Workbench settings. Enable them to start or reopen a session.';
   if (code === 'CANCELLED') return 'The FTP connection was cancelled.';
   if (code === 'TIMEOUT') return 'The FTP connection timed out.';
   return `Could not connect to the ${secure ? 'FTPS' : 'FTP'} server (${code}).`;
 }
 
 function rdpOpenError(code: string): string {
-  if (code === 'NOT_SUPPORTED') return 'Windows Remote Desktop is available only on Windows.';
+  if (code === 'NOT_SUPPORTED') return 'RDP viewer launches are disabled in Workbench settings or unavailable on this computer.';
   if (code === 'CANCELLED') return 'Opening Windows Remote Desktop was cancelled.';
   if (code === 'INVALID_REQUEST') return 'Enter a valid host name or IP address and port.';
   return 'Windows Remote Desktop could not be started. Check that the Windows viewer is available.';
 }
 
 function vncOpenError(code: string): string {
-  if (code === 'NOT_SUPPORTED') return 'TigerVNC is available only on Windows.';
+  if (code === 'NOT_SUPPORTED') return 'VNC viewer launches are disabled in Workbench settings or unavailable on this computer.';
   if (code === 'CANCELLED') return 'Opening TigerVNC was cancelled.';
   if (code === 'INVALID_REQUEST') return 'Enter a valid host name or IP address and port.';
   if (code === 'UNAVAILABLE') return 'TigerVNC was not found in its standard Program Files location. Install TigerVNC and try again.';
@@ -320,8 +324,10 @@ function Workbench() {
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [enabledOptionalConnections, setEnabledOptionalConnections] = useState<readonly OptionalConnectionId[]>(DEFAULT_ENABLED_OPTIONAL_CONNECTIONS);
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const [workbenchPreferencesSettled, setWorkbenchPreferencesSettled] = useState(false);
+  const [workbenchPreferencesLoaded, setWorkbenchPreferencesLoaded] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -1250,8 +1256,10 @@ function Workbench() {
     setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
     setShowSftpBrowserBesideSsh(preferences.showSftpBrowserBesideSsh);
     setVisibleLocalShells(preferences.visibleLocalShells);
+    setEnabledOptionalConnections(preferences.enabledOptionalConnections);
     setCustomLogoDataUrl(preferences.customLogoDataUrl);
     setWorkbenchPreferencesSettled(true);
+    setWorkbenchPreferencesLoaded(true);
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
@@ -1284,7 +1292,9 @@ function Workbench() {
     try {
       const reply = await window.multiRemoteTerminal.listSerialPorts();
       if (!reply.ok) {
-        setSerialPortsError(`Serial ports could not be listed (${reply.error.code}).`);
+        setSerialPortsError(reply.error.code === 'NOT_SUPPORTED'
+          ? 'Serial port access is disabled in Workbench settings. Enable it to list or open COM ports.'
+          : `Serial ports could not be listed (${reply.error.code}).`);
         return;
       }
       setSerialPorts(reply.result);
@@ -1709,7 +1719,9 @@ function Workbench() {
     pendingOpenRequests.current.delete(sessionId);
     setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     if (!reply.ok) {
-      if (reply.error.code !== 'CANCELLED') setAlert(`Could not open ${configuration.path} (${reply.error.code}). Check the port settings and device connection.`);
+      if (reply.error.code !== 'CANCELLED') setAlert(reply.error.code === 'NOT_SUPPORTED'
+        ? 'Serial port access is disabled in Workbench settings. Enable it to start or reopen this connection.'
+        : `Could not open ${configuration.path} (${reply.error.code}). Check the port settings and device connection.`);
       return;
     }
     const ordinal = ++nextSerialOrdinal.current;
@@ -2369,12 +2381,18 @@ function Workbench() {
     })),
     { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
-    { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },
-    { id: 'connect-serial', label: 'Connect to serial port', run: openSerialConnect },
-    { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
-    { id: 'connect-rdp', label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() },
-    { id: 'connect-vnc', label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() },
-    { id: 'local-tftp-server', label: 'Local TFTP server', run: () => setTftpServerOpen(true) },
+    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('telnet')
+      ? [{ id: 'connect-telnet' as const, label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() }] : []),
+    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('serial')
+      ? [{ id: 'connect-serial' as const, label: 'Connect to serial port', run: openSerialConnect }] : []),
+    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('ftp')
+      ? [{ id: 'connect-ftp' as const, label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() }] : []),
+    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('rdp')
+      ? [{ id: 'connect-rdp' as const, label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() }] : []),
+    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc')
+      ? [{ id: 'connect-vnc' as const, label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() }] : []),
+    ...(workbenchPreferencesLoaded && enabledOptionalConnections.includes('tftp')
+      ? [{ id: 'local-tftp-server' as const, label: 'Local TFTP server', run: () => setTftpServerOpen(true) }] : []),
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
@@ -2898,11 +2916,11 @@ function Workbench() {
         <div className="rail-heading"><h2>Sessions</h2><span>{sessions.length}</span></div>
         <button className="new-terminal" type="button" onClick={openPalette}><span aria-hidden="true">＋</span> New local terminal</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect()}><span aria-hidden="true">↗</span> Connect to SSH</button>
-        <button className="connect-ssh-button" type="button" onClick={() => openSerialConnect()}>Connect to serial port</button>
-        <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>
-        <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>
-        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>
-        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>
+        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('serial') && <button className="connect-ssh-button" type="button" onClick={() => openSerialConnect()}>Connect to serial port</button>}
+        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('telnet') && <button className="connect-ssh-button" type="button" onClick={() => openTelnetConnect()}><span aria-hidden="true">↗</span> Connect to Telnet (plaintext)</button>}
+        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('ftp') && <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>}
+        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('rdp') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>}
+        {workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tftp-server-open" onClick={() => setTftpServerOpen(true)}>Local TFTP server</button>
@@ -3060,12 +3078,16 @@ function Workbench() {
             <p>Open a local terminal, connect to a terminal server, or browse files over FTP or FTPS.</p>
             <button type="button" className="new-terminal" onClick={openPalette}>New local terminal</button>
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect()}>Connect to SSH</button>
-            <button type="button" className="connect-ssh-button" onClick={() => openSerialConnect()}>Connect to serial port</button>
+            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('serial') &&
+              <button type="button" className="connect-ssh-button" onClick={() => openSerialConnect()}>Connect to serial port</button>}
             <button type="button" className="connect-ssh-button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
-            <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>
-            <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>
-            <button type="button" className="connect-ssh-button" onClick={() => openRdpConnect()}>Connect to RDP desktop</button>
-            <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>
+            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('telnet') &&
+              <button type="button" className="connect-ssh-button" onClick={() => openTelnetConnect()}>Connect to Telnet (plaintext)</button>}
+            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('ftp') &&
+              <button type="button" className="connect-ssh-button" onClick={() => openFtpConnect()}>Connect to FTP / FTPS files</button>}
+            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('rdp') &&
+              <button type="button" className="connect-ssh-button" onClick={() => openRdpConnect()}>Connect to RDP desktop</button>}
+            {workbenchPreferencesLoaded && enabledOptionalConnections.includes('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
           </div>}
         </div>
       </main>

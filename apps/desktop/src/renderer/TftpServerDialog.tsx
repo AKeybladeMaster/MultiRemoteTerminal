@@ -8,6 +8,7 @@ function failureMessage(code: ErrorCode): string {
   if (code === 'BUSY') return 'The TFTP server is already starting or stopping. Wait for that operation to finish.';
   if (code === 'FORBIDDEN') return 'Use the folder or server button to confirm this action.';
   if (code === 'NOT_FOUND') return 'Choose the folder again before starting the server.';
+  if (code === 'NOT_SUPPORTED') return 'The local TFTP server is disabled in Workbench settings. Enable it before choosing a folder or starting the server.';
   if (code === 'INVALID_REQUEST') return 'Choose a folder and enter a port from 0 to 65535.';
   if (code === 'TIMEOUT') return 'The TFTP server did not respond. Try again.';
   return `The TFTP server could not complete the request (${code}). Try again.`;

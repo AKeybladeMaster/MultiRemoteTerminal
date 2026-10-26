@@ -127,6 +127,11 @@ The greeting supports up to 512 Unicode code points, is stored in the local app
 profile, and appears below the tab bar after startup until you dismiss it. The
 greeting is plain text and never runs in a terminal. Leave it blank to hide it.
 
+The **Optional connection types** settings control whether new Telnet, FTP/FTPS,
+serial, RDP, VNC, or local TFTP work can start. Saved profiles stay in the local
+catalog while disabled, but cannot be reopened until you enable that type.
+Connections and file sessions already open can continue and close.
+
 The same dialog can highlight selected words in visible terminal output. Turn
 on **Highlight terminal keywords**, add a rule, enter an RE2-style regular
 expression such as `ERROR|WARN` or `MRT-[A-Z0-9-]+`, and choose its foreground

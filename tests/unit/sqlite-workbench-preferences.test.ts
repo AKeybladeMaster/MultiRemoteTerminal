@@ -178,6 +178,21 @@ test('SQLite migrates schema v8 preferences with an empty PowerShell profile scr
   database.close();
 });
 
+test('SQLite migrates schema v9 preferences to the default optional provider allowlist', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+      autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+      visibleLocalShells: ['powershell', 'bash', 'wsl'], customLogoDataUrl: null, powerShellProfileScript: '' }),
+    9, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.deepEqual(preferences.read().enabledOptionalConnections, DEFAULT_WORKBENCH_PREFERENCES.enabledOptionalConnections);
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
+});
+
 test('SQLite rejects corrupted or unsupported stored preference records', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();
@@ -190,6 +205,20 @@ test('SQLite rejects corrupted or unsupported stored preference records', () => 
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
   database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?')
     .run('{"startupGreeting":"safe"}', 99, 'workbench');
+  assert.throws(() => preferences.read(), /Storage operation corrupt/u);
+  database.close();
+});
+
+test('SQLite rejects a current-schema preference record missing the provider allowlist', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false,
+      terminalHighlightRules: [], autoSaveSessions: false, terminalShellSyntaxEnabled: false,
+      showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash', 'wsl'],
+      customLogoDataUrl: null, powerShellProfileScript: '' }),
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
   database.close();
 });

@@ -5315,10 +5315,18 @@ test('local shell tool visibility persists and controls command palette entries 
 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await page.screenshot({ path: 'test-results/local-shell-tools-settings.png' });
+    await settings.getByRole('heading', { name: 'Optional connection types' }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-results/optional-connection-settings.png' });
     const powershell = settings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
+    const telnet = settings.getByRole('checkbox', { name: 'Allow Telnet connections' });
+    const ftp = settings.getByRole('checkbox', { name: 'Allow FTP and FTPS connections' });
     await expect(powershell).toBeChecked();
+    await expect(telnet).toBeChecked();
+    await telnet.focus();
+    await page.keyboard.press('Tab');
+    await expect(ftp).toBeFocused();
     await powershell.uncheck();
+    await telnet.uncheck();
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -5326,6 +5334,9 @@ test('local shell tool visibility persists and controls command palette entries 
     const palette = page.getByRole('dialog', { name: 'Command palette' });
     await expect(palette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
     await expect(palette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible();
+    await expect(palette.getByRole('button', { name: 'Connect to Telnet server (plaintext)', exact: true })).toHaveCount(0);
+    await expect(palette.getByRole('button', { name: 'Connect to FTP or FTPS server', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Connect to Telnet (plaintext)', exact: true })).toHaveCount(0);
 
     await app.close();
     app = await launch(true);
@@ -5335,6 +5346,7 @@ test('local shell tool visibility persists and controls command palette entries 
     const delayedPalette = page.getByRole('dialog', { name: 'Command palette' });
     await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toHaveCount(0);
     await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await expect(delayedPalette.getByRole('button', { name: 'Connect to Telnet server (plaintext)', exact: true })).toHaveCount(0);
     await delayedPalette.locator('#palette-search').focus();
     await page.keyboard.press('ArrowDown');
     const sftpCommand = delayedPalette.getByRole('button', { name: 'Connect to SFTP files', exact: true });
@@ -5350,14 +5362,22 @@ test('local shell tool visibility persists and controls command palette entries 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
     const restoredPowerShell = restoredSettings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
+    const restoredTelnet = restoredSettings.getByRole('checkbox', { name: 'Allow Telnet connections' });
     await expect(restoredPowerShell).not.toBeChecked();
+    await expect(restoredTelnet).not.toBeChecked();
     await restoredPowerShell.check();
+    await restoredTelnet.check();
     await restoredSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(restoredSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await restoredSettings.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Connect to Telnet (plaintext)', exact: true })).toBeVisible();
     const tabsBeforePowerShellLaunch = await page.getByRole('tab').count();
     await runPaletteCommand(page, 'New PowerShell terminal');
     await expect(page.getByRole('tab')).toHaveCount(tabsBeforePowerShellLaunch + 1);
+    await runPaletteCommand(page, 'Connect to Telnet server (plaintext)');
+    const telnetDialog = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
+    await expect(telnetDialog).toBeVisible();
+    await telnetDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

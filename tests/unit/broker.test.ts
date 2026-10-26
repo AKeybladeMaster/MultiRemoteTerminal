@@ -834,6 +834,61 @@ test('VNC IPC dispatch consumes an explicit one-shot approval before launching T
     error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
 });
 
+test('disabled optional providers block all new entry points while existing work can continue and close', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const base = actions();
+  const disabledPreferences = { ...DEFAULT_WORKBENCH_PREFERENCES, enabledOptionalConnections: [] };
+  const gated: CommandActions = {
+    ...base,
+    authorizeTelnetConsent: () => true,
+    authorizeFtpConsent: () => true,
+    authorizeRdpLaunch: () => true,
+    authorizeVncLaunch: () => true,
+    authorizeTftpServerAction: () => true,
+    chooseTftpRoot: async () => ({ ok: true, result: { selectionId: sessionId, folderName: 'share' } }),
+    startTftpServer: async () => ({ ok: true, result: { state: 'running', address: '127.0.0.1', port: 6969, folderName: 'share' } }),
+    preferences: { ...base.preferences, read: async () => ({ ok: true, result: disabledPreferences }) }
+  };
+  const attempts = [
+    { command: 'telnet.open', payload: { sessionId, host: 'example.net', port: 23, columns: 80, rows: 24 } },
+    { command: 'serial.ports.list', payload: {} },
+    { command: 'serial.open', payload: { sessionId, configuration: {
+      path: 'COM3', baudRate: 9600, dataBits: 8, parity: 'none', stopBits: 1, flowControl: 'none'
+    }, columns: 80, rows: 24 } },
+    { command: 'ftp.open', payload: { sessionId, host: 'example.net', port: 21, secure: true } },
+    { command: 'rdp.launch', payload: { host: 'desktop.example.net', port: 3389 } },
+    { command: 'vnc.launch', payload: { host: 'desktop.example.net', port: 5900 } },
+    { command: 'tftp.root.choose', payload: {} },
+    { command: 'tftp.start', payload: { selectionId: sessionId, port: 6969 } }
+  ];
+  for (const attempt of attempts) {
+    const reply = await dispatchCommand(owner, { ...attempt, requestId: request.requestId, contractVersion: 1 }, gated, () => {});
+    assert.deepEqual(reply, { requestId: request.requestId, ok: false,
+      error: { code: 'NOT_SUPPORTED', target: 'application', retryable: false } }, attempt.command);
+  }
+
+  const existingWrite = await dispatchCommand(owner, { command: 'telnet.write', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, data: 'continue\n' } }, gated, () => {});
+  const existingList = await dispatchCommand(owner, { command: 'ftp.files.list', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, path: '/' } }, gated, () => {});
+  const closeServer = await dispatchCommand(owner, { command: 'tftp.stop', requestId: request.requestId, contractVersion: 1,
+    payload: {} }, gated, () => {});
+  assert.equal(existingWrite.ok, true);
+  assert.equal(existingList.ok, true);
+  assert.equal(closeServer.ok, true);
+});
+
+test('optional provider starts fail closed when persisted settings cannot be read', async () => {
+  const base = actions();
+  const unavailable: CommandActions = { ...base,
+    preferences: { ...base.preferences, read: async () => failure('UNAVAILABLE') }
+  };
+  const reply = await dispatchCommand(owner, { command: 'rdp.launch', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'desktop.example.net', port: 3389 } }, unavailable, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: false,
+    error: { code: 'UNAVAILABLE', target: 'application', retryable: true } });
+});
+
 test('only validated local, SSH or Telnet terminal open, write and close commands count as user activity', async () => {
   let activityCount = 0;
   const withActivity = actions(snapshot, () => { activityCount += 1; });
