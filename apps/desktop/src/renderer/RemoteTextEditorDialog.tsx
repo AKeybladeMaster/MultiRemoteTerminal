@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { RemoteTextFile } from '../../../../packages/domain/src/remote-text-file.ts';
 import { MAX_REMOTE_TEXT_FILE_BYTES, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import { TextEditorContent } from './TextEditorContent.tsx';
 import { fileLineEnding, hasMixedLineEndings, lineEndingLabel, textareaContent } from './text-editor-format.ts';
 import { textEditorErrorMessage } from './text-editor-errors.ts';
 
@@ -175,10 +176,9 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
         {closeIntent === 'reload' ? 'Discard and reload' : 'Discard and close'}
       </button>
     </div>}
-    <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>
-    <textarea id={contentId} className="remote-text-editor-content" value={draft} spellCheck={false}
-      disabled={!file || busy !== undefined} aria-describedby={`${contentId}-hint`}
-      onChange={event => { setDraft(event.currentTarget.value); setError(undefined); setCloseIntent(undefined); }} />
+    <TextEditorContent key={`${sessionId}:${remotePath ?? ''}`} contentId={contentId} fileName={remotePath?.slice(remotePath.lastIndexOf('/') + 1) ?? ''}
+      value={draft} disabled={!file || busy !== undefined} describedBy={`${contentId}-hint`}
+      onChange={value => { setDraft(value); setError(undefined); setCloseIntent(undefined); }} />
     <p id={`${contentId}-hint`} className="remote-text-editor-hint">
       {bytes === undefined ? 'This file contains unsupported characters or exceeds 512 KB.' : `${bytes.toLocaleString()} of ${MAX_REMOTE_TEXT_FILE_BYTES.toLocaleString()} bytes · UTF-8`}
     </p>

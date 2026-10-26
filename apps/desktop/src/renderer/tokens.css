@@ -16,6 +16,14 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
   --accent-ink: #142231;
   --focus: #f5ce85;
   --terminal-background: #101c28;
+  --syntax-keyword: #df8fff;
+  --syntax-command: #54d7d4;
+  --syntax-option: #f8d36b;
+  --syntax-string: #84f2a7;
+  --syntax-variable: #96c2ff;
+  --syntax-comment: #98a6b4;
+  --syntax-operator: #ff8989;
+  --syntax-path: #69aafc;
   --error: #ffb4a9;
   height: 100%;
   min-width: 0;
@@ -36,6 +44,14 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
   --accent-ink: #ffffff;
   --focus: #825600;
   --terminal-background: #fbfcfe;
+  --syntax-keyword: #583574;
+  --syntax-command: #14585c;
+  --syntax-option: #6d4900;
+  --syntax-string: #185c36;
+  --syntax-variable: #174c85;
+  --syntax-comment: #43596f;
+  --syntax-operator: #8d2525;
+  --syntax-path: #275b96;
   --error: #8b1b16;
   color-scheme: light;
 }
@@ -225,12 +241,41 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .remote-text-editor-path { min-width: 0; overflow: hidden; color: var(--muted); font: 11px/1.45 "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .remote-text-editor-state, .remote-text-editor-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .remote-text-editor-label { color: var(--muted); font-size: 12px; font-weight: 650; }
-.remote-text-editor-content {
-  flex: 1 1 auto; width: 100%; min-height: 120px; resize: none; padding: 13px 14px; border: 1px solid var(--line); border-radius: 3px;
-  background: var(--terminal-background); color: var(--text); font: 13px/1.6 "Cascadia Mono", Consolas, monospace;
-  tab-size: 2; white-space: pre; overflow: auto; overscroll-behavior: contain; user-select: text; -webkit-user-select: text;
+.text-editor-syntax-controls { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.text-editor-syntax-controls label { color: var(--muted); font-size: 12px; font-weight: 650; }
+.text-editor-syntax-controls select { min-height: 30px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); color: var(--text); }
+.text-editor-syntax-controls select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.text-editor-syntax-controls select:disabled { opacity: .8; }
+.text-editor-syntax-controls p { flex: 1 1 100%; }
+.text-editor-code-surface {
+  position: relative; flex: 1 1 auto; width: 100%; min-height: 120px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--terminal-background); overscroll-behavior: contain;
 }
-.remote-text-editor-content:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
+.text-editor-code-surface:focus-within { border-color: var(--focus); }
+.text-editor-code-preview, .remote-text-editor-content {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 13px 14px;
+  font: 13px/1.6 "Cascadia Mono", Consolas, monospace; tab-size: 2; white-space: pre;
+}
+.text-editor-code-preview { z-index: 0; overflow: hidden; color: var(--text); pointer-events: none; user-select: none; }
+.remote-text-editor-content {
+  z-index: 1; resize: none; border: 0; outline: 0; overflow: auto; overscroll-behavior: contain; background: transparent;
+  color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--text); user-select: text; -webkit-user-select: text;
+}
+.remote-text-editor-content::selection { background: color-mix(in srgb, var(--accent) 45%, transparent); color: transparent; }
+.remote-text-editor-content:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+.text-syntax-token--shell-command, .text-syntax-token--json-key { color: var(--syntax-command); font-weight: 650; }
+.text-syntax-token--shell-keyword, .text-syntax-token--json-literal { color: var(--syntax-keyword); font-weight: 650; }
+.text-syntax-token--shell-option, .text-syntax-token--json-number { color: var(--syntax-option); }
+.text-syntax-token--shell-string, .text-syntax-token--json-string { color: var(--syntax-string); }
+.text-syntax-token--shell-variable { color: var(--syntax-variable); }
+.text-syntax-token--shell-comment { color: var(--syntax-comment); font-style: italic; }
+.text-syntax-token--shell-operator, .text-syntax-token--json-punctuation { color: var(--syntax-operator); }
+.text-syntax-token--shell-path { color: var(--syntax-path); }
+@media (forced-colors: active) {
+  .text-editor-code-preview { display: none; }
+  .remote-text-editor-content { color: CanvasText; -webkit-text-fill-color: CanvasText; caret-color: CanvasText; }
+  .text-editor-code-surface { border-color: CanvasText; background: Canvas; }
+}
 .remote-text-editor-content:disabled { opacity: .8; }
 .remote-text-editor-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-left: 3px solid var(--focus); background: var(--surface-raised); font-size: 12px; }
 .remote-text-editor-confirm span { flex: 1 1 100%; }

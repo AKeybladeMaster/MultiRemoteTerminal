@@ -391,6 +391,52 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
   }
 });
 
+test('local text editor auto-detects shell syntax and supports a JSON color profile', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
+  const path = join(profile, 'example.zsh');
+  const source = 'if test "$HOME"; then\n  git status --short\nfi\n';
+  await writeFile(path, source);
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(contents).toHaveValue(source);
+    await expect(preview.locator('[data-token-kind="shell-keyword"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
+    await expect(preview.locator('[data-token-kind="shell-command"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
+    await page.screenshot({ path: 'test-results/editor-shell-syntax.png' });
+
+    await syntax.selectOption('json');
+    await contents.fill('{"name":"MultiRemoteTerminal","enabled":true}');
+    await expect(preview.locator('[data-token-kind="json-key"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
+    await expect(preview.locator('[data-token-kind="json-literal"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
+    const longJson = Array.from({ length: 120 }, (_, index) => `{"name":"line-${index}","enabled":true}`).join('\n');
+    await contents.fill(longJson);
+    const textareaScrollTop = await contents.evaluate(element => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event('scroll'));
+      return element.scrollTop;
+    });
+    await expect.poll(() => preview.evaluate(element => element.scrollTop)).toBe(textareaScrollTop);
+    await syntax.selectOption('plain');
+    await expect(preview.locator('[data-token-kind]')).toHaveCount(0);
+    expect(await readFile(path, 'utf8')).toBe(source);
+
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await editor.getByRole('button', { name: 'Discard and close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('a second application process exits and shows and focuses the primary window under the same profile', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-single-instance-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
