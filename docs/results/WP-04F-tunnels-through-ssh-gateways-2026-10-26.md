@@ -30,7 +30,7 @@ The E2E caught a renderer composition bug where the dialog's parent callback acc
 
 ## Review
 
-The first Standards and Spec reviews found no standards violation or scope creep. The independent implementation review found missing E2E instrumentation for PTY/SFTP and recommended exact-buffer, client-cleanup and listener-release assertions plus stale-summary corrections. Those findings are addressed in this follow-up; rerun focused Windows E2E and final reviews before promotion.
+Final Standards and Spec reviews found no standards violation, scope creep or incorrect implementation. The independent implementation review initially identified E2E proof gaps for PTY/SFTP absence, complete bytes and cleanup; the follow-up closed those findings with assertions for PTY/shell/SFTP absence, exact response-buffer equality, all fixture clients and sockets closing, and listener release. Final implementation review found no critical, important or minor findings and marked the change ready to merge. Routed remote-forward and dynamic SOCKS roundtrips remain unverified and are recorded as open.
 
 ## Remaining limits
 
