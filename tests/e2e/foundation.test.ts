@@ -658,7 +658,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
           onUploadStart: path => {
             if (path.endsWith('.partial')) {
               sftpDropUploadStartCount++;
-              largeDropUploadStarted = sftpDropUploadStartCount >= 3;
+              largeDropUploadStarted = sftpDropUploadStartCount === 3;
               dropFixtureEvents.push('start');
             }
           },

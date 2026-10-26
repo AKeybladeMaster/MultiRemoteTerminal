@@ -15,7 +15,7 @@
 
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers" --reporter=line` — 1/1 passed on Windows in 30.6 seconds.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers" --reporter=line` — 1/1 passed on Windows in 32.3 seconds after the fixture delay was scoped to the large drop upload.
 - `git diff --check` — passed.
 
 ## Limits
