@@ -4561,7 +4561,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     const versionCommand = "printf 'MRT-BASH:%s\\n' \"$BASH_VERSION\"";
     await sendLine(page, 'Bash session 1', "printf 'MRT-BASH-OUTPUT:%s\\n' $'\\U0001F642'", `MRT-BASH-OUTPUT:${String.fromCodePoint(0x1f642)}`);
 
-    await sendLine(page, 'Bash session 1', "PS1='mrt$ '", 'mrt$');
+    await sendLine(page, 'Bash session 1', "PS1=$'mrt \\u276f '", 'mrt ❯');
     const syntaxPanel = await selectTerminal(page, 'Bash session 1');
     await syntaxPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();

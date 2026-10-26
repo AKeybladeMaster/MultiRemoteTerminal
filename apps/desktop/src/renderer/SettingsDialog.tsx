@@ -311,7 +311,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             <span>Color shell commands at prompts</span>
           </label>
           <p id="terminal-shell-syntax-description" className="settings-highlight-help">
-            Colors common command tokens while you type at prompts ending in $, #, %, or &gt;. It does not change terminal input or output.
+            Colors common command tokens while you type at prompts ending in $, #, %, &gt;, ❯, or ➜. It does not change terminal input or output.
           </p>
           <label className="settings-highlight-toggle" htmlFor="terminal-highlight-enabled">
             <input id="terminal-highlight-enabled" type="checkbox" checked={terminalHighlightEnabled}

@@ -9,8 +9,8 @@ import {
 import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 
-test('shell prompt detection accepts common prompt endings and rejects password prompts', () => {
-  for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'PS C:\\work> ']) {
+test('shell prompt detection accepts common shell and zsh-style endings and rejects password prompts', () => {
+  for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'PS C:\\work> ', 'project ❯ ', 'build ➜ ']) {
     assert.equal(isShellPromptAtCursor(prompt), true, prompt);
   }
   for (const prompt of ['Password: ', 'Verification code: ', 'ordinary output']) {
