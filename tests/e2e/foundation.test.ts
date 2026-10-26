@@ -3417,7 +3417,7 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
     await expect(command).toHaveValue('Write-Output deployed');
     await expect(dialog.getByRole('button', { name: 'Create macro', exact: true })).toBeEnabled();
     await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
-    const macroRow = dialog.getByRole('button', { name: /Deploy checklist/ });
+    const macroRow = dialog.locator('button.macro-list-item').filter({ hasText: 'Deploy checklist' });
     await expect(macroRow).toBeVisible();
     await expect(macroRow).toContainText('2 steps');
     await expect(dialog.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
@@ -3427,8 +3427,8 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
     await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
     await dialog.getByLabel('Confirmation message').fill('Proceed with deployment?');
     await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: /Deploy checklist/ })).toContainText('3 steps');
-    await expect(dialog.getByRole('button', { name: /Deploy checklist/ })).toContainText('Review, verify, and deploy');
+    await expect(macroRow).toContainText('3 steps');
+    await expect(macroRow).toContainText('Review, verify, and deploy');
     await dialog.getByRole('button', { name: 'Close macro manager', exact: true }).click();
     await expect(openMacros).toBeFocused();
 
@@ -3438,8 +3438,9 @@ test('macro library creates, edits, persists and deletes typed steps', async () 
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Macros', exact: true }).click();
     dialog = page.getByRole('dialog', { name: 'Macros' });
-    await expect(dialog.getByRole('button', { name: /Deploy checklist/ })).toContainText('3 steps');
-    await dialog.getByRole('button', { name: /Deploy checklist/ }).click();
+    const reopenedMacroRow = dialog.locator('button.macro-list-item').filter({ hasText: 'Deploy checklist' });
+    await expect(reopenedMacroRow).toContainText('3 steps');
+    await reopenedMacroRow.click();
     await expect(dialog.getByLabel('Description')).toHaveValue('Review, verify, and deploy');
     await expect(dialog.getByLabel('Confirmation message')).toHaveValue('Proceed with deployment?');
     await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
