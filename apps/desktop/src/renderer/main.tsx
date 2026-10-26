@@ -1117,12 +1117,12 @@ function Workbench() {
     }
   }, [loadTunnelManager]);
 
-  const startTunnel = useCallback(async (id: string): Promise<void> => {
+  const startTunnel = useCallback(async (id: string, gatewayProfileIds?: readonly string[]): Promise<void> => {
     const operation = ++tunnelOperationRequest.current;
     setTunnelBusyId(id);
     setTunnelError(undefined);
     try {
-      const reply = await window.multiRemoteTerminal.startTunnel(id);
+      const reply = await window.multiRemoteTerminal.startTunnel(id, gatewayProfileIds);
       if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
       else setTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
       await loadTunnelManager();
@@ -3432,7 +3432,8 @@ function Workbench() {
       onClose={() => setVncConnectOpen(false)} onLaunch={launchVncViewer} onSaveProfile={saveVncProfile} />}
     {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
-      onDelete={id => { void deleteTunnel(id); }} onStart={id => { void startTunnel(id); }} onStop={id => { void stopTunnel(id); }} />}
+      onDelete={id => { void deleteTunnel(id); }} onStart={(id, gatewayProfileIds) => { void startTunnel(id, gatewayProfileIds); }}
+      onStop={id => { void stopTunnel(id); }} />}
     {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} shortcuts={macroShortcuts} loading={macrosLoading} busy={macroBusy} error={macroError}
       activeSessionId={activeId}
       recordingTargets={sessions.filter(isMacroTerminal).filter(session => session.state === 'running').map(session => ({ sessionId: session.sessionId, title: macroTargetTitle(session) }))}

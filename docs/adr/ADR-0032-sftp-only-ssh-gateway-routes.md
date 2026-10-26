@@ -42,8 +42,9 @@ routed file session must preserve the no-shell behavior of standalone SFTP.
 Saved SFTP-only targets can now use the bounded gateway route without changing
 the session schema or opening a remote shell. Direct SFTP behavior remains the
 same. Automatic saving remains disabled for routed sessions because the route
-is not part of the saved target definition. P-22/F-011 remain partial while
-tunnel routes, longer chains and broader interoperability are open.
+is not part of the saved target definition. WP-04F later added saved tunnel
+routes. P-22/F-011 remain partial because routed remote-forward and dynamic
+SOCKS roundtrips, longer chains and broader interoperability remain open.
 
 ## Acceptance evidence
 

@@ -517,7 +517,22 @@ export async function dispatchCommand(
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };
       case 'tunnel.delete': return { requestId, ...await actions.tunnels.remove(parsed.result.payload.id) };
-      case 'tunnel.start': return { requestId, ...await actions.tunnels.start(parsed.result.payload.id, actions.cancellation) };
+      case 'tunnel.start': {
+        const { id, gatewayProfileIds = [] } = parsed.result.payload;
+        if (gatewayProfileIds.length === 0) return { requestId, ...await actions.tunnels.start(id, actions.cancellation) };
+        const tunnels = await actions.tunnels.list();
+        if (!tunnels.ok) return { requestId, ...tunnels };
+        const tunnel = tunnels.result.find(item => item.definition.id === id);
+        if (!tunnel) return { requestId, ...failure('NOT_FOUND') };
+        const target = await actions.sessionCatalog.get(tunnel.definition.sessionId, actions.cancellation);
+        if (!target.ok) return { requestId, ...target };
+        if ((target.result.kind !== 'ssh' && target.result.kind !== 'sftp') || !target.result.host || !target.result.port) {
+          return { requestId, ...failure('INVALID_REQUEST') };
+        }
+        const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host: target.result.host, port: target.result.port });
+        if (!route.ok) return { requestId, ...route };
+        return { requestId, ...await actions.tunnels.start(id, actions.cancellation, route.result) };
+      }
       case 'tunnel.stop': return { requestId, ...await actions.tunnels.stop(parsed.result.payload.id) };
     }
   } catch {

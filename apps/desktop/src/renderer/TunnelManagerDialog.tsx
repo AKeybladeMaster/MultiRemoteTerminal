@@ -3,6 +3,7 @@ import type { FormEvent, ReactElement, Ref } from 'react';
 import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SavedSessionDefinition } from '../../../../packages/domain/src/session-definition.ts';
 import type { SshTunnelDraft, SshTunnelMode, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { canonicalizeSshHostEndpoint, hostEndpointKey } from '../../../../packages/domain/src/host-trust.ts';
 
 export interface TunnelManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
@@ -14,7 +15,7 @@ export interface TunnelManagerDialogProps {
   readonly onClose: () => void;
   readonly onSave: (draft: SshTunnelDraft) => Promise<string | undefined>;
   readonly onDelete: (id: string) => void;
-  readonly onStart: (id: string) => void;
+  readonly onStart: (id: string, gatewayProfileIds?: readonly string[]) => void;
   readonly onStop: (id: string) => void;
 }
 
@@ -59,9 +60,28 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   const [targetHost, setTargetHost] = useState('');
   const [targetPort, setTargetPort] = useState('');
   const selected = tunnels.find(item => item.definition.id === selectedId);
+  const [gatewayRouteOpen, setGatewayRouteOpen] = useState(false);
+  const [gatewayOneId, setGatewayOneId] = useState('');
+  const [gatewayTwoId, setGatewayTwoId] = useState('');
   const [loadedSelectionId, setLoadedSelectionId] = useState<string>();
   const locked = isRunning(selected?.status);
   const busy = busyId !== undefined;
+  const targetProfile = selected && profiles.find(profile => profile.id === selected.definition.sessionId);
+  const targetEndpoint = targetProfile && (targetProfile.kind === 'ssh' || targetProfile.kind === 'sftp')
+    ? canonicalizeSshHostEndpoint({ host: targetProfile.host, port: targetProfile.port }) : undefined;
+  const gatewayProfiles = profiles.filter((profile): profile is Extract<SavedSessionDefinition, { readonly kind: 'ssh' }> => {
+    if (profile.kind !== 'ssh' || profile.id === selected?.definition.sessionId) return false;
+    const endpoint = canonicalizeSshHostEndpoint({ host: profile.host, port: profile.port });
+    return endpoint !== undefined && (!targetEndpoint || hostEndpointKey(endpoint) !== hostEndpointKey(targetEndpoint));
+  });
+  const secondGatewayProfiles = gatewayProfiles.filter(profile => {
+    if (!gatewayOneId) return true;
+    const first = gatewayProfiles.find(candidate => candidate.id === gatewayOneId);
+    if (!first) return true;
+    const firstEndpoint = canonicalizeSshHostEndpoint({ host: first.host, port: first.port });
+    const endpoint = canonicalizeSshHostEndpoint({ host: profile.host, port: profile.port });
+    return endpoint !== undefined && firstEndpoint !== undefined && hostEndpointKey(endpoint) !== hostEndpointKey(firstEndpoint);
+  });
 
   useEffect(() => {
     if (!creating && !selectedId && tunnels.length > 0) setSelectedId(tunnels[0]?.definition.id);
@@ -85,6 +105,9 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   function startNew(): void {
     setCreating(true);
     setSelectedId(undefined);
+    setGatewayRouteOpen(false);
+    setGatewayOneId('');
+    setGatewayTwoId('');
     setLoadedSelectionId(undefined);
     setSessionId(eligibleProfiles[0]?.id ?? '');
     setName('');
@@ -131,7 +154,9 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
           <ul className="tunnel-list">
             {tunnels.map(item => <li key={item.definition.id}>
               <button type="button" className={`tunnel-list-item ${selectedId === item.definition.id ? 'selected' : ''}`}
-                aria-pressed={selectedId === item.definition.id} onClick={() => { setCreating(false); setSelectedId(item.definition.id); }}>
+                aria-pressed={selectedId === item.definition.id} onClick={() => {
+                  setCreating(false); setSelectedId(item.definition.id); setGatewayRouteOpen(false); setGatewayOneId(''); setGatewayTwoId('');
+                }}>
                 <span className={`tunnel-state-dot ${item.status.state}`} aria-hidden="true" />
               <span className="tunnel-list-copy"><strong>{item.definition.name}</strong><small>{tunnelModeLabel(item.definition.mode)}</small><small>{tunnelRouteLabel(item.definition)}</small></span>
                 <span className="tunnel-list-state">{statusLabel(item.status)}</span>
@@ -208,8 +233,40 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
                 ? <button type="button" className="tunnel-stop" onClick={() => onStop(selected.definition.id)}>Stop tunnel</button>
                 : <button type="button" className="tunnel-stop" disabled={!selected || selected.status.state === 'stopping' || busy}
                   onClick={() => selected && onStart(selected.definition.id)}>Start tunnel</button>}
+              {selected && !locked && <button type="button" className="tunnel-start-routed" disabled={busy || gatewayProfiles.length === 0}
+                aria-expanded={gatewayRouteOpen} aria-controls="tunnel-gateway-route" onClick={() => setGatewayRouteOpen(open => !open)}>
+                {gatewayRouteOpen ? 'Hide gateway route' : 'Start through gateways'}
+              </button>}
               <button type="submit" className="ssh-primary" disabled={locked || busy || eligibleProfiles.length === 0}>{busy ? 'Working…' : 'Save tunnel'}</button>
             </div>
+            {gatewayRouteOpen && selected && !locked && <fieldset id="tunnel-gateway-route" className="tunnel-gateway-route" aria-label="SSH gateway route">
+              <legend>SSH gateway route</legend>
+              <p className="tunnel-hint">Choose up to two saved SSH profiles in connection order. This route applies to this start only.</p>
+              <label htmlFor="tunnel-gateway-one">SSH gateway 1</label>
+              <select id="tunnel-gateway-one" name="gatewayOneProfileId" disabled={busy || gatewayProfiles.length === 0} value={gatewayOneId}
+                onChange={event => { setGatewayOneId(event.target.value); setGatewayTwoId(''); }}>
+                <option value="">Select a gateway</option>
+                {gatewayProfiles.map(profile => <option key={profile.id} value={profile.id}>{profileLabel(profile)}</option>)}
+              </select>
+              <label htmlFor="tunnel-gateway-two">SSH gateway 2 (optional)</label>
+              <select id="tunnel-gateway-two" name="gatewayTwoProfileId" disabled={busy || !gatewayOneId} value={gatewayTwoId}
+                onChange={event => setGatewayTwoId(event.target.value)}>
+                <option value="">No second gateway</option>
+                {secondGatewayProfiles.filter(profile => profile.id !== gatewayOneId).map(profile =>
+                  <option key={profile.id} value={profile.id}>{profileLabel(profile)}</option>)}
+              </select>
+              <div className="tunnel-gateway-actions">
+                <button type="button" className="ssh-primary" disabled={busy || !gatewayOneId}
+                  onClick={() => {
+                    if (!selected || !gatewayOneId) return;
+                    onStart(selected.definition.id, [gatewayOneId, ...(gatewayTwoId ? [gatewayTwoId] : [])]);
+                    setGatewayRouteOpen(false); setGatewayOneId(''); setGatewayTwoId('');
+                  }}>Start tunnel via gateways</button>
+                <button type="button" disabled={busy} onClick={() => {
+                  setGatewayRouteOpen(false); setGatewayOneId(''); setGatewayTwoId('');
+                }}>Cancel</button>
+              </div>
+            </fieldset>}
           </form>
         </section>
       </div>

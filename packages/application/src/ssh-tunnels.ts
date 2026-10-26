@@ -4,6 +4,9 @@ import type { SshTunnelDefinition, SshTunnelDraft, TunnelRunStatus } from '../..
 import { isTunnelId, normalizeSshTunnelDraft } from '../../domain/src/ssh-tunnel.ts';
 import { isSessionDefinitionId } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition } from '../../domain/src/session-definition.ts';
+import { canonicalizeSshHostEndpoint, hostEndpointKey } from '../../domain/src/host-trust.ts';
+import type { SshHostEndpoint } from '../../domain/src/host-trust.ts';
+import { MAX_SSH_GATEWAY_HOPS, normalizeSshGatewayRoute } from '../../domain/src/ssh-route.ts';
 import type { CancellationSignal } from './cancellation.ts';
 import type { SshTerminalController } from './ssh-terminals.ts';
 import type { StorageOperationKind } from './storage-errors.ts';
@@ -34,7 +37,7 @@ export interface SshTunnelController {
   list(): Promise<Outcome<readonly SshTunnelSnapshot[]>>;
   save(draft: unknown): Promise<Outcome<SshTunnelDefinition>>;
   remove(id: unknown): Promise<Outcome<Record<string, never>>>;
-  start(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>>;
+  start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<TunnelRunStatus>>;
   stop(id: unknown): Promise<Outcome<TunnelRunStatus>>;
   beginSessionRemoval(sessionId: string): boolean;
   endSessionRemoval(sessionId: string): void;
@@ -46,6 +49,8 @@ export interface SshTunnelController {
 interface RuntimeTunnel {
   readonly definition: SshTunnelDefinition;
   readonly sshSessionId: string;
+  readonly routeKey: string;
+  readonly gatewayEndpoints?: readonly SshHostEndpoint[];
   status: TunnelRunStatus;
   startPromise?: Promise<Outcome<TunnelRunStatus>>;
   stopPromise?: Promise<Outcome<TunnelRunStatus>>;
@@ -56,6 +61,8 @@ interface RuntimeTunnel {
 
 interface StartAttempt {
   cancelled: boolean;
+  readonly routeKey: string;
+  readonly gatewayEndpoints?: readonly SshHostEndpoint[];
   sessionId?: string;
   runtime?: RuntimeTunnel;
   promise: Promise<Outcome<TunnelRunStatus>>;
@@ -64,6 +71,23 @@ interface StartAttempt {
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
 const TERMINAL_ERROR_CODES: readonly ErrorCode[] = ['INVALID_REQUEST', 'UNKNOWN_COMMAND', 'FORBIDDEN', 'UNAVAILABLE', 'NOT_SUPPORTED',
   'TIMEOUT', 'BUSY', 'NOT_FOUND', 'CONFLICT', 'CANCELLED', 'OUTPUT_LIMIT', 'AUTHENTICATION_FAILED', 'HOST_KEY_REJECTED', 'HOST_KEY_CHANGED'];
+
+function normalizeRequestedGatewayEndpoints(value: unknown): { readonly endpoints?: readonly SshHostEndpoint[]; readonly key: string } | undefined {
+  if (value === undefined) return { key: 'direct' };
+  if (!Array.isArray(value) || value.length > MAX_SSH_GATEWAY_HOPS) return undefined;
+  const endpoints: SshHostEndpoint[] = [];
+  const visited = new Set<string>();
+  for (const candidate of value) {
+    const endpoint = canonicalizeSshHostEndpoint(candidate);
+    if (!endpoint) return undefined;
+    const key = hostEndpointKey(endpoint);
+    if (visited.has(key)) return undefined;
+    visited.add(key);
+    endpoints.push(endpoint);
+  }
+  return endpoints.length === 0 ? { key: 'direct' }
+    : { endpoints, key: JSON.stringify(endpoints.map(hostEndpointKey)) };
+}
 
 export function createSshTunnelController(
   catalog: SshTunnelCatalog,
@@ -151,20 +175,25 @@ export function createSshTunnelController(
     catch (error) { return failure(storageErrorCode(error)); }
   }
 
-  function start(id: unknown, cancellation?: CancellationSignal): Promise<Outcome<TunnelRunStatus>> {
+  function start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<TunnelRunStatus>> {
     if (disposed) return Promise.resolve(failure('CANCELLED'));
     if (cancellation?.aborted) return Promise.resolve(failure('CANCELLED', 'terminal'));
     if (!isTunnelId(id)) return Promise.resolve(failure('INVALID_REQUEST'));
+    const requestedRoute = normalizeRequestedGatewayEndpoints(gatewayEndpoints);
+    if (!requestedRoute) return Promise.resolve(failure('INVALID_REQUEST'));
     const pending = startingRequests.get(id);
-    if (pending) return observeStart(pending, cancellation);
+    if (pending) return pending.routeKey === requestedRoute.key ? observeStart(pending, cancellation) : Promise.resolve(failure('BUSY', 'terminal'));
     const current = runtimes.get(id);
     if (current) {
-      if (current.status.state !== 'starting' || !current.startPromise) return Promise.resolve(failure('BUSY', 'terminal'));
-      const attempt = { cancelled: false, runtime: current, promise: current.startPromise };
+      if (current.status.state !== 'starting' || !current.startPromise || current.routeKey !== requestedRoute.key) return Promise.resolve(failure('BUSY', 'terminal'));
+      const attempt = { cancelled: false, routeKey: current.routeKey,
+        ...(current.gatewayEndpoints ? { gatewayEndpoints: current.gatewayEndpoints } : {}), runtime: current, promise: current.startPromise };
       return observeStart(attempt, cancellation);
     }
 
-    const attempt: StartAttempt = { cancelled: false, promise: Promise.resolve(failure('UNAVAILABLE')) };
+    const attempt: StartAttempt = { cancelled: false, routeKey: requestedRoute.key,
+      ...(requestedRoute.endpoints ? { gatewayEndpoints: requestedRoute.endpoints } : {}),
+      promise: Promise.resolve(failure('UNAVAILABLE')) };
     startingRequests.set(id, attempt);
     attempt.promise = performStartRequest(id, attempt).finally(() => {
       if (startingRequests.get(id) === attempt) startingRequests.delete(id);
@@ -210,7 +239,11 @@ export function createSshTunnelController(
     if (!profile) return failure('NOT_FOUND');
     if ((profile.kind !== 'ssh' && profile.kind !== 'sftp') || !profile.host || !profile.port) return failure('INVALID_REQUEST');
 
-    const runtime: RuntimeTunnel = { definition, sshSessionId: newId(), status: { tunnelId: id, state: 'starting' }, stopRequested: false, bound: false };
+    const route = normalizeSshGatewayRoute(attempt.gatewayEndpoints ?? [], { host: profile.host, port: profile.port });
+    if (!route) return failure('INVALID_REQUEST');
+
+    const runtime: RuntimeTunnel = { definition, sshSessionId: newId(), routeKey: attempt.routeKey,
+      ...(route.length === 0 ? {} : { gatewayEndpoints: route }), status: { tunnelId: id, state: 'starting' }, stopRequested: false, bound: false };
     if (!isTunnelId(runtime.sshSessionId)) return failure('UNAVAILABLE');
     attempt.runtime = runtime;
     runtimes.set(id, runtime);
@@ -222,7 +255,9 @@ export function createSshTunnelController(
 
   async function performStart(runtime: RuntimeTunnel, host: string, port: number): Promise<Outcome<TunnelRunStatus>> {
     try {
-      const opened = await ssh.openFiles(runtime.sshSessionId, host, port);
+      const opened = runtime.gatewayEndpoints
+        ? await ssh.openFiles(runtime.sshSessionId, host, port, undefined, runtime.gatewayEndpoints)
+        : await ssh.openFiles(runtime.sshSessionId, host, port);
       if (!opened.ok) {
         await closeRuntimeResources(runtime);
         const status: TunnelRunStatus = runtime.stopRequested ? { tunnelId: runtime.definition.id, state: 'stopped' }

@@ -471,6 +471,12 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
   const start = { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1, payload: { id: definition.id } };
   const parsedStart = parseRequest(start);
   assert.equal(parsedStart.ok, true);
+  const gatewayIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const routedStart = { ...start, payload: { id: definition.id, gatewayProfileIds: gatewayIds } };
+  assert.equal(parseRequest(routedStart).ok, true);
+  assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [...gatewayIds, '33333333-3333-4333-8333-333333333333'] } }).ok, false);
+  assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [gatewayIds[0], gatewayIds[0]] } }).ok, false);
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, route: [] } }).ok, false);
   if (parsedStart.ok) {
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
       result: { tunnelId: definition.id, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 } }, parsedStart.result), true);
