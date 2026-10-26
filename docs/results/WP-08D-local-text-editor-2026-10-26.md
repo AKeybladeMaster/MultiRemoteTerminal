@@ -2,7 +2,7 @@
 
 ## Requirement coverage
 
-- F-014 and P-27: implemented bounded local text opening, explicit save/reload, line-ending preservation, draft retention on conflict, and close confirmation.
+- F-014 and P-27: implemented bounded local open/edit/save behavior through the native-picker-backed main flow, explicit save/reload, line-ending preservation, draft retention on conflict, and close confirmation. Automated UI acceptance uses a guarded selected-path hook, so native picker selection and dismissal still need Windows UI verification.
 - P-27 and F-014 remain PARTIAL: syntax profiles and autosave are not implemented.
 
 ## Behavior
@@ -22,10 +22,10 @@
 
 ## Validation
 
-- Focused command `node --test tests/unit/local-text-editor.test.ts tests/unit/local-text-file-provider.test.ts tests/unit/broker.test.ts tests/unit/text-editor-format.test.ts`: **34 passed, 0 failed**.
+- Focused command `node --test tests/unit/local-text-editor.test.ts tests/unit/local-text-file-provider.test.ts tests/unit/broker.test.ts tests/unit/text-editor-format.test.ts tests/unit/text-editor-errors.test.ts`: **35 passed, 0 failed**.
 - `corepack pnpm typecheck`: passed.
 - `corepack pnpm lint`: passed, including static import-boundary checks.
-- `corepack pnpm build`: passed on Windows x64; renderer bundle was 919.48 kB minified and Vite reported its >500 kB chunk warning.
+- `corepack pnpm build`: passed on Windows x64; renderer bundle was 919.22 kB minified and Vite reported its >500 kB chunk warning.
 - `corepack pnpm setup:electron`: passed.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Windows local text editor|SFTP sessions verify trust and transfers" --reporter=line`: **2 passed**. These Windows E2Es verify local and remote mixed-line-ending disclosure and normalization along with conflict preservation/reload. The local test uses the guarded `--mrt-e2e-local-text-file=...` path hook, not Electron's native picker. The controller unit test confirms a canceled picker result does not invoke the file provider; native picker selection/dismissal is not UI-automated.
 - `git diff --check`: passed after the mixed-ending changes.
