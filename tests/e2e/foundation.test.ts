@@ -220,12 +220,14 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
 
 interface E2EFileDigest { readonly size: number; readonly sha256: string; }
 
-async function writeRepeatedFile(path: string, size: number, byte: number): Promise<void> {
-  const chunk = Buffer.alloc(1024 * 1024, byte);
+async function writePatternFile(path: string, size: number, seed: number): Promise<void> {
+  const chunk = Buffer.alloc(1024 * 1024);
   const file = await openFile(path, 'w');
   try {
     for (let position = 0; position < size;) {
       const length = Math.min(chunk.byteLength, size - position);
+      const block = Math.floor(position / chunk.byteLength);
+      for (let index = 0; index < length; index++) chunk[index] = (index * 31 + block * 17 + seed) & 0xff;
       let offset = 0;
       while (offset < length) {
         const result = await file.write(chunk, offset, length - offset, position + offset);
@@ -602,7 +604,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   await mkdir(downloadRoot);
   await mkdir(remoteScaleRoot);
   await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
-  await writeRepeatedFile(largeRemoteFile, largeTransferSize, 0x5a);
+  await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
   const expectedLargeFileDigest = await hashFile(largeRemoteFile);
   await writeFile(uploadSource, 'private local upload payload');
   await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
@@ -2139,7 +2141,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const dropUploadContents = [Buffer.alloc(1_024, 0x42), Buffer.from('second dropped FTP payload')];
   const largeTransferSize = 100 * 1024 * 1024;
   const downloadRoot = join(profile, 'downloads');
-  await writeRepeatedFile(uploadSource, largeTransferSize, 0x41);
+  await writePatternFile(uploadSource, largeTransferSize, 0x41);
   const expectedLargeFileDigest = await hashFile(uploadSource);
   await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
   await mkdir(downloadRoot);
