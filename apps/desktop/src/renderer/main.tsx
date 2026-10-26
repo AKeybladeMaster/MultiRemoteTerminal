@@ -313,6 +313,7 @@ function Workbench() {
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
+  const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -1226,6 +1227,7 @@ function Workbench() {
     setTerminalHighlightEnabled(preferences.terminalHighlightEnabled);
     setTerminalHighlightRules(preferences.terminalHighlightRules);
     setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
+    setShowSftpBrowserBesideSsh(preferences.showSftpBrowserBesideSsh);
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
@@ -2964,25 +2966,29 @@ function Workbench() {
           </div>
         </section>}
         <div className="terminal-stack">
-          {sessions.map(session => <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
-            aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
-            {session.transport === 'ftp' || session.transport === 'sftp'
-              ? <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport={session.transport}
-                onReconnect={() => session.transport === 'ftp' ? reconnectFtp(session) : reconnectSftp(session)} />
-              : <div className={`terminal-panel-layout ${session.transport === 'ssh' && session.state === 'running' ? 'with-remote-files' : ''}`}>
-                <div className="terminal-pane-stage">
-                  <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
-                    transport={session.transport}
-                    canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId) &&
-                      !(multiExecView && multiExecView.phase !== 'finished' && multiExecView.targets.some(target => target.sessionId === session.sessionId))}
-                    theme={theme} fontSize={fontSize} terminalHighlightEnabled={terminalHighlightEnabled}
-                    terminalHighlightRules={terminalHighlightRules} terminalShellSyntaxEnabled={terminalShellSyntaxEnabled} onReady={terminalReady}
-                    onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
-                </div>
-                {session.transport === 'ssh' && session.state === 'running' &&
-                  <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport="sftp" />}
-              </div>}
-          </section>)}
+          {sessions.map(session => {
+            const showSftpFilePane = showSftpBrowserBesideSsh && session.transport === 'ssh' && session.state === 'running';
+            return <section className="terminal-panel" key={session.sessionId} id={`panel-${session.sessionId}`} role="tabpanel"
+              aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
+              {session.transport === 'ftp' || session.transport === 'sftp'
+                ? <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport={session.transport}
+                  onReconnect={() => session.transport === 'ftp' ? reconnectFtp(session) : reconnectSftp(session)} />
+                : <div className={`terminal-panel-layout ${showSftpFilePane ? 'with-remote-files' : ''}`}>
+                  <div className="terminal-pane-stage">
+                    <TerminalPane sessionId={session.sessionId} title={session.title} active={session.sessionId === activeId}
+                      transport={session.transport}
+                      canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId) &&
+                        !(multiExecView && multiExecView.phase !== 'finished' && multiExecView.targets.some(target => target.sessionId === session.sessionId))}
+                      theme={theme} fontSize={fontSize} terminalHighlightEnabled={terminalHighlightEnabled}
+                      terminalHighlightRules={terminalHighlightRules} terminalShellSyntaxEnabled={terminalShellSyntaxEnabled} onReady={terminalReady}
+                      onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
+                  </div>
+                  {session.transport === 'ssh' && session.state === 'running' &&
+                    <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId && showSftpFilePane}
+                      hidden={!showSftpFilePane} transport="sftp" />}
+                </div>}
+            </section>;
+          })}
           {sessions.length === 0 && <div className="empty-terminal">
             <span className="empty-mark" aria-hidden="true">›_</span>
             <h2>No terminal is open</h2>

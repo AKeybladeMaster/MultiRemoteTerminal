@@ -192,6 +192,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { scrollbar-width: thin; }
 .remote-file-panel { position: relative; display: flex; flex: 0 0 clamp(225px, 28vw, 320px); flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
+.remote-file-panel[hidden] { display: none; }
 .remote-file-panel.is-file-drop-active { outline: 2px dashed var(--accent); outline-offset: -5px; background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .remote-file-heading { display: flex; align-items: center; justify-content: space-between; min-height: 43px; padding: 0 11px 0 14px; border-bottom: 1px solid var(--line); }
 .remote-file-heading h2 { margin: 0; font-size: 13px; font-weight: 650; }

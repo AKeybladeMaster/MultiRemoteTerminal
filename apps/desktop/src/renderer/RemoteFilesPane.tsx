@@ -10,6 +10,7 @@ interface RemoteFilesPaneProps {
   readonly sessionId: string;
   readonly active: boolean;
   readonly transport: 'sftp' | 'ftp';
+  readonly hidden?: boolean;
   readonly onReconnect?: () => void;
 }
 
@@ -54,7 +55,7 @@ function kindLabel(entry: RemoteFileEntry): string {
   return 'Other item';
 }
 
-export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: RemoteFilesPaneProps) {
+export function RemoteFilesPane({ sessionId, active, transport, hidden = false, onReconnect }: RemoteFilesPaneProps) {
   const [listing, setListing] = useState<RemoteDirectoryListing>();
   const [error, setError] = useState<string>();
   const [errorCode, setErrorCode] = useState<string>();
@@ -266,7 +267,8 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
       </div>}
   </li>;
   const dropEnabled = active && Boolean(listing && !loading && !error && !transfer && !editorBusy);
-  return <aside className={`remote-file-panel${dropActive ? ' is-file-drop-active' : ''}`} aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser"
+  return <aside className={`remote-file-panel${dropActive ? ' is-file-drop-active' : ''}`} hidden={hidden}
+    aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser"
     data-mrt-remote-file-drop-target={dropEnabled ? 'true' : undefined} data-mrt-remote-file-session-id={dropEnabled ? sessionId : undefined}
     data-mrt-remote-file-transport={dropEnabled ? transport : undefined} data-mrt-remote-file-directory={dropEnabled ? listing?.path : undefined}
     onDragEnter={event => { if (dropEnabled && event.dataTransfer.types.includes('Files')) setDropActive(true); }}
