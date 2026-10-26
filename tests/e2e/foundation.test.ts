@@ -534,6 +534,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   await writeFile(uploadSource, 'private local upload payload');
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
   await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
+  await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -672,6 +673,14 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(editorText).toHaveValue('remote changed!\nsecond line\n');
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor).toHaveCount(0);
+    const remoteSyntaxEdit = sftpPanel.getByRole('button', { name: 'Edit remote.zsh', exact: true });
+    await remoteSyntaxEdit.click();
+    const remoteSyntaxEditor = page.getByRole('dialog', { name: 'remote.zsh' });
+    await expect(remoteSyntaxEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-keyword"]').first()).toHaveText('if');
+    await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-command"]').first()).toHaveText('true');
+    await remoteSyntaxEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteSyntaxEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();

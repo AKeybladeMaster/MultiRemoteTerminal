@@ -52,7 +52,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
         onChange={event => onChange(event.currentTarget.value)} onScroll={syncScroll} />
     </div>
     {preview.isTruncated && resolvedProfile !== 'plain' && <p className="remote-text-editor-hint" role="note">
-      Syntax colors are limited to 64,000 characters or 4,096 colored tokens to keep editing responsive; the full file remains editable.
+      Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens, whichever comes first; the full file remains editable.
     </p>}
   </>;
 }

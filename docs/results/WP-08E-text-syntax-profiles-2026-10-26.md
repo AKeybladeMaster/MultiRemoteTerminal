@@ -24,10 +24,10 @@
 - `node --test tests/unit/text-syntax.test.ts`: **4 passed, 0 failed**.
 - `corepack pnpm typecheck`: passed.
 - `corepack pnpm lint`: passed, including import-boundary checks.
-- `corepack pnpm build`: passed on Windows x64; the renderer bundle is 924.95 kB minified and Vite reports its >500 kB advisory.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "local text editor auto-detects shell syntax" --reporter=line`: **1 passed**. It uses the guarded selected-path test hook and covers `.zsh` auto-detection, Shell and JSON token colors, switching to Plain text, unchanged file bytes before save, and scroll synchronization.
+- `corepack pnpm build`: passed on Windows x64; the renderer bundle is 924.97 kB minified and Vite reports its >500 kB advisory.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "local text editor auto-detects shell syntax|SFTP sessions verify trust" --reporter=line`: **2 passed**. The guarded local-file test covers `.zsh` auto-detection, Shell and JSON token colors, switching to Plain text, unchanged file bytes before save, and scroll synchronization. The Windows loopback SFTP test opens a remote `.zsh` file and verifies that the remote basename selects Shell coloring and displays keyword/command tokens.
 - Screenshot `test-results/editor-shell-syntax.png` (1164 x 761 pixels) was visually inspected in Playwright Electron. The existing editor dialog is the visual baseline; the token overlay aligns with the textarea and the dark palette remains readable.
-- `git diff --check`: pending final review pass.
+- `git diff --check`: passed after implementation and review follow-up changes.
 
 ## Limits
 
@@ -38,4 +38,4 @@
 
 ## Review
 
-Independent Standards and Spec review is pending.
+Independent Spec review found no missing or incorrect requirements and confirmed that P-30 terminal grammar remains explicitly out of this editor slice. The Standards review found no hard violations; it requested accurate UTF-16-bound wording and a remote-editor smoke assertion. Both follow-ups are included and pass the focused UI checks. Final two-axis review of the complete committed range is pending.
