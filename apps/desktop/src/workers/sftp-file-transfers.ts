@@ -19,12 +19,18 @@ const SFTP_OPERATION_TIMEOUT_MS = 10_000;
 const TRANSFER_IDLE_TIMEOUT_MS = 30_000;
 const PROGRESS_INTERVAL_MS = 100;
 const MAX_COPY_NAME_ATTEMPTS = 9_999;
+const MAX_ORPHANED_UPLOADS = 128;
+const MAX_UPLOAD_RECOVERY_ATTEMPTS_PER_CHANNEL = 4;
+const ORPHANED_UPLOAD_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+const SFTP_RECOVERY_OPERATION_TIMEOUT_MS = 2_000;
 const TRANSFER_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MANAGED_UPLOAD_STAGE_NAME = /^\.mrt-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.partial$/i;
 
 export interface SftpFileTransfers {
   upload(sessionId: string, operationId: string, channel: SFTPWrapper, localPath: string, remoteDirectory: string, fileName: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
+    onProgress?: (progress: FileTransferProgress) => void, recoveryScope?: string): Promise<FileTransferResult>;
+  cleanupOrphanedUploads(channel: SFTPWrapper, recoveryScope: string | undefined, cancellation?: CancellationSignal): Promise<void>;
   download(sessionId: string, operationId: string, channel: SFTPWrapper, remotePath: string, localPath: string,
     conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
     onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult>;
@@ -102,7 +108,8 @@ function report(onProgress: ((progress: FileTransferProgress) => void) | undefin
   catch { /* Renderer progress observers cannot interrupt worker-owned file cleanup. */ }
 }
 
-function sftpCall<T>(channel: SFTPWrapper, call: (callback: (error: Error | null | undefined, result: T) => void) => void): Promise<T> {
+function sftpCall<T>(channel: SFTPWrapper, call: (callback: (error: Error | null | undefined, result: T) => void) => void,
+  timeoutMs = SFTP_OPERATION_TIMEOUT_MS): Promise<T> {
   return new Promise((resolveCall, rejectCall) => {
     let settled = false;
     const finish = (error?: Error | null, result?: T) => {
@@ -117,15 +124,15 @@ function sftpCall<T>(channel: SFTPWrapper, call: (callback: (error: Error | null
     const timer = setTimeout(() => {
       finish(new SshTerminalProviderError('TIMEOUT'));
       try { (channel as SFTPWrapper & { end?: () => void }).end?.(); } catch { /* Session teardown owns final cleanup. */ }
-    }, SFTP_OPERATION_TIMEOUT_MS);
+    }, timeoutMs);
     channel.once('close', onClose);
     try { call((error, result) => finish(error, result)); }
     catch { finish(new SshTerminalProviderError('UNAVAILABLE')); }
   });
 }
 
-async function remoteLstat(channel: SFTPWrapper, path: string): Promise<SftpStats | undefined> {
-  try { return await sftpCall<SftpStats>(channel, callback => channel.lstat(path, callback)); }
+async function remoteLstat(channel: SFTPWrapper, path: string, timeoutMs = SFTP_OPERATION_TIMEOUT_MS): Promise<SftpStats | undefined> {
+  try { return await sftpCall<SftpStats>(channel, callback => channel.lstat(path, callback), timeoutMs); }
   catch (error) {
     const code = sftpErrorCode(error);
     if (code === 2 || code === '2' || code === 'ENOENT') return undefined;
@@ -133,9 +140,9 @@ async function remoteLstat(channel: SFTPWrapper, path: string): Promise<SftpStat
   }
 }
 
-async function remoteRealpath(channel: SFTPWrapper, path: string): Promise<string> {
+async function remoteRealpath(channel: SFTPWrapper, path: string, timeoutMs = SFTP_OPERATION_TIMEOUT_MS): Promise<string> {
   try {
-    const resolved = await sftpCall<string>(channel, callback => channel.realpath(path, callback));
+    const resolved = await sftpCall<string>(channel, callback => channel.realpath(path, callback), timeoutMs);
     if (!isRemotePath(resolved) || !resolved.startsWith('/')) throw new SshTerminalProviderError('INVALID_REQUEST');
     return resolved;
   } catch (error) {
@@ -144,11 +151,12 @@ async function remoteRealpath(channel: SFTPWrapper, path: string): Promise<strin
 }
 
 /** Requires canonical resolution to preserve the normalized path, rejecting symlinked ancestors. */
-async function assertRemotePathComponents(channel: SFTPWrapper, path: string, finalKind: 'directory' | 'file'): Promise<SftpStats> {
-  const expected = path.startsWith('/') ? posix.normalize(path) : posix.resolve(await remoteRealpath(channel, '.'), path);
-  const actual = await remoteRealpath(channel, path);
+async function assertRemotePathComponents(channel: SFTPWrapper, path: string, finalKind: 'directory' | 'file',
+  timeoutMs = SFTP_OPERATION_TIMEOUT_MS): Promise<SftpStats> {
+  const expected = path.startsWith('/') ? posix.normalize(path) : posix.resolve(await remoteRealpath(channel, '.', timeoutMs), path);
+  const actual = await remoteRealpath(channel, path, timeoutMs);
   if (actual !== expected) throw new SshTerminalProviderError('INVALID_REQUEST');
-  const stats = await remoteLstat(channel, path);
+  const stats = await remoteLstat(channel, path, timeoutMs);
   if (!stats) throw new SshTerminalProviderError('NOT_FOUND');
   if (stats.isSymbolicLink() || (finalKind === 'directory' ? !stats.isDirectory() : !stats.isFile())) {
     throw new SshTerminalProviderError('INVALID_REQUEST');
@@ -156,8 +164,8 @@ async function assertRemotePathComponents(channel: SFTPWrapper, path: string, fi
   return stats;
 }
 
-async function unlinkRemote(channel: SFTPWrapper, path: string): Promise<void> {
-  try { await sftpCall<void>(channel, callback => channel.unlink(path, callback)); }
+async function unlinkRemote(channel: SFTPWrapper, path: string, timeoutMs = SFTP_OPERATION_TIMEOUT_MS): Promise<void> {
+  try { await sftpCall<void>(channel, callback => channel.unlink(path, callback), timeoutMs); }
   catch (error) {
     const code = sftpErrorCode(error);
     if (code === 2 || code === '2' || code === 'ENOENT') return;
@@ -200,6 +208,10 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
   if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
   const abortController = new AbortController();
   let abortCode: 'CANCELLED' | 'TIMEOUT' | undefined;
+  let rejectAborted: (error: Error) => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+  const rejectOnAbort = () => rejectAborted(new SshTerminalProviderError(abortCode ?? 'CANCELLED'));
+  abortController.signal.addEventListener('abort', rejectOnAbort, { once: true });
   let transferred = 0;
   let lastProgressAt = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -234,7 +246,10 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
   emitProgress(true);
   resetIdleTimer();
   try {
-    await pipeline(source, meter, destination, { signal: abortController.signal });
+    const streaming = pipeline(source, meter, destination, { signal: abortController.signal });
+    // ssh2's write-stream destroy can wait indefinitely for a remote handle-close reply after transport loss.
+    // Let cancellation settle now; the caller still destroys the streams and records any unremoved stage.
+    await Promise.race([streaming, aborted]);
     emitProgress(true);
     return transferred;
   } catch (error) {
@@ -246,6 +261,7 @@ async function runStreamTransfer(sessionId: string, operationId: string, directi
     throw mappedSftpError(error);
   } finally {
     clearTimeout(idleTimer);
+    abortController.signal.removeEventListener('abort', rejectOnAbort);
     cancellation?.removeEventListener('abort', cancel);
   }
 }
@@ -361,9 +377,78 @@ async function remoteCommit(channel: SFTPWrapper, temporaryPath: string, finalPa
 }
 
 export function createSftpFileTransfers(): SftpFileTransfers {
+  const orphanedUploads = new Map<string, Map<string, number>>();
+
+  function removeOrphanedUpload(recoveryScope: string, path: string): void {
+    const scoped = orphanedUploads.get(recoveryScope);
+    scoped?.delete(path);
+    if (scoped?.size === 0) orphanedUploads.delete(recoveryScope);
+  }
+
+  function rememberOrphanedUpload(recoveryScope: string | undefined, path: string): void {
+    if (!recoveryScope || recoveryScope.length > 4_096 || !isRemotePath(path) || !posix.isAbsolute(path) ||
+        !MANAGED_UPLOAD_STAGE_NAME.test(posix.basename(path))) return;
+    const now = Date.now();
+    for (const [scope, paths] of orphanedUploads) {
+      for (const [candidate, createdAt] of paths) {
+        if (createdAt < now - ORPHANED_UPLOAD_TTL_MS) paths.delete(candidate);
+      }
+      if (paths.size === 0) orphanedUploads.delete(scope);
+    }
+    let scoped = orphanedUploads.get(recoveryScope);
+    if (!scoped) { scoped = new Map(); orphanedUploads.set(recoveryScope, scoped); }
+    scoped.set(path, now);
+    let count = [...orphanedUploads.values()].reduce((total, paths) => total + paths.size, 0);
+    while (count > MAX_ORPHANED_UPLOADS) {
+      let oldestScope: string | undefined;
+      let oldestPath: string | undefined;
+      let oldestTime = Number.POSITIVE_INFINITY;
+      for (const [scope, paths] of orphanedUploads) {
+        for (const [candidate, createdAt] of paths) {
+          if (createdAt < oldestTime) { oldestScope = scope; oldestPath = candidate; oldestTime = createdAt; }
+        }
+      }
+      if (!oldestScope || !oldestPath) break;
+      removeOrphanedUpload(oldestScope, oldestPath);
+      count -= 1;
+    }
+  }
+
+  async function cleanupOrphanedUploads(channel: SFTPWrapper, recoveryScope: string | undefined,
+    cancellation?: CancellationSignal): Promise<void> {
+    if (!recoveryScope) return;
+    const scoped = orphanedUploads.get(recoveryScope);
+    if (!scoped) return;
+    const now = Date.now();
+    let attempts = 0;
+    for (const [path, createdAt] of [...scoped]) {
+      if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+      if (createdAt < now - ORPHANED_UPLOAD_TTL_MS) { removeOrphanedUpload(recoveryScope, path); continue; }
+      if (attempts >= MAX_UPLOAD_RECOVERY_ATTEMPTS_PER_CHANNEL) break;
+      attempts += 1;
+      try {
+        if (!isRemotePath(path) || !posix.isAbsolute(path) || !MANAGED_UPLOAD_STAGE_NAME.test(posix.basename(path))) {
+          removeOrphanedUpload(recoveryScope, path);
+          continue;
+        }
+        const parent = posix.dirname(path);
+        const actualParent = await remoteRealpath(channel, parent, SFTP_RECOVERY_OPERATION_TIMEOUT_MS);
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        if (actualParent !== parent) continue;
+        await unlinkRemote(channel, path, SFTP_RECOVERY_OPERATION_TIMEOUT_MS);
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        removeOrphanedUpload(recoveryScope, path);
+      } catch {
+        if (cancellation?.aborted) throw new SshTerminalProviderError('CANCELLED');
+        // Retain failed cleanup records for the next trusted SFTP connection. They never cross to the renderer.
+        break;
+      }
+    }
+  }
+
   async function upload(sessionId: string, operationId: string, channel: SFTPWrapper, localPath: string, remoteDirectory: string,
     fileName: string, conflictPolicy: FileTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FileTransferProgress) => void): Promise<FileTransferResult> {
+    onProgress?: (progress: FileTransferProgress) => void, recoveryScope?: string): Promise<FileTransferResult> {
     if (!TRANSFER_OPERATION_ID.test(operationId) || !validLocalPath(localPath) || basename(localPath) !== fileName ||
         !isRemotePath(remoteDirectory) || !isRemoteFileName(fileName) || !isFileTransferConflictPolicy(conflictPolicy)) {
       throw new SshTerminalProviderError('INVALID_REQUEST');
@@ -433,7 +518,10 @@ export function createSftpFileTransfers(): SftpFileTransfers {
       const expected = conflictPolicy === 'overwrite' && existing ? existing : currentTarget && conflictPolicy === 'overwrite' ? currentTarget : undefined;
       const commit = await remoteCommit(channel, temporaryPath, finalPath, fileName, expected, conflictPolicy, beginCommit);
       if (commit.skipped) {
-        if (temporaryOwned) await unlinkRemote(channel, temporaryPath).catch(() => undefined);
+        if (temporaryOwned && temporaryPath) {
+          try { await unlinkRemote(channel, temporaryPath); }
+          catch { rememberOrphanedUpload(recoveryScope, temporaryPath); }
+        }
         temporaryPath = undefined;
         temporaryOwned = false;
         return transferResult('upload', commit.fileName, 0, 'skipped');
@@ -442,7 +530,10 @@ export function createSftpFileTransfers(): SftpFileTransfers {
       temporaryOwned = false;
       return transferResult('upload', commit.fileName, bytesTransferred);
     } catch (error) {
-      if (temporaryOwned && temporaryPath) await unlinkRemote(channel, temporaryPath).catch(() => undefined);
+      if (temporaryOwned && temporaryPath) {
+        try { await unlinkRemote(channel, temporaryPath, SFTP_RECOVERY_OPERATION_TIMEOUT_MS); }
+        catch { rememberOrphanedUpload(recoveryScope, temporaryPath); }
+      }
       if (wasCancelled()) throw new SshTerminalProviderError('CANCELLED');
       if (error instanceof SshTerminalProviderError) throw error;
       if (error instanceof LocalTransferTargetError) throw new SshTerminalProviderError(error.code);
@@ -588,7 +679,7 @@ export function createSftpFileTransfers(): SftpFileTransfers {
     }
   }
 
-  return Object.freeze({ upload, download, readText, saveText });
+  return Object.freeze({ upload, cleanupOrphanedUploads, download, readText, saveText });
 }
 
 function sameLocalVersion(before: Stats, after: Stats): boolean {
