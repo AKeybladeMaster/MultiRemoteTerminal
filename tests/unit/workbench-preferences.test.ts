@@ -30,6 +30,22 @@ test('workbench preferences migrate the prior highlight schema and validate opt-
   assert.equal(normalizeWorkbenchPreferences({ ...previous, autoSaveSessions: true, credential: 'secret' }), undefined);
 });
 
+test('workbench preferences migrate session-saving schema with terminal shell coloring disabled by default', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' as const }], autoSaveSessions: true };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }], autoSaveSessions: true,
+    terminalShellSyntaxEnabled: false
+  });
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, terminalShellSyntaxEnabled: true }), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }], autoSaveSessions: true,
+    terminalShellSyntaxEnabled: true
+  });
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, terminalShellSyntaxEnabled: 'yes' }), undefined);
+});
+
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {
   const originalReplace = String.prototype.replace;
   let scannedOversizedInput = false;

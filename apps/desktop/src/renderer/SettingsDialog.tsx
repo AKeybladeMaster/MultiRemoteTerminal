@@ -14,6 +14,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const [greeting, setGreeting] = useState('');
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
+  const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [autoSaveSessions, setAutoSaveSessions] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -32,7 +33,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const normalizedRules = normalizeTerminalHighlightRules(terminalHighlightRules);
   const greetingIsValid = Boolean(normalizeWorkbenchPreferences({ startupGreeting: greeting }));
   const validatedPreferences = normalizeWorkbenchPreferences({
-    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions
+    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled
   });
   const characterCount = Array.from(greeting).length;
 
@@ -49,6 +50,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setTerminalHighlightEnabled(reply.result.terminalHighlightEnabled);
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
         setAutoSaveSessions(reply.result.autoSaveSessions);
+        setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
       }
       else {
         setLoadFailed(true);
@@ -124,6 +126,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setTerminalHighlightEnabled(reply.result.terminalHighlightEnabled);
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
         setAutoSaveSessions(reply.result.autoSaveSessions);
+        setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         onPreferencesSaved(reply.result);
         setStatus('Settings saved.');
       }
@@ -253,6 +256,15 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             : !greetingIsValid && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
         </div>
         <div className="settings-highlights">
+          <label className="settings-highlight-toggle" htmlFor="terminal-shell-syntax-enabled">
+            <input id="terminal-shell-syntax-enabled" type="checkbox" checked={terminalShellSyntaxEnabled}
+              disabled={loading || loadFailed || saving} aria-describedby="terminal-shell-syntax-description"
+              onChange={event => { setTerminalShellSyntaxEnabled(event.target.checked); setError(undefined); setStatus(''); }} />
+            <span>Color shell commands at prompts</span>
+          </label>
+          <p id="terminal-shell-syntax-description" className="settings-highlight-help">
+            Colors common command tokens while you type at prompts ending in $, #, %, or &gt;. It does not change terminal input or output.
+          </p>
           <label className="settings-highlight-toggle" htmlFor="terminal-highlight-enabled">
             <input id="terminal-highlight-enabled" type="checkbox" checked={terminalHighlightEnabled}
               disabled={loading || loadFailed || saving}

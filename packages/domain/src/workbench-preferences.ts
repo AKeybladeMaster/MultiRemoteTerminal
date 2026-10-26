@@ -1,8 +1,8 @@
 import { normalizeTerminalHighlightRules } from './terminal-highlights.ts';
 import type { TerminalHighlightRule } from './terminal-highlights.ts';
 
-export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 3;
-export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2] as const);
+export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 4;
+export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3] as const);
 export const MAX_STARTUP_GREETING_CODE_POINTS = 512;
 
 export interface WorkbenchPreferences {
@@ -10,10 +10,12 @@ export interface WorkbenchPreferences {
   readonly terminalHighlightEnabled: boolean;
   readonly terminalHighlightRules: readonly TerminalHighlightRule[];
   readonly autoSaveSessions: boolean;
+  readonly terminalShellSyntaxEnabled: boolean;
 }
 
 export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = Object.freeze({
-  startupGreeting: '', terminalHighlightEnabled: false, terminalHighlightRules: Object.freeze([]), autoSaveSessions: false
+  startupGreeting: '', terminalHighlightEnabled: false, terminalHighlightRules: Object.freeze([]), autoSaveSessions: false,
+  terminalShellSyntaxEnabled: false
 });
 
 export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferences | undefined {
@@ -23,9 +25,12 @@ export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferen
   const isGreetingOnlyShape = keys.length === 1;
   const isHighlightShape = keys.length === 3 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
     Object.hasOwn(value, 'terminalHighlightRules');
-  const isCurrentShape = keys.length === 4 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+  const isSessionSaveShape = keys.length === 4 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
     Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions');
-  if (!isGreetingOnlyShape && !isHighlightShape && !isCurrentShape) return undefined;
+  const isCurrentShape = keys.length === 5 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+    Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
+    Object.hasOwn(value, 'terminalShellSyntaxEnabled');
+  if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isCurrentShape) return undefined;
 
   const inputGreeting = value.startupGreeting;
   if (inputGreeting.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) return undefined;
@@ -39,10 +44,13 @@ export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferen
   const terminalHighlightRules = normalizeTerminalHighlightRules(value.terminalHighlightRules);
   if (!terminalHighlightRules) return undefined;
   if (isHighlightShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
-    terminalHighlightRules, autoSaveSessions: false });
+    terminalHighlightRules, autoSaveSessions: false, terminalShellSyntaxEnabled: false });
   if (typeof value.autoSaveSessions !== 'boolean') return undefined;
+  if (isSessionSaveShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
+    terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: false });
+  if (typeof value.terminalShellSyntaxEnabled !== 'boolean') return undefined;
   return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled, terminalHighlightRules,
-    autoSaveSessions: value.autoSaveSessions });
+    autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled });
 }
 
 export function isWorkbenchPreferences(value: unknown): value is WorkbenchPreferences {

@@ -6,7 +6,16 @@ import {
   MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS,
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
-import { extractBoundedTerminalHighlightLine } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import { extractBoundedTerminalHighlightLine, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+
+test('shell prompt detection accepts common prompt endings and rejects password prompts', () => {
+  for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'PS C:\\work> ']) {
+    assert.equal(isShellPromptAtCursor(prompt), true, prompt);
+  }
+  for (const prompt of ['Password: ', 'Verification code: ', 'ordinary output']) {
+    assert.equal(isShellPromptAtCursor(prompt), false, prompt);
+  }
+});
 
 test('terminal highlight rules validate and return Unicode-safe text ranges', () => {
   const rules = normalizeTerminalHighlightRules([
