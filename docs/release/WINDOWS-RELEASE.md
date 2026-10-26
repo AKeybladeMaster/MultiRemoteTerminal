@@ -2,6 +2,8 @@
 
 **Current state:** The available Windows 11 x64 workstation can build and smoke-test unsigned `0.0.0` packages. No publisher certificate or final product version is configured. Do not describe the current artifacts as a signed release or an M4 build.
 
+**Latest packaged smoke (2026-10-26):** x64 NSIS and portable packages were rebuilt and their SBOM/hash metadata generated. After fixing a stale status locator in the installer E2E, all four packaged-app tests passed against those artifacts. See [WP-07W results](../results/WP-07W-package-smoke-revalidation-2026-10-26.md). Windows 10, Authenticode signing and the rest of the M4 release gate remain open.
+
 ## Reproducible build inputs
 
 - Build on Windows x64 with Node.js `24.14.1` and pnpm `12.15.0`, both pinned by the repository.
