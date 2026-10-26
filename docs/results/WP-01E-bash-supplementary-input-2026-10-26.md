@@ -6,9 +6,7 @@
 
 ## Reproduction
 
-The Windows E2E copies a Bash printf command with format fragment `MRT-OUT%s` and argument `PUT:🙂` to the clipboard, then verifies the exact clipboard text before trusted Ctrl+V. Those pieces produce `MRT-OUTPUT:🙂`, a marker absent from the echoed command. The test waits for this output, marks the run as expected-to-fail only if it observes `MRT-OUTPUT:�` (U+FFFD), and then asserts the intended `MRT-OUTPUT:🙂`. A shell-generated emoji still renders correctly. The regular Bash acceptance E2E continues to pass for BMP Unicode, shell commands, resize, saved-profile reopen, and Ctrl+W closure.
-
-The expected-failure annotation is conditional on observing U+FFFD in the executed output. If the full Unicode character reaches Bash, the regression test passes without the expected-failure annotation.
+The original command-mode reproduction copied a Bash printf command with format fragment `MRT-OUT%s` and argument `PUT:🙂`, verified the clipboard text before trusted Ctrl+V, and observed U+FFFD in the executed output. The current expected-failure test first runs `cat`, pastes `MRT-RAW:🙂`, and checks the raw input path. It marks the run expected-to-fail when that path displays `MRT-RAW:�` (U+FFFD); otherwise it continues to the original printf round trip, which must also preserve the character. A shell-generated emoji still renders correctly. The regular Bash acceptance E2E passes for BMP Unicode, shell commands, resize, saved-profile reopen, and Ctrl+W closure.
 
 ## Diagnosis
 
