@@ -4632,6 +4632,44 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
   }
 });
 
+test('Git Bash supplementary Unicode paste survives a full command round trip', async () => {
+  test.skip(process.platform !== 'win32', 'ConPTY compatibility evidence is required on Windows');
+  test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash compatibility check');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-bash-unicode-e2e-'));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New Bash terminal');
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
+
+    const supplementarySample = String.fromCodePoint(0x1f642);
+    const pasteCommand = `printf 'MRT-OUT%s\\n' 'PUT:${supplementarySample}'`;
+    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);
+    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(pasteCommand);
+    const panel = await selectTerminal(page, 'Bash session 1');
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('Control+V');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OUT%s');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-OUTPUT:', { timeout: 15_000 });
+
+    const terminalText = await panel.locator('.xterm-rows').innerText();
+    if (terminalText.includes('MRT-OUTPUT:\uFFFD')) {
+      test.fail(true, 'Git for Windows Bash 2.53.0 replaces a supplementary pasted character with U+FFFD through system ConPTY on this Windows host.');
+    }
+    await expect(panel.locator('.xterm-rows')).toContainText(`MRT-OUTPUT:${supplementarySample}`);
+  } finally {
+    try {
+      if (app) await app.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('WSL terminals require an explicit distribution and saved profiles reopen the same target', async () => {
   test.skip(process.platform !== 'win32', 'WSL integration flow requires the Windows E2E harness');
   test.setTimeout(60_000);
