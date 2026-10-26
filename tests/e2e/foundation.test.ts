@@ -2334,6 +2334,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ftp-e2e-'));
   const uploadSource = join(profile, 'e2e-upload.txt');
+  const interruptedUploadName = 'zz-interrupted-upload.bin';
   const dropUploadSources = [join(profile, 'mrt-drop-first.txt'), join(profile, 'mrt-drop-second.txt')];
   const dropUploadContents = [Buffer.alloc(1_024, 0x42), Buffer.from('second dropped FTP payload')];
   const largeTransferSize = 100 * 1024 * 1024;
@@ -2360,6 +2361,10 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   let interruptedDownloadSocket: Socket | undefined;
   let interruptedDownloadControlSocket: Socket | undefined;
   let interruptNextDownload = false;
+  let interruptedUploadSocket: Socket | undefined;
+  let interruptedUploadControlSocket: Socket | undefined;
+  let interruptNextUpload = false;
+  let nextStouName: string | undefined;
   let acceptedUsername = false;
   let acceptedPassword = false;
   const ftpCommandVerbs: string[] = [];
@@ -2447,18 +2452,30 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
       if (transferStarted || !transferSocket || !uploadName) return;
       transferStarted = true;
       uploadTransferStartedCount++;
+      const isInterruptedUpload = uploadName === interruptedUploadName;
       if (stouCount === 2) {
         transferSocket.pause();
         setTimeout(() => transferSocket?.resume(), 1_500);
       }
       const name = uploadName;
       const dataSocket = transferSocket;
+      if (isInterruptedUpload) {
+        interruptedUploadSocket = dataSocket;
+        interruptedUploadControlSocket = socket;
+        dataSocket.pause();
+        setTimeout(() => dataSocket.resume(), 20);
+      }
       const chunks: Buffer[] = [];
-      const uploadHash = name === 'mrt-server-generated.txt' ? createHash('sha256') : undefined;
+      const uploadHash = name === 'mrt-server-generated.txt' || name === 'zz-interrupted-upload-retry.bin'
+        ? createHash('sha256') : undefined;
       dataSocket.on('data', chunk => {
         const data = Buffer.from(chunk);
         chunks.push(data);
         uploadHash?.update(data);
+        if (isInterruptedUpload) {
+          remoteFiles.set(posix.resolve(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
+          dataSocket.pause();
+        }
       });
       dataSocket.once('end', () => {
         const complete = () => {
@@ -2529,8 +2546,10 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           ftpStouCommands.push(command);
           if (argument !== '') { reply('501 STOU does not accept a pathname'); continue; }
           stouCount++;
-          const requestedName = stouCount <= 2 ? 'mrt-server-generated.txt'
-            : `mrt-drop-${stouCount === 3 ? 'first' : 'second'}.txt`;
+          const requestedName = interruptNextUpload ? interruptedUploadName : nextStouName ?? (stouCount <= 2 ? 'mrt-server-generated.txt'
+            : `mrt-drop-${stouCount === 3 ? 'first' : 'second'}.txt`);
+          if (interruptNextUpload) interruptNextUpload = false;
+          nextStouName = undefined;
           const extensionAt = requestedName.lastIndexOf('.');
           const extension = extensionAt > 0 ? requestedName.slice(extensionAt) : '';
           const stem = extension ? requestedName.slice(0, -extension.length) : requestedName;
@@ -2563,6 +2582,11 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           ftpDeleteArguments.push(argument);
           remoteFiles.delete(posix.resolve(currentDirectory, argument).replace(/^\//u, ''));
           reply('250 Delete successful');
+        }
+        else if (verb === 'SIZE') {
+          const path = posix.resolve(currentDirectory, argument).replace(/^\//u, '');
+          const contents = remoteFiles.get(path);
+          reply(contents ? `213 ${contents.byteLength}` : '550 File not found');
         }
         else if (verb === 'QUIT') { reply('221 Goodbye'); socket.end(); }
         else reply('502 Command not implemented');
@@ -2726,6 +2750,41 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
       .toBeVisible({ timeout: 15_000 });
     expect(await hashFile(join(downloadRoot, 'zz-interrupted-download.bin'))).toEqual(expectedInterruptedDownloadDigest);
 
+    interruptNextUpload = true;
+    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect.poll(() => ftpStouCommands.length).toBe(5);
+    await expect.poll(() => remoteFiles.get(interruptedUploadName)?.byteLength ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
+    const partialUploadSize = remoteFiles.get(interruptedUploadName)?.byteLength ?? 0;
+    expect(partialUploadSize).toBeLessThan(largeTransferSize);
+    const failedUploadDataSocket = interruptedUploadSocket;
+    const failedUploadControlSocket = interruptedUploadControlSocket;
+    if (!failedUploadDataSocket || failedUploadDataSocket.destroyed || !failedUploadControlSocket || failedUploadControlSocket.destroyed) {
+      throw new Error('The FTP fixture has no live control and data sockets to reset during upload');
+    }
+    failedUploadDataSocket.resetAndDestroy();
+    failedUploadControlSocket.resetAndDestroy();
+    await expect(browser.getByText('The file transfer failed. Check the connection and server permissions.', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+
+    await browser.getByRole('button', { name: 'Refresh remote folder' }).click();
+    await expect(reconnectButton).toBeVisible({ timeout: 15_000 });
+    await reconnectButton.click();
+    dialog = page.getByRole('dialog', { name: 'Connect to FTP or FTPS files' });
+    await expect(dialog.getByLabel('Host name or IP address')).toHaveValue('127.0.0.1');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => connectionCount).toBe(3);
+    await expect.poll(() => remoteFiles.has(interruptedUploadName), { timeout: 10_000 }).toBe(false);
+    expect(ftpDeleteArguments).toContain(interruptedUploadName);
+    nextStouName = 'zz-interrupted-upload-retry.bin';
+    await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
+    await expect.poll(() => ftpStouCommands.length).toBe(6);
+    await expect.poll(() => remoteFiles.get('zz-interrupted-upload-retry.bin')?.byteLength ?? 0, { timeout: 30_000 })
+      .toBe(largeTransferSize);
+    expect({ size: remoteFiles.get('zz-interrupted-upload-retry.bin')?.byteLength, sha256: ftpLargeUploadDigest })
+      .toEqual(expectedLargeFileDigest);
+    await expect(browser.getByText(/^Uploaded zz-interrupted-upload-retry\.bin \(/u)).toBeVisible({ timeout: 10_000 });
+
     await page.getByRole('button', { name: 'Close active file session', exact: true }).click();
     const closeDialog = page.getByRole('alertdialog');
     await closeDialog.getByRole('button', { name: 'Close session', exact: true }).click();
@@ -2754,7 +2813,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect(dialog.getByLabel('Connection security')).toHaveValue('ftp');
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
-    await expect.poll(() => connectionCount).toBe(3);
+    await expect.poll(() => connectionCount).toBe(4);
   } finally {
     await app?.close();
     for (const socket of controlSockets) socket.destroy();

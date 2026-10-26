@@ -259,7 +259,8 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
   class FakeFtpClient implements FtpLibraryClient {
     readonly ftp = { verbose: true, log: (message: string) => { void message; } };
     closed = false;
-    readonly files = new Map<string, Buffer>();
+    readonly files: Map<string, Buffer>;
+    constructor(files = new Map<string, Buffer>()) { this.files = files; }
     cwd = '/';
     progress: ((info: { readonly name: string; readonly type: string; readonly bytes: number }) => void) | undefined;
     uploadDelayMs = 0;
@@ -267,6 +268,9 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     renameFailDestination: string | undefined;
     uniqueStoreNameOverride: string | undefined;
     uniqueStoreHook: ((remotePath: string) => void) | undefined;
+    failUniqueAfterFirstChunk = false;
+    failUniqueAfterComplete = false;
+    failSize = false;
     uploadCount = 0;
     listing: { name: unknown; type: unknown; size: unknown; modifiedAt?: unknown }[] = [];
     accessOptions: unknown;
@@ -278,7 +282,10 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       if (!this.pendingList) return Promise.resolve(this.listing);
       return new Promise(resolve => { this.pendingList = resolve as (value: never) => void; });
     }
-    async size(path: string): Promise<number> { return this.files.get(path)?.length ?? 0; }
+    async size(path: string): Promise<number> {
+      if (this.failSize) throw new Error('simulated unsupported SIZE command');
+      return this.files.get(path)?.length ?? 0;
+    }
     async rename(source: string, destination: string): Promise<void> {
       this.renameHook?.();
       this.renameHook = undefined;
@@ -333,6 +340,16 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
         this.files.set(actualPath, Buffer.concat(chunks));
         this.progress?.({ name: actualPath, type: 'upload', bytes: Buffer.concat(chunks).length });
         if (this.uploadDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, this.uploadDelayMs));
+        if (this.failUniqueAfterFirstChunk) {
+          this.failUniqueAfterFirstChunk = false;
+          this.closed = true;
+          throw new Error('simulated control connection loss during upload');
+        }
+      }
+      if (this.failUniqueAfterComplete) {
+        this.failUniqueAfterComplete = false;
+        this.closed = true;
+        throw new Error('simulated lost completion reply after upload');
       }
       return actualPath;
     }
@@ -512,6 +529,62 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
   }
   await provider.close(sessionId);
   assert.equal(clients[0]?.closed, true);
+
+  const recoveryRoot = await mkdtemp(join(tmpdir(), 'mrt-ftp-recovery-test-'));
+  try {
+    const recoveryFiles = new Map<string, Buffer>();
+    const recoveryClients: FakeFtpClient[] = [];
+    let failNextRecoverySize = false;
+    const recoveryProvider = createFtpTransportProvider(() => {
+      const client = new FakeFtpClient(recoveryFiles);
+      client.failSize = failNextRecoverySize;
+      failNextRecoverySize = false;
+      recoveryClients.push(client);
+      return client;
+    }, () => false, { directory: 2, file: 1, symbolicLink: 3 });
+    const recoveryEndpoint = { host: 'ftp.example.net', port: 21, secure: false } as const;
+    const recoveryCredentials = { username: 'alice', password: 'temporary-secret' };
+    const interruptedPath = join(recoveryRoot, 'interrupted.bin');
+    const interruptedContents = Buffer.alloc(256 * 1024, 65);
+    await writeFile(interruptedPath, interruptedContents);
+    await recoveryProvider.open('recovery-first', recoveryEndpoint, recoveryCredentials);
+    recoveryClients[0]!.failUniqueAfterFirstChunk = true;
+    await assert.rejects(recoveryProvider.uploadFile('recovery-first', '66666666-6666-4666-8666-666666666666', interruptedPath,
+      '.', 'interrupted.bin', 'rename'), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    const orphanPath = [...recoveryFiles.keys()][0];
+    assert.ok(orphanPath);
+    assert.ok(recoveryFiles.get(orphanPath)!.byteLength < interruptedContents.byteLength);
+
+    await recoveryProvider.open('recovery-other-user', recoveryEndpoint, { username: 'bob', password: 'different-secret' });
+    assert.ok(recoveryFiles.has(orphanPath), 'an orphan stage is not cleaned for a different FTP username');
+    await recoveryProvider.close('recovery-other-user');
+    failNextRecoverySize = true;
+    await recoveryProvider.open('recovery-same-user', recoveryEndpoint, recoveryCredentials);
+    assert.ok(recoveryFiles.has(orphanPath), 'an unsupported SIZE check must not authorize deletion');
+    await recoveryProvider.close('recovery-same-user');
+    const samePathReplacement = Buffer.from('a different, smaller remote file');
+    recoveryFiles.set(orphanPath, samePathReplacement);
+    await recoveryProvider.open('recovery-same-user-retry', recoveryEndpoint, recoveryCredentials);
+    assert.equal(recoveryFiles.has(orphanPath), false,
+      'SIZE cannot distinguish an undersized same-path replacement from the captured stage; this FTP object-identity race is documented');
+    await recoveryProvider.close('recovery-same-user-retry');
+
+    const completePath = join(recoveryRoot, 'complete.bin');
+    const completeContents = Buffer.from('complete upload');
+    await writeFile(completePath, completeContents);
+    await recoveryProvider.open('recovery-complete-first', recoveryEndpoint, recoveryCredentials);
+    recoveryClients[4]!.failUniqueAfterComplete = true;
+    await assert.rejects(recoveryProvider.uploadFile('recovery-complete-first', '77777777-7777-4777-8777-777777777777', completePath,
+      '.', 'complete.bin', 'rename'), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    const possiblyCompletePath = 'complete.bin';
+    await recoveryProvider.open('recovery-complete-same-user', recoveryEndpoint, recoveryCredentials);
+    assert.deepEqual(recoveryFiles.get(possiblyCompletePath), completeContents,
+      'a stage whose remote size reached the expected source size is preserved as a possibly completed upload');
+    await recoveryProvider.close('recovery-complete-same-user');
+    await recoveryProvider.shutdown();
+  } finally {
+    await rm(recoveryRoot, { recursive: true, force: true });
+  }
 
   const cancellationClient = clients[0]!;
   cancellationClient.closed = false;
