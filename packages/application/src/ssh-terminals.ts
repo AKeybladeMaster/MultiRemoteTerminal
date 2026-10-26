@@ -78,6 +78,7 @@ export interface SshTerminalProvider {
     endpoint: SshHostEndpoint,
     credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops?: readonly SshConnectionGatewayCredentials[],
   ): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
   resize(sessionId: string, size: TerminalSize): Promise<void>;
@@ -111,7 +112,8 @@ export type SshTrustEvent =
 export interface SshTerminalController {
   open(sessionId: string, host: string, port: number, size: TerminalSize, gatewayEndpoints?: readonly SshHostEndpoint[],
     authentication?: SshAuthenticationSelection): Promise<Outcome<SshTerminalSession>>;
-  openFiles(sessionId: string, host: string, port: number, authentication?: SshAuthenticationSelection): Promise<Outcome<SshTerminalSession>>;
+  openFiles(sessionId: string, host: string, port: number, authentication?: SshAuthenticationSelection,
+    gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<SshTerminalSession>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
@@ -387,7 +389,7 @@ export function createSshTerminalController(
       providerCredentials ??= { username, password };
 
       const verifyEndpoint = (remoteEndpoint: SshHostEndpoint, evidence: HostKeyEvidence) => verifyHost(session, remoteEndpoint, evidence);
-      if (size === undefined) await provider.openFiles(sessionId, endpoint, providerCredentials, verifyEndpoint);
+      if (size === undefined) await provider.openFiles(sessionId, endpoint, providerCredentials, verifyEndpoint, gatewayCredentials);
       else await provider.open(sessionId, endpoint, providerCredentials, size, verifyEndpoint, gatewayCredentials);
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session || session.state === 'closing') {
         await provider.close(sessionId).catch(() => undefined);
@@ -433,8 +435,8 @@ export function createSshTerminalController(
   }
 
   async function openFiles(sessionId: string, host: string, port: number,
-    authentication?: SshAuthenticationSelection): Promise<Outcome<SshTerminalSession>> {
-    return openConnection(sessionId, host, port, undefined, [], authentication);
+    authentication?: SshAuthenticationSelection, gatewayEndpoints: readonly SshHostEndpoint[] = []): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port, undefined, gatewayEndpoints, authentication);
   }
 
   async function write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {

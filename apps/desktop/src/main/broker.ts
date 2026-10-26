@@ -128,6 +128,22 @@ async function pasteFromClipboard(
   return { requestId, ...await write(sessionId, data) };
 }
 
+async function resolveSshGatewayRoute(
+  actions: Pick<CommandActions, 'sessionCatalog' | 'cancellation'>,
+  gatewayProfileIds: readonly string[],
+  target: SshHostEndpoint,
+): Promise<Outcome<readonly SshHostEndpoint[]>> {
+  const endpoints: SshHostEndpoint[] = [];
+  for (const profileId of gatewayProfileIds) {
+    const profile = await actions.sessionCatalog.get(profileId, actions.cancellation);
+    if (!profile.ok) return profile;
+    if (profile.result.kind !== 'ssh') return failure('INVALID_REQUEST');
+    endpoints.push({ host: profile.result.host, port: profile.result.port });
+  }
+  const route = normalizeSshGatewayRoute(endpoints, target);
+  return route ? { ok: true, result: route } : failure('INVALID_REQUEST');
+}
+
 export async function dispatchCommand(
   sender: CommandSender,
   input: unknown,
@@ -213,15 +229,8 @@ export async function dispatchCommand(
       case 'ssh.open': {
         const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId } = parsed.result.payload;
         const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
-        const endpoints: SshHostEndpoint[] = [];
-        for (const gatewayProfileId of gatewayProfileIds) {
-          const result = await actions.sessionCatalog.get(gatewayProfileId, actions.cancellation);
-          if (!result.ok) return { requestId, ...result };
-          if (result.result.kind !== 'ssh') return { requestId, ...failure('INVALID_REQUEST') };
-          endpoints.push({ host: result.result.host, port: result.result.port });
-        }
-        const route = normalizeSshGatewayRoute(endpoints, { host, port });
-        if (!route) return { requestId, ...failure('INVALID_REQUEST') };
+        const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host, port });
+        if (!route.ok) return { requestId, ...route };
         let authentication: SshAuthenticationSelection | undefined;
         if (authenticationMethod === 'private-key') {
           const selected = await actions.selectSshPrivateKey();
@@ -241,7 +250,7 @@ export async function dispatchCommand(
           authentication = savedCredentials ? { method: 'password', savedCredentials } : { method: 'password' };
         }
         try {
-          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route, authentication) };
+          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route.result, authentication) };
         } finally {
           if (savedCredentials) {
             savedCredentials.username = '';
@@ -251,16 +260,18 @@ export async function dispatchCommand(
         }
       }
       case 'sftp.open': {
-        const { sessionId, host, port } = parsed.result.payload;
+        const { sessionId, host, port, gatewayProfileIds = [] } = parsed.result.payload;
+        const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host, port });
+        if (!route.ok) return { requestId, ...route };
         const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
-        if (authenticationMethod === 'password') return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
-        if (authenticationMethod === 'agent') {
-          return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, { method: 'agent' }) };
-        }
+        if (authenticationMethod === 'password') return { requestId,
+          ...await actions.sshTerminals.openFiles(sessionId, host, port, undefined, route.result) };
+        if (authenticationMethod === 'agent') return { requestId,
+          ...await actions.sshTerminals.openFiles(sessionId, host, port, { method: 'agent' }, route.result) };
         const selected = await actions.selectSshPrivateKey();
         if (!selected.ok) return { requestId, ...selected };
         const authentication: SshAuthenticationSelection = { method: 'private-key', privateKey: selected.result };
-        try { return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, authentication) }; }
+        try { return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, authentication, route.result) }; }
         finally { selected.result.data.fill(0); }
       }
       case 'sftp.close': return { requestId, ...await actions.sshTerminals.close(parsed.result.payload.sessionId) };

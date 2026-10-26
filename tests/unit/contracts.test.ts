@@ -151,10 +151,14 @@ test('credential and vault commands accept only profile identifiers and safe sta
 
 test('SFTP open and close commands share SSH endpoint validation without terminal dimensions', () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
   const open = { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'Server.Example.com.', port: 22 } };
   const parsed = parseRequest(open);
   assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, gatewayProfileIds[0]] } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: ['not-a-profile-id'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
   if (parsed.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {

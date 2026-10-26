@@ -51,6 +51,11 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   delete openFiles.size;
   assert.equal(parseSshWorkerInput(openFiles)?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...openFiles, credentials: privateKeyCredentials })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops: [...gatewayHops, firstGateway] }), undefined,
+    'files-only routes are bounded to two gateways');
+  assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops: [{ ...firstGateway, endpoint: openFiles.endpoint }] }), undefined,
+    'the files-only target cannot also be a gateway');
   assert.equal(parseSshWorkerInput({ ...openFiles, size: open.size }), undefined, 'file-only requests cannot smuggle terminal configuration');
 
   const key = hostKey();

@@ -153,9 +153,14 @@ test('worker host opens a file-only SSH session without sending terminal dimensi
   const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
   const sessionId = '11111111-1111-4111-8111-111111111111';
 
-  await host.openFiles(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' }, async () => true);
+  await host.openFiles(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' }, async () => true,
+    [{ endpoint: { host: 'gateway.example.net', port: 2201 }, credentials: { username: 'gateway', password: 'gateway-secret' } }]);
   assert.equal(worker.requests[0]?.command, 'open-files');
   assert.equal(Object.hasOwn(worker.requests[0] ?? {}, 'size'), false);
+  const gatewayHops = worker.requests[0]?.gatewayHops as readonly { readonly endpoint: { readonly host: string; readonly port: number };
+    readonly credentials: { readonly username: string; readonly password: string } }[] | undefined;
+  assert.deepEqual(gatewayHops?.map(hop => hop.endpoint), [{ host: 'gateway.example.net', port: 2201 }]);
+  assert.equal(gatewayHops?.[0]?.credentials.password, '', 'gateway secrets are cleared after worker handoff');
   await host.shutdown();
 });
 

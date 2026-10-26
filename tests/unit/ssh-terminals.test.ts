@@ -107,13 +107,17 @@ class FakeProvider implements SshTerminalProvider {
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
   async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
-    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>) {
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops: readonly { readonly endpoint: SshHostEndpoint; readonly credentials: { username: string; password: string } }[] = []) {
     this.opened.push({ sessionId: session, endpoint, credentials });
     if ('privateKey' in credentials) {
       this.privateKeyCopies.push(Buffer.from(credentials.privateKey));
       this.privateKeyPassphrases.push(credentials.passphrase);
     } else if ('method' in credentials) this.agentMethods.push(credentials.method);
     else this.passwords.push(credentials.password);
+    this.gatewayRoutes.push(gatewayHops.map(hop => ({ ...hop.endpoint })));
+    this.gatewayCredentialRefs.push(...gatewayHops.map(hop => hop.credentials));
+    for (const hop of gatewayHops) if (!await verifyHost(hop.endpoint, evidence)) throw new Error('Gateway host verification failed');
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
   async write(): Promise<void> {}
@@ -432,6 +436,27 @@ test('SSH jump routes prompt and verify each gateway and destination in route or
     'SSH destination: target.example.net:22']);
   assert.deepEqual(provider.gatewayRoutes, [[gatewayOne, gatewayTwo]]);
   assert.deepEqual(trust.inspected, [gatewayOne, gatewayTwo, destination]);
+  assert.ok(provider.gatewayCredentialRefs.every(credentials => credentials.username === '' && credentials.password === ''),
+    'gateway credentials are cleared after the operation');
+  await controller.dispose();
+});
+
+test('SFTP-only gateway routes verify each hop without opening a shell and clear hop credentials', async () => {
+  const gateway = { host: 'gateway.example.net', port: 2201 };
+  const destination = { host: 'files.example.net', port: 22 };
+  const prompts: string[] = [];
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider,
+    promptWith({ kind: 'provided', username: 'alice', secret: 'operation-secret' }, prompts), trust);
+
+  const opened = await controller.openFiles(sessionId, destination.host, destination.port, undefined, [gateway]);
+
+  assert.equal(opened.ok, true);
+  assert.deepEqual(prompts, ['Gateway 1: gateway.example.net:2201', 'SSH destination: files.example.net:22']);
+  assert.deepEqual(provider.gatewayRoutes, [[gateway]]);
+  assert.deepEqual(trust.inspected, [gateway, destination]);
   assert.ok(provider.gatewayCredentialRefs.every(credentials => credentials.username === '' && credentials.password === ''),
     'gateway credentials are cleared after the operation');
   await controller.dispose();

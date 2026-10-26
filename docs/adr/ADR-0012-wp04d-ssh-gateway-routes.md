@@ -50,6 +50,9 @@ P-22/F-011 remains partial: only saved SSH terminal targets are routable, there
 is a two-gateway cap, and server interoperability beyond the Windows loopback
 fixture has not been verified.
 
+WP-04E later extends this route mechanism to saved SFTP-only targets; see
+[ADR-0032](ADR-0032-sftp-only-ssh-gateway-routes.md).
+
 ## Acceptance evidence
 
 - Domain and typed IPC tests reject duplicate profile IDs, more than two IDs,

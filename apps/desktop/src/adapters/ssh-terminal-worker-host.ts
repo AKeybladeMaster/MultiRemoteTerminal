@@ -53,6 +53,17 @@ function clearAuthenticationCredentials(credentials: SshAuthenticationCredential
     credentials.passphrase = '';
   } else if (!('method' in credentials)) credentials.password = '';
 }
+
+function copyGatewayCredentials(gatewayHops: readonly SshConnectionGatewayCredentials[]): SshConnectionGatewayCredentials[] {
+  return gatewayHops.map(hop => ({ endpoint: { ...hop.endpoint }, credentials: { ...hop.credentials } }));
+}
+
+function clearGatewayCredentials(gatewayHops: readonly SshConnectionGatewayCredentials[]): void {
+  for (const hop of gatewayHops) {
+    hop.credentials.username = '';
+    hop.credentials.password = '';
+  }
+}
 const FILE_TRANSFER_TIMEOUT_MS = 60 * 60_000;
 const REMOTE_TEXT_TIMEOUT_MS = 60_000;
 const FILE_TRANSFER_CLEANUP_GRACE_MS = 10_000;
@@ -108,7 +119,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
     const credentialsCopy = copyAuthenticationCredentials(credentials);
-    const gatewayCopies = gatewayHops.map(hop => ({ endpoint: { ...hop.endpoint }, credentials: { ...hop.credentials } }));
+    const gatewayCopies = copyGatewayCredentials(gatewayHops);
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open',
       sessionId, endpoint, credentials: credentialsCopy, size, gatewayHops: gatewayCopies } as const satisfies SshWorkerRequest;
     this.sessions.set(sessionId, { endpoints: [...gatewayCopies.map(hop => hop.endpoint), { ...endpoint }], verifyHost });
@@ -118,23 +129,26 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
       throw error;
     } finally {
       clearAuthenticationCredentials(credentialsCopy);
-      for (const hop of gatewayCopies) { hop.credentials.username = ''; hop.credentials.password = ''; }
+      clearGatewayCredentials(gatewayCopies);
     }
   }
 
   async openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
-    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>): Promise<void> {
+    verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
+    gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
     const credentialsCopy = copyAuthenticationCredentials(credentials);
+    const gatewayCopies = copyGatewayCredentials(gatewayHops);
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open-files',
-      sessionId, endpoint, credentials: credentialsCopy } as const satisfies SshWorkerRequest;
-    this.sessions.set(sessionId, { endpoints: [{ host: endpoint.host, port: endpoint.port }], verifyHost });
+      sessionId, endpoint, credentials: credentialsCopy, ...(gatewayCopies.length > 0 ? { gatewayHops: gatewayCopies } : {}) } as const satisfies SshWorkerRequest;
+    this.sessions.set(sessionId, { endpoints: [...gatewayCopies.map(hop => hop.endpoint), { ...endpoint }], verifyHost });
     try { await this.request(request, OPEN_TIMEOUT_MS); }
     catch (error) {
       this.sessions.delete(sessionId);
       throw error;
     } finally {
       clearAuthenticationCredentials(credentialsCopy);
+      clearGatewayCredentials(gatewayCopies);
     }
   }
 

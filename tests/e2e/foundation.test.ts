@@ -27,7 +27,7 @@ interface VaultE2EProbe {
   unlock(): Promise<void>;
 }
 type Ssh2FixtureSession = EventEmitter;
-interface Ssh2FixtureStream extends EventEmitter { write(data: string | Buffer): boolean; }
+interface Ssh2FixtureStream extends EventEmitter { write(data: string | Buffer): boolean; end(): void; }
 interface Ssh2AuthenticationContext {
   readonly username: string;
   readonly password: string;
@@ -1800,8 +1800,10 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
   const clients = new Set<Ssh2FixtureClient>();
   const relaySockets = new Set<Socket>();
   const fixtureEvents: string[] = [];
+  const sftpRoot = join(profile, 'remote-sftp');
+  let sftpRequests = 0;
   const servers: Array<{ readonly name: string; readonly server: Ssh2FixtureServer; address?: AddressInfo }> = [];
-  const createFixture = (name: string, target: boolean): Ssh2FixtureServer => {
+  const createFixture = (name: string, role: 'gateway' | 'terminal' | 'sftp'): Ssh2FixtureServer => {
     const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
     const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
       const client = rawClient as Ssh2FixtureClient;
@@ -1816,7 +1818,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       });
       client.on('ready', () => {
         fixtureEvents.push(`${name}:authenticated`);
-        if (!target) client.on('tcpip', (acceptChannel: () => Duplex, rejectChannel: () => void, rawInfo: unknown) => {
+        if (role === 'gateway') client.on('tcpip', (acceptChannel: () => Duplex, rejectChannel: () => void, rawInfo: unknown) => {
           const info = rawInfo as { readonly destIP: string; readonly destPort: number };
           if (info.destIP !== '127.0.0.1' || !servers.some(item => item.address?.port === info.destPort)) {
             fixtureEvents.push(`${name}:rejected:${info.destIP}:${info.destPort}`);
@@ -1838,12 +1840,23 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
           socket.once('connect', () => fixtureEvents.push(`${name}:relay:${info.destPort}`));
           channel.pipe(socket).pipe(channel);
         });
-        if (target) client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        if (role !== 'gateway') client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
           const session = acceptSession();
-          session.on('pty', (accept: () => void) => accept());
-          session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          if (role === 'terminal') {
+            session.on('pty', (accept: () => void) => accept());
+            session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+              fixtureEvents.push(`${name}:shell`);
+              acceptShell().write('MRT-JUMP-TARGET-READY\r\n');
+            });
+          }
+          if (role === 'sftp') session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
             fixtureEvents.push(`${name}:shell`);
-            acceptShell().write('MRT-JUMP-TARGET-READY\r\n');
+            acceptShell().end();
+          });
+          if (role === 'sftp') session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
+            sftpRequests++;
+            fixtureEvents.push(`${name}:sftp`);
+            startSftpFixture(acceptSftp(), sftpRoot, ssh2.utils.sftp);
           });
         });
       });
@@ -1854,9 +1867,12 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
   };
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
-    createFixture('gateway-one', false);
-    createFixture('gateway-two', false);
-    createFixture('target', true);
+    await mkdir(sftpRoot);
+    await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through two SSH gateways');
+    createFixture('gateway-one', 'gateway');
+    createFixture('gateway-two', 'gateway');
+    createFixture('target', 'terminal');
+    createFixture('sftp-target', 'sftp');
     for (const fixture of servers) {
       await new Promise<void>((resolveListen, rejectListen) => {
         fixture.server.once('error', rejectListen);
@@ -1871,7 +1887,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const gatewayOnePort = servers[0]?.address?.port;
     const gatewayTwoPort = servers[1]?.address?.port;
     const targetPort = servers[2]?.address?.port;
-    if (!gatewayOnePort || !gatewayTwoPort || !targetPort) throw new Error('The SSH route fixture did not expose all ports');
+    const sftpTargetPort = servers[3]?.address?.port;
+    if (!gatewayOnePort || !gatewayTwoPort || !targetPort || !sftpTargetPort) throw new Error('The SSH route fixture did not expose all ports');
 
     app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -1881,7 +1898,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       const replies = await Promise.all([
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway one', host: '127.0.0.1', port: ports.gatewayOne }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway two', host: '127.0.0.1', port: ports.gatewayTwo }),
-        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Target profile', host: '127.0.0.1', port: ports.target })
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Target profile', host: '127.0.0.1', port: ports.target }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'sftp', name: 'SFTP target profile', host: '127.0.0.1', port: ports.sftpTarget })
       ]);
       const ids: string[] = [];
       for (const reply of replies) {
@@ -1889,8 +1907,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         ids.push(reply.result.id);
       }
       return ids;
-    }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort });
-    expect(profileIds).toHaveLength(3);
+    }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort, sftpTarget: sftpTargetPort });
+    expect(profileIds).toHaveLength(4);
     await page.reload();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
 
@@ -1918,6 +1936,34 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-JUMP-TARGET-READY', { timeout: 15_000 });
       await confirmCloseActiveTerminal(page, secondGateway ? 'Gateway one → Gateway two → Target profile' : 'Gateway one → Target profile');
     };
+    const openSftpRoute = async (): Promise<void> => {
+      await page.getByRole('button', { name: 'Actions for saved session SFTP target profile' }).click();
+      await page.getByRole('button', { name: 'Connect SFTP target profile through gateways' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Connect SFTP target profile through gateways' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
+      await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
+      await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
+      await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
+      await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+      for (const port of [sftpTargetPort]) {
+        const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+        await expect(trust).toBeVisible({ timeout: 15_000 });
+        await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${port}`);
+        await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+      }
+      const tab = page.getByRole('tab').filter({ hasText: 'Gateway one → Gateway two → SFTP target profile' }).last();
+      await expect(tab).toBeVisible({ timeout: 25_000 });
+      const panelId = await tab.getAttribute('aria-controls');
+      if (!panelId) throw new Error('Missing routed SFTP panel');
+      await expect(page.locator(`#${panelId}`).getByTestId('remote-file-browser').getByText('gateway-sftp.txt', { exact: true }))
+        .toBeVisible({ timeout: 15_000 });
+      expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
+      await page.getByRole('button', { name: 'Close active file session' }).click();
+      const confirmation = page.getByRole('alertdialog');
+      await expect(confirmation).toContainText('Gateway one → Gateway two → SFTP target profile');
+      await confirmation.getByRole('button', { name: 'Close session' }).click();
+    };
     const waitForRelayCleanup = async (): Promise<void> => {
       try { await expect.poll(() => relaySockets.size).toBe(0); }
       catch (error) {
@@ -1941,6 +1987,14 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(2);
     expect(fixtureEvents).toContain('gateway-one:relay:' + targetPort);
     expect(fixtureEvents.filter(event => event === 'gateway-two:authenticated')).toHaveLength(1);
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+
+    await openSftpRoute();
+    await expect.poll(() => sftpRequests).toBe(1);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + sftpTargetPort);
+    expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
   } finally {
