@@ -15,6 +15,7 @@ import { createSessionCatalog } from '../../../../packages/application/src/sessi
 import { createSessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
 import { createMacroCatalog } from '../../../../packages/application/src/macros.ts';
 import { createWorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
+import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
@@ -227,6 +228,7 @@ function boot(): void {
 
   let delayFirstOpenReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-terminal-open', app.isPackaged, process.env, process.argv);
   let delayFirstSessionCreateReply = isE2ETestHookEnabled('--mrt-e2e-delay-first-session-create-reply', app.isPackaged, process.env, process.argv);
+  let delayFirstWorkbenchPreferencesRead = isE2ETestHookEnabled('--mrt-e2e-delay-first-workbench-preferences-read', app.isPackaged, process.env, process.argv);
   const openReplyBarrier = delayFirstOpenReply ? async (): Promise<void> => {
     if (!delayFirstOpenReply) return;
     delayFirstOpenReply = false;
@@ -332,7 +334,17 @@ function boot(): void {
   const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
   const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels, sessionCredentials);
   const macros = createMacroCatalog(storageStore);
-  const preferences = createWorkbenchPreferencesManager(storageStore);
+  const workbenchPreferences = createWorkbenchPreferencesManager(storageStore);
+  const preferences: WorkbenchPreferencesManager = {
+    async read(cancellation) {
+      if (delayFirstWorkbenchPreferencesRead) {
+        delayFirstWorkbenchPreferencesRead = false;
+        await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 4_000));
+      }
+      return workbenchPreferences.read(cancellation);
+    },
+    save(value, cancellation) { return workbenchPreferences.save(value, cancellation); }
+  };
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })

@@ -15,7 +15,7 @@ Use these terms consistently in specs, issue titles, test names and interfaces.
 - **Host trust decision:** explicit accept/reject after SSH host fingerprint inspection.
 - **Vault:** module that encrypts/decrypts credentials for an operation without returning them to the renderer.
 - **Profile script:** explicitly configured and previewable shell initialization text/path; an executable local file, not a hidden app startup action.
-- **Tool registry:** allowed/discovered third-party local providers and settings for visibility/availability.
+- **Tool registry:** an allowlist/catalog of supported local providers and built-in actions with user settings for visibility/availability. WP-11A's fixed local-shell catalog changes command-palette visibility; it does not detect provider installation or disable a provider.
 - **Daemon:** intentionally started background server with a monitored lifecycle and no app-enforced time limit.
 - **Modular monolith:** one local desktop product with cohesive domain/application modules, sometimes internally split into utility processes for safety and responsiveness.
 - **Deep module:** substantial behavior behind a small coherent interface. See codebase-design skill.

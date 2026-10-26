@@ -4859,7 +4859,11 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
 test('local shell tool visibility persists and controls command palette entries after restart', async () => {
   test.skip(process.platform !== 'win32', 'Local shell tool preference acceptance requires Windows');
   const profile = await mkdtemp(join(tmpdir(), 'mrt-local-shell-tools-e2e-'));
-  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  const launch = (delayPreferences = false) => electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`,
+      ...(delayPreferences ? ['--mrt-e2e-delay-first-workbench-preferences-read'] : [])],
+    env: delayPreferences ? { ...electronEnvironment(), MRT_E2E: '1' } : electronEnvironment()
+  });
   let app = await launch();
   try {
     let page = await app.firstWindow();
@@ -4880,9 +4884,16 @@ test('local shell tool visibility persists and controls command palette entries 
     await expect(palette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible();
 
     await app.close();
-    app = await launch();
+    app = await launch(true);
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.keyboard.press('Control+Shift+P');
+    const delayedPalette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toHaveCount(0);
+    await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
     const restoredPowerShell = restoredSettings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
@@ -4891,8 +4902,9 @@ test('local shell tool visibility persists and controls command palette entries 
     await restoredSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(restoredSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await restoredSettings.getByRole('button', { name: 'Close', exact: true }).click();
+    const tabsBeforePowerShellLaunch = await page.getByRole('tab').count();
     await runPaletteCommand(page, 'New PowerShell terminal');
-    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+    await expect(page.getByRole('tab')).toHaveCount(tabsBeforePowerShellLaunch + 1);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
