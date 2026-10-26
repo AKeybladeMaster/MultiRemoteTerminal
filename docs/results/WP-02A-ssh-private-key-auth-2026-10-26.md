@@ -19,4 +19,4 @@ The implementation uses the repository's already-pinned `ssh2@1.17.0`; no packag
 
 ## Remaining acceptance work
 
-P-03/F-003 remains PARTIAL. The native file picker and real protected credential prompt were exercised through test hooks rather than interactive packaged acceptance. SSH agent authentication, key authentication through gateway routes, disposable Windows OpenSSH interoperability, packaged native prompt behavior, cross-format key acceptance and final Windows release security/packaging gates remain open.
+P-03/F-003 remains PARTIAL. The native file picker and real protected credential prompt were exercised through test hooks rather than interactive packaged acceptance. Installed Windows OpenSSH agent interoperability, key authentication through gateway routes, disposable Windows OpenSSH interoperability, packaged native prompt behavior, cross-format key acceptance and final Windows release security/packaging gates remain open.
