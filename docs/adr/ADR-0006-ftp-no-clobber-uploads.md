@@ -1,6 +1,6 @@
 # ADR-0006: FTP unique uploads and conflict safety
 
-**Status:** Accepted for WP-09D (2026-10-24)
+**Status:** Accepted for WP-09D (2026-10-24), extended by WP-05L (2026-10-26)
 
 ## Context
 
@@ -14,13 +14,13 @@ The pinned `basic-ftp` 6.2.3 client implements streaming, data-channel setup, FT
 - For skip, if a competing client creates the requested name after preflight and STOU allocates another name, remove the unique upload and report skipped. If cleanup fails, report a conflict without replacing the competing file.
 - For an existing target with explicit overwrite consent, retain the staged backup/replace sequence. Do not describe it as atomic; server errors can still leave recovery or cleanup work.
 - For an existing local download target with explicit overwrite consent, verify the destination identity immediately before replacing it. Node's Windows rename operation does not provide an identity-conditional compare-and-swap, so a concurrent local process can still replace the destination in the small interval between verification and rename; this is an accepted limitation for this slice.
-- Capture the STOU path from the initial 125/150 reply before data transfer. On user cancellation, end the upload stream cleanly and try `DELE` while the FTP control connection remains available. A control-channel failure or process crash can still leave an incomplete server-selected file; the file can also be visible to other listing clients while it is being written.
+- Capture the STOU path from the initial 125/150 reply before data transfer. On user cancellation, end the upload stream cleanly and try `DELE` while the FTP control connection remains available. If an upload failure prevents immediate cleanup, retain the exact stage path and expected source size in a bounded in-memory worker registry keyed by a digest of endpoint host, port, TLS mode and username; never include the password. On a same-scope reconnect, inspect at most one stage with SIZE and issue DELE only when remote size is smaller than expected. Preserve full-size or larger files because the transfer may have completed before its final reply was lost. FTP SIZE confirms only current path length, not object identity; a concurrent client that replaces the recorded path with a smaller file before reconnect can cause that replacement to be deleted. This is an accepted limitation of same-route FTP recovery, not protection against untrusted concurrent remote writers. A control-channel failure or worker/application restart can still leave residue; the file can also be visible to other listing clients while being written.
 - Expose a committing progress phase to disable cancellation after the app crosses a commit boundary. A request deadline during commit does not cancel immediately; the worker gets a bounded two-minute settlement window for the FTP command sequence and rollback. If the commit still does not settle, worker termination can leave the old target under a hidden `.backup` name and the staged replacement under `.partial`; this is an indeterminate recovery case.
 - Other transfer deadlines request cancellation and allow two seconds for stream and local-temp cleanup before force termination. A forced worker exit can still leave local or remote partial data.
 
 ## Consequences
 
-On a conforming server, non-overwrite STOU uploads cannot silently replace an existing remote file. The server chooses the unique filename; it may differ from the local basename even when that name was free. The server-selected file is visible during upload, and cleanup after connection loss is best-effort. Servers that reject STOU cannot be used for safe non-overwrite uploads in this slice. Broader FTP/FTPS interoperability remains part of P-10 acceptance.
+On a conforming server, non-overwrite STOU uploads cannot silently replace an existing remote file. The server chooses the unique filename; it may differ from the local basename even when that name was free. The server-selected file is visible during upload. A failed upload stage is retried on a same-worker reconnect only when SIZE confirms it is undersized; full-size files are preserved. The in-memory recovery record is bounded to 128 entries, seven days and four attempts, and is lost if the worker exits. This does not verify server identity or remote object identity beyond endpoint and username scope, so a smaller same-path replacement can be deleted and FTP/FTPS interoperability and termination residue remain limitations. Servers that reject STOU cannot be used for safe non-overwrite uploads in this slice. Broader FTP/FTPS interoperability remains part of P-10 acceptance.
 
 ## References
 

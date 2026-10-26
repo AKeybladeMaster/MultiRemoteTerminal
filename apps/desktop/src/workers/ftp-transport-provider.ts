@@ -1,6 +1,6 @@
 import { lstat, open as openFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ReadStream, Stats } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { basename, isAbsolute, resolve } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { FtpFilesProviderError } from '../../../../packages/application/src/ftp-files.ts';
@@ -43,6 +43,7 @@ export type FtpAuthenticationErrorCheck = (error: unknown) => boolean;
 
 interface FtpSession {
   readonly client: FtpLibraryClient;
+  readonly recoveryScope: string;
   busy: boolean;
   cancelled: boolean;
   activeStream: Readable | Writable | undefined;
@@ -50,6 +51,9 @@ interface FtpSession {
 
 const SERVER_PROGRESS_TIMEOUT_MS = 30_000;
 const MAX_LISTING_BYTES = 2 * 1024 * 1024;
+const MAX_INTERRUPTED_UPLOAD_RECORDS = 128;
+const MAX_INTERRUPTED_UPLOAD_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const MAX_INTERRUPTED_UPLOAD_ATTEMPTS = 4;
 const TRANSFER_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_COPY_NAME_ATTEMPTS = 9_999;
 
@@ -104,9 +108,85 @@ function isFtpCommandUnsupported(error: unknown): boolean {
   return error.code === 500 || error.code === 501 || error.code === 502 || error.code === 504;
 }
 
+interface InterruptedUploadRecord {
+  readonly path: string;
+  readonly expectedBytes: number;
+  readonly createdAt: number;
+  attempts: number;
+}
+
 export function createFtpTransportProvider(createClient: FtpLibraryClientFactory, isAuthenticationError: FtpAuthenticationErrorCheck,
   fileTypes: { readonly directory: number; readonly file: number; readonly symbolicLink: number }): FtpFilesProvider {
   const sessions = new Map<string, FtpSession>();
+  const interruptedUploads = new Map<string, InterruptedUploadRecord[]>();
+
+  function recoveryScope(endpoint: FtpEndpoint, username: string): string {
+    return createHash('sha256').update(JSON.stringify([endpoint.host.toLowerCase(), endpoint.port, endpoint.secure, username])).digest('hex');
+  }
+
+  function removeInterruptedUpload(scope: string, record: InterruptedUploadRecord): void {
+    const records = interruptedUploads.get(scope);
+    if (!records) return;
+    const remaining = records.filter(candidate => candidate !== record);
+    if (remaining.length === 0) interruptedUploads.delete(scope);
+    else interruptedUploads.set(scope, remaining);
+  }
+
+  function pruneInterruptedUploads(now: number): void {
+    for (const [scope, records] of interruptedUploads) {
+      const remaining = records.filter(record => now - record.createdAt < MAX_INTERRUPTED_UPLOAD_AGE_MS &&
+        record.attempts < MAX_INTERRUPTED_UPLOAD_ATTEMPTS);
+      if (remaining.length === 0) interruptedUploads.delete(scope);
+      else interruptedUploads.set(scope, remaining);
+    }
+  }
+
+  function rememberInterruptedUpload(scope: string, path: string, expectedBytes: number): void {
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    if (!isFtpRemotePath(path) || !isFtpFileName(name) || remoteParentPath(path) === path ||
+        !Number.isSafeInteger(expectedBytes) || expectedBytes < 0) return;
+    const now = Date.now();
+    pruneInterruptedUploads(now);
+    let total = [...interruptedUploads.values()].reduce((count, records) => count + records.length, 0);
+    while (total >= MAX_INTERRUPTED_UPLOAD_RECORDS) {
+      let oldestScope: string | undefined;
+      let oldestRecord: InterruptedUploadRecord | undefined;
+      for (const [candidateScope, records] of interruptedUploads) {
+        for (const record of records) {
+          if (!oldestRecord || record.createdAt < oldestRecord.createdAt) {
+            oldestScope = candidateScope;
+            oldestRecord = record;
+          }
+        }
+      }
+      if (!oldestScope || !oldestRecord) break;
+      removeInterruptedUpload(oldestScope, oldestRecord);
+      total--;
+    }
+    const records = interruptedUploads.get(scope) ?? [];
+    records.push({ path, expectedBytes, createdAt: now, attempts: 0 });
+    interruptedUploads.set(scope, records);
+  }
+
+  async function recoverOneInterruptedUpload(session: FtpSession): Promise<void> {
+    pruneInterruptedUploads(Date.now());
+    const record = interruptedUploads.get(session.recoveryScope)?.[0];
+    if (!record) return;
+    record.attempts++;
+    try {
+      const actualBytes = await session.client.size(record.path);
+      if (!Number.isSafeInteger(actualBytes) || actualBytes < 0) return;
+      if (actualBytes >= record.expectedBytes) {
+        removeInterruptedUpload(session.recoveryScope, record);
+        return;
+      }
+      await session.client.remove(record.path, true);
+      removeInterruptedUpload(session.recoveryScope, record);
+    } catch (error) {
+      if (session.client.closed === true) throw error;
+      if (record.attempts >= MAX_INTERRUPTED_UPLOAD_ATTEMPTS) removeInterruptedUpload(session.recoveryScope, record);
+    }
+  }
 
   async function open(sessionId: string, endpoint: FtpEndpoint, credentials: FtpCredentials): Promise<void> {
     if (!isCanonicalFtpEndpoint(endpoint) || typeof credentials.username !== 'string' || credentials.username.length === 0 ||
@@ -118,10 +198,12 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
     const client = createClient(SERVER_PROGRESS_TIMEOUT_MS, { allowSeparateTransferHost: false, maxListingBytes: MAX_LISTING_BYTES });
     client.ftp.verbose = false;
     client.ftp.log = () => {};
-    const session: FtpSession = { client, busy: true, cancelled: false, activeStream: undefined };
+    const session: FtpSession = { client, recoveryScope: recoveryScope(endpoint, credentials.username), busy: true, cancelled: false, activeStream: undefined };
     sessions.set(sessionId, session);
     try {
       await client.access({ host: endpoint.host, port: endpoint.port, user: credentials.username, password: credentials.password, secure: endpoint.secure });
+      if (session.cancelled || sessions.get(sessionId) !== session) throw new FtpFilesProviderError('CANCELLED');
+      await recoverOneInterruptedUpload(session);
       if (session.cancelled || sessions.get(sessionId) !== session) throw new FtpFilesProviderError('CANCELLED');
       session.busy = false;
     } catch (error) {
@@ -196,6 +278,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
     if (session.busy || session.cancelled) throw new FtpFilesProviderError('BUSY');
     session.busy = true;
     let temporaryRemotePath: string | undefined;
+    let expectedUploadBytes: number | undefined;
     let sourceFile: Awaited<ReturnType<typeof openFile>> | undefined;
     let upload: ReadStream | undefined;
     let cancelled = false;
@@ -238,6 +321,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
         if (wasCancelled()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
         sourceFile = await openFile(localPath, 'r');
         sourceStats = await sourceFile.stat();
+        expectedUploadBytes = sourceStats.size;
         const currentPathStats = await lstat(localPath);
         if (!sourceStats.isFile() || !currentPathStats.isFile() || currentPathStats.isSymbolicLink() ||
             sourceStats.dev !== currentPathStats.dev || sourceStats.ino !== currentPathStats.ino || sourceStats.size !== currentPathStats.size ||
@@ -386,7 +470,15 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       }
       return completed('upload', targetName, sourceStats.size);
     } catch (error) {
-      if (temporaryRemotePath) await session.client.remove(temporaryRemotePath, true).catch(() => undefined);
+      if (temporaryRemotePath) {
+        const failedStagePath = temporaryRemotePath;
+        let removed = false;
+        try { await session.client.remove(failedStagePath, true); removed = true; }
+        catch { /* A lost control connection can prevent immediate cleanup; defer exact-stage recovery. */ }
+        if (!removed && expectedUploadBytes !== undefined) {
+          rememberInterruptedUpload(session.recoveryScope, failedStagePath, expectedUploadBytes);
+        }
+      }
       if (wasCancelled()) {
         const sessionUsable = session.client.closed !== true;
         if (!sessionUsable) sessions.delete(sessionId);
