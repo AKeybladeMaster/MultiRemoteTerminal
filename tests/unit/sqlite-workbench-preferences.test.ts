@@ -18,7 +18,8 @@ test('SQLite stores and restores the Unicode startup greeting across database re
     assert.deepEqual(preferences.read(), DEFAULT_WORKBENCH_PREFERENCES);
     const updated = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Привет 👋\nこんにちは',
       terminalHighlightEnabled: true, terminalHighlightRules: [{ pattern: '\\b(git|ssh)\\b', color: 'cyan' as const }],
-      terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false };
+      terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false,
+      customLogoDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' };
     assert.deepEqual(preferences.save(updated), updated);
     database.close();
 
@@ -107,6 +108,20 @@ test('SQLite migrates schema v6 shell visibility and enables the new WSL action 
       showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash'] }), 6, '2026-10-26T00:00:00.000Z');
   const preferences = new SqliteWorkbenchPreferencesRepository(database);
   assert.deepEqual(preferences.read().visibleLocalShells, ['powershell', 'bash', 'wsl']);
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
+});
+
+test('SQLite migrates schema v7 preferences with the built-in logo fallback', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false,
+      terminalHighlightRules: [], autoSaveSessions: false, terminalShellSyntaxEnabled: false,
+      showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash', 'wsl'] }), 7, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.equal(preferences.read().customLogoDataUrl, null);
   assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
     WORKBENCH_PREFERENCES_SCHEMA_VERSION);
   database.close();

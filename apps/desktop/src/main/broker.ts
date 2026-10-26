@@ -22,6 +22,7 @@ import type { CancellationSignal } from '../../../../packages/application/src/ca
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
 import type { TftpRootSelection, TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
+import type { CustomLogoSelection } from '../../../../packages/domain/src/custom-logo.ts';
 import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import type { DroppedUploadSelection } from './dropped-upload-registry.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
@@ -73,6 +74,7 @@ export interface CommandActions {
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
   readonly resolveSshTransferConflict: (direction: FileTransferDirection, fileName: string) => Promise<FileTransferConflictPolicy | undefined>;
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
+  readonly selectCustomLogo: () => Promise<Outcome<CustomLogoSelection>>;
   readonly cancellation?: CancellationSignal;
   readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
@@ -140,6 +142,7 @@ export async function dispatchCommand(
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
         parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start' || parsed.result.command === 'tftp.stop' ||
+        parsed.result.command === 'branding.logo.select' ||
         parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
@@ -438,6 +441,7 @@ export async function dispatchCommand(
       case 'macro.shortcut.list': return { requestId, ...await actions.macros.listShortcuts(actions.cancellation) };
       case 'macro.shortcut.set': return { requestId, ...await actions.macros.setShortcut(parsed.result.payload.macroId, parsed.result.payload.code, actions.cancellation) };
       case 'macro.shortcut.delete': return { requestId, ...await actions.macros.removeShortcut(parsed.result.payload.macroId, actions.cancellation) };
+      case 'branding.logo.select': return { requestId, ...await actions.selectCustomLogo() };
       case 'preferences.get': return { requestId, ...await actions.preferences.read(actions.cancellation) };
       case 'preferences.save': return { requestId, ...await actions.preferences.save(parsed.result.payload.preferences, actions.cancellation) };
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };

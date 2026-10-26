@@ -5,11 +5,11 @@
 ## Branching and release protocol
 
 - Inspect `git status`, branch graph and `origin` before changes; preserve existing repository contents unless user directs a clean reset.
-- Use the active `dev-1` branch for feature work; integrate optional `feature/WP-XX` branches into `dev-1` first. `main` is the default branch.
-- Keep commits scoped per work package, with spec/acceptance test references. Review and validate each completed phase on `dev-1`.
-- After a phase passes its acceptance checks and independent review, push `dev-1` and promote it to `main` with a regular merge commit, then return to `dev-1`. The M4 gate remains required before calling a build an MVP release. Do not force-push.
+- Use the active `dev` branch for feature work; integrate optional `feature/WP-XX` branches into `dev` first. `main` is the default branch.
+- Keep commits scoped per work package, with spec/acceptance test references. Review and validate each completed phase on `dev`.
+- After a phase passes its acceptance checks and independent review, push `dev` and promote it to `main` with a regular merge commit, then return to `dev`. The M4 gate remains required before calling a build an MVP release. Do not force-push.
 - Verify remote branch history with `git ls-remote` after publishing. Credentials and GitHub privileges are user-controlled.
-- No direct source pushes to `main` and no blanket claim that `dev-1` or `main` contains a change until remote refs confirm it.
+- No direct source pushes to `main` and no blanket claim that `dev` or `main` contains a change until remote refs confirm it.
 
 ## Shared definition of done for every work package
 
@@ -200,6 +200,8 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 
 **WP-07T — Master-password profile restore acceptance (partial):** A Windows UI-to-main/utility-process E2E copies only the encrypted master-password vault file into a different `userData` directory under the same Windows account. The restored app starts locked and blocks credential resolution; Settings unlocks it through the guarded test prompt and the exact credential resolves afterward. The test confirms the secret is absent from both vault files. Cross-account restore, Windows-account-protected mode migration, reinstall restore and packaged native prompts remain open; F-010/P-29 stay PARTIAL. See [WP-07T results](results/WP-07T-master-vault-profile-restore-2026-10-26.md).
 
+**WP-07U — Bounded custom logo (partial):** Implements the P-35 logo path without exposing filesystem paths to the renderer. The main-process native picker accepts PNG only; checks the 1 MiB input and 512×512 dimension bounds before Electron image decoding; normalizes to a PNG no larger than 512 KiB; and returns only a bounded data URL through typed IPC. Workbench preferences schema v8 stores the image value and migrates earlier settings with no logo. The header keeps the built-in wordmark and displays the selected image; Settings can reset it. Domain, adapter, IPC, picker, CSP and broker tests pass; the Windows E2E verifies a valid image, preference persistence across restart, invalid input rejection and reset through a guarded picker hook. Actual native-dialog selection and cancellation are still unverified, so P-35 remains PARTIAL. See [ADR-0028](adr/ADR-0028-custom-logo-storage.md) and [WP-07U results](results/WP-07U-custom-logo-2026-10-26.md).
+
 ### WP-08 — RDP/VNC and local editor
 
 **Requires:** MVP.  
@@ -269,7 +271,7 @@ WP-01G independent Standards and Spec review (2026-10-26): no blocking findings.
 
 ## Suggested merge checkpoints
 
-- `dev-1` can accept small reviewed vertical slices throughout.
+- `dev` can accept small reviewed vertical slices throughout.
 - `main` receives completed, reviewed phases through regular merges, not task stubs. A `main` merge does not imply the M4 release gate passed.
 - Release tags like `v0.1.0` mean a *tested MVP*, not completion of all MobaXterm parity features.
 - If already-existing app source contradicts this spec, assess before replacing; `docs/adr/` holds reasoned changes.

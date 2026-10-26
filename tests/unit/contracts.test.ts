@@ -517,3 +517,19 @@ test('workbench preference IPC accepts bounded plain Unicode greeting text only'
       error: { code: 'CORRUPT', target: 'application', retryable: false } }, parsed.result), true);
   }
 });
+
+test('custom logo IPC accepts only the typed selection request and bounded PNG result', () => {
+  const choose = { command: 'branding.logo.select', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsed = parseRequest(choose);
+  assert.equal(parsed.ok, true);
+  assert.equal(parseRequest({ ...choose, payload: { path: 'C:\\Users\\logo.png' } }).ok, false);
+  if (parsed.ok) {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { dataUrl } }, parsed.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { dataUrl, path: 'C:\\logo.png' } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: { dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' } }, parsed.result), false);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: false,
+      error: { code: 'CANCELLED', target: 'application', retryable: false } }, parsed.result), true);
+  }
+});

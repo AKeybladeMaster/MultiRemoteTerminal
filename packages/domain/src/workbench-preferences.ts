@@ -2,10 +2,12 @@ import { normalizeTerminalHighlightRules } from './terminal-highlights.ts';
 import type { TerminalHighlightRule } from './terminal-highlights.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS, normalizeVisibleLocalShells } from './local-shell-tools.ts';
 import type { LocalShell } from './local-terminal.ts';
+import { isCustomLogoDataUrl, MAX_CUSTOM_LOGO_DATA_URL_LENGTH } from './custom-logo.ts';
 
-export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 7;
-export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5, 6] as const);
+export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 8;
+export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5, 6, 7] as const);
 export const MAX_STARTUP_GREETING_CODE_POINTS = 512;
+export const MAX_WORKBENCH_PREFERENCES_JSON_LENGTH = MAX_CUSTOM_LOGO_DATA_URL_LENGTH + 32_768;
 
 export interface WorkbenchPreferences {
   readonly startupGreeting: string;
@@ -15,11 +17,13 @@ export interface WorkbenchPreferences {
   readonly terminalShellSyntaxEnabled: boolean;
   readonly showSftpBrowserBesideSsh: boolean;
   readonly visibleLocalShells: readonly LocalShell[];
+  readonly customLogoDataUrl: string | null;
 }
 
 export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = Object.freeze({
   startupGreeting: '', terminalHighlightEnabled: false, terminalHighlightRules: Object.freeze([]), autoSaveSessions: false,
-  terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS
+  terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS,
+  customLogoDataUrl: null
 });
 
 export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersion?: number): WorkbenchPreferences | undefined {
@@ -41,7 +45,12 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
     Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
     Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
     Object.hasOwn(value, 'visibleLocalShells');
-  if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isShellSyntaxShape && !isSftpPaneShape && !isCurrentShape) return undefined;
+  const isCustomLogoShape = keys.length === 8 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+    Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
+    Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
+    Object.hasOwn(value, 'visibleLocalShells') && Object.hasOwn(value, 'customLogoDataUrl');
+  if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isShellSyntaxShape && !isSftpPaneShape &&
+      !isCurrentShape && !isCustomLogoShape) return undefined;
 
   const inputGreeting = value.startupGreeting;
   if (inputGreeting.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) return undefined;
@@ -56,20 +65,20 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
   if (!terminalHighlightRules) return undefined;
   if (isHighlightShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
-    visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
+    visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, customLogoDataUrl: null });
   if (typeof value.autoSaveSessions !== 'boolean') return undefined;
   if (isSessionSaveShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: false,
-    showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
+    showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, customLogoDataUrl: null });
   if (typeof value.terminalShellSyntaxEnabled !== 'boolean') return undefined;
   if (isShellSyntaxShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
-  if (!isSftpPaneShape && !isCurrentShape) return undefined;
+    showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, customLogoDataUrl: null });
+  if (!isSftpPaneShape && !isCurrentShape && !isCustomLogoShape) return undefined;
   if (typeof value.showSftpBrowserBesideSsh !== 'boolean') return undefined;
   if (isSftpPaneShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
+    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, customLogoDataUrl: null });
   let visibleLocalShells: readonly LocalShell[] | undefined;
   if (sourceSchemaVersion === 6) {
     const previousShells = normalizeVisibleLocalShells(value.visibleLocalShells, false);
@@ -79,9 +88,13 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
     visibleLocalShells = normalizeVisibleLocalShells(value.visibleLocalShells);
   }
   if (!visibleLocalShells) return undefined;
+  const customLogoDataUrl = isCustomLogoShape
+    ? value.customLogoDataUrl === null ? null : isCustomLogoDataUrl(value.customLogoDataUrl) ? value.customLogoDataUrl : undefined
+    : null;
+  if (customLogoDataUrl === undefined) return undefined;
   return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled, terminalHighlightRules,
     autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells });
+    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells, customLogoDataUrl });
 }
 
 export function isWorkbenchPreferences(value: unknown): value is WorkbenchPreferences {

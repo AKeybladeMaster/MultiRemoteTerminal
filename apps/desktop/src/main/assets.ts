@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 // xterm.js installs its parsed-color and decoration styles in runtime <style> elements.
 // Keep inline scripts blocked; only the style policy permits generated inline CSS.
-export const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'";
+export const CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'";
 
 export function assetPath(raw: string): string | undefined {
   try {

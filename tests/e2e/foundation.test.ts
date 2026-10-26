@@ -5105,3 +5105,59 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('custom workbench logo is bounded, persists across restart, and resets to the built-in wordmark', async () => {
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-custom-logo-e2e-'));
+  const logoPath = join(profile, 'selected-logo.png');
+  const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==', 'base64');
+  const launch = () => electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo', `--mrt-e2e-custom-logo-file=${logoPath}`],
+    env: { ...electronEnvironment(), MRT_E2E: '1' }
+  });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await writeFile(logoPath, validPng);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    const preview = settings.getByRole('img', { name: 'Selected workbench logo' });
+    await expect(preview).toBeVisible();
+    await expect(preview).toHaveJSProperty('naturalWidth', 1);
+    await page.screenshot({ path: 'test-results/custom-logo-settings.png' });
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('custom-workbench-logo')).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByTestId('custom-workbench-logo')).toBeVisible();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
+
+    await writeFile(logoPath, Buffer.from('not a PNG image'));
+    await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    await expect(settings.getByRole('alert')).toContainText('Choose a valid PNG image');
+    await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
+    await settings.getByRole('button', { name: 'Use built-in wordmark', exact: true }).click();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});

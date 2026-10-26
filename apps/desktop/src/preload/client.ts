@@ -2,7 +2,7 @@ import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropE
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
-  ChooseTftpRootReply, TftpServerStatusReply } from '../../../../packages/contracts/src/commands.ts';
+  ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
@@ -548,6 +548,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     deleteMacroShortcut(macroId: string): Promise<TerminalActionReply> {
       return send(voidRequest('macro.shortcut.delete', { macroId }), 8_000);
+    },
+    selectCustomLogo(): Promise<SelectCustomLogoReply> {
+      return send({ command: 'branding.logo.select', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} });
     },
     getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply> {
       return send({ command: 'preferences.get', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);

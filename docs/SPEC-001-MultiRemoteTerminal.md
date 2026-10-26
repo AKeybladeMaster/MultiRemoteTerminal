@@ -7,7 +7,7 @@
 
 ## Background
 
-The user wants an original personal counterpart to the publicly described Home and Professional feature sets of MobaXterm, without the Home Edition record/runtime limits. The new product is named **MultiRemoteTerminal** and is developed in the GitHub repository `AKeybladeMaster/MultiRemoteTerminal`. The active development branch is `dev-1`; reviewed phases are merged into the default `main` branch with history preserved.
+The user wants an independent Windows remote-terminal workbench with the capabilities defined in this specification. The new product is named **MultiRemoteTerminal** and is developed in the GitHub repository `AKeybladeMaster/MultiRemoteTerminal`. The active development branch is `dev`; reviewed phases are merged into the default `main` branch with history preserved.
 
 The comparison application's publicly advertised features include tabbed local terminals, SSH/Telnet/Rlogin/Mosh, RDP/VNC/XDMCP, SFTP browser, X11 forwarding/server, SSH gateways and tunnels, multi-execution, macros, local tools, text editing, master-password storage, syntax highlighting and professional customizer settings. The official edition table additionally describes no limits on stored sessions/tunnels/macros, unlimited network-daemon runtime, startup message/logo, user profile script and enabled-tool selection.
 
@@ -125,7 +125,7 @@ Study interaction patterns and user-visible behavior rather than copying styles,
 
 Build **vertical slices** in this sequence; every slice must pass tests before expansion. See [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md).
 
-1. **Foundation:** workspace, Electron security posture, typed preload/IPC, app shell, design tokens and CI checks; source work proceeds on `dev-1` before reviewed promotion to `main`.
+1. **Foundation:** workspace, Electron security posture, typed preload/IPC, app shell, design tokens and CI checks; source work proceeds on `dev` before reviewed promotion to `main`.
 2. **Terminal/SSH:** ConPTY/PTY lifecycle, SSH shell, known-host trust dialog, credential vault, tabs, error states.
 3. **Catalog:** SQLite schemas and migrations, folders/sessions, filters, backup, import/export redacted defaults.
 4. **SFTP and forwarding:** remote file browser, transfers, jumps, local/remote/dynamic SSH tunnels.
@@ -143,7 +143,7 @@ No step may be marked done because it has only stub UI or scaffolding.
 | M1 — Secure shell foundation | F-001/002/003/010/012 | Windows local/SSH workbench with trust/vault |
 | M2 — Remote operations MVP | F-004/005/006/011 | Session catalog, SFTP, forwarding/jump tests |
 | M3 — Power-user MVP | F-007/008/009/013 | Macros, MultiExec, professional settings, unlimited records |
-| M4 — v0.1 ready | N-001..N-007 | Installed/portable build E2E, no critical findings, reviewed `dev-1`→`main` promotion |
+| M4 — v0.1 ready | N-001..N-007 | Installed/portable build E2E, no critical findings, reviewed `dev`→`main` promotion |
 | M5 — Remote desktop/legacy | F-014..F-019 | RDP/VNC/serial/FTP/Mosh/legacy |
 | M6 — Full parity candidate | F-020..F-024 | X server/XDMCP/daemons/tooling tested on Windows |
 

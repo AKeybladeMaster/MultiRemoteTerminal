@@ -57,6 +57,8 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 }
 .app-header, .status-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px; }
 .app-header { min-width: 0; border-bottom: 1px solid var(--line); }
+.app-brand { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.app-custom-logo { width: 30px; height: 30px; flex: none; object-fit: contain; }
 .wordmark { font-size: 16px; font-weight: 650; letter-spacing: .005em; white-space: nowrap; }
 .header-actions { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .build-label, .status-bar { color: var(--muted); font-size: 12px; }
@@ -312,6 +314,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .settings-form-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; color: var(--muted); font-size: 11px; }
 .settings-form-meta .dialog-error { margin: 0; }
 .settings-highlights { display: grid; gap: 9px; margin-top: 5px; padding-top: 14px; border-top: 1px solid var(--line); }
+.settings-custom-logo-preview { width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); border-radius: 4px; background: var(--terminal-background); padding: 8px; }
 .settings-highlight-toggle { display: flex; align-items: center; gap: 8px; color: var(--text) !important; font-size: 13px !important; cursor: pointer; }
 .settings-highlight-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
 .settings-highlight-help { margin: -3px 0 1px 23px; color: var(--muted); font-size: 11px; line-height: 1.45; }

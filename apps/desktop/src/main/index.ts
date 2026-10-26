@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, join, resolve } from 'node:path';
@@ -56,6 +56,7 @@ import { bindRendererRequestCancellation } from './renderer-request-cancellation
 import { isE2ETestHookEnabled } from './e2e-test-hooks.ts';
 import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
 import { createNetworkWorkerEnvironment } from './network-worker-environment.ts';
+import { createCustomLogoPicker } from './custom-logo-picker.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 
@@ -391,6 +392,20 @@ function boot(): void {
     const absolutePath = result.filePaths[0];
     return { absolutePath, fileName: basename(absolutePath) };
   }, randomUUID);
+  const customLogoPicker = createCustomLogoPicker(async () => {
+    const testPath = e2eCustomLogoPath();
+    if (testPath) return testPath;
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose a PNG logo', buttonLabel: 'Choose image', properties: ['openFile'],
+      filters: [{ name: 'PNG image', extensions: ['png'] }]
+    };
+    const currentWindow = window;
+    const result = currentWindow && !currentWindow.isDestroyed()
+      ? await dialog.showOpenDialog(currentWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    return result.filePaths[0];
+  }, bytes => nativeImage.createFromBuffer(Buffer.from(bytes)));
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
@@ -508,6 +523,7 @@ function boot(): void {
         authorizeVncLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'vnc', host, port),
         authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) =>
           rendererGestures.consumeTftpServerAction(event.sender.id, action, selectionId, port),
+        selectCustomLogo: () => customLogoPicker.select(),
         async chooseTftpRoot(cancellation) {
           if (cancellation?.aborted) return failure('CANCELLED');
           if (tftpRootDialogOpen || tftpServer.getStatus().state === 'running') return failure('BUSY');
@@ -793,6 +809,12 @@ function e2eTransferPath(prefix: string, testModeFlag: string): string | undefin
 function e2eLocalTextFilePath(): string | undefined {
   if (!isE2ETestHookEnabled('--mrt-e2e-local-text-editor', app.isPackaged, process.env, process.argv)) return undefined;
   const value = process.argv.find(argument => argument.startsWith('--mrt-e2e-local-text-file='))?.slice('--mrt-e2e-local-text-file='.length);
+  return value && resolve(value) === value ? value : undefined;
+}
+
+function e2eCustomLogoPath(): string | undefined {
+  if (!isE2ETestHookEnabled('--mrt-e2e-custom-logo', app.isPackaged, process.env, process.argv)) return undefined;
+  const value = process.argv.find(argument => argument.startsWith('--mrt-e2e-custom-logo-file='))?.slice('--mrt-e2e-custom-logo-file='.length);
   return value && resolve(value) === value ? value : undefined;
 }
 

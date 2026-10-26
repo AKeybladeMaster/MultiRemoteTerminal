@@ -79,6 +79,22 @@ test('workbench preferences migrate shell visibility defaults and reject unknown
   assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: 'bash' }), undefined);
 });
 
+test('workbench preferences migrate schema v7 and validate bounded normalized logos', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+    autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: ['powershell', 'bash'] };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous, 7), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...previous
+  });
+  const logo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: logo }), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...previous, customLogoDataUrl: logo
+  });
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 'data:image/png;base64,../../bad' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 42 }), undefined);
+});
+
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {
   const originalReplace = String.prototype.replace;
   let scannedOversizedInput = false;

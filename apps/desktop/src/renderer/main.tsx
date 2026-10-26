@@ -320,6 +320,7 @@ function Workbench() {
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const [workbenchPreferencesSettled, setWorkbenchPreferencesSettled] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
@@ -1248,6 +1249,7 @@ function Workbench() {
     setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
     setShowSftpBrowserBesideSsh(preferences.showSftpBrowserBesideSsh);
     setVisibleLocalShells(preferences.visibleLocalShells);
+    setCustomLogoDataUrl(preferences.customLogoDataUrl);
     setWorkbenchPreferencesSettled(true);
   }, []);
 
@@ -2870,7 +2872,10 @@ function Workbench() {
     <h1 className="visually-hidden" translate="no">MultiRemoteTerminal terminal workspace</h1>
     <a className="skip" href="#workspace">Skip to terminal workspace</a>
     <header className="app-header">
-      <span className="wordmark" translate="no">MultiRemoteTerminal</span>
+      <div className="app-brand">
+        {customLogoDataUrl && <img className="app-custom-logo" src={customLogoDataUrl} alt="" aria-hidden="true" width={30} height={30} data-testid="custom-workbench-logo" />}
+        <span className="wordmark" translate="no">MultiRemoteTerminal</span>
+      </div>
       <div className="header-actions">
         <span className="build-label">Local and remote sessions</span>
         <button ref={localTextEditorTrigger} className="quiet-button" type="button" aria-haspopup="dialog"

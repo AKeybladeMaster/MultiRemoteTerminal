@@ -27,6 +27,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
   resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
+  selectCustomLogo: async () => ({ ok: true, result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } }),
   discardDroppedUploadHandles: () => {}, terminals: {
     async open(sessionId, launch) { return { ok: true, result: { sessionId, ...launch, state: 'running' } }; },
     async listWslDistributions() { return { ok: true, result: [{ name: 'Ubuntu' }] }; }, cancelWslDistributionDiscovery: noOp,
@@ -126,6 +127,15 @@ test('session auto-save requires the persisted opt-in preference at the main-pro
   assert.equal(allowed.ok, true);
   assert.equal(saved, 1);
   assert.equal(activity, 2);
+});
+
+test('custom logo selection uses only the native main-process picker action', async () => {
+  let activity = 0;
+  const reply = await dispatchCommand(owner, { command: 'branding.logo.select', requestId: request.requestId, contractVersion: 1, payload: {} },
+    actions(snapshot, () => { activity++; }), () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: true,
+    result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } });
+  assert.equal(activity, 1);
 });
 
 test('saved SSH opens resolve the profile credential in main and clear it after provider handoff', async () => {
