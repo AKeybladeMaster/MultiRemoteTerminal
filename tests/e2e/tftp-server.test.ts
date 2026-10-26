@@ -31,7 +31,7 @@ function receivePacket(
       if (error) rejectPacket(error);
       else if (result) resolvePacket(result);
     };
-    socket.once('message', onMessage);
+    socket.on('message', onMessage);
     socket.once('error', onError);
   });
 }
@@ -211,6 +211,7 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
     for (const fileName of capacityFileNames.slice(0, 8)) {
       const activeReplyPromise = receivePacket(client, 5_000, 'bounded active TFTP slot', (packet, remote) =>
         packet.readUInt16BE(0) === 3 && !activeTransferPorts.has(remote.port));
+      if (activeCapacityReplies.length === 1) await new Promise<void>(resolveRetry => setTimeout(resolveRetry, 1_100));
       await sendPacket(client, tftpRequest(1, fileName), runningPort);
       const activeReply = await activeReplyPromise;
       activeCapacityReplies.push(activeReply);
