@@ -21,6 +21,8 @@ import { canonicalizeFtpEndpoint, isFtpTransferProgress, isFtpTransferResult } f
 import { isCanonicalFtpEndpoint } from '../../domain/src/ftp.ts';
 import { isFtpDirectoryListing, isFtpRemotePath } from '../../domain/src/ftp.ts';
 import type { FtpTransferProgress, FtpTransferResult } from '../../domain/src/ftp.ts';
+import { isTftpPort, isTftpRootSelection, isTftpServerStatus } from '../../domain/src/tftp.ts';
+import type { TftpRootSelection, TftpServerStatus } from '../../domain/src/tftp.ts';
 import { isSavedSessionDefinition, isSessionDefinitionId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../domain/src/session-definition.ts';
 import { isSessionFolderId } from '../../domain/src/session-definition.ts';
@@ -55,6 +57,8 @@ export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
 export const VNC_LAUNCH_GESTURE_CHANNEL = 'mrt:vnc-launch-gesture:v1';
+export const TFTP_SERVER_ACTION_GESTURE_CHANNEL = 'mrt:tftp-server-action-gesture:v1';
+export const TFTP_SERVER_STATUS_EVENT_CHANNEL = 'mrt:tftp-server-status:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
@@ -140,6 +144,10 @@ export type UploadDroppedFtpFileRequest = Request<'ftp.files.upload-dropped', { 
 export type DownloadFtpFileRequest = Request<'ftp.files.download', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
 export type CancelFtpTransferRequest = Request<'ftp.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
 export type CloseFtpFilesRequest = Request<'ftp.close', { readonly sessionId: string }>;
+export type ChooseTftpRootRequest = Request<'tftp.root.choose', Record<string, never>>;
+export type StartTftpServerRequest = Request<'tftp.start', { readonly selectionId: string; readonly port: number }>;
+export type GetTftpServerStatusRequest = Request<'tftp.status', Record<string, never>>;
+export type StopTftpServerRequest = Request<'tftp.stop', Record<string, never>>;
 export type LaunchRdpViewerRequest = Request<'rdp.launch', { readonly host: string; readonly port: number }>;
 export type LaunchVncViewerRequest = Request<'vnc.launch', { readonly host: string; readonly port: number }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
@@ -189,6 +197,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   ListSerialPortsRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | UploadDroppedFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
+  ChooseTftpRootRequest | StartTftpServerRequest | GetTftpServerStatusRequest | StopTftpServerRequest |
   LaunchRdpViewerRequest | LaunchVncViewerRequest |
   ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
@@ -219,6 +228,8 @@ export type LocalTextFileSaveReply = CommandReply<LocalTextFileSaveResult>;
 export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type FtpTransferReply = CommandReply<FtpTransferResult>;
+export type ChooseTftpRootReply = CommandReply<TftpRootSelection>;
+export type TftpServerStatusReply = CommandReply<TftpServerStatus>;
 
 export interface RemoteFileDropContext {
   readonly sessionId: string;
@@ -315,6 +326,10 @@ export interface DesktopBridge {
   downloadFtpFile(sessionId: string, operationId: string, remotePath: string): Promise<FtpTransferReply>;
   cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
   closeFtpFiles(sessionId: string): Promise<TerminalActionReply>;
+  chooseTftpRoot(): Promise<ChooseTftpRootReply>;
+  startTftpServer(selectionId: string, port: number): Promise<TftpServerStatusReply>;
+  getTftpServerStatus(): Promise<TftpServerStatusReply>;
+  stopTftpServer(): Promise<TerminalActionReply>;
   launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply>;
   launchVncViewer(host: string, port: number): Promise<LaunchVncViewerReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
@@ -357,6 +372,7 @@ export interface DesktopBridge {
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
+  onTftpServerStatus(listener: (status: TftpServerStatus) => void): () => void;
   onFtpTransferProgress(listener: (event: FtpTransferProgress) => void): () => void;
   onSshTransferProgress(listener: (event: FileTransferProgress) => void): () => void;
   onRemoteFilesDropped(listener: (event: RemoteFileDropEvent) => boolean): () => void;
@@ -391,6 +407,20 @@ export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: s
 export function parseVncLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
   if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
   return canonicalizeVncEndpoint(value);
+}
+
+export type TftpServerActionGestureRequest =
+  | { readonly action: 'choose-root' }
+  | { readonly action: 'start'; readonly selectionId: string; readonly port: number };
+
+export function parseTftpServerActionGestureRequest(value: unknown): TftpServerActionGestureRequest | undefined {
+  if (!record(value) || typeof value.action !== 'string') return undefined;
+  if (value.action === 'choose-root' && exactKeys(value, ['action'])) return value as unknown as TftpServerActionGestureRequest;
+  if (value.action === 'start' && exactKeys(value, ['action', 'selectionId', 'port']) &&
+      typeof value.selectionId === 'string' && UUID.test(value.selectionId) && isTftpPort(value.port)) {
+    return value as unknown as TftpServerActionGestureRequest;
+  }
+  return undefined;
 }
 
 function validSize(columns: unknown, rows: unknown): boolean {
@@ -543,6 +573,11 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'ftp.close' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as CloseFtpFilesRequest };
   }
+  if (value.command === 'tftp.root.choose' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ChooseTftpRootRequest };
+  if (value.command === 'tftp.start' && exactKeys(payload, ['selectionId', 'port']) && typeof payload.selectionId === 'string' &&
+      UUID.test(payload.selectionId) && isTftpPort(payload.port)) return { ok: true, result: value as unknown as StartTftpServerRequest };
+  if (value.command === 'tftp.status' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetTftpServerStatusRequest };
+  if (value.command === 'tftp.stop' && exactKeys(payload, [])) return { ok: true, result: value as unknown as StopTftpServerRequest };
   if (value.command === 'rdp.launch' && exactKeys(payload, ['host', 'port']) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeRdpEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as LaunchRdpViewerRequest };
@@ -682,7 +717,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'serial.ports.list', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
-    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.upload-dropped', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
+    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.upload-dropped', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
+    'tftp.root.choose', 'tftp.start', 'tftp.status', 'tftp.stop', 'rdp.launch', 'vnc.launch',
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
@@ -783,6 +819,9 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'ftp.files.upload') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ftp.files.upload-dropped') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ftp.files.download') return isFtpTransferResult(value.result) && value.result.direction === 'download';
+    if (request.command === 'tftp.root.choose') return isTftpRootSelection(value.result);
+    if (request.command === 'tftp.start' || request.command === 'tftp.status') return isTftpServerStatus(value.result);
+    if (request.command === 'tftp.stop') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.count') return isCount(value.result);
     if (request.command === 'session.create' || request.command === 'session.remember') return isSavedSessionDefinition(value.result);

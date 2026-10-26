@@ -9,6 +9,7 @@ const TELNET_SUBMIT_SELECTOR = 'button[data-mrt-telnet-consent-trigger]';
 
 interface HostElement {
   getAttribute(name: string): string | null;
+  closest(selector: string): HostElement | null;
 }
 
 interface EventTargetElement {
@@ -67,6 +68,18 @@ export interface ExternalViewerLaunchGestureStore {
 export interface ExternalViewerLaunchGestureDocument {
   addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
   removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+}
+
+export interface TftpServerActionGestureStore {
+  consume(action: 'choose-root' | 'start', selectionId?: string, port?: number): Promise<boolean>;
+  dispose(): void;
+}
+
+export interface TftpServerActionGestureDocument {
+  addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  addEventListener(type: 'submit', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'submit', listener: (event: Event) => void, capture: true): void;
 }
 
 export function installTerminalPasteGestureStore(documentTarget: PasteGestureDocument,
@@ -159,6 +172,52 @@ export function installExternalViewerLaunchGestureStore(documentTarget: External
     },
     dispose(): void {
       documentTarget.removeEventListener('click', observeClick, true);
+      gesture = undefined;
+    }
+  });
+}
+
+export function installTftpServerActionGestureStore(documentTarget: TftpServerActionGestureDocument,
+  authorize: (action: 'choose-root' | 'start', selectionId?: string, port?: number) => Promise<boolean>,
+  now: () => number = () => performance.now()): TftpServerActionGestureStore {
+  let gesture: { readonly action: 'choose-root' | 'start'; readonly selectionId?: string; readonly port?: number; readonly expiresAt: number } | undefined;
+  const captureStart = (form: TelnetConnectForm): void => {
+    const selectionId = form.getAttribute('data-mrt-tftp-selection-id') ?? '';
+    const port = Number(form.querySelector('input[name="port"]')?.value);
+    if (!SESSION_ID.test(selectionId) || !Number.isSafeInteger(port) || port < 0 || port > 65_535) { gesture = undefined; return; }
+    gesture = { action: 'start', selectionId, port, expiresAt: now() + GESTURE_TTL_MS };
+  };
+  const observeClick = (event: Event): void => {
+    const click = event as unknown as { readonly type: string; readonly isTrusted: boolean; readonly target: EventTargetElement | null };
+    if (click.type !== 'click' || !click.isTrusted) return;
+    const button = click.target?.closest('button[data-mrt-tftp-server-action-trigger]');
+    const action = button?.getAttribute('data-mrt-tftp-server-action-trigger');
+    if (action === 'choose-root') { gesture = { action, expiresAt: now() + GESTURE_TTL_MS }; return; }
+    if (action !== 'start') return;
+    const form = button?.closest('form') as TelnetConnectForm | null | undefined;
+    if (form) captureStart(form);
+  };
+  const observeSubmit = (event: Event): void => {
+    const submit = event as unknown as TrustedSubmitEvent;
+    if (submit.type !== 'submit' || !submit.isTrusted) return;
+    const form = submit.target?.closest('form[data-mrt-tftp-selection-id]');
+    if (form) captureStart(form as TelnetConnectForm);
+  };
+  documentTarget.addEventListener('click', observeClick, true);
+  documentTarget.addEventListener('submit', observeSubmit, true);
+  return Object.freeze({
+    async consume(action: 'choose-root' | 'start', selectionId?: string, port?: number): Promise<boolean> {
+      const current = gesture;
+      gesture = undefined;
+      if (!current || current.expiresAt < now() || current.action !== action) return false;
+      if (action === 'start' && (selectionId !== current.selectionId || port !== current.port)) return false;
+      if (action === 'choose-root' && (selectionId !== undefined || port !== undefined)) return false;
+      try { return await authorize(action, current.selectionId, current.port) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('click', observeClick, true);
+      documentTarget.removeEventListener('submit', observeSubmit, true);
       gesture = undefined;
     }
   });

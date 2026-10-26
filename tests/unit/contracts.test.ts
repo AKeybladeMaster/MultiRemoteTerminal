@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
-  parseRdpLaunchGestureRequest, parseRequest } from '../../packages/contracts/src/commands.ts';
+  parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { MAX_STARTUP_GREETING_CODE_POINTS } from '../../packages/domain/src/workbench-preferences.ts';
 
@@ -279,6 +279,46 @@ test('FTP commands accept exact endpoints and safe directory replies without ret
   if (parsedUpload.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: transferResult }, parsedUpload.result), true);
   assert.equal(parseRequest({ command: 'ftp.files.cancel', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, operationId, reason: 'anything' } }).ok, false);
+});
+
+test('TFTP commands keep selected filesystem paths in main and validate loopback server state', () => {
+  const choose = { command: 'tftp.root.choose', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsedChoose = parseRequest(choose);
+  assert.equal(parsedChoose.ok, true);
+  assert.equal(parseRequest({ ...choose, payload: { absolutePath: 'C:\\private' } }).ok, false);
+  if (parsedChoose.ok) {
+    const selected = { selectionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', folderName: 'firmware' };
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: selected }, parsedChoose.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...selected, absolutePath: 'C:\\private' } }, parsedChoose.result), false);
+  }
+  const start = { command: 'tftp.start', requestId: request.requestId, contractVersion: 1,
+    payload: { selectionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', port: 0 } };
+  const parsedStart = parseRequest(start);
+  assert.equal(parsedStart.ok, true);
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, port: 65_536 } }).ok, false);
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, rootDirectory: 'C:\\private' } }).ok, false);
+  if (parsedStart.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+    result: { state: 'running', address: '127.0.0.1', port: 52_001, folderName: 'firmware' }
+  }, parsedStart.result), true);
+  const status = { command: 'tftp.status', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const parsedStatus = parseRequest(status);
+  assert.equal(parsedStatus.ok, true);
+  if (parsedStatus.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+    result: { state: 'running', address: '0.0.0.0', port: 69, folderName: 'firmware' }
+  }, parsedStatus.result), false);
+  assert.equal(parseRequest({ command: 'tftp.stop', requestId: request.requestId, contractVersion: 1, payload: { force: true } }).ok, false);
+});
+
+test('TFTP start gestures accept only a scoped action, opaque selection token, and valid port', () => {
+  const token = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  assert.deepEqual(parseTftpServerActionGestureRequest({ action: 'choose-root' }), { action: 'choose-root' });
+  assert.deepEqual(parseTftpServerActionGestureRequest({ action: 'start', selectionId: token, port: 0 }), { action: 'start', selectionId: token, port: 0 });
+  for (const value of [
+    { action: 'choose-root', path: 'C:\\private' },
+    { action: 'start', selectionId: token, port: 65_536 },
+    { action: 'start', selectionId: 'not-a-token', port: 69 },
+    { action: 'stop' }
+  ]) assert.equal(parseTftpServerActionGestureRequest(value), undefined);
 });
 
 test('saved-session IPC accepts only supported non-secret definitions and validated catalog actions', () => {

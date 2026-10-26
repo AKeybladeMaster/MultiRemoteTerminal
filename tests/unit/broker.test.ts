@@ -7,6 +7,7 @@ import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/ren
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
+import { failure } from '../../packages/domain/src/errors.ts';
 import type { SerialConfiguration } from '../../packages/domain/src/serial.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
@@ -20,7 +21,8 @@ const emptyMacro = { id: '7c08b18a-57cc-4b44-a8b3-2d404850e81c', schemaVersion: 
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
   authorizeFtpConsent: () => false, authorizeRdpLaunch: () => false,
-  authorizeVncLaunch: () => false,
+  authorizeVncLaunch: () => false, authorizeTftpServerAction: () => false,
+  chooseTftpRoot: async () => failure('UNAVAILABLE'), startTftpServer: async () => failure('UNAVAILABLE'),
   confirmMultilinePaste: async () => false,
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
@@ -96,7 +98,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   }, preferences: {
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
     save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
-  }
+  }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
 });
 
 test('session auto-save requires the persisted opt-in preference at the main-process broker', async () => {

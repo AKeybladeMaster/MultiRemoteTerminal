@@ -8,6 +8,7 @@ import type { SerialTerminalController } from '../../../../packages/application/
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
 import type { RdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import type { VncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
+import type { TftpServerController } from '../../../../packages/application/src/tftp-server.ts';
 import type { LocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
@@ -20,6 +21,8 @@ import type { WorkbenchSnapshot } from '../../../../packages/application/src/wor
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
+import type { TftpRootSelection, TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
+import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import type { DroppedUploadSelection } from './dropped-upload-registry.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
@@ -56,6 +59,9 @@ export interface CommandActions {
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
   readonly authorizeRdpLaunch: (host: string, port: number) => boolean;
   readonly authorizeVncLaunch: (host: string, port: number) => boolean;
+  readonly authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) => boolean;
+  readonly chooseTftpRoot: (cancellation?: CancellationSignal) => Promise<Outcome<TftpRootSelection>>;
+  readonly startTftpServer: (selectionId: string, port: number, cancellation?: CancellationSignal) => Promise<Outcome<TftpServerStatus>>;
   readonly confirmMultilinePaste: () => Promise<boolean>;
   readonly selectFtpUploadFile: () => Promise<FtpUploadSelection | undefined>;
   readonly selectFtpDownloadPath: (fileName: string) => Promise<string | undefined>;
@@ -83,6 +89,7 @@ export interface CommandActions {
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
+  readonly tftpServer: Pick<TftpServerController, 'getStatus' | 'stop'>;
 }
 
 async function pasteFromClipboard(
@@ -131,6 +138,7 @@ export async function dispatchCommand(
         parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'ftp.files.upload' ||
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
+        parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start' || parsed.result.command === 'tftp.stop' ||
         parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
@@ -373,6 +381,17 @@ export async function dispatchCommand(
         if (!actions.authorizeVncLaunch(host, port)) return { requestId, ...failure('FORBIDDEN') };
         return { requestId, ...await actions.vncViewer.launch(host, port, actions.cancellation) };
       }
+      case 'tftp.root.choose': {
+        if (!actions.authorizeTftpServerAction('choose-root')) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.chooseTftpRoot(actions.cancellation) };
+      }
+      case 'tftp.start': {
+        const { selectionId, port } = parsed.result.payload;
+        if (!actions.authorizeTftpServerAction('start', selectionId, port)) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.startTftpServer(selectionId, port, actions.cancellation) };
+      }
+      case 'tftp.status': return { requestId, ok: true, result: actions.tftpServer.getStatus() };
+      case 'tftp.stop': return { requestId, ...await actions.tftpServer.stop() };
       case 'session.list': return { requestId, ...await actions.sessionCatalog.list(parsed.result.payload.query, actions.cancellation) };
       case 'session.count': return { requestId, ...await actions.sessionCatalog.count(actions.cancellation) };
       case 'session.create': return { requestId, ...await actions.sessionCatalog.create(parsed.result.payload, actions.cancellation) };

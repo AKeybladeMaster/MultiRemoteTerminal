@@ -19,14 +19,15 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile',
     'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer', 'openLocalTextFile', 'reloadLocalTextFile', 'saveLocalTextFile', 'closeLocalTextFile',
-    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer', 'launchVncViewer',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'chooseTftpRoot',
+    'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
     'getWorkbenchPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
     'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
 });
 
@@ -61,6 +62,31 @@ test('preload routes tunnel manager requests and validates runtime status events
   unsubscribe();
   assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
   assert.equal(statuses, 1);
+});
+
+test('preload routes TFTP operations and validates loopback status events', async () => {
+  const selectionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const status = { state: 'running', address: '127.0.0.1', port: 52_001, folderName: 'firmware' } as const;
+  const seen: string[] = [];
+  let deliverStatus: ((value: unknown) => void) | undefined;
+  const bridge = createBridge(async request => {
+    seen.push(request.command);
+    const result = request.command === 'tftp.root.choose' ? { selectionId, folderName: 'firmware' }
+      : request.command === 'tftp.start' || request.command === 'tftp.status' ? status : {};
+    return { requestId: request.requestId, ok: true, result };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+  async () => true, undefined, listener => { deliverStatus = listener; return () => { deliverStatus = undefined; }; });
+  assert.equal((await bridge.chooseTftpRoot()).ok, true);
+  assert.equal((await bridge.startTftpServer(selectionId, 0)).ok, true);
+  assert.deepEqual(await bridge.getTftpServerStatus(), { requestId: id(), ok: true, result: status });
+  assert.equal((await bridge.stopTftpServer()).ok, true);
+  let updates = 0;
+  const unsubscribe = bridge.onTftpServerStatus(() => { updates++; });
+  deliverStatus?.(status);
+  deliverStatus?.({ ...status, address: '0.0.0.0' });
+  unsubscribe();
+  assert.deepEqual(seen, ['tftp.root.choose', 'tftp.start', 'tftp.status', 'tftp.stop']);
+  assert.equal(updates, 1);
 });
 
 test('preload sends standalone SFTP commands with only the endpoint and session id', async () => {

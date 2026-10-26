@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
-import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
+  installTftpServerActionGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -205,4 +206,77 @@ test('preload plain FTP consent is trusted, endpoint-bound, one-shot, and unavai
   assert.equal(await gestures.consume(firstSession, 'files.example.com', 21, false), false, 'expired consent is rejected');
   gestures.dispose();
   assert.equal(submit, undefined);
+});
+
+test('TFTP gestures require trusted folder/start actions and support keyboard form submission', async () => {
+  let now = 120;
+  let click: ((event: Event) => void) | undefined;
+  let submit: ((event: Event) => void) | undefined;
+  const authorized: Array<{ action: string; selectionId?: string; port?: number }> = [];
+  const form = {
+    getAttribute(name: string) { return name === 'data-mrt-tftp-selection-id' ? firstSession : null; },
+    closest(selector: string) { return selector.startsWith('form') ? this : null; },
+    querySelector(selector: string) { return selector === 'input[name="port"]' ? { value: '69' } : null; }
+  };
+  const buttonTarget = (action: string) => {
+    const button = {
+      getAttribute(name: string) { return name === 'data-mrt-tftp-server-action-trigger' ? action : null; },
+      closest(selector: string) { return selector === 'form' ? form : null; }
+    };
+    return { closest(selector: string) { return selector === 'button[data-mrt-tftp-server-action-trigger]' ? button : null; } };
+  };
+  const documentTarget = {
+    addEventListener(type: 'click' | 'submit', listener: (event: Event) => void) { if (type === 'click') click = listener; else submit = listener; },
+    removeEventListener(type: 'click' | 'submit', listener: (event: Event) => void) {
+      if (type === 'click' && click === listener) click = undefined;
+      if (type === 'submit' && submit === listener) submit = undefined;
+    }
+  };
+  const gestures = installTftpServerActionGestureStore(documentTarget, async (action, selectionId, port) => {
+    authorized.push({ action, ...(selectionId ? { selectionId } : {}), ...(port !== undefined ? { port } : {}) });
+    return true;
+  }, () => now);
+  const clickEvent = (action: string, isTrusted: boolean) => ({ type: 'click', isTrusted, target: buttonTarget(action) }) as unknown as Event;
+
+  click?.(clickEvent('choose-root', false));
+  assert.equal(await gestures.consume('choose-root'), false, 'untrusted clicks cannot authorize folder selection');
+  click?.(clickEvent('choose-root', true));
+  assert.equal(await gestures.consume('choose-root'), true);
+  assert.equal(await gestures.consume('choose-root'), false, 'folder selection authorization is one-shot');
+
+  click?.(clickEvent('start', false));
+  assert.equal(await gestures.consume('start', firstSession, 69), false);
+  click?.(clickEvent('start', true));
+  assert.equal(await gestures.consume('start', firstSession, 70), false, 'the submitted port must match the trusted form');
+  click?.(clickEvent('start', true));
+  assert.equal(await gestures.consume('start', firstSession, 69), true);
+  const submitEvent = (isTrusted: boolean) => ({ type: 'submit', isTrusted, target: form }) as unknown as Event;
+  submit?.(submitEvent(true));
+  assert.equal(await gestures.consume('start', firstSession, 69), true, 'trusted Enter/form submission remains keyboard accessible');
+  submit?.(submitEvent(false));
+  assert.equal(await gestures.consume('start', firstSession, 69), false);
+  assert.deepEqual(authorized, [
+    { action: 'choose-root' }, { action: 'start', selectionId: firstSession, port: 69 }, { action: 'start', selectionId: firstSession, port: 69 }
+  ]);
+  click?.(clickEvent('start', true));
+  now += 751;
+  assert.equal(await gestures.consume('start', firstSession, 69), false, 'expired gestures cannot start the server');
+  gestures.dispose();
+  assert.equal(click, undefined);
+  assert.equal(submit, undefined);
+});
+
+test('main TFTP server gestures are sender, action, selection, port, and one-shot scoped', () => {
+  let now = 300;
+  const gate = new RendererGestureGate(() => now);
+  gate.issueTftpServerAction(11, 'start', firstSession, 69);
+  assert.equal(gate.consumeTftpServerAction(12, 'start', firstSession, 69), false);
+  assert.equal(gate.consumeTftpServerAction(11, 'start', secondSession, 69), false);
+  assert.equal(gate.consumeTftpServerAction(11, 'start', firstSession, 70), false);
+  assert.equal(gate.consumeTftpServerAction(11, 'choose-root'), false);
+  assert.equal(gate.consumeTftpServerAction(11, 'start', firstSession, 69), true);
+  assert.equal(gate.consumeTftpServerAction(11, 'start', firstSession, 69), false);
+  gate.issueTftpServerAction(11, 'choose-root');
+  now += 751;
+  assert.equal(gate.consumeTftpServerAction(11, 'choose-root'), false);
 });

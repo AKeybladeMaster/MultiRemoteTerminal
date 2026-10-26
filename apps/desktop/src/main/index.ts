@@ -22,8 +22,8 @@ import type { SshTunnelController } from '../../../../packages/application/src/s
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
-  SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest,
+  SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -41,12 +41,15 @@ import type { FtpFilesController } from '../../../../packages/application/src/ft
 import { createRdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import { createVncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
 import { createLocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
+import { createTftpServerController } from '../../../../packages/application/src/tftp-server.ts';
+import { TftpServerWorkerHost } from '../adapters/tftp-server-worker-host.ts';
 import { FtpFilesWorkerHost } from '../adapters/ftp-files-worker-host.ts';
 import { WindowsRdpViewer } from '../adapters/windows-rdp-viewer.ts';
 import { WindowsVncViewer } from '../adapters/windows-vnc-viewer.ts';
 import { LocalTextFilesWorkerHost } from '../adapters/local-text-files-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
+import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import { DroppedUploadRegistry } from './dropped-upload-registry.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
 import { isE2ETestHookEnabled } from './e2e-test-hooks.ts';
@@ -350,6 +353,11 @@ function boot(): void {
       env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env, e2eFtpExtraCaPath)
     })
   ), credentialPrompt);
+  const tftpServer = createTftpServerController(new TftpServerWorkerHost(
+    join(dist, 'host/apps/desktop/src/workers/tftp-server-worker.js'), app.getAppPath()
+  ));
+  let selectedTftpRoot: { readonly selectionId: string; readonly absolutePath: string; readonly folderName: string } | undefined;
+  let tftpRootDialogOpen = false;
   const localTextFilesWorker = new LocalTextFilesWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/local-text-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, options)
@@ -419,6 +427,10 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TUNNEL_STATUS_EVENT_CHANNEL, status);
   });
+  tftpServer.subscribe(status => {
+    const current = window;
+    if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TFTP_SERVER_STATUS_EVENT_CHANNEL, status);
+  });
   ipcMain.handle(REMOTE_FILE_DROP_TEST_CHANNEL, event => {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
     return e2eRemoteFileDrop && owned && event.senderFrame === event.sender.mainFrame && isAppDocument(event.senderFrame?.url ?? '');
@@ -444,7 +456,8 @@ function boot(): void {
     const parsed = parseRequest(input);
     const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command.startsWith('macro.') ||
       parsed.result.command.startsWith('preferences.') || parsed.result.command.startsWith('tunnel.') || parsed.result.command === 'ssh.files.list' ||
-      parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch') && owned && mainFrame && isAppDocument(frameUrl);
+      parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
+      parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start') && owned && mainFrame && isAppDocument(frameUrl);
     const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.upload-dropped' || parsed.result.command === 'ftp.files.download') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.upload-dropped' || parsed.result.command === 'ssh.files.download' ||
@@ -478,6 +491,42 @@ function boot(): void {
         authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
         authorizeRdpLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'rdp', host, port),
         authorizeVncLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'vnc', host, port),
+        authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) =>
+          rendererGestures.consumeTftpServerAction(event.sender.id, action, selectionId, port),
+        async chooseTftpRoot(cancellation) {
+          if (cancellation?.aborted) return failure('CANCELLED');
+          if (tftpRootDialogOpen || tftpServer.getStatus().state === 'running') return failure('BUSY');
+          tftpRootDialogOpen = true;
+          try {
+            const e2eRoot = e2eTransferPath('--mrt-e2e-tftp-root=', '--mrt-e2e-tftp-server');
+            let absolutePath = e2eRoot;
+            if (!absolutePath) {
+              const options: Electron.OpenDialogOptions = {
+                title: 'Choose files to share over local TFTP', buttonLabel: 'Choose folder', properties: ['openDirectory', 'createDirectory']
+              };
+              const currentWindow = window;
+              const result = currentWindow && !currentWindow.isDestroyed()
+                ? await dialog.showOpenDialog(currentWindow, options)
+                : await dialog.showOpenDialog(options);
+              if (result.canceled || !result.filePaths[0]) return failure('CANCELLED');
+              absolutePath = result.filePaths[0];
+            }
+            if (cancellation?.aborted) return failure('CANCELLED');
+            if (!absolutePath || resolve(absolutePath) !== absolutePath) return failure('INVALID_REQUEST');
+            const selection = { selectionId: randomUUID(), absolutePath, folderName: basename(absolutePath) };
+            selectedTftpRoot = selection;
+            return { ok: true as const, result: { selectionId: selection.selectionId, folderName: selection.folderName } };
+          } finally {
+            tftpRootDialogOpen = false;
+          }
+        },
+        async startTftpServer(selectionId, port, cancellation) {
+          const selection = selectedTftpRoot;
+          if (!selection || selection.selectionId !== selectionId) return failure('NOT_FOUND');
+          const result = await tftpServer.start({ absolutePath: selection.absolutePath, folderName: selection.folderName }, port, cancellation);
+          if (result.ok && selectedTftpRoot?.selectionId === selectionId) selectedTftpRoot = undefined;
+          return result;
+        },
         async confirmMultilinePaste() {
           const options: Electron.MessageBoxOptions = {
             type: 'warning', title: 'Confirm multiline paste',
@@ -587,7 +636,16 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros, preferences, tunnels, cancellation: cancellation.signal
+        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros, preferences, tunnels,
+        tftpServer: {
+          getStatus: () => tftpServer.getStatus(),
+          async stop() {
+            const result = await tftpServer.stop();
+            if (result.ok) selectedTftpRoot = undefined;
+            return result;
+          }
+        },
+        cancellation: cancellation.signal
       }, () => { /* Diagnostics are off by default; no payload or exception is logged. */ });
       if (delayFirstSessionCreateReply && parsed.ok && parsed.result.command === 'session.create' && reply.ok) {
         delayFirstSessionCreateReply = false;
@@ -655,6 +713,17 @@ function boot(): void {
     rendererGestures.issueExternalViewerLaunch(event.sender.id, 'vnc', endpoint.host, endpoint.port);
     return true;
   });
+  ipcMain.handle(TFTP_SERVER_ACTION_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const action = parseTftpServerActionGestureRequest(input);
+    if (!action) return false;
+    rendererGestures.issueTftpServerAction(event.sender.id, action.action, action.action === 'start' ? action.selectionId : undefined,
+      action.action === 'start' ? action.port : undefined);
+    return true;
+  });
   ipcMain.handle(CANCEL_CATALOG_COMMAND_CHANNEL, cancelCatalogCommand);
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -665,7 +734,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
-    void tunnels.dispose().then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
+    void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
@@ -678,6 +747,7 @@ function boot(): void {
     ipcMain.removeHandler(FTP_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(RDP_LAUNCH_GESTURE_CHANNEL);
     ipcMain.removeHandler(VNC_LAUNCH_GESTURE_CHANNEL);
+    ipcMain.removeHandler(TFTP_SERVER_ACTION_GESTURE_CHANNEL);
     ipcMain.removeHandler(COMMAND_CHANNEL);
     protocol.unhandle('mrt');
   });

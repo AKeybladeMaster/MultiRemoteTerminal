@@ -42,6 +42,7 @@ import { SAVED_SESSION_CATALOG_VIRTUALIZATION_THRESHOLD, VirtualizedList } from 
 import type { TerminalTheme, TerminalUiHandle } from './TerminalPane.tsx';
 import { RemoteFilesPane } from './RemoteFilesPane.tsx';
 import { TunnelManagerDialog } from './TunnelManagerDialog.tsx';
+import { TftpServerDialog } from './TftpServerDialog.tsx';
 import { MacroManagerDialog } from './MacroManagerDialog.tsx';
 import { MultiExecDialog } from './MultiExecDialog.tsx';
 import { HelpDialog } from './HelpDialog.tsx';
@@ -109,7 +110,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
+type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'local-tftp-server' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -368,6 +369,7 @@ function Workbench() {
   const [tunnelsLoading, setTunnelsLoading] = useState(false);
   const [tunnelBusyId, setTunnelBusyId] = useState<string>();
   const [tunnelError, setTunnelError] = useState<string>();
+  const [tftpServerOpen, setTftpServerOpen] = useState(false);
   const [multiExecOpen, setMultiExecOpen] = useState(false);
   const [multiExecView, setMultiExecView] = useState<MultiExecView>();
   const [macroManagerOpen, setMacroManagerOpen] = useState(false);
@@ -2325,6 +2327,7 @@ function Workbench() {
     { id: 'connect-ftp', label: 'Connect to FTP or FTPS server', run: () => openFtpConnect() },
     { id: 'connect-rdp', label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() },
     { id: 'connect-vnc', label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() },
+    { id: 'local-tftp-server', label: 'Local TFTP server', run: () => setTftpServerOpen(true) },
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
     { id: 'close-active', label: 'Close active terminal', run: () => { if (activeId) requestCloseTerminal(activeId); } },
     { id: 'toggle-theme', label: `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`, run: toggleTheme },
@@ -2841,6 +2844,7 @@ function Workbench() {
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
+        <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tftp-server-open" onClick={() => setTftpServerOpen(true)}>Local TFTP server</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="macro-manager-open" onClick={openMacroManager}>Macros</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="multi-exec-open" onClick={openMultiExec}>MultiExec</button>
         <button className="save-session-button" type="button" disabled={!active || catalogBusy} onClick={beginSaveActiveSession}>Save active session</button>
@@ -3008,6 +3012,7 @@ function Workbench() {
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
     {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences} />}
+    <TftpServerDialog open={tftpServerOpen} onClose={() => setTftpServerOpen(false)} />
     <LocalTextEditorDialog open={localTextEditorOpen} file={localTextFile} onClose={closeLocalTextEditor} />
     <footer className="status-bar">
       <div className="terminal-status">
