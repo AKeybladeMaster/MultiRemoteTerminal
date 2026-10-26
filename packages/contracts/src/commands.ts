@@ -27,7 +27,7 @@ import { isSessionFolderId } from '../../domain/src/session-definition.ts';
 import { isSavedSessionFolder, normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../domain/src/session-folder.ts';
 import type { SavedSessionFolder, SavedSessionFolderDraft } from '../../domain/src/session-folder.ts';
 import type { SessionFolderExportResult, SessionFolderImportResult } from '../../domain/src/session-folder-bundle.ts';
-import { isRemoteDirectoryListing, isRemotePath } from '../../domain/src/remote-files.ts';
+import { isRemoteDirectoryListing, isRemoteFileName, isRemotePath } from '../../domain/src/remote-files.ts';
 import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
 import { isFileTransferProgress, isFileTransferResult } from '../../domain/src/file-transfer.ts';
 import type { FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
@@ -49,6 +49,8 @@ export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
 export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
+export const REMOTE_FILE_DROP_CHANNEL = 'mrt:remote-file-drop:v1';
+export const REMOTE_FILE_DROP_TEST_CHANNEL = 'mrt:e2e-remote-file-drop:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
 export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
@@ -58,6 +60,7 @@ export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
 export const TUNNEL_STATUS_EVENT_CHANNEL = 'mrt:tunnel-status-event:v1';
+export const MAX_REMOTE_FILE_DROP_COUNT = 16;
 export const APP_URL = 'mrt://app/index.html';
 
 export function isAppDocument(value: string): boolean {
@@ -118,6 +121,9 @@ export type DecideSshHostRequest = Request<'ssh.host.approve' | 'ssh.host.reject
 export type RevokeSshHostRequest = Request<'ssh.host.revoke', { readonly host: string; readonly port: number }>;
 export type ListSshDirectoryRequest = Request<'ssh.files.list', { readonly sessionId: string; readonly path: string }>;
 export type UploadSshFileRequest = Request<'ssh.files.upload', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string }>;
+export type UploadDroppedSshFileRequest = Request<'ssh.files.upload-dropped', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string; readonly token: string }>;
+export type DiscardRemoteFileDropHandlesRequest = Request<'files.drop.discard', { readonly sessionId: string; readonly transport: 'sftp' | 'ftp';
+  readonly remoteDirectory: string; readonly tokens: readonly string[] }>;
 export type DownloadSshFileRequest = Request<'ssh.files.download', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
 export type ReadSshTextFileRequest = Request<'ssh.files.read-text', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
 export type SaveSshTextFileRequest = Request<'ssh.files.write-text', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string;
@@ -130,6 +136,7 @@ export type CloseLocalTextFileRequest = Request<'local-text.close', { readonly s
 export type OpenFtpFilesRequest = Request<'ftp.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly secure: boolean }>;
 export type ListFtpDirectoryRequest = Request<'ftp.files.list', { readonly sessionId: string; readonly path: string }>;
 export type UploadFtpFileRequest = Request<'ftp.files.upload', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string }>;
+export type UploadDroppedFtpFileRequest = Request<'ftp.files.upload-dropped', { readonly sessionId: string; readonly operationId: string; readonly remoteDirectory: string; readonly token: string }>;
 export type DownloadFtpFileRequest = Request<'ftp.files.download', { readonly sessionId: string; readonly operationId: string; readonly remotePath: string }>;
 export type CancelFtpTransferRequest = Request<'ftp.files.cancel', { readonly sessionId: string; readonly operationId: string }>;
 export type CloseFtpFilesRequest = Request<'ftp.close', { readonly sessionId: string }>;
@@ -176,11 +183,12 @@ export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<s
 export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
-  UploadSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
+  UploadSshFileRequest | UploadDroppedSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
+  DiscardRemoteFileDropHandlesRequest |
   OpenLocalTextFileRequest | ReloadLocalTextFileRequest | SaveLocalTextFileRequest | CloseLocalTextFileRequest |
   OpenTelnetTerminalRequest | WriteTelnetTerminalRequest | PasteTelnetTerminalRequest | ResizeTelnetTerminalRequest | AcknowledgeTelnetTerminalRequest | CloseTelnetTerminalRequest |
   ListSerialPortsRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
-  OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
+  OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | UploadDroppedFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   LaunchRdpViewerRequest | LaunchVncViewerRequest |
   ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
@@ -211,6 +219,26 @@ export type LocalTextFileSaveReply = CommandReply<LocalTextFileSaveResult>;
 export type OpenFtpFilesReply = CommandReply<FtpFilesSession>;
 export type ListFtpDirectoryReply = CommandReply<RemoteDirectoryListing>;
 export type FtpTransferReply = CommandReply<FtpTransferResult>;
+
+export interface RemoteFileDropContext {
+  readonly sessionId: string;
+  readonly transport: 'sftp' | 'ftp';
+  readonly remoteDirectory: string;
+}
+
+export interface RemoteFileDropHandle {
+  readonly token: string;
+  readonly fileName: string;
+  readonly size: number;
+}
+
+export type RemoteFileDropEvent = RemoteFileDropContext & Outcome<readonly RemoteFileDropHandle[]>;
+
+export interface RemoteFileDropRegistrationRequest extends RemoteFileDropContext {
+  /** Local paths exist only between the sandboxed preload and the main process. */
+  readonly localPaths: readonly string[];
+}
+
 export type LaunchRdpViewerReply = CommandReply<RdpLaunchResult>;
 export type LaunchVncViewerReply = CommandReply<VncLaunchResult>;
 export type ListSessionsReply = CommandReply<readonly SavedSessionDefinition[]>;
@@ -270,6 +298,8 @@ export interface DesktopBridge {
   revokeSshHost(host: string, port: number): Promise<TerminalActionReply>;
   listSshDirectory(sessionId: string, path: string): Promise<ListSshDirectoryReply>;
   uploadSshFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<SshTransferReply>;
+  uploadDroppedSshFile(sessionId: string, operationId: string, remoteDirectory: string, token: string): Promise<SshTransferReply>;
+  discardRemoteFileDropHandles(context: RemoteFileDropContext, tokens: readonly string[]): Promise<TerminalActionReply>;
   downloadSshFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTransferReply>;
   readSshTextFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTextFileReply>;
   saveSshTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string): Promise<SshTextFileSaveReply>;
@@ -281,6 +311,7 @@ export interface DesktopBridge {
   openFtpFiles(sessionId: string, host: string, port: number, secure: boolean): Promise<OpenFtpFilesReply>;
   listFtpDirectory(sessionId: string, path: string): Promise<ListFtpDirectoryReply>;
   uploadFtpFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<FtpTransferReply>;
+  uploadDroppedFtpFile(sessionId: string, operationId: string, remoteDirectory: string, token: string): Promise<FtpTransferReply>;
   downloadFtpFile(sessionId: string, operationId: string, remotePath: string): Promise<FtpTransferReply>;
   cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply>;
   closeFtpFiles(sessionId: string): Promise<TerminalActionReply>;
@@ -328,6 +359,7 @@ export interface DesktopBridge {
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
   onFtpTransferProgress(listener: (event: FtpTransferProgress) => void): () => void;
   onSshTransferProgress(listener: (event: FileTransferProgress) => void): () => void;
+  onRemoteFilesDropped(listener: (event: RemoteFileDropEvent) => boolean): () => void;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -368,6 +400,32 @@ function validSize(columns: unknown, rows: unknown): boolean {
 
 export function requestIdOf(value: unknown): string {
   return record(value) && typeof value.requestId === 'string' && UUID.test(value.requestId) ? value.requestId : '';
+}
+
+export function parseRemoteFileDropRegistrationRequest(value: unknown): Outcome<RemoteFileDropRegistrationRequest> {
+  if (!record(value) || !exactKeys(value, ['sessionId', 'transport', 'remoteDirectory', 'localPaths']) ||
+      typeof value.sessionId !== 'string' || !UUID.test(value.sessionId) ||
+      (value.transport !== 'sftp' && value.transport !== 'ftp') ||
+      !(value.transport === 'ftp' ? isFtpRemotePath(value.remoteDirectory) : isRemotePath(value.remoteDirectory)) ||
+      !Array.isArray(value.localPaths) || value.localPaths.length < 1 || value.localPaths.length > MAX_REMOTE_FILE_DROP_COUNT ||
+      !Array.from(value.localPaths).every(path => typeof path === 'string' && path.length > 0 && path.length <= 32_768 && !path.includes('\0'))) {
+    return failure('INVALID_REQUEST');
+  }
+  return { ok: true, result: value as unknown as RemoteFileDropRegistrationRequest };
+}
+
+export function isRemoteFileDropEvent(value: unknown): value is RemoteFileDropEvent {
+  if (!record(value) || (value.transport !== 'sftp' && value.transport !== 'ftp') ||
+      typeof value.sessionId !== 'string' || !UUID.test(value.sessionId) ||
+      !(value.transport === 'ftp' ? isFtpRemotePath(value.remoteDirectory) : isRemotePath(value.remoteDirectory)) ||
+      typeof value.ok !== 'boolean') return false;
+  if (value.ok) {
+    return exactKeys(value, ['sessionId', 'transport', 'remoteDirectory', 'ok', 'result']) && Array.isArray(value.result) &&
+      value.result.length <= MAX_REMOTE_FILE_DROP_COUNT && Array.from(value.result).every(item => record(item) &&
+        exactKeys(item, ['token', 'fileName', 'size']) && typeof item.token === 'string' && UUID.test(item.token) &&
+        isRemoteFileName(item.fileName) && Number.isSafeInteger(item.size) && (item.size as number) >= 0);
+  }
+  return exactKeys(value, ['sessionId', 'transport', 'remoteDirectory', 'ok', 'error']) && validError(value.error);
 }
 
 export function parseRequest(value: unknown): Outcome<CommandRequest> {
@@ -470,6 +528,11 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'ftp.files.upload' && exactKeys(payload, ['sessionId', 'operationId', 'remoteDirectory']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
       isFtpRemotePath(payload.remoteDirectory)) return { ok: true, result: value as unknown as UploadFtpFileRequest };
+  if (value.command === 'ftp.files.upload-dropped' && exactKeys(payload, ['sessionId', 'operationId', 'remoteDirectory', 'token']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
+      typeof payload.token === 'string' && UUID.test(payload.token) && isFtpRemotePath(payload.remoteDirectory)) {
+    return { ok: true, result: value as unknown as UploadDroppedFtpFileRequest };
+  }
   if (value.command === 'ftp.files.download' && exactKeys(payload, ['sessionId', 'operationId', 'remotePath']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
       isFtpRemotePath(payload.remotePath)) return { ok: true, result: value as unknown as DownloadFtpFileRequest };
@@ -500,6 +563,18 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'ssh.files.upload' && exactKeys(payload, ['sessionId', 'operationId', 'remoteDirectory']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
       isRemotePath(payload.remoteDirectory)) return { ok: true, result: value as unknown as UploadSshFileRequest };
+  if (value.command === 'ssh.files.upload-dropped' && exactKeys(payload, ['sessionId', 'operationId', 'remoteDirectory', 'token']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
+      typeof payload.token === 'string' && UUID.test(payload.token) && isRemotePath(payload.remoteDirectory)) {
+    return { ok: true, result: value as unknown as UploadDroppedSshFileRequest };
+  }
+  if (value.command === 'files.drop.discard' && exactKeys(payload, ['sessionId', 'transport', 'remoteDirectory', 'tokens']) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && (payload.transport === 'sftp' || payload.transport === 'ftp') &&
+      (payload.transport === 'ftp' ? isFtpRemotePath(payload.remoteDirectory) : isRemotePath(payload.remoteDirectory)) &&
+      Array.isArray(payload.tokens) && payload.tokens.length > 0 && payload.tokens.length <= MAX_REMOTE_FILE_DROP_COUNT &&
+      Array.from(payload.tokens).every(token => typeof token === 'string' && UUID.test(token))) {
+    return { ok: true, result: value as unknown as DiscardRemoteFileDropHandlesRequest };
+  }
   if (value.command === 'ssh.files.download' && exactKeys(payload, ['sessionId', 'operationId', 'remotePath']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.operationId === 'string' && UUID.test(payload.operationId) &&
       isRemotePath(payload.remotePath)) return { ok: true, result: value as unknown as DownloadSshFileRequest };
@@ -603,11 +678,11 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
-    'ssh.files.upload', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel',
+    'ssh.files.upload', 'ssh.files.upload-dropped', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel', 'files.drop.discard',
     'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'serial.ports.list', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
-    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
+    'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.upload-dropped', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close', 'rdp.launch', 'vnc.launch',
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
@@ -693,6 +768,7 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'serial.open') return validSerialOpenResult(value.result, request);
     if (request.command === 'ssh.files.list') return isRemoteDirectoryListing(value.result);
     if (request.command === 'ssh.files.upload') return isFileTransferResult(value.result) && value.result.direction === 'upload';
+    if (request.command === 'ssh.files.upload-dropped') return isFileTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ssh.files.download') return isFileTransferResult(value.result) && value.result.direction === 'download';
     if (request.command === 'ssh.files.read-text') return isRemoteTextFile(value.result) && value.result.path === request.payload.remotePath;
     if (request.command === 'ssh.files.write-text') return isRemoteTextFileSaveResult(value.result) && value.result.path === request.payload.remotePath &&
@@ -701,9 +777,11 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'local-text.save') return isLocalTextFileSaveResult(value.result) &&
       value.result.bytesSaved === remoteTextByteLength(request.payload.content);
     if (request.command === 'local-text.close') return record(value.result) && exactKeys(value.result, []);
+    if (request.command === 'files.drop.discard') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'ftp.open') return validFtpOpenResult(value.result, request);
     if (request.command === 'ftp.files.list') return isFtpDirectoryListing(value.result);
     if (request.command === 'ftp.files.upload') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
+    if (request.command === 'ftp.files.upload-dropped') return isFtpTransferResult(value.result) && value.result.direction === 'upload';
     if (request.command === 'ftp.files.download') return isFtpTransferResult(value.result) && value.result.direction === 'download';
     if (request.command === 'session.list') return Array.isArray(value.result) && value.result.every(isSavedSessionDefinition);
     if (request.command === 'session.count') return isCount(value.result);

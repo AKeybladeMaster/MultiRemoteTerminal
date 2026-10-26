@@ -21,9 +21,9 @@ import { createSshTunnelController } from '../../../../packages/application/src/
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
   SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -47,6 +47,7 @@ import { WindowsVncViewer } from '../adapters/windows-vnc-viewer.ts';
 import { LocalTextFilesWorkerHost } from '../adapters/local-text-files-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
+import { DroppedUploadRegistry } from './dropped-upload-registry.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
 import { isE2ETestHookEnabled } from './e2e-test-hooks.ts';
 import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
@@ -86,6 +87,8 @@ let windowReady = false;
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
 const rendererGestures = new RendererGestureGate();
+const droppedUploads = new DroppedUploadRegistry();
+const e2eRemoteFileDrop = isE2ETestHookEnabled('--mrt-e2e-file-drop', app.isPackaged, process.env, process.argv);
 const ownsSingleInstance = app.requestSingleInstanceLock();
 interface PendingCatalogCommand {
   readonly cancellation: AbortController;
@@ -110,7 +113,10 @@ function createWindow(): void {
   window = current;
   windowReady = false;
   const webContentsId = current.webContents.id;
-  current.webContents.once('destroyed', () => rendererGestures.clear(webContentsId));
+  current.webContents.once('destroyed', () => {
+    rendererGestures.clear(webContentsId);
+    droppedUploads.clearSender(webContentsId);
+  });
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
   current.webContents.on('will-frame-navigate', event => event.preventDefault());
@@ -127,7 +133,10 @@ function createWindow(): void {
     }
     stopActiveTerminals();
   });
-  current.webContents.on('render-process-gone', () => stopActiveTerminals());
+  current.webContents.on('render-process-gone', () => {
+    droppedUploads.clearSender(webContentsId);
+    stopActiveTerminals();
+  });
   void current.loadURL(APP_URL);
 }
 
@@ -400,6 +409,23 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TUNNEL_STATUS_EVENT_CHANNEL, status);
   });
+  ipcMain.handle(REMOTE_FILE_DROP_TEST_CHANNEL, event => {
+    const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
+    return e2eRemoteFileDrop && owned && event.senderFrame === event.sender.mainFrame && isAppDocument(event.senderFrame?.url ?? '');
+  });
+  ipcMain.handle(REMOTE_FILE_DROP_CHANNEL, async (event, input: unknown) => {
+    const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    const frameUrl = event.senderFrame?.url ?? '';
+    if (!owned || !mainFrame || !isAppDocument(frameUrl)) return failure('FORBIDDEN');
+    const parsed = parseRemoteFileDropRegistrationRequest(input);
+    if (!parsed.ok) return parsed;
+    const { sessionId, transport, remoteDirectory, localPaths } = parsed.result;
+    const outcome = await droppedUploads.register(event.sender.id, { sessionId, transport, remoteDirectory }, localPaths);
+    return outcome.ok
+      ? { sessionId, transport, remoteDirectory, ok: true, result: outcome.result }
+      : { sessionId, transport, remoteDirectory, ...failure(outcome.error) };
+  });
   ipcMain.handle(COMMAND_CHANNEL, async (event, input: unknown) => {
     const owned = window !== undefined && !window.isDestroyed() && event.sender === window.webContents;
     const cancellation = new AbortController();
@@ -409,9 +435,9 @@ function boot(): void {
     const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command.startsWith('macro.') ||
       parsed.result.command.startsWith('preferences.') || parsed.result.command.startsWith('tunnel.') || parsed.result.command === 'ssh.files.list' ||
       parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch') && owned && mainFrame && isAppDocument(frameUrl);
-    const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.download') &&
+    const transferRequest = parsed.ok && (parsed.result.command === 'ftp.files.upload' || parsed.result.command === 'ftp.files.upload-dropped' || parsed.result.command === 'ftp.files.download') &&
       owned && mainFrame && isAppDocument(frameUrl);
-    const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.download' ||
+    const sshTransferRequest = parsed.ok && (parsed.result.command === 'ssh.files.upload' || parsed.result.command === 'ssh.files.upload-dropped' || parsed.result.command === 'ssh.files.download' ||
       parsed.result.command === 'ssh.files.read-text' || parsed.result.command === 'ssh.files.write-text') &&
       owned && mainFrame && isAppDocument(frameUrl);
     const localTextRequest = parsed.ok && parsed.result.command.startsWith('local-text.') && owned && mainFrame && isAppDocument(frameUrl);
@@ -513,6 +539,12 @@ function boot(): void {
           if (result.canceled || !result.filePaths[0]) return undefined;
           const localPath = result.filePaths[0];
           return { localPath, fileName: basename(localPath) };
+        },
+        consumeDroppedUpload(context, token) {
+          return droppedUploads.consume(event.sender.id, context, token);
+        },
+        discardDroppedUploadHandles(context, tokens) {
+          droppedUploads.discard(event.sender.id, context, tokens);
         },
         async selectSshDownloadPath(fileName: string) {
           const e2eRoot = e2eTransferPath('--mrt-e2e-sftp-download-root=', '--mrt-e2e-sftp-transfers');

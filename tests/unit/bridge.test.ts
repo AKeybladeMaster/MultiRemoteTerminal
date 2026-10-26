@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBridge } from '../../apps/desktop/src/preload/client.ts';
+import { parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
 
@@ -15,14 +16,17 @@ test('preload sends a fixed command and returns a validated reply', async () => 
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
-    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'downloadSshFile', 'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer',
-    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer', 'launchVncViewer',
-    'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-    'getWorkbenchPreferences', 'saveWorkbenchPreferences',
-    'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession', 'listSavedSessionFolders', 'createSavedSessionFolder',
-    'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder', 'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
+    'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
+    'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile',
+    'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer', 'openLocalTextFile', 'reloadLocalTextFile', 'saveLocalTextFile', 'closeLocalTextFile',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'launchRdpViewer', 'launchVncViewer',
+    'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
+    'getWorkbenchPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+    'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
+    'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
+    'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
 });
 
@@ -116,6 +120,23 @@ test('preload routes SFTP transfers through fixed commands without accepting ren
     { command: 'ssh.files.download', requestId: id(), contractVersion: 1, payload: { sessionId, operationId, remotePath: '/home/alice/report.txt' } },
     { command: 'ssh.files.cancel', requestId: id(), contractVersion: 1, payload: { sessionId, operationId } }
   ]);
+});
+
+test('preload discard sends only context fields from a remote-file drop event', async () => {
+  const sessionId = 'd1c6c7d4-732c-4e3f-8df1-d8c84ea972fb';
+  const token = '79123813-7e3c-43dc-ae72-b8a5d317f852';
+  const event = { sessionId, transport: 'sftp' as const, remoteDirectory: '/incoming', ok: true as const,
+    result: [{ token, fileName: 'upload.txt', size: 12 }] };
+  let sent: unknown;
+  const bridge = createBridge(async request => {
+    sent = request;
+    return { requestId: request.requestId, ok: true, result: {} };
+  }, id);
+
+  assert.equal((await bridge.discardRemoteFileDropHandles(event, [token])).ok, true);
+  assert.equal(parseRequest(sent).ok, true);
+  assert.deepEqual(sent, { command: 'files.drop.discard', requestId: id(), contractVersion: 1,
+    payload: { sessionId, transport: 'sftp', remoteDirectory: '/incoming', tokens: [token] } });
 });
 
 test('preload routes bounded remote text reads and saves through fixed SFTP commands', async () => {

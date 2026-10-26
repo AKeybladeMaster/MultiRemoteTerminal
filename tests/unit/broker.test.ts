@@ -24,7 +24,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   confirmMultilinePaste: async () => false,
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
-  resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, terminals: {
+  resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
+  discardDroppedUploadHandles: () => {}, terminals: {
     async open(sessionId, shell) { return { ok: true, result: { sessionId, shell, state: 'running' } }; },
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
@@ -342,6 +343,52 @@ test('FTP transfers keep local paths in main, forward explicit conflict choices,
     payload: { sessionId, operationId } }, withTransfers, () => {});
   assert.deepEqual(cancelled, { requestId: request.requestId, ok: true, result: {} });
   assert.equal(observed.at(-1), `cancel:${sessionId}:${operationId}`);
+});
+
+test('dropped SFTP and FTP uploads consume the bound local selection and reuse transfer conflict policy', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operationId = 'cf66fcda-f195-45f0-b8be-1873b56319e3';
+  const token = 'ce2b576c-476b-4e85-86d8-96ca612fc716';
+  const observed: unknown[] = [];
+  const base = actions();
+  const withDroppedUploads: CommandActions = { ...base,
+    consumeDroppedUpload(context, receivedToken) {
+      observed.push({ kind: 'consume', context, token: receivedToken });
+      return receivedToken === token ? { localPath: 'C:\\private\\dropped.txt', fileName: 'dropped.txt' } : undefined;
+    },
+    discardDroppedUploadHandles(context, tokens) { observed.push({ kind: 'discard', context, tokens }); },
+    resolveSshTransferConflict: async (direction, fileName) => { observed.push({ kind: 'ssh-policy', direction, fileName }); return 'overwrite'; },
+    resolveFtpTransferConflict: async (direction, fileName) => { observed.push({ kind: 'ftp-policy', direction, fileName }); return 'rename'; },
+    sshTerminals: { ...base.sshTerminals, async uploadRemoteFile(id, op, localPath, remoteDirectory, fileName, policy) {
+      observed.push({ kind: 'ssh-upload', id, op, localPath, remoteDirectory, fileName, policy });
+      return { ok: true, result: { direction: 'upload', fileName, bytesTransferred: 4, state: 'completed' } };
+    } },
+    ftpFiles: { ...base.ftpFiles, async uploadFile(id, op, localPath, remoteDirectory, fileName, policy) {
+      observed.push({ kind: 'ftp-upload', id, op, localPath, remoteDirectory, fileName, policy });
+      return { ok: true, result: { direction: 'upload', fileName, bytesTransferred: 4, state: 'completed' } };
+    } }
+  };
+  const ssh = await dispatchCommand(owner, { command: 'ssh.files.upload-dropped', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/incoming', token } }, withDroppedUploads, () => {});
+  assert.deepEqual(ssh, { requestId: request.requestId, ok: true,
+    result: { direction: 'upload', fileName: 'dropped.txt', bytesTransferred: 4, state: 'completed' } });
+  const ftp = await dispatchCommand(owner, { command: 'ftp.files.upload-dropped', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/incoming', token } }, withDroppedUploads, () => {});
+  assert.deepEqual(ftp, { requestId: request.requestId, ok: true,
+    result: { direction: 'upload', fileName: 'dropped.txt', bytesTransferred: 4, state: 'completed' } });
+  const discardTokens = [token, '18f2f903-7b6f-4c8d-9c42-b63a58c4b087'];
+  const discarded = await dispatchCommand(owner, { command: 'files.drop.discard', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, transport: 'sftp', remoteDirectory: '/incoming', tokens: discardTokens } }, withDroppedUploads, () => {});
+  assert.deepEqual(discarded, { requestId: request.requestId, ok: true, result: {} });
+  assert.deepEqual(observed, [
+    { kind: 'consume', context: { transport: 'sftp', sessionId, remoteDirectory: '/incoming' }, token },
+    { kind: 'ssh-policy', direction: 'upload', fileName: 'dropped.txt' },
+    { kind: 'ssh-upload', id: sessionId, op: operationId, localPath: 'C:\\private\\dropped.txt', remoteDirectory: '/incoming', fileName: 'dropped.txt', policy: 'overwrite' },
+    { kind: 'consume', context: { transport: 'ftp', sessionId, remoteDirectory: '/incoming' }, token },
+    { kind: 'ftp-policy', direction: 'upload', fileName: 'dropped.txt' },
+    { kind: 'ftp-upload', id: sessionId, op: operationId, localPath: 'C:\\private\\dropped.txt', remoteDirectory: '/incoming', fileName: 'dropped.txt', policy: 'rename' },
+    { kind: 'discard', context: { sessionId, transport: 'sftp', remoteDirectory: '/incoming' }, tokens: discardTokens }
+  ]);
 });
 
 test('valid sender reaches the application through its interface', async () => {
