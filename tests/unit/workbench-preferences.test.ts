@@ -5,6 +5,7 @@ import { StorageOperationError } from '../../packages/application/src/storage-er
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences,
   toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS } from '../../packages/domain/src/local-shell-tools.ts';
+import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, normalizeEnabledOptionalConnections } from '../../packages/domain/src/optional-connection-tools.ts';
 import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../packages/domain/src/powershell-profile.ts';
 
 test('workbench greeting validation preserves Unicode, normalizes newlines, and accepts clearing the greeting', () => {
@@ -105,6 +106,23 @@ test('workbench preferences migrate schema v8 logos with an empty profile script
   assert.deepEqual(normalizeWorkbenchPreferences(schemaV8, 8), { ...DEFAULT_WORKBENCH_PREFERENCES, ...schemaV8 });
   assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'bad\u0000script' }), undefined);
   assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'x'.repeat(16_001) }), undefined);
+});
+
+test('optional connection preferences use a fixed allowlist and migrate schema v9 with providers enabled', () => {
+  assert.deepEqual(normalizeEnabledOptionalConnections(['vnc', 'telnet']), ['telnet', 'vnc']);
+  assert.deepEqual(normalizeEnabledOptionalConnections([]), []);
+  assert.equal(normalizeEnabledOptionalConnections(['telnet', 'telnet']), undefined);
+  assert.equal(normalizeEnabledOptionalConnections(['arbitrary']), undefined);
+
+  const schemaV9 = { startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+    autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: ['powershell', 'bash', 'wsl'],
+    customLogoDataUrl: null, powerShellProfileScript: '' };
+  assert.deepEqual(normalizeWorkbenchPreferences(schemaV9, 9), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...schemaV9, enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS
+  });
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...schemaV9, enabledOptionalConnections: ['ftp'] })?.enabledOptionalConnections, ['ftp']);
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV9, enabledOptionalConnections: ['unknown'] }), undefined);
 });
 
 test('PowerShell profile text normalizes newlines and rejects unreviewable controls and oversized scripts', () => {

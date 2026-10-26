@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, FormEvent } from 'react';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, OPTIONAL_CONNECTION_TOOL_REGISTRY } from '../../../../packages/domain/src/optional-connection-tools.ts';
+import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import { MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../../../packages/domain/src/powershell-profile.ts';
@@ -29,6 +31,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
   const [autoSaveSessions, setAutoSaveSessions] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [enabledOptionalConnections, setEnabledOptionalConnections] = useState<readonly OptionalConnectionId[]>(DEFAULT_ENABLED_OPTIONAL_CONNECTIONS);
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -52,7 +55,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
   const profileActionBusy = profilePreviewBusy || profileApplyBusy;
   const validatedPreferences = normalizeWorkbenchPreferences({
     startupGreeting: greeting, powerShellProfileScript, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh, visibleLocalShells, customLogoDataUrl
+    showSftpBrowserBesideSsh, visibleLocalShells, enabledOptionalConnections, customLogoDataUrl
   });
   const characterCount = Array.from(greeting).length;
 
@@ -74,6 +77,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
         setVisibleLocalShells(reply.result.visibleLocalShells);
+        setEnabledOptionalConnections(reply.result.enabledOptionalConnections);
         setCustomLogoDataUrl(reply.result.customLogoDataUrl);
       }
       else {
@@ -161,6 +165,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
         setVisibleLocalShells(reply.result.visibleLocalShells);
+        setEnabledOptionalConnections(reply.result.enabledOptionalConnections);
         setCustomLogoDataUrl(reply.result.customLogoDataUrl);
         onPreferencesSaved(reply.result);
         setStatus('Settings saved.');
@@ -322,6 +327,35 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
               Use built-in wordmark
             </button>
           </div>
+        </section>
+        <section className="settings-highlights" role="group" aria-labelledby="optional-connections-heading"
+          aria-describedby="optional-connections-description">
+          <h3 id="optional-connections-heading">Optional connection types</h3>
+          <p className="settings-highlight-help" id="optional-connections-description">
+            Choose which built-in connection types can start new work. Disabling one hides its launch action and blocks new opens, including saved-profile reopen. Existing sessions remain available to finish and close.
+          </p>
+          {OPTIONAL_CONNECTION_TOOL_REGISTRY.map(tool => {
+            const inputId = `optional-connection-${tool.id}`;
+            const descriptionId = `${inputId}-description`;
+            return <div key={tool.id}>
+              <label className="settings-highlight-toggle" htmlFor={inputId}>
+                <input id={inputId} name={`enabledOptionalConnections.${tool.id}`} type="checkbox"
+                  checked={enabledOptionalConnections.includes(tool.id)} disabled={loading || loadFailed || saving}
+                  aria-describedby={descriptionId}
+                  onChange={event => {
+                    const selected = new Set(enabledOptionalConnections);
+                    if (event.target.checked) selected.add(tool.id);
+                    else selected.delete(tool.id);
+                    setEnabledOptionalConnections(OPTIONAL_CONNECTION_TOOL_REGISTRY
+                      .filter(candidate => selected.has(candidate.id)).map(candidate => candidate.id));
+                    setError(undefined);
+                    setStatus('');
+                  }} />
+                <span>{tool.settingLabel}</span>
+              </label>
+              <p className="settings-highlight-help" id={descriptionId}>{tool.description}</p>
+            </div>;
+          })}
         </section>
         <div className="settings-highlights">
           <h3>Credential vault</h3>

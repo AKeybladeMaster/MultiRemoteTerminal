@@ -25,6 +25,7 @@ import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust
 import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
 import type { TftpRootSelection, TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
 import type { CustomLogoSelection } from '../../../../packages/domain/src/custom-logo.ts';
+import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import type { DroppedUploadSelection } from './dropped-upload-registry.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
@@ -34,6 +35,16 @@ import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-
 import { MAX_SERIAL_INPUT_CHARS } from '../../../../packages/domain/src/serial.ts';
 
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
+const OPTIONAL_CONNECTION_FOR_COMMAND: Readonly<Partial<Record<string, OptionalConnectionId>>> = Object.freeze({
+  'telnet.open': 'telnet',
+  'serial.ports.list': 'serial',
+  'serial.open': 'serial',
+  'ftp.open': 'ftp',
+  'rdp.launch': 'rdp',
+  'vnc.launch': 'vnc',
+  'tftp.root.choose': 'tftp',
+  'tftp.start': 'tftp'
+});
 
 export interface CommandSender {
   readonly owned: boolean;
@@ -135,6 +146,14 @@ export async function dispatchCommand(
 
   const { requestId } = parsed.result;
   try {
+    const optionalConnection = OPTIONAL_CONNECTION_FOR_COMMAND[parsed.result.command];
+    if (optionalConnection) {
+      const preferences = await actions.preferences.read(actions.cancellation);
+      if (!preferences.ok) return { requestId, ...preferences };
+      if (!preferences.result.enabledOptionalConnections.includes(optionalConnection)) {
+        return { requestId, ...failure('NOT_SUPPORTED') };
+      }
+    }
     if (parsed.result.command === 'terminal.open' || parsed.result.command === 'terminal.write' || parsed.result.command === 'terminal.close' ||
         parsed.result.command === 'ssh.open' || parsed.result.command === 'ssh.write' || parsed.result.command === 'ssh.close' ||
         parsed.result.command === 'sftp.open' || parsed.result.command === 'sftp.close' ||
