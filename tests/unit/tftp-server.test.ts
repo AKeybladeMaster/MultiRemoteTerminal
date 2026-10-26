@@ -128,9 +128,16 @@ test('TFTP server bounds pending file opens and rejects the next request as busy
     client = createSocket('udp4');
 
     for (let requestNumber = 1; requestNumber <= 8; requestNumber++) {
-      let opened!: () => void;
-      const openedPromise = new Promise<void>(resolve => { opened = resolve; });
-      openedCountWaiters.set(requestNumber, opened);
+      const openedPromise = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          openedCountWaiters.delete(requestNumber);
+          reject(new Error(`Timed out waiting for TFTP file open ${requestNumber}`));
+        }, 2_000);
+        openedCountWaiters.set(requestNumber, () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
       await sendPacket(client, readRequest(`pending-${requestNumber}.bin`), port);
       await openedPromise;
     }
@@ -141,6 +148,7 @@ test('TFTP server bounds pending file opens and rejects the next request as busy
     assert.equal(busyReply.readUInt16BE(0), 5);
     assert.equal(busyReply.readUInt16BE(2), 0);
     assert.equal(busyReply.toString('ascii', 4, busyReply.length - 1), 'Server is busy');
+    assert.equal(openCount, 8, 'the busy ninth RRQ must not enter the file opener');
   } finally {
     releaseAllOpens = true;
     for (const release of releasePendingOpens) release();
