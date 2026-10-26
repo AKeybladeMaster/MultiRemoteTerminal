@@ -24,7 +24,12 @@ This improves readability for common typed shell commands, including Bash. It is
 - `git diff --check` — passed after implementation and documentation updates.
 - The generated `test-results/bash-shell-syntax-prompt.png` was visually inspected; the live command remains visible in xterm and token colors are applied without rewriting its text.
 
-Independent Standards and Spec review — pending.
+## Independent review
+
+- **Spec:** No blocking findings. P-30 remains PARTIAL; the result explicitly limits dedicated WP-01G E2E evidence to local Git Bash and leaves SSH/Telnet acceptance unverified.
+- **Standards:** No documented-standard breaches. The marker cleanup evidence gap is resolved by unit and Windows E2E assertions, and xterm cell extraction is shared by both keyword and shell decorators.
+
+Reviewers performed static review of the pinned diff and did not rerun tests; the validation results above were run after the cleanup follow-up.
 
 ## Limits and follow-up
 

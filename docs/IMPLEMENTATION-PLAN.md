@@ -206,7 +206,7 @@ WP-04A review follow-up (2026-10-24): concurrent starts are coalesced, preflight
 WP-01F independent Standards, Spec and General review: [review outcome](results/WP-01F-review.md).
 **WP-01G — Terminal shell prompt coloring (partial):** Workbench settings add an opt-in shell-color preference (off by default), migrating stored preference schemas v1–v3 to v4 without enabling it. On local, SSH and Telnet terminals, the renderer anchors to xterm's parsed cursor row only after explicit keystroke input at a prompt ending in `$`, `#`, `%` or `>`, then colors bounded Shell lexical tokens using the shared domain tokenizer. Decorations remain transient and do not alter terminal data; Enter, Ctrl+C, Ctrl+D, Ctrl+L, failed paste, disabling the setting and pane teardown clear the anchor. Windows E2E covers Git Bash token colors and verifies cancellation removes the decorations; unit coverage checks marker disposal, prompt recognition and preference migration. SSH/Telnet terminal coloring shares the pane path but lacks dedicated E2E coverage. Wrapped input rows and full shell grammar remain open, so P-30 stays PARTIAL. See [ADR-0024](adr/ADR-0024-terminal-shell-prompt-coloring.md) and [WP-01G results](results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md).
 
-WP-01G independent Standards and Spec review: pending.
+WP-01G independent Standards and Spec review (2026-10-26): no blocking findings. The review follow-up added cleanup assertions and documented that dedicated SSH/Telnet UI acceptance remains open; see [WP-01G results](results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md).
 
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
