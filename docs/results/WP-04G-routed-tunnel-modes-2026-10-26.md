@@ -10,9 +10,9 @@
 
 Extended the existing Windows SSH gateway E2E fixture to verify remote-forward and dynamic SOCKS traffic through two saved SSH gateways. No production behavior changed in this slice.
 
-The remote-forward case requests a loopback server bind with port `0`, reads the assigned port from tunnel status, sends TCP data through the remote listener and compares the full response bytes. Stop verifies unbind, gateway/client/socket cleanup, and that the remote listener refuses connections.
+The remote-forward case requests a loopback server bind with port `0`, reads the assigned port from tunnel status, sends a length-prefixed TCP frame through the remote listener, and compares the complete response through TCP EOF. After cleanup, the target fixture's raw byte count must equal the frame length exactly. Stop verifies unbind, gateway/client/socket cleanup, and that the remote listener refuses connections.
 
-The dynamic case starts a two-hop route, negotiates unauthenticated SOCKS5, issues a domain-name `CONNECT` to `localhost`, compares the complete TCP response bytes and verifies the stopped local SOCKS listener refuses connections. Across the local, remote and dynamic routed starts, the tunnel target fixture records no PTY, shell or SFTP request.
+The dynamic case starts a two-hop route, negotiates unauthenticated SOCKS5, issues a domain-name `CONNECT` to `localhost`, compares the complete TCP response through EOF, and verifies the stopped local SOCKS listener refuses connections. Its target fixture also checks the exact raw request length after cleanup. Across the local, remote and dynamic routed starts, each target request's framed byte count is exact and the SSH target records no PTY, shell or SFTP request.
 
 ## Verification
 
@@ -27,7 +27,11 @@ Environment: Windows 11 Pro x64, build 26200; Node 24.14.1; pinned Electron 45.0
 
 ## Review
 
-Independent Standards, Spec and implementation reviews are pending for this phase.
+Independent review covered `83aec59c95f1bb3195174abb26006198dc913938...af8e6694d689454217ae402629cb95fafa96e1cd`.
+
+- **Standards:** No documented violations or remaining possible Fowler smells.
+- **Spec:** No findings or scope creep; the remaining interoperability and route-length limits stay partial.
+- **Implementation:** No critical, important or minor issues; ready to merge.
 
 ## Remaining limits
 
