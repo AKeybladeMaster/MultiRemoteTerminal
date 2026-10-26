@@ -1,7 +1,9 @@
 # WP-04G: Routed remote and dynamic tunnel acceptance
 
-**Date:** 2026-10-26  
-**Branch:** `dev`  
+**Date:** 2026-10-26
+
+**Branch:** `dev`
+
 **Requirements:** F-006, F-011; P-22, P-24 and P-25 (partial)
 
 ## Delivered
@@ -21,7 +23,7 @@ Environment: Windows 11 Pro x64, build 26200; Node 24.14.1; pinned Electron 45.0
 | `corepack pnpm typecheck` | Passed |
 | `corepack pnpm lint` | Passed; import-boundary checks passed |
 | `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH saved-profile jump routes verify every hop" --reporter=line` | Passed, 1/1 Windows Electron E2E, covering terminal/SFTP routes and all three routed tunnel modes |
-| `git diff --check` | Passed |
+| `git diff --check` | Passed after removing Markdown hard-break trailing spaces |
 
 ## Review
 
