@@ -321,7 +321,7 @@ function Workbench() {
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
-  const [selectedCommand, setSelectedCommand] = useState(0);
+  const [selectedCommandId, setSelectedCommandId] = useState<CommandName>();
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
   const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
   const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' }>>();
@@ -2146,7 +2146,7 @@ function Workbench() {
   useEffect(() => {
     if (paletteOpen) {
       requestAnimationFrame(() => paletteInput.current?.focus());
-      setSelectedCommand(0);
+      setSelectedCommandId(undefined);
     } else if (paletteReturnFocus.current) {
       const target = paletteReturnFocus.current;
       paletteReturnFocus.current = null;
@@ -2348,6 +2348,13 @@ function Workbench() {
     { id: 'open-settings', label: 'Workbench settings', run: openSettings }
   ];
   const filteredCommands = commands.filter(command => command.label.toLowerCase().includes(query.toLowerCase()));
+  const selectedCommandIndex = Math.max(0, filteredCommands.findIndex(command => command.id === selectedCommandId));
+  const selectedPaletteCommand = filteredCommands[selectedCommandIndex];
+  useEffect(() => {
+    if (paletteOpen && selectedCommandId === undefined && filteredCommands[0]) {
+      setSelectedCommandId(filteredCommands[0].id);
+    }
+  }, [filteredCommands, paletteOpen, selectedCommandId]);
   const active = sessions.find(session => session.sessionId === activeId);
   const multiExecTargets: MultiExecDisplayTarget[] = sessions.filter(isMacroTerminal)
     .filter(session => session.state === 'running' && handles.current.has(session.sessionId))
@@ -3070,16 +3077,22 @@ function Workbench() {
         <h2 id="palette-heading" className="visually-hidden">Command palette</h2>
         <label className="visually-hidden" htmlFor="palette-search">Find a command</label>
         <input ref={paletteInput} id="palette-search" name="command" autoComplete="off" type="search" placeholder="Find a command…" value={query}
-          onChange={event => { setQuery(event.target.value); setSelectedCommand(0); }}
+          onChange={event => { setQuery(event.target.value); setSelectedCommandId(undefined); }}
           onKeyDown={event => {
-            if (event.key === 'ArrowDown') { event.preventDefault(); setSelectedCommand(value => Math.min(value + 1, filteredCommands.length - 1)); }
-            else if (event.key === 'ArrowUp') { event.preventDefault(); setSelectedCommand(value => Math.max(0, value - 1)); }
-            else if (event.key === 'Enter') { event.preventDefault(); runCommand(filteredCommands[selectedCommand]); }
+            if (event.key === 'ArrowDown' && filteredCommands.length > 0) {
+              event.preventDefault();
+              setSelectedCommandId(filteredCommands[Math.min(selectedCommandIndex + 1, filteredCommands.length - 1)]?.id);
+            }
+            else if (event.key === 'ArrowUp' && filteredCommands.length > 0) {
+              event.preventDefault();
+              setSelectedCommandId(filteredCommands[Math.max(0, selectedCommandIndex - 1)]?.id);
+            }
+            else if (event.key === 'Enter') { event.preventDefault(); runCommand(selectedPaletteCommand); }
           }} />
         <ul>
           {filteredCommands.map((command, index) => <li key={command.id}>
-            <button className={index === selectedCommand ? 'active' : ''} type="button" aria-current={index === selectedCommand ? 'true' : undefined}
-              onMouseEnter={() => setSelectedCommand(index)} onClick={() => runCommand(command)}>
+            <button className={index === selectedCommandIndex ? 'active' : ''} type="button" aria-current={index === selectedCommandIndex ? 'true' : undefined}
+              onMouseEnter={() => setSelectedCommandId(command.id)} onClick={() => runCommand(command)}>
               <span>{command.label}</span><span aria-hidden="true">{command.id.startsWith('new-') ? '↵' : ''}</span>
             </button>
           </li>)}
