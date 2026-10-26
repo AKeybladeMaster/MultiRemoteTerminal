@@ -357,7 +357,7 @@ function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promis
 test('Windows local text editor preserves drafts on conflict and saves the selected file', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-local-text-editor-e2e-'));
   const path = join(profile, 'settings.txt');
-  await writeFile(path, 'name=old\r\n');
+  await writeFile(path, 'name=old\r\nlegacy=1\n');
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
     `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
   try {
@@ -367,19 +367,21 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
     const editor = page.getByTestId('local-text-editor');
     const contents = editor.getByRole('textbox', { name: 'File contents' });
     await expect(editor.getByRole('heading', { name: 'settings.txt', exact: true })).toBeVisible();
-    await expect(contents).toHaveValue('name=old\n');
-    await contents.fill('name=draft\n');
-    await writeFile(path, 'name=external\r\n');
+    await expect(contents).toHaveValue('name=old\nlegacy=1\n');
+    await expect(editor.getByRole('note')).toHaveText('Mixed line endings will be normalized to CRLF when you save.');
+    await contents.fill('name=draft\nlegacy=1\n');
+    await writeFile(path, 'name=external\r\nlegacy=external\n');
     await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(editor.getByRole('alert')).toContainText('changed since it was opened');
-    await expect(contents).toHaveValue('name=draft\n');
+    await expect(contents).toHaveValue('name=draft\nlegacy=1\n');
     await editor.getByRole('button', { name: 'Reload', exact: true }).click();
     await editor.getByRole('button', { name: 'Discard and reload', exact: true }).click();
-    await expect(contents).toHaveValue('name=external\n');
-    await contents.fill('name=final\n');
+    await expect(contents).toHaveValue('name=external\nlegacy=external\n');
+    await expect(editor.getByRole('note')).toHaveText('Mixed line endings will be normalized to CRLF when you save.');
+    await contents.fill('name=final\nlegacy=external\n');
     await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(editor.getByRole('status')).toHaveText('Saved');
-    expect(await readFile(path, 'utf8')).toBe('name=final\r\n');
+    expect(await readFile(path, 'utf8')).toBe('name=final\r\nlegacy=external\r\n');
     await expect(page.locator('body')).not.toContainText(path);
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor).toBeHidden();
@@ -485,7 +487,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
   await writeFile(uploadSource, 'private local upload payload');
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
-  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\r\n');
+  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -597,6 +599,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(editButton).toBeEnabled({ timeout: 15_000 });
     await editButton.click();
     await expect(editorText).toHaveValue('original remote text\nsecond line\n');
+    await expect(editor.getByRole('note')).toHaveText('Mixed line endings will be normalized to CRLF when you save.');
     await editorText.fill('edited from app\nsecond line\n');
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor.getByRole('alert')).toContainText('Discard your unsaved changes?');
@@ -609,6 +612,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(editor.getByRole('status')).toContainText('Saved', { timeout: 15_000 });
     await expect(editor.getByRole('alert')).toHaveCount(0);
     expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('edited from app\r\nsecond line\r\n');
+    await expect(editor.getByRole('note')).toHaveCount(0);
 
     await editor.getByRole('button', { name: 'Reload', exact: true }).click();
     await expect(editorText).toHaveValue('edited from app\nsecond line\n');

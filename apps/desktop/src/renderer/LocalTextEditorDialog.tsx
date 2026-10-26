@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { LocalTextFile } from '../../../../packages/domain/src/local-text-file.ts';
 import { MAX_REMOTE_TEXT_FILE_BYTES, remoteTextByteLength } from '../../../../packages/domain/src/remote-text-file.ts';
-import { fileLineEnding, textareaContent } from './text-editor-format.ts';
+import { fileLineEnding, hasMixedLineEndings, lineEndingLabel, textareaContent } from './text-editor-format.ts';
+import { textEditorErrorMessage } from './text-editor-errors.ts';
 
 interface LocalTextEditorDialogProps {
   readonly open: boolean;
@@ -10,17 +11,6 @@ interface LocalTextEditorDialogProps {
 }
 
 type CloseIntent = 'close' | 'reload';
-
-function errorMessage(code: string): string {
-  if (code === 'CONFLICT') return 'The local file changed since it was opened. Your draft is preserved; reload the latest version before saving again.';
-  if (code === 'NOT_SUPPORTED') return 'This is not a regular UTF-8 text file. It was not changed.';
-  if (code === 'OUTPUT_LIMIT') return 'This file exceeds the 512 KB editor limit.';
-  if (code === 'NOT_FOUND') return 'The selected file no longer exists. Open it again from its current location.';
-  if (code === 'FORBIDDEN') return 'Windows denied access to this file. Check the file permissions.';
-  if (code === 'TIMEOUT') return 'The local file operation timed out. Check the file before retrying.';
-  if (code === 'CANCELLED') return 'The local file operation was cancelled.';
-  return 'The local text file could not be saved or loaded.';
-}
 
 export function LocalTextEditorDialog({ open, file: initialFile, onClose }: LocalTextEditorDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -63,7 +53,7 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
     const reply = await window.multiRemoteTerminal.reloadLocalTextFile(file.selectionId);
     setBusy(undefined);
     if (!reply.ok) {
-      setError(errorMessage(reply.error.code));
+      setError(textEditorErrorMessage(reply.error.code, 'local'));
       return;
     }
     setFile(reply.result);
@@ -79,7 +69,7 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
     const reply = await window.multiRemoteTerminal.saveLocalTextFile(file.selectionId, content, file.revision);
     setBusy(undefined);
     if (!reply.ok) {
-      setError(errorMessage(reply.error.code));
+      setError(textEditorErrorMessage(reply.error.code, 'local'));
       return;
     }
     setFile({ ...file, content, revision: reply.result.revision, bytes: reply.result.bytesSaved });
@@ -126,6 +116,9 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
     <p id={`${contentId}-hint`} className="remote-text-editor-hint">
       {bytes === undefined ? 'This file contains unsupported characters or exceeds 512 KB.' : `${bytes.toLocaleString()} of ${MAX_REMOTE_TEXT_FILE_BYTES.toLocaleString()} bytes · UTF-8`}
     </p>
+    {file && hasMixedLineEndings(file.content) && <p className="remote-text-editor-hint" role="note">
+      Mixed line endings will be normalized to {lineEndingLabel(lineEnding)} when you save.
+    </p>}
     <footer className="remote-text-editor-actions">
       <button type="button" disabled={busy !== undefined} onClick={requestClose}>Close</button>
       <button type="button" disabled={!file || busy !== undefined || closeIntent !== undefined} onClick={() => void reload()}>Reload</button>
