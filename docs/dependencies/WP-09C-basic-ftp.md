@@ -15,7 +15,7 @@ Use `basic-ftp` only inside the FTP utility worker for explicit FTPS and consent
 
 ## Limits
 
-The current slice browses directories only. Upload/download, partial-file cleanup, collision policy, local destination-root safety, and FTPS certificate interoperability remain release gates. The 2 MiB cap applies to parsed listing data; the UI returns at most 500 validated file entries. Plain FTP is inherently unencrypted and remains an explicit user choice.
+The current slice browses directories only. Upload/download, partial-file cleanup, collision policy, and local destination-root safety were release gates for this slice. WP-09F now verifies explicit FTPS certificate rejection/trust and protected data channels against a local fixture; public CA-chain interoperability remains a release gate. The 2 MiB cap applies to parsed listing data; the UI returns at most 500 validated file entries. Plain FTP is inherently unencrypted and remains an explicit user choice.
 
 ## Official references
 

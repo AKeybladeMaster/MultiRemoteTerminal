@@ -2,12 +2,14 @@ const windowsRuntimeVariables = ['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP'] 
 
 export function createNetworkWorkerEnvironment(
   appRoot: string,
-  parentEnvironment: Readonly<Record<string, string | undefined>>
+  parentEnvironment: Readonly<Record<string, string | undefined>>,
+  testExtraCaPath?: string
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { MRT_APP_ROOT: appRoot };
   for (const name of windowsRuntimeVariables) {
     const value = parentEnvironment[name];
     if (value !== undefined) environment[name] = value;
   }
+  if (testExtraCaPath !== undefined) environment.MRT_E2E_FTP_CA = testExtraCaPath;
   return environment;
 }

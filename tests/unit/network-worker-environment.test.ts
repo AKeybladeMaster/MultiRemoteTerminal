@@ -26,3 +26,13 @@ test('network worker environment omits absent Windows runtime variables', () => 
     MRT_APP_ROOT: 'installed-app'
   });
 });
+
+test('network worker environment accepts only an explicitly supplied FTP test CA path', () => {
+  assert.deepEqual(createNetworkWorkerEnvironment('installed-app', {
+    NODE_EXTRA_CA_CERTS: 'must-not-cross-process-boundary',
+    FTP_TOKEN: 'must-not-cross-process-boundary'
+  }, 'tests/fixtures/ftps-test-cert.pem'), {
+    MRT_APP_ROOT: 'installed-app',
+    MRT_E2E_FTP_CA: 'tests/fixtures/ftps-test-cert.pem'
+  });
+});
