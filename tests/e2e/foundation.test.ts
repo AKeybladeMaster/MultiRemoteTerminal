@@ -61,6 +61,7 @@ interface Ssh2FixturePackage {
 
 interface SftpFixtureOptions {
   readonly readDelayMs?: number;
+  readonly readDelayForPath?: (path: string) => number;
   readonly writeDelayMs?: number;
   readonly renameDelayMs?: number;
   readonly onUploadStart?: (path: string) => void;
@@ -71,6 +72,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
   options: SftpFixtureOptions = {}): void {
   interface DirectoryHandle { readonly path: string; readonly names: string[]; read: boolean; }
   const fileHandles = new Map<number, Awaited<ReturnType<typeof openFile>>>();
+  const fileHandlePaths = new Map<number, string>();
   const directoryHandles = new Map<number, DirectoryHandle>();
   let nextHandleId = 1;
   const handleBytes = (id: number) => { const value = Buffer.alloc(4); value.writeUInt32BE(id); return value; };
@@ -144,17 +146,20 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
         ? append ? exclusive ? 'ax' : 'a' : create && (truncate || exclusive) ? exclusive ? 'wx' : 'w' : reading ? 'r+' : 'r+'
         : 'r';
       const file = await openFile(location.local, fileFlags, requestAttributes.mode ? requestAttributes.mode & 0o777 : 0o600);
-      if (writing) options.onUploadStart?.(location.remote);
       const id = nextHandleId++;
       fileHandles.set(id, file);
+      fileHandlePaths.set(id, location.remote);
+      if (writing) options.onUploadStart?.(location.remote);
       sftp.handle(requestId, handleBytes(id));
     })().catch(error => sftp.status(requestId, statusForError(error)));
   });
   sftp.on('READ', (requestId: number, handle: Buffer, offset: number, length: number) => {
-    const file = fileHandles.get(handleId(handle));
+    const id = handleId(handle);
+    const file = fileHandles.get(id);
     if (!file || !Number.isSafeInteger(length) || length < 0 || length > 256 * 1024) { sftp.status(requestId, api.STATUS_CODE.FAILURE); return; }
     void (async () => {
-      if (options.readDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, options.readDelayMs));
+      const delayMs = options.readDelayForPath?.(fileHandlePaths.get(id) ?? '') ?? options.readDelayMs ?? 0;
+      if (delayMs > 0) await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
       const buffer = Buffer.alloc(length);
       const result = await file.read(buffer, 0, length, offset);
       if (result.bytesRead === 0) sftp.status(requestId, api.STATUS_CODE.EOF);
@@ -179,6 +184,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
     const file = fileHandles.get(id);
     if (file) {
       fileHandles.delete(id);
+      fileHandlePaths.delete(id);
       void file.close().then(() => sftp.status(requestId, api.STATUS_CODE.OK), error => sftp.status(requestId, statusForError(error)));
       return;
     }
@@ -207,8 +213,61 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
   sftp.once('close', () => {
     for (const file of fileHandles.values()) void file.close().catch(() => undefined);
     fileHandles.clear();
+    fileHandlePaths.clear();
     directoryHandles.clear();
   });
+}
+
+interface E2EFileDigest { readonly size: number; readonly sha256: string; }
+
+async function writePatternFile(path: string, size: number, seed: number): Promise<void> {
+  const words = new Uint32Array((1024 * 1024) / Uint32Array.BYTES_PER_ELEMENT);
+  const chunk = Buffer.from(words.buffer);
+  const file = await openFile(path, 'w');
+  try {
+    for (let position = 0; position < size;) {
+      const length = Math.min(chunk.byteLength, size - position);
+      const block = Math.floor(position / chunk.byteLength);
+      let state = (seed ^ Math.imul(block + 1, 0x9e3779b1)) >>> 0;
+      if (state === 0) state = 0x6d2b79f5;
+      const wordCount = Math.floor(length / Uint32Array.BYTES_PER_ELEMENT);
+      for (let index = 0; index < wordCount; index++) {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        words[index] = state >>> 0;
+      }
+      for (let index = wordCount * Uint32Array.BYTES_PER_ELEMENT; index < length; index++) {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        chunk[index] = state & 0xff;
+      }
+      let offset = 0;
+      while (offset < length) {
+        const result = await file.write(chunk, offset, length - offset, position + offset);
+        if (result.bytesWritten === 0) throw new Error('The large-file fixture write made no progress.');
+        offset += result.bytesWritten;
+      }
+      position += length;
+    }
+  } finally { await file.close(); }
+}
+
+async function hashFile(path: string): Promise<E2EFileDigest> {
+  const file = await openFile(path, 'r');
+  const buffer = Buffer.alloc(1024 * 1024);
+  const hash = createHash('sha256');
+  let size = 0;
+  try {
+    for (;;) {
+      const result = await file.read(buffer, 0, buffer.byteLength, null);
+      if (result.bytesRead === 0) break;
+      size += result.bytesRead;
+      hash.update(buffer.subarray(0, result.bytesRead));
+    }
+  } finally { await file.close(); }
+  return { size, sha256: hash.digest('hex') };
 }
 
 const unicodeSample = String.fromCodePoint(0x416, 0x96ea, 0x1f642);
@@ -545,26 +604,19 @@ test('SSH quick connect validates the address before any credential prompt and r
 test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
-  const remoteRoot = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-remote-'));
+  const remoteRoot = join(profile, 'remote-files');
   const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
   const hostileOutputPathLiteral = JSON.stringify(hostileOutputPath).replace(/'/gu, '&#39;');
   const hostileShellOutput = `<img src=x onerror='globalThis.__mrtRemoteOutputExecuted = true; require("node:fs").writeFileSync(${hostileOutputPathLiteral}, "owned")'>`;
   const remoteScaleRoot = join(remoteRoot, 'scale');
+  const largeRemoteFile = join(remoteRoot, 'large.bin');
+  const largeTransferSize = 100 * 1024 * 1024;
+  const dropUploadContents = [Buffer.alloc(1_024, 0x41), Buffer.from('private dropped upload payload two')];
   const uploadSource = join(profile, 'upload.txt');
   const dropUploadSources = [join(profile, 'dragged-upload.txt'), join(profile, 'dragged-upload-second.txt')];
   const dropFixtureEvents: string[] = [];
   const downloadRoot = join(profile, 'downloads');
-  await mkdir(downloadRoot);
-  await mkdir(remoteScaleRoot);
-  await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
-  await writeFile(uploadSource, 'private local upload payload');
-  await Promise.all([
-    writeFile(dropUploadSources[0]!, 'private dropped upload payload one'),
-    writeFile(dropUploadSources[1]!, 'private dropped upload payload two')
-  ]);
-  await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
-  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
-  await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
+  let expectedLargeFileDigest: E2EFileDigest;
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -594,6 +646,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
       session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
         fixtureEvents.push('sftp');
         startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500,
+          readDelayForPath: path => path === '/home/mrt/large.bin' ? 0 : 700,
           onUploadStart: path => { if (path.endsWith('.partial')) dropFixtureEvents.push('start'); },
           onRename: path => {
             const fileName = posix.basename(path);
@@ -609,6 +662,17 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   let listening = false;
   try {
+    await mkdir(remoteRoot);
+    await mkdir(downloadRoot);
+    await mkdir(remoteScaleRoot);
+    await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
+    await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
+    expectedLargeFileDigest = await hashFile(largeRemoteFile);
+    await writeFile(uploadSource, 'private local upload payload');
+    await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
+    await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
+    await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
+    await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -665,6 +729,10 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(remoteFileList.locator('li[data-virtual-index]').first()).toHaveAttribute('data-virtual-index', '0');
     await sftpPanel.getByRole('button', { name: 'Open parent folder', exact: true }).click();
     await expect(remoteFileList).toHaveAttribute('aria-label', 'Items in /home/mrt');
+    await sftpPanel.getByRole('button', { name: 'Download large.bin', exact: true }).click();
+    await expect(sftpPanel.getByText('Downloaded large.bin (100 MB).', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => hashFile(join(downloadRoot, 'large.bin')).catch(() => undefined), { timeout: 30_000 })
+      .toEqual(expectedLargeFileDigest);
     await sftpPanel.getByRole('button', { name: 'Download remote.txt', exact: true }).click();
     await expect(sftpPanel.getByText(/Downloaded remote.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'remote.txt'), 'utf8')).toBe('remote download payload');
@@ -770,10 +838,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect.poll(() => [...dropFixtureEvents], { timeout: 20_000 }).toEqual([
       'start', 'complete:dragged-upload.txt', 'start', 'complete:dragged-upload-second.txt'
     ]);
-    await expect.poll(() => readFile(join(remoteRoot, 'dragged-upload.txt'), 'utf8').catch(() => undefined))
-      .toBe('private dropped upload payload one');
-    await expect.poll(() => readFile(join(remoteRoot, 'dragged-upload-second.txt'), 'utf8').catch(() => undefined))
-      .toBe('private dropped upload payload two');
+    expect(await readFile(join(remoteRoot, 'dragged-upload.txt'))).toEqual(dropUploadContents[0]);
+    expect(await readFile(join(remoteRoot, 'dragged-upload-second.txt'))).toEqual(dropUploadContents[1]);
     await expect(contextualFiles.getByText(/Uploaded dragged-upload-second\.txt/u)).toBeVisible({ timeout: 15_000 });
 
     await contextualFiles.getByRole('button', { name: 'Upload file', exact: true }).click();
@@ -788,7 +854,6 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    await rm(remoteRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
 
@@ -2085,16 +2150,14 @@ test('Telnet requires plaintext consent and carries terminal input through the w
 });
 
 test('FTP shows plaintext risk, browses through the utility worker, and persists a credential-free profile for reconnect', async () => {
-  test.setTimeout(75_000);
+  test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ftp-e2e-'));
   const uploadSource = join(profile, 'e2e-upload.txt');
   const dropUploadSources = [join(profile, 'mrt-drop-first.txt'), join(profile, 'mrt-drop-second.txt')];
-  const dropUploadContents = [Buffer.from('first dropped FTP payload'), Buffer.from('second dropped FTP payload')];
-  const uploadContents = Buffer.alloc(4 * 1024 * 1024, 65);
+  const dropUploadContents = [Buffer.alloc(1_024, 0x42), Buffer.from('second dropped FTP payload')];
+  const largeTransferSize = 100 * 1024 * 1024;
   const downloadRoot = join(profile, 'downloads');
-  await writeFile(uploadSource, uploadContents);
-  await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
-  await mkdir(downloadRoot);
+  let expectedLargeFileDigest: E2EFileDigest;
   const remoteFiles = new Map<string, Buffer>([
     ['readme.txt', Buffer.from('hello remote')],
     ['documents/nested.txt', Buffer.from('nested content abc')],
@@ -2111,6 +2174,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const ftpCwdArguments: string[] = [];
   const ftpDeleteArguments: string[] = [];
   const ftpDropUploadEvents: string[] = [];
+  let ftpLargeUploadDigest: string | undefined;
   let stouCount = 0;
   let uploadTransferStartedCount = 0;
   let firstDropReplyPending = false;
@@ -2194,10 +2258,16 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
       const name = uploadName;
       const dataSocket = transferSocket;
       const chunks: Buffer[] = [];
-      dataSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      const uploadHash = name === 'mrt-server-generated.txt' ? createHash('sha256') : undefined;
+      dataSocket.on('data', chunk => {
+        const data = Buffer.from(chunk);
+        chunks.push(data);
+        uploadHash?.update(data);
+      });
       dataSocket.once('end', () => {
         const complete = () => {
           remoteFiles.set(posix.join(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
+          if (uploadHash) ftpLargeUploadDigest = uploadHash.digest('hex');
           if (name.startsWith('mrt-drop-')) ftpDropUploadEvents.push(`complete:${name}`);
           dataSocket.end();
           reply('226 Transfer complete');
@@ -2212,7 +2282,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     const sendDownload = () => {
       if (transferStarted || !transferSocket || !downloadName) return;
       transferStarted = true;
-      const contents = remoteFiles.get(downloadName);
+      const remotePath = (downloadName.startsWith('/') ? posix.normalize(downloadName) : posix.resolve(currentDirectory, downloadName))
+        .replace(/^\//u, '');
+      const contents = remoteFiles.get(remotePath);
       if (!contents) { reply('550 File not found'); transferSocket.destroy(); finishTransfer(); return; }
       transferSocket.end(contents);
       transferSocket.once('close', () => {
@@ -2272,7 +2344,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           receiveUpload();
         }
         else if (verb === 'RETR') {
-          downloadName = argument.slice(argument.lastIndexOf('/') + 1);
+          downloadName = argument;
           reply('150 Opening download connection');
           sendDownload();
         }
@@ -2302,6 +2374,10 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
   try {
+    await writePatternFile(uploadSource, largeTransferSize, 0x41);
+    expectedLargeFileDigest = await hashFile(uploadSource);
+    await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
+    await mkdir(downloadRoot);
     await new Promise<void>((resolveListen, rejectListen) => {
       control.once('error', rejectListen);
       control.listen(0, '127.0.0.1', resolveListen);
@@ -2336,7 +2412,11 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect.poll(() => ftpCwdArguments.length).toBe(2);
     expect(ftpStouCommands).toEqual(['STOU']);
     expect(ftpCwdArguments).toEqual(['documents', '/']);
-    await expect.poll(() => remoteFiles.get('documents/mrt-server-generated.txt')?.length).toBe(uploadContents.length);
+    await expect.poll(() => remoteFiles.get('documents/mrt-server-generated.txt')?.length).toBe(largeTransferSize);
+    const uploadedLargeFile = remoteFiles.get('documents/mrt-server-generated.txt');
+    if (!uploadedLargeFile) throw new Error('The FTP fixture did not retain the uploaded large file.');
+    expect({ size: uploadedLargeFile.byteLength, sha256: ftpLargeUploadDigest })
+      .toEqual(expectedLargeFileDigest);
     await expect(browser.getByText(/^Uploaded mrt-server-generated\.txt \(/u)).toBeVisible({ timeout: 10_000 });
 
     await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
@@ -2353,6 +2433,21 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await browser.getByRole('button', { name: 'Download readme.txt', exact: true }).click();
     await expect.poll(() => readFile(join(downloadRoot, 'readme.txt'), 'utf8').catch(() => undefined)).toBe('hello remote');
     await expect(browser.getByText('Downloaded readme.txt (12 B).', { exact: true })).toBeVisible({ timeout: 10_000 });
+
+    const rootFileList = browser.locator('.remote-file-list');
+    await rootFileList.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    const openDocuments = browser.getByRole('button', { name: 'Open folder documents', exact: true });
+    await expect(openDocuments).toBeVisible({ timeout: 10_000 });
+    await openDocuments.click();
+    const downloadLargeButton = browser.getByRole('button', { name: 'Download mrt-server-generated.txt', exact: true });
+    await expect(downloadLargeButton).toBeVisible({ timeout: 10_000 });
+    await downloadLargeButton.click();
+    await expect(browser.getByText('Downloaded mrt-server-generated.txt (100 MB).', { exact: true }))
+      .toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => hashFile(join(downloadRoot, 'mrt-server-generated.txt')).catch(() => undefined), { timeout: 60_000 })
+      .toEqual(expectedLargeFileDigest);
+    await browser.getByRole('button', { name: 'Open parent folder', exact: true }).click();
+    await expect(browser.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 });
 
     await expect(browser).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
     await dispatchFileDrop(page, dropUploadSources, '[data-testid="remote-file-browser"]');
