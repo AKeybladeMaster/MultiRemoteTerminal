@@ -24,13 +24,13 @@ Environment: Windows 11 Pro x64, build 26200; Node 24.14.1; pinned Electron 45.0
 | `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH saved-profile jump routes verify every hop" --reporter=line` | Passed, 1/1 Windows Electron E2E |
 | `git diff --check` | Passed |
 
-The Windows E2E uses a dedicated two-gateway route with first-use trust prompts for both gateways and the target. It starts a saved local forward from the UI, verifies that the gateway relays reach the target in order, sends a TCP payload through the returned loopback port, checks the exact echoed payload, observes no shell or SFTP subsystem request, stops the tunnel, and waits for route sockets and forwarding sockets to close. Existing direct tunnel E2Es continue to cover the remote and SOCKS5 modes.
+The Windows E2E uses a dedicated two-gateway route with first-use trust prompts for both gateways and the target. It starts a saved local forward from the UI, verifies that the gateway relays reach the target in order, sends a TCP payload through the returned loopback port, compares the complete echoed byte buffer, and observes no PTY, shell or SFTP request at the tunnel target. After stopping, it waits for all three SSH fixture clients and forwarding sockets to close, then verifies the assigned local port refuses connections. Existing direct tunnel E2Es continue to cover the remote and SOCKS5 modes.
 
 The E2E caught a renderer composition bug where the dialog's parent callback accepted only the tunnel ID and dropped the selected gateway IDs. The callback now forwards both values; the final two-gateway routed acceptance passed.
 
 ## Review
 
-Independent Standards and Spec reviews are pending before promotion to `main`.
+The first Standards and Spec reviews found no standards violation or scope creep. The independent implementation review found missing E2E instrumentation for PTY/SFTP and recommended exact-buffer, client-cleanup and listener-release assertions plus stale-summary corrections. Those findings are addressed in this follow-up; rerun focused Windows E2E and final reviews before promotion.
 
 ## Remaining limits
 

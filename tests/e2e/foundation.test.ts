@@ -1809,10 +1809,12 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     tunneledSockets.add(socket);
     socket.once('close', () => tunneledSockets.delete(socket));
     socket.on('error', () => {});
+    let forwardedPayload = Buffer.alloc(0);
     socket.on('data', data => {
       tunneledBytes += data.length;
-      socket.write(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), data]));
+      forwardedPayload = Buffer.concat([forwardedPayload, data]);
     });
+    socket.once('end', () => socket.end(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), forwardedPayload])));
   });
   const servers: Array<{ readonly name: string; readonly server: Ssh2FixtureServer; address?: AddressInfo }> = [];
   const createFixture = (name: string, role: 'gateway' | 'terminal' | 'sftp'): Ssh2FixtureServer => {
@@ -1877,7 +1879,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         if (role !== 'gateway') client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
           const session = acceptSession();
           if (role === 'terminal') {
-            session.on('pty', (accept: () => void) => accept());
+            session.on('pty', (accept: () => void) => { fixtureEvents.push(`${name}:pty`); accept(); });
             session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
               fixtureEvents.push(`${name}:shell`);
               acceptShell().write('MRT-JUMP-TARGET-READY\r\n');
@@ -1887,8 +1889,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
             fixtureEvents.push(`${name}:shell`);
             acceptShell().end();
           });
-          if (role === 'sftp') session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
-            sftpRequests++;
+          if (role === 'terminal' || role === 'sftp') session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
+            if (role === 'sftp') sftpRequests++;
             fixtureEvents.push(`${name}:sftp`);
             startSftpFixture(acceptSftp(), sftpRoot, ssh2.utils.sftp);
           });
@@ -2029,6 +2031,18 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         throw new Error(`${error instanceof Error ? error.message : 'Relay cleanup timed out'}\nRemaining route relays: ${JSON.stringify(remaining)}`);
       }
     };
+    const localPortRefusesConnections = (port: number): Promise<boolean> => new Promise(resolveProbe => {
+      const probe = connectTcp(port, '127.0.0.1');
+      let settled = false;
+      const finish = (refused: boolean): void => {
+        if (settled) return;
+        settled = true;
+        probe.destroy();
+        resolveProbe(refused);
+      };
+      probe.once('connect', () => finish(false));
+      probe.once('error', error => finish((error as NodeJS.ErrnoException).code === 'ECONNREFUSED'));
+    });
 
     await openRoute(true);
     await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(1);
@@ -2089,6 +2103,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     expect(fixtureEvents).toContain(`tunnel-gateway-two:relay:${tunnelTargetPort}`);
     expect(fixtureEvents.filter(event => event.endsWith(':shell'))).toHaveLength(shellCountBeforeTunnel);
     expect(sftpRequests).toBe(sftpRequestsBeforeTunnel);
+    expect(fixtureEvents.filter(event => ['tunnel-target:pty', 'tunnel-target:shell', 'tunnel-target:sftp'].includes(event))).toEqual([]);
 
     const tunnelPort = await page.evaluate(async () => {
       const reply = await window.multiRemoteTerminal.listSshTunnels();
@@ -2097,29 +2112,26 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       if (!active || active.status.state !== 'active') throw new Error('Gateway routed tunnel did not become active');
       return active.status.bindPort;
     });
-    const payload = 'exact-forwarded-bytes';
-    const echoed = await new Promise<string>((resolveEcho, rejectEcho) => {
+    const payload = Buffer.from('exact-forwarded-bytes');
+    const expectedEcho = Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), payload]);
+    const echoed = await new Promise<Buffer>((resolveEcho, rejectEcho) => {
       const socket = connectTcp(tunnelPort, '127.0.0.1');
-      let received = '';
+      const received: Buffer[] = [];
       const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for the gateway-routed forward')); }, 10_000);
       socket.once('error', error => { clearTimeout(timer); rejectEcho(error); });
-      socket.once('connect', () => socket.write(Buffer.from(payload)));
-      socket.on('data', chunk => {
-        received += chunk.toString('utf8');
-        if (received.includes(`MRT-GATEWAY-TUNNEL:${payload}`)) {
-          clearTimeout(timer);
-          socket.destroy();
-          resolveEcho(received);
-        }
-      });
+      socket.once('connect', () => socket.end(payload));
+      socket.on('data', chunk => received.push(Buffer.from(chunk)));
+      socket.once('end', () => { clearTimeout(timer); resolveEcho(Buffer.concat(received)); });
     });
-    expect(echoed).toContain(`MRT-GATEWAY-TUNNEL:${payload}`);
-    expect(tunneledBytes).toBe(Buffer.byteLength(payload));
+    expect(echoed).toEqual(expectedEcho);
+    expect(tunneledBytes).toBe(payload.byteLength);
     expect(fixtureEvents).toContain('target:tunnel-forward');
     await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
     await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
+    await expect.poll(() => clients.size).toBe(0);
     await expect.poll(() => relaySockets.size).toBe(0);
     await expect.poll(() => tunneledSockets.size).toBe(0);
+    expect(await localPortRefusesConnections(tunnelPort)).toBe(true);
   } finally {
     await app?.close();
     for (const client of clients) client.end();
