@@ -12,7 +12,7 @@ F-014 calls for local and remote text editing. WP-08C provides bounded, conflict
 - The main-process application controller retains the absolute path in one in-memory selection and returns an opaque UUID, the basename, and bounded text. Renderer commands can only refer to that selection UUID; they cannot provide or receive a local path.
 - Run file reads and writes in a one-shot Electron utility process. Accept regular files only, strict UTF-8, no NUL, and a 512 KiB encoded-content limit. The worker checks file identity and SHA-256 revision before returning or saving.
 - Stage saves in a unique exclusive sibling file, verify the source again, move it to a unique sibling backup, and create the replacement without replacing a file that appeared concurrently. Attempt to restore the backup on failure without overwriting a concurrent file.
-- Keep save, reload and discard actions explicit. Preserve the draft after conflict and confirm before discarding it. Preserve the first line-ending style when saving. The selected path and draft are not persisted.
+- Keep save, reload and discard actions explicit. Preserve the draft after conflict and confirm before discarding it. Preserve the first line-ending style when saving; when the source mixes line endings, disclose that save normalizes them to the first style. The selected path and draft are not persisted.
 - The utility process has a 15-second operation deadline. On app shutdown or renderer teardown, the selection is cleared; temporary or backup cleanup after forced process termination is best effort.
 
 ## Consequences
