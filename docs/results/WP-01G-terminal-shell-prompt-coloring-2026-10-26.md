@@ -15,11 +15,12 @@ This improves readability for common typed shell commands, including Bash. It is
 
 ## Validation
 
-- `node --test tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/terminal-highlights.test.ts` — 16/16 passed, covering prompt endings, schema-v3 migration defaults, opt-in validation and persistence.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "terminal keyword highlighting|Git Bash runs in a local terminal" --reporter=line` — 2/2 Windows Electron E2Es passed. Git Bash input shows the expected `if` and `true` token colors; settings persist across restart, while keyword coloring continues to preserve independent ANSI colors.
+- `node --test tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/terminal-highlights.test.ts` — 17/17 passed, covering prompt endings, anchor marker disposal, schema-v3 migration defaults, opt-in validation and persistence.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "terminal keyword highlighting|Git Bash runs in a local terminal" --reporter=line` — 2/2 Windows Electron E2Es passed. Git Bash input shows the expected `if` and `true` token colors; Ctrl+C removes the active token decorations; settings persist across restart, while keyword coloring continues to preserve independent ANSI colors.
+- The focused E2E exercises local Git Bash. SSH and Telnet panes use the same renderer path but have not received dedicated WP-01G UI acceptance.
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
-- `corepack pnpm build` — passed on Windows x64 with Node.js 24.14.1. The renderer bundle is 928.21 kB minified / 254.32 kB gzip and triggers Vite's 500 kB advisory.
+- `corepack pnpm build` — passed on Windows x64 with Node.js 24.14.1. The renderer bundle is 928.18 kB minified / 254.33 kB gzip and triggers Vite's 500 kB advisory.
 - `git diff --check` — passed after implementation and documentation updates.
 - The generated `test-results/bash-shell-syntax-prompt.png` was visually inspected; the live command remains visible in xterm and token colors are applied without rewriting its text.
 

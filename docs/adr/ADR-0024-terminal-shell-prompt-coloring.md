@@ -11,7 +11,7 @@ P-30 asks for readable syntax colors in terminal sessions. WP-01F already colors
 - Add a persistent workbench preference, `terminalShellSyntaxEnabled`, defaulting to `false`. Advance the preference schema to v4; valid v1 greeting, v2 keyword-highlight and v3 automatic-session-save settings migrate with shell coloring disabled.
 - On local, SSH and Telnet terminals, observe only the normal xterm buffer. When a user keystroke first arrives and the visible cursor-line text ends in a common prompt character (`$`, `#`, `%` or `>`), retain an xterm marker and cursor column as a transient anchor. Color only the typed portion of that active physical row with token ranges from the shared Shell tokenizer.
 - Reuse the current terminal theme's foreground colors. Apply no more than 64 token decorations during a refresh and retain the existing 2,048 UTF-16 code-unit line extraction bound. Do not parse raw output, add protocol messages, rewrite terminal bytes, log command text or persist token state.
-- Clear the marker on Enter, Ctrl+C, Ctrl+D, Ctrl+L, failed clipboard paste and terminal-pane teardown. Exclude serial terminals.
+- Clear the marker on Enter, Ctrl+C, Ctrl+D, Ctrl+L, failed clipboard paste, when the setting is disabled and on terminal-pane teardown. Exclude serial terminals.
 - Keep the user in control of the feature through the Settings checkbox. Do not install shell scripts, change prompt configuration, infer command safety or enable coloring by default.
 
 ## Consequences and limits
