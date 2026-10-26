@@ -21,7 +21,7 @@
 - `corepack pnpm lint` — passed, including ESLint and static import-boundary checks.
 - `corepack pnpm build` — passed on Windows x64. Vite reports the existing large renderer bundle advisory (930.90 kB minified, 255.03 kB gzip).
 - `corepack pnpm setup:electron` — passed before the handle-discard follow-up.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers" --reporter=line` — 1/1 passed on Windows after the follow-up. The loopback SSH/SFTP fixture verifies uploaded remote bytes for a native-backed file sent through the active SSH file pane.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers|FTP shows plaintext risk" --reporter=line` — 2/2 passed on Windows. The loopback SFTP and FTP fixtures each verify two native-backed dropped files arrive with the expected bytes in serial start/commit order. FTP evidence covers the server-assigned `STOU` names.
 - `git diff --check` — passed after the follow-up.
 
 ## Limits

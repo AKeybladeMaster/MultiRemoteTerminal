@@ -63,6 +63,8 @@ interface SftpFixtureOptions {
   readonly readDelayMs?: number;
   readonly writeDelayMs?: number;
   readonly renameDelayMs?: number;
+  readonly onUploadStart?: (path: string) => void;
+  readonly onRename?: (path: string) => void;
 }
 
 function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2FixturePackage['utils']['sftp'],
@@ -142,6 +144,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
         ? append ? exclusive ? 'ax' : 'a' : create && (truncate || exclusive) ? exclusive ? 'wx' : 'w' : reading ? 'r+' : 'r+'
         : 'r';
       const file = await openFile(location.local, fileFlags, requestAttributes.mode ? requestAttributes.mode & 0o777 : 0o600);
+      if (writing) options.onUploadStart?.(location.remote);
       const id = nextHandleId++;
       fileHandles.set(id, file);
       sftp.handle(requestId, handleBytes(id));
@@ -192,6 +195,7 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
         const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
         if (code !== 'ENOENT') throw error;
         await renameFile(from, to);
+        options.onRename?.(remoteLocation(destination).remote);
         sftp.status(requestId, api.STATUS_CODE.OK);
       }
     })().catch(error => sftp.status(requestId, statusForError(error)));
@@ -242,6 +246,26 @@ async function focusVirtualizedListBoundary(list: Locator, edge: 'first' | 'last
     boundary.focus();
     return { index: Number(row.dataset.virtualIndex), focused: document.activeElement === boundary };
   }, edge);
+}
+
+async function dispatchFileDrop(page: Page, filePaths: readonly string[], targetSelector: string): Promise<void> {
+  const inputId = `mrt-e2e-drop-input-${randomUUID()}`;
+  const inputSelector = `#${inputId}`;
+  await page.evaluate(({ id }) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.id = id;
+    input.multiple = true;
+    input.hidden = true;
+    document.body.append(input);
+  }, { id: inputId });
+  await page.locator(inputSelector).setInputFiles([...filePaths]);
+  await expect.poll(() => page.evaluate(() => typeof (globalThis as unknown as { __mrtE2EFileDrop?: unknown }).__mrtE2EFileDrop))
+    .toBe('object');
+  const dispatched = await page.evaluate(({ inputSelector: input, targetSelector: target }) => (globalThis as unknown as {
+    __mrtE2EFileDrop?: { dropFromInput(inputSelector: string, targetSelector: string): boolean }
+  }).__mrtE2EFileDrop?.dropFromInput(input, target) ?? false, { inputSelector, targetSelector });
+  expect(dispatched).toBe(true);
 }
 
 async function runPaletteCommand(page: Page, label: string): Promise<void> {
@@ -527,13 +551,17 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const hostileShellOutput = `<img src=x onerror='globalThis.__mrtRemoteOutputExecuted = true; require("node:fs").writeFileSync(${hostileOutputPathLiteral}, "owned")'>`;
   const remoteScaleRoot = join(remoteRoot, 'scale');
   const uploadSource = join(profile, 'upload.txt');
-  const dropUploadSource = join(profile, 'dragged-upload.txt');
+  const dropUploadSources = [join(profile, 'dragged-upload.txt'), join(profile, 'dragged-upload-second.txt')];
+  const dropFixtureEvents: string[] = [];
   const downloadRoot = join(profile, 'downloads');
   await mkdir(downloadRoot);
   await mkdir(remoteScaleRoot);
   await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
   await writeFile(uploadSource, 'private local upload payload');
-  await writeFile(dropUploadSource, 'private dropped upload payload');
+  await Promise.all([
+    writeFile(dropUploadSources[0]!, 'private dropped upload payload one'),
+    writeFile(dropUploadSources[1]!, 'private dropped upload payload two')
+  ]);
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
   await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
   await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
@@ -565,7 +593,13 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
       });
       session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
         fixtureEvents.push('sftp');
-        startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500 });
+        startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500,
+          onUploadStart: path => { if (path.endsWith('.partial')) dropFixtureEvents.push('start'); },
+          onRename: path => {
+            const fileName = posix.basename(path);
+            if (fileName === 'dragged-upload.txt' || fileName === 'dragged-upload-second.txt') dropFixtureEvents.push(`complete:${fileName}`);
+          }
+        });
       });
     });
     });
@@ -731,23 +765,16 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(contextualFiles).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
 
-    await page.evaluate(() => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.id = 'mrt-e2e-drop-input';
-      document.body.append(input);
-    });
-    await page.locator('#mrt-e2e-drop-input').setInputFiles(dropUploadSource);
-    await expect.poll(() => page.evaluate(() => typeof (globalThis as unknown as { __mrtE2EFileDrop?: unknown }).__mrtE2EFileDrop))
-      .toBe('object');
-    const dropDispatched = await page.evaluate(({ inputSelector, targetSelector }) => (globalThis as unknown as {
-      __mrtE2EFileDrop?: { dropFromInput(inputSelector: string, targetSelector: string): boolean }
-    }).__mrtE2EFileDrop?.dropFromInput(inputSelector, targetSelector) ?? false, {
-      inputSelector: '#mrt-e2e-drop-input', targetSelector: `#${sshPanelId} [data-testid="remote-file-browser"]`
-    });
-    expect(dropDispatched).toBe(true);
-    await expect(contextualFiles.getByText(/Uploaded dragged-upload\.txt/u)).toBeVisible({ timeout: 15_000 });
-    expect(await readFile(join(remoteRoot, 'dragged-upload.txt'), 'utf8')).toBe('private dropped upload payload');
+    dropFixtureEvents.length = 0;
+    await dispatchFileDrop(page, dropUploadSources, `#${sshPanelId} [data-testid="remote-file-browser"]`);
+    await expect.poll(() => [...dropFixtureEvents], { timeout: 20_000 }).toEqual([
+      'start', 'complete:dragged-upload.txt', 'start', 'complete:dragged-upload-second.txt'
+    ]);
+    await expect.poll(() => readFile(join(remoteRoot, 'dragged-upload.txt'), 'utf8').catch(() => undefined))
+      .toBe('private dropped upload payload one');
+    await expect.poll(() => readFile(join(remoteRoot, 'dragged-upload-second.txt'), 'utf8').catch(() => undefined))
+      .toBe('private dropped upload payload two');
+    await expect(contextualFiles.getByText(/Uploaded dragged-upload-second\.txt/u)).toBeVisible({ timeout: 15_000 });
 
     await contextualFiles.getByRole('button', { name: 'Upload file', exact: true }).click();
     await expect(contextualFiles.getByText(/Uploaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
@@ -2061,9 +2088,12 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   test.setTimeout(75_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ftp-e2e-'));
   const uploadSource = join(profile, 'e2e-upload.txt');
+  const dropUploadSources = [join(profile, 'mrt-drop-first.txt'), join(profile, 'mrt-drop-second.txt')];
+  const dropUploadContents = [Buffer.from('first dropped FTP payload'), Buffer.from('second dropped FTP payload')];
   const uploadContents = Buffer.alloc(4 * 1024 * 1024, 65);
   const downloadRoot = join(profile, 'downloads');
   await writeFile(uploadSource, uploadContents);
+  await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
   await mkdir(downloadRoot);
   const remoteFiles = new Map<string, Buffer>([
     ['readme.txt', Buffer.from('hello remote')],
@@ -2080,8 +2110,10 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const ftpStouCommands: string[] = [];
   const ftpCwdArguments: string[] = [];
   const ftpDeleteArguments: string[] = [];
+  const ftpDropUploadEvents: string[] = [];
   let stouCount = 0;
   let uploadTransferStartedCount = 0;
+  let firstDropReplyPending = false;
   const control = createServer(socket => {
     controlSockets.add(socket);
     socket.on('error', () => {});
@@ -2160,13 +2192,21 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
         setTimeout(() => transferSocket?.resume(), 1_500);
       }
       const name = uploadName;
+      const dataSocket = transferSocket;
       const chunks: Buffer[] = [];
-      transferSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
-      transferSocket.once('end', () => {
-        remoteFiles.set(posix.join(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
-        transferSocket?.end();
-        reply('226 Transfer complete');
-        finishTransfer();
+      dataSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      dataSocket.once('end', () => {
+        const complete = () => {
+          remoteFiles.set(posix.join(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
+          if (name.startsWith('mrt-drop-')) ftpDropUploadEvents.push(`complete:${name}`);
+          dataSocket.end();
+          reply('226 Transfer complete');
+          finishTransfer();
+        };
+        if (name === 'mrt-drop-first.txt') {
+          firstDropReplyPending = true;
+          setTimeout(() => { firstDropReplyPending = false; complete(); }, 600);
+        } else complete();
       });
     };
     const sendDownload = () => {
@@ -2214,13 +2254,15 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
           ftpStouCommands.push(command);
           if (argument !== '') { reply('501 STOU does not accept a pathname'); continue; }
           stouCount++;
-          const requestedName = 'mrt-server-generated.txt';
+          const requestedName = stouCount <= 2 ? 'mrt-server-generated.txt'
+            : `mrt-drop-${stouCount === 3 ? 'first' : 'second'}.txt`;
           const extensionAt = requestedName.lastIndexOf('.');
           const extension = extensionAt > 0 ? requestedName.slice(extensionAt) : '';
           const stem = extension ? requestedName.slice(0, -extension.length) : requestedName;
           uploadName = requestedName;
           const prefix = currentDirectory === '/' ? '' : `${currentDirectory.replace(/^\//u, '')}/`;
           for (let ordinal = 1; remoteFiles.has(`${prefix}${uploadName}`); ordinal++) uploadName = `${stem} (${ordinal})${extension}`;
+          if (uploadName.startsWith('mrt-drop-')) ftpDropUploadEvents.push(`start:${uploadName}`);
           reply(`150 FILE: ${uploadName}`);
           receiveUpload();
         }
@@ -2256,7 +2298,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   const launch = async () => electron.launch({
     args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials', '--mrt-e2e-ftp-transfers',
-      `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
+      '--mrt-e2e-file-drop', `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
     env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
   try {
@@ -2311,6 +2353,19 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await browser.getByRole('button', { name: 'Download readme.txt', exact: true }).click();
     await expect.poll(() => readFile(join(downloadRoot, 'readme.txt'), 'utf8').catch(() => undefined)).toBe('hello remote');
     await expect(browser.getByText('Downloaded readme.txt (12 B).', { exact: true })).toBeVisible({ timeout: 10_000 });
+
+    await expect(browser).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
+    await dispatchFileDrop(page, dropUploadSources, '[data-testid="remote-file-browser"]');
+    await expect.poll(() => ftpDropUploadEvents.includes('start:mrt-drop-first.txt')).toBe(true);
+    await expect.poll(() => firstDropReplyPending).toBe(true);
+    await expect.poll(() => [...ftpDropUploadEvents], { timeout: 20_000 }).toEqual([
+      'start:mrt-drop-first.txt', 'complete:mrt-drop-first.txt',
+      'start:mrt-drop-second.txt', 'complete:mrt-drop-second.txt'
+    ]);
+    expect(remoteFiles.get('mrt-drop-first.txt')).toEqual(dropUploadContents[0]);
+    expect(remoteFiles.get('mrt-drop-second.txt')).toEqual(dropUploadContents[1]);
+    await expect(browser.getByText(/Uploaded mrt-drop-second\.txt/u)).toBeVisible({ timeout: 10_000 });
+
     expect(acceptedUsername).toBe(true);
     expect(acceptedPassword).toBe(true);
     expect(await page.locator('body').innerText()).not.toContain('ftp-e2e-secret');
