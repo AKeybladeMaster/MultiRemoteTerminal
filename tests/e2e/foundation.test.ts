@@ -2159,6 +2159,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const ftpCwdArguments: string[] = [];
   const ftpDeleteArguments: string[] = [];
   const ftpDropUploadEvents: string[] = [];
+  let ftpLargeUploadDigest: string | undefined;
   let stouCount = 0;
   let uploadTransferStartedCount = 0;
   let firstDropReplyPending = false;
@@ -2242,10 +2243,16 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
       const name = uploadName;
       const dataSocket = transferSocket;
       const chunks: Buffer[] = [];
-      dataSocket.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      const uploadHash = name === 'mrt-server-generated.txt' ? createHash('sha256') : undefined;
+      dataSocket.on('data', chunk => {
+        const data = Buffer.from(chunk);
+        chunks.push(data);
+        uploadHash?.update(data);
+      });
       dataSocket.once('end', () => {
         const complete = () => {
           remoteFiles.set(posix.join(currentDirectory, name).replace(/^\//u, ''), Buffer.concat(chunks));
+          if (uploadHash) ftpLargeUploadDigest = uploadHash.digest('hex');
           if (name.startsWith('mrt-drop-')) ftpDropUploadEvents.push(`complete:${name}`);
           dataSocket.end();
           reply('226 Transfer complete');
@@ -2389,7 +2396,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect.poll(() => remoteFiles.get('documents/mrt-server-generated.txt')?.length).toBe(largeTransferSize);
     const uploadedLargeFile = remoteFiles.get('documents/mrt-server-generated.txt');
     if (!uploadedLargeFile) throw new Error('The FTP fixture did not retain the uploaded large file.');
-    expect({ size: uploadedLargeFile.byteLength, sha256: createHash('sha256').update(uploadedLargeFile).digest('hex') })
+    expect({ size: uploadedLargeFile.byteLength, sha256: ftpLargeUploadDigest })
       .toEqual(expectedLargeFileDigest);
     await expect(browser.getByText(/^Uploaded mrt-server-generated\.txt \(/u)).toBeVisible({ timeout: 10_000 });
 

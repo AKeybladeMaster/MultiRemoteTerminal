@@ -9,7 +9,7 @@
 - The Windows loopback SFTP and FTP E2Es each upload an exactly 1 KiB dropped file and verify the remote bytes.
 - The SFTP loopback E2E downloads a 100 MiB remote file through the standalone files-only pane.
 - The FTP loopback E2E uploads and downloads a 100 MiB file through the utility worker.
-- The 100 MiB transfers compare exact size and SHA-256 digests. File hashing reads in bounded 1 MiB chunks.
+- The 100 MiB transfers compare exact size and SHA-256 digests. Local-file hashing uses bounded 1 MiB reads; the FTP upload fixture hashes each received network chunk.
 - The E2E fixtures are local loopback servers; no external hosts, package changes, or production hooks were added.
 
 ## Validation
