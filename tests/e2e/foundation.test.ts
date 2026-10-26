@@ -221,13 +221,28 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
 interface E2EFileDigest { readonly size: number; readonly sha256: string; }
 
 async function writePatternFile(path: string, size: number, seed: number): Promise<void> {
-  const chunk = Buffer.alloc(1024 * 1024);
+  const words = new Uint32Array((1024 * 1024) / Uint32Array.BYTES_PER_ELEMENT);
+  const chunk = Buffer.from(words.buffer);
   const file = await openFile(path, 'w');
   try {
     for (let position = 0; position < size;) {
       const length = Math.min(chunk.byteLength, size - position);
       const block = Math.floor(position / chunk.byteLength);
-      for (let index = 0; index < length; index++) chunk[index] = (index * 31 + block * 17 + seed) & 0xff;
+      let state = (seed ^ Math.imul(block + 1, 0x9e3779b1)) >>> 0;
+      if (state === 0) state = 0x6d2b79f5;
+      const wordCount = Math.floor(length / Uint32Array.BYTES_PER_ELEMENT);
+      for (let index = 0; index < wordCount; index++) {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        words[index] = state >>> 0;
+      }
+      for (let index = wordCount * Uint32Array.BYTES_PER_ELEMENT; index < length; index++) {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        chunk[index] = state & 0xff;
+      }
       let offset = 0;
       while (offset < length) {
         const result = await file.write(chunk, offset, length - offset, position + offset);
