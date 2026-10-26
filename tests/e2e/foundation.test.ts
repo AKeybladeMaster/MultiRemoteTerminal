@@ -604,7 +604,7 @@ test('SSH quick connect validates the address before any credential prompt and r
 test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
-  const remoteRoot = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-remote-'));
+  const remoteRoot = join(profile, 'remote-files');
   const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
   const hostileOutputPathLiteral = JSON.stringify(hostileOutputPath).replace(/'/gu, '&#39;');
   const hostileShellOutput = `<img src=x onerror='globalThis.__mrtRemoteOutputExecuted = true; require("node:fs").writeFileSync(${hostileOutputPathLiteral}, "owned")'>`;
@@ -616,16 +616,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const dropUploadSources = [join(profile, 'dragged-upload.txt'), join(profile, 'dragged-upload-second.txt')];
   const dropFixtureEvents: string[] = [];
   const downloadRoot = join(profile, 'downloads');
-  await mkdir(downloadRoot);
-  await mkdir(remoteScaleRoot);
-  await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
-  await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
-  const expectedLargeFileDigest = await hashFile(largeRemoteFile);
-  await writeFile(uploadSource, 'private local upload payload');
-  await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
-  await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
-  await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
-  await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
+  let expectedLargeFileDigest: E2EFileDigest;
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   const clients = new Set<Ssh2FixtureClient>();
@@ -671,6 +662,17 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   let listening = false;
   try {
+    await mkdir(remoteRoot);
+    await mkdir(downloadRoot);
+    await mkdir(remoteScaleRoot);
+    await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
+    await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
+    expectedLargeFileDigest = await hashFile(largeRemoteFile);
+    await writeFile(uploadSource, 'private local upload payload');
+    await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
+    await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
+    await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
+    await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -852,7 +854,6 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    await rm(remoteRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
 
@@ -2156,10 +2157,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const dropUploadContents = [Buffer.alloc(1_024, 0x42), Buffer.from('second dropped FTP payload')];
   const largeTransferSize = 100 * 1024 * 1024;
   const downloadRoot = join(profile, 'downloads');
-  await writePatternFile(uploadSource, largeTransferSize, 0x41);
-  const expectedLargeFileDigest = await hashFile(uploadSource);
-  await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
-  await mkdir(downloadRoot);
+  let expectedLargeFileDigest: E2EFileDigest;
   const remoteFiles = new Map<string, Buffer>([
     ['readme.txt', Buffer.from('hello remote')],
     ['documents/nested.txt', Buffer.from('nested content abc')],
@@ -2376,6 +2374,10 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
   try {
+    await writePatternFile(uploadSource, largeTransferSize, 0x41);
+    expectedLargeFileDigest = await hashFile(uploadSource);
+    await Promise.all(dropUploadSources.map((path, index) => writeFile(path, dropUploadContents[index]!)));
+    await mkdir(downloadRoot);
     await new Promise<void>((resolveListen, rejectListen) => {
       control.once('error', rejectListen);
       control.listen(0, '127.0.0.1', resolveListen);
