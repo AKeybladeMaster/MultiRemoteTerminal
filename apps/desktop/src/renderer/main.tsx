@@ -55,6 +55,7 @@ import { RdpConnectDialog } from './RdpConnectDialog.tsx';
 import { VncConnectDialog } from './VncConnectDialog.tsx';
 import { LocalTextEditorDialog } from './LocalTextEditorDialog.tsx';
 import { WslDistributionDialog } from './WslDistributionDialog.tsx';
+import { SshGatewayRoutePicker } from './SshGatewayRoutePicker.tsx';
 import { textEditorErrorMessage } from './text-editor-errors.ts';
 import { workbenchPreferenceFailureMessage } from './workbench-preference-errors.ts';
 import '@xterm/xterm/css/xterm.css';
@@ -338,8 +339,7 @@ function Workbench() {
   const [sshAuthenticationMethod, setSshAuthenticationMethod] = useState<SshAuthenticationMethod>('password');
   const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' | 'sftp' }>>();
   const [sshGatewayProfiles, setSshGatewayProfiles] = useState<readonly Extract<SavedSessionDefinition, { kind: 'ssh' }>[]>([]);
-  const [sshGatewayOne, setSshGatewayOne] = useState('');
-  const [sshGatewayTwo, setSshGatewayTwo] = useState('');
+  const [sshGatewayProfileIds, setSshGatewayProfileIds] = useState<readonly string[]>([]);
   const [sshHost, setSshHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
   const [sshConnectError, setSshConnectError] = useState<string>();
@@ -1270,8 +1270,7 @@ function Workbench() {
     setSshAuthenticationMethod('password');
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
-    setSshGatewayOne('');
-    setSshGatewayTwo('');
+    setSshGatewayProfileIds([]);
     setSshHost(host);
     setSshPort(String(port));
     setSshSavedTitle(savedTitle);
@@ -1579,8 +1578,7 @@ function Workbench() {
     setSshConnectOpen(false);
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
-    setSshGatewayOne('');
-    setSshGatewayTwo('');
+    setSshGatewayProfileIds([]);
     setPaletteOpen(false);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
@@ -1623,8 +1621,7 @@ function Workbench() {
     setSshConnectOpen(false);
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
-    setSshGatewayOne('');
-    setSshGatewayTwo('');
+    setSshGatewayProfileIds([]);
     setPaletteOpen(false);
     setAlert(undefined);
     const sessionId = crypto.randomUUID();
@@ -2222,7 +2219,7 @@ function Workbench() {
 
   useLayoutEffect(() => {
     if (sshConnectOpen) {
-      if (sshGatewayTarget) document.getElementById('ssh-gateway-one')?.focus();
+      if (sshGatewayTarget) document.getElementById('ssh-gateway-1')?.focus();
       else sshHostInput.current?.focus();
     }
   }, [sshConnectOpen, sshGatewayTarget]);
@@ -2620,16 +2617,15 @@ function Workbench() {
     setSshConnectOpen(false);
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
-    setSshGatewayOne('');
-    setSshGatewayTwo('');
+    setSshGatewayProfileIds([]);
   }
 
   function connectThroughSelectedGateways() {
-    if (!sshGatewayTarget || !sshGatewayOne) {
+    if (!sshGatewayTarget || sshGatewayProfileIds.length === 0) {
       setSshConnectError('Choose the first SSH gateway.');
       return;
     }
-    const selected = [sshGatewayOne, sshGatewayTwo].filter(Boolean);
+    const selected = sshGatewayProfileIds;
     const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
     const routedTitle = [...names, sshGatewayTarget.name].join(' → ');
     if (sshGatewayTarget.kind === 'sftp') void openSftpFiles(sshHost, sshPort, routedTitle, sshAuthenticationMethod, selected);
@@ -3277,25 +3273,13 @@ function Workbench() {
             <option value="private-key">Private key file</option>
             <option value="agent">Windows OpenSSH agent</option>
           </select>
-          {sshGatewayTarget && <>
-            <label htmlFor="ssh-gateway-one">SSH gateway 1</label>
-            <select id="ssh-gateway-one" value={sshGatewayOne} onChange={event => { setSshGatewayOne(event.target.value); setSshGatewayTwo(''); }}>
-              <option value="">Choose a saved SSH profile</option>
-              {sshGatewayProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} — {sshEndpointLabel(profile.host, profile.port)}</option>)}
-            </select>
-            <label htmlFor="ssh-gateway-two">SSH gateway 2 (optional)</label>
-            <select id="ssh-gateway-two" value={sshGatewayTwo} onChange={event => setSshGatewayTwo(event.target.value)} disabled={!sshGatewayOne}>
-              <option value="">No second gateway</option>
-              {sshGatewayProfiles.filter(profile => profile.id !== sshGatewayOne && (() => {
-                const first = sshGatewayProfiles.find(item => item.id === sshGatewayOne);
-                return !first || profile.host !== first.host || profile.port !== first.port;
-              })()).map(profile => <option key={profile.id} value={profile.id}>{profile.name} — {sshEndpointLabel(profile.host, profile.port)}</option>)}
-            </select>
-          </>}
+          {sshGatewayTarget && <SshGatewayRoutePicker idPrefix="ssh" profiles={sshGatewayProfiles}
+            targetEndpoint={canonicalizeSshHostEndpoint({ host: sshGatewayTarget.host, port: sshGatewayTarget.port })}
+            selectedProfileIds={sshGatewayProfileIds} onChange={setSshGatewayProfileIds} />}
           {sshConnectError && <p className="dialog-error" role="alert">{sshConnectError}</p>}
           <div className="ssh-connect-actions">
             <button type="button" onClick={cancelSshConnect}>Cancel</button>
-            <button type="submit" className="ssh-primary" disabled={Boolean(sshGatewayTarget && !sshGatewayOne)}>Connect</button>
+            <button type="submit" className="ssh-primary" disabled={Boolean(sshGatewayTarget && sshGatewayProfileIds.length === 0)}>Connect</button>
           </div>
         </form>
       </section>

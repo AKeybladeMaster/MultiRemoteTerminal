@@ -97,12 +97,12 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload,
-    gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'] } }).ok, true);
+  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333'];
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload,
     gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111'] } }).ok, false);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload,
-    gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333'] } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
 
@@ -151,12 +151,14 @@ test('credential and vault commands accept only profile identifiers and safe sta
 
 test('SFTP open and close commands share SSH endpoint validation without terminal dimensions', () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
-  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333'];
   const open = { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'Server.Example.com.', port: 22 } };
   const parsed = parseRequest(open);
   assert.equal(parsed.ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, gatewayProfileIds[0]] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: ['not-a-profile-id'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
@@ -471,10 +473,11 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
   const start = { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1, payload: { id: definition.id } };
   const parsedStart = parseRequest(start);
   assert.equal(parsedStart.ok, true);
-  const gatewayIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  const gatewayIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333'];
   const routedStart = { ...start, payload: { id: definition.id, gatewayProfileIds: gatewayIds } };
   assert.equal(parseRequest(routedStart).ok, true);
-  assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [...gatewayIds, '33333333-3333-4333-8333-333333333333'] } }).ok, false);
+  assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [...gatewayIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [gatewayIds[0], gatewayIds[0]] } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...start.payload, route: [] } }).ok, false);
   if (parsedStart.ok) {

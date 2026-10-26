@@ -5,7 +5,7 @@ import { isTerminalSize } from '../../../../packages/domain/src/local-terminal.t
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import { MAX_SSH_PRIVATE_KEY_BYTES } from '../../../../packages/application/src/ssh-terminals.ts';
-import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
+import { MAX_SSH_GATEWAY_HOPS, normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import { isRemoteDirectoryListing, isRemotePath } from '../../../../packages/domain/src/remote-files.ts';
@@ -99,7 +99,7 @@ function isAuthenticationCredentials(value: unknown): value is SshAuthentication
 }
 
 function isGatewayHops(value: unknown, target: unknown): value is readonly SshConnectionGatewayCredentials[] {
-  if (!isCanonicalEndpoint(target) || !Array.isArray(value) || value.length > 2) return false;
+  if (!isCanonicalEndpoint(target) || !Array.isArray(value) || value.length > MAX_SSH_GATEWAY_HOPS) return false;
   const endpoints: SshHostEndpoint[] = [];
   for (const hop of value) {
     if (!record(hop) || !exactKeys(hop, ['endpoint', 'credentials']) || !isCanonicalEndpoint(hop.endpoint) || !isPasswordCredentials(hop.credentials)) return false;

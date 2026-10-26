@@ -246,9 +246,10 @@ test('SSH provider uses the validated agent pipe for user authentication and nev
   await provider.close(sessionId);
 });
 
-test('SSH provider opens a bounded jump route over nested channels and closes the complete chain', async () => {
+test('SSH provider opens a three-gateway route over nested channels and closes the complete chain', async () => {
   const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
   const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
+  const gatewayThree = { host: 'gateway-three.example.net', port: 2203 };
   const destination = { host: 'target.example.net', port: 22 };
   const clients: RoutedFakeClient[] = [];
   const provider = createSshTransportProvider({ create: () => {
@@ -260,7 +261,8 @@ test('SSH provider opens a bounded jump route over nested channels and closes th
   const opened = provider.open(sessionId, destination, { username: 'target-user', password: 'target-secret' }, size,
     async remote => { verified.push(remote.host); return true; }, [
       { endpoint: gatewayOne, credentials: { username: 'gateway-one-user', password: 'gateway-one-secret' } },
-      { endpoint: gatewayTwo, credentials: { username: 'gateway-two-user', password: 'gateway-two-secret' } }
+      { endpoint: gatewayTwo, credentials: { username: 'gateway-two-user', password: 'gateway-two-secret' } },
+      { endpoint: gatewayThree, credentials: { username: 'gateway-three-user', password: 'gateway-three-secret' } }
     ]);
 
   const authorizeAndAdvance = async (index: number, expectedHost: string): Promise<void> => {
@@ -278,15 +280,19 @@ test('SSH provider opens a bounded jump route over nested channels and closes th
   assert.equal(clients[1]?.config?.host, gatewayTwo.host);
   assert.equal(clients[1]?.config?.sock, clients[0]?.routeChannels[0]);
   await authorizeAndAdvance(1, gatewayTwo.host);
-  assert.equal(clients[2]?.config?.host, destination.host);
+  assert.equal(clients[2]?.config?.host, gatewayThree.host);
   assert.equal(clients[2]?.config?.sock, clients[1]?.routeChannels[0]);
-  await authorizeAndAdvance(2, destination.host);
+  await authorizeAndAdvance(2, gatewayThree.host);
+  assert.equal(clients[3]?.config?.host, destination.host);
+  assert.equal(clients[3]?.config?.sock, clients[2]?.routeChannels[0]);
+  await authorizeAndAdvance(3, destination.host);
   await opened;
 
-  assert.deepEqual(verified, [gatewayOne.host, gatewayTwo.host, destination.host]);
+  assert.deepEqual(verified, [gatewayOne.host, gatewayTwo.host, gatewayThree.host, destination.host]);
   assert.deepEqual(clients[0]?.routeRequests, [gatewayTwo]);
-  assert.deepEqual(clients[1]?.routeRequests, [destination]);
-  assert.deepEqual(clients[2]?.shellSize, { term: 'xterm-256color', cols: size.columns, rows: size.rows });
+  assert.deepEqual(clients[1]?.routeRequests, [gatewayThree]);
+  assert.deepEqual(clients[2]?.routeRequests, [destination]);
+  assert.deepEqual(clients[3]?.shellSize, { term: 'xterm-256color', cols: size.columns, rows: size.rows });
   const routeChannels = clients.flatMap(client => client.routeChannels);
   await provider.close(sessionId);
   assert.ok(clients.every(client => client.ended));

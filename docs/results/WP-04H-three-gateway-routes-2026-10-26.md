@@ -1,0 +1,27 @@
+# WP-04H: bounded three-gateway SSH routes
+
+**Date:** 2026-10-26
+
+**Status:** Partial; routes above three hops and broad public-server interoperability remain open.
+**Requirements:** F-006, F-011, P-22, P-23, P-24, P-25.
+
+## Delivered
+
+- Saved SSH terminal, SFTP-only and local, remote or dynamic tunnel starts accept up to three ordered saved SSH gateways. Four hops are rejected by the domain, command contracts and worker protocol.
+- Terminal/SFTP and tunnel dialogs share `SshGatewayRoutePicker`. It shows no more than the domain limit and filters duplicate profiles, duplicate endpoints and the target endpoint from later choices.
+- Renderer IPC continues to carry saved profile IDs only. Routes and credentials remain operation-scoped and are not persisted or exported.
+- Each hop retains independent host verification and ordered credential prompts. Only the final terminal target receives a shell, only an SFTP target receives SFTP, and tunnel targets receive no PTY, shell or SFTP subsystem.
+- Existing 15-second inter-hop channel and 130-second overall open deadlines, cancellation, credential clearing and full chain cleanup remain in force. Worker protocol version 1 is unchanged.
+
+## Validation
+
+- `corepack pnpm typecheck` — passed.
+- Focused SSH/domain/contract/broker tests — **123/123 passed**.
+- `corepack pnpm lint` — passed, including static import-boundary checks.
+- `corepack pnpm build` — passed, including the Windows native addon and production renderer. Vite reported the existing 963.72 kB renderer chunk-size warning.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH saved-profile jump routes verify every hop" --reporter=line` — **1 passed**. The Windows loopback E2E covers one-, two- and three-gateway terminal routes; two- and three-gateway SFTP routes; three-gateway local, remote and dynamic tunnel roundtrips; independent trust, exact relayed bytes, target subsystem policy, tunnel unbind and cleanup.
+- `git diff --check` — passed.
+
+## Limitations
+
+Routes longer than three gateways, real public-server interoperability, and Windows OpenSSH agent authentication through gateway routes remain unverified. This slice does not complete the broader MVP release gate.
