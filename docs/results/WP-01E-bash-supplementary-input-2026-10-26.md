@@ -2,7 +2,7 @@
 
 **Requirements:** F-002; partial progress toward P-02.
 **Platform:** Windows 11 x64, Git for Windows 2.53.0.windows.2, Node 24.14.1, Electron 45.0.0.
-**Status:** Interactive Git Bash command paste is verified on the tested Windows 11 host. Windows 10 and packaged shell lifecycle acceptance remain open.
+**Status:** Interactive Git Bash command paste and packaged shell lifecycle are verified on the tested Windows 11 host. Windows 10 acceptance remains open.
 
 ## Reproduction
 
@@ -49,8 +49,9 @@ The revised interactive Bash E2E confirms `printf 'MRT-OUTPUT:%s\\n' '🙂'` rec
 - `corepack pnpm build` and `corepack pnpm typecheck` — passed on Windows x64. Vite emitted the existing renderer chunk-size advisory.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Git Bash supplementary Unicode paste survives a full command round trip" --repeat-each=3 --workers=1 --reporter=list` — 3 passed on Windows 11 x64 with Git for Windows 2.53.0.windows.2.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Git Bash supplementary Unicode paste survives a full command round trip|Git Bash runs in a local terminal and saved Bash sessions reopen|Windows local terminal workbench operates real shells, handles 10 tabs and closes their processes" --workers=1 --reporter=list` — 3 passed against the latest build, covering interactive supplementary paste, saved Bash reopen, PowerShell supplementary paste, and the 10-tab lifecycle.
+- `corepack pnpm package:win:smoke` — rebuilt unsigned x64 NSIS and portable artifacts; all 4 package E2Es passed, including Git Bash command execution in both installed and portable applications.
 - `node --test tests/unit/local-terminal.test.ts tests/unit/broker.test.ts tests/unit/terminal-worker-protocol.test.ts tests/unit/win32-input-mode.test.ts` — 45 passed, including main-only clipboard routing, worker bounds, mode detection across chunks, and UTF-16 record encoding.
 - `corepack pnpm lint` — passed, including static, dynamic, export and type import boundary checks.
 - `git diff --check` — passed.
 
-F-002 remains partial until Windows 10 and packaged shell lifecycle acceptance pass; the raw ConPTY echo artifact is also documented. P-02 remains partial pending real user-managed WSL distribution interoperability and broader Unix-tool coverage.
+F-002 remains partial pending Windows 10 acceptance; the raw ConPTY echo artifact is also documented. P-02 remains partial pending real user-managed WSL distribution interoperability and broader Unix-tool coverage.
