@@ -25,6 +25,7 @@ test('FTPS validates the server certificate and encrypts the FTP data channel', 
   const tlsErrors: string[] = [];
   const uploadedFiles: Buffer[] = [];
   let protectedDataChannelCount = 0;
+  const protectedDataSessionReuse: boolean[] = [];
   let unprotectedTransferAttempt = false;
   const server = createNetServer(rawControlSocket => {
     fixtureEvents.push('control connection');
@@ -79,6 +80,7 @@ test('FTPS validates the server certificate and encrypts the FTP data channel', 
         });
         protectedSocket.once('secure', () => {
           protectedDataChannelCount++;
+          protectedDataSessionReuse.push(protectedSocket.isSessionReused());
           startTransfer();
         });
         protectedSocket.resume();
@@ -241,6 +243,9 @@ test('FTPS validates the server certificate and encrypts the FTP data channel', 
     expect(commands.some(command => command.verb === 'STOU' && command.encrypted)).toBe(true);
     expect(commands.some(command => command.verb === 'LIST' && command.encrypted)).toBe(true);
     expect(protectedDataChannelCount).toBeGreaterThanOrEqual(2);
+    expect(protectedDataSessionReuse).toHaveLength(protectedDataChannelCount);
+    expect(protectedDataSessionReuse.length).toBeGreaterThanOrEqual(2);
+    expect(protectedDataSessionReuse.every(reused => reused)).toBe(true);
     expect(unprotectedTransferAttempt).toBe(false);
     expect(uploadedFiles[0]?.equals(uploadBytes)).toBe(true);
   } finally {

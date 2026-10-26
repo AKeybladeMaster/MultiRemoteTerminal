@@ -26,4 +26,4 @@ The app's test-only `--mrt-e2e-ftp-ca=` argument is accepted only when the un-pa
 
 ## Limits and follow-up
 
-This verifies a controlled local explicit-FTPS flow; it does not verify public CA chains, certificate revocation behavior, server-specific TLS policies, TLS session reuse on data sockets, or broad public FTP/FTPS server interoperability. The test fixture does not require session reuse. No production certificate-validation policy was relaxed. P-10 and F-016 remain PARTIAL.
+This verifies a controlled local explicit-FTPS flow; it does not verify public CA chains, certificate revocation behavior, server-specific TLS policies, or broad public FTP/FTPS server interoperability. WP-09G separately verifies data-channel session reuse against a controlled local fixture. No production certificate-validation policy was relaxed. P-10 and F-016 remain PARTIAL.

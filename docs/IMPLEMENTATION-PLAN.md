@@ -245,6 +245,8 @@ WP-01G independent Standards and Spec review (2026-10-26): no blocking findings.
 
 **WP-09F — Explicit FTPS certificate and data-channel acceptance (partial):** A Windows loopback E2E verifies that an untrusted certificate is rejected before account login and that an explicitly trusted test CA permits explicit FTPS through the app's utility worker. The fixture requires TLS on control commands and protects both directory listing and upload data channels; upload bytes are compared exactly. The trusted CA is supplied only by an un-packaged E2E flag and worker-local TLS options, leaving production certificate validation unchanged. This does not establish public CA-chain, TLS session reuse, or broad FTP-server interoperability. P-10 and F-016 remain partial. See [WP-09F results](results/WP-09F-ftps-tls-acceptance-2026-10-26.md).
 
+
+**WP-09G - FTPS data-channel session resumption acceptance (partial):** Extend the Windows loopback FTPS E2E to call `TLSSocket.isSessionReused()` for each observed protected data connection. The listing and upload flows observed four connections and every connection resumed a TLS session using the existing pinned `basic-ftp@6.2.3` client. This verifies only the controlled fixture and current Node/Electron runtime; public-server interoperability, public CA chains and revocation behavior remain open, so P-10 and F-016 remain partial. See [WP-09G results](results/WP-09G-ftps-session-resumption-2026-10-26.md).
 ### WP-10 — X11, XDMCP and daemons
 
 **Requires:** WP-02/provider registry; separate security review before release.  
