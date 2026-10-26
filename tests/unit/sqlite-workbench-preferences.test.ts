@@ -17,7 +17,8 @@ test('SQLite stores and restores the Unicode startup greeting across database re
     const preferences = new SqliteWorkbenchPreferencesRepository(database);
     assert.deepEqual(preferences.read(), DEFAULT_WORKBENCH_PREFERENCES);
     const updated = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Привет 👋\nこんにちは',
-      terminalHighlightEnabled: true, terminalHighlightRules: [{ pattern: '\\b(git|ssh)\\b', color: 'cyan' as const }] };
+      terminalHighlightEnabled: true, terminalHighlightRules: [{ pattern: '\\b(git|ssh)\\b', color: 'cyan' as const }],
+      terminalShellSyntaxEnabled: true };
     assert.deepEqual(preferences.save(updated), updated);
     database.close();
 
@@ -54,6 +55,19 @@ test('SQLite migrates schema v2 highlighting settings with session saving disabl
   database.close();
 });
 
+test('SQLite migrates schema v3 preferences with terminal shell coloring disabled by default', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false,
+      terminalHighlightRules: [], autoSaveSessions: true }), 3, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.deepEqual(preferences.read(), { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', autoSaveSessions: true });
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
+});
+
 test('SQLite rejects corrupted or unsupported stored preference records', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();
@@ -65,7 +79,7 @@ test('SQLite rejects corrupted or unsupported stored preference records', () => 
     .run('{"startupGreeting":"safe","terminalHighlightEnabled":false,"terminalHighlightRules":[],"extra":true}', 2, 'workbench');
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
   database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?')
-    .run('{"startupGreeting":"safe"}', 4, 'workbench');
+    .run('{"startupGreeting":"safe"}', 5, 'workbench');
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
   database.close();
 });

@@ -3,7 +3,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
-import { attachTerminalHighlights } from './terminal-highlighting.ts';
+import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellPromptAtCursor } from './terminal-highlighting.ts';
+import type { TerminalShellInputAnchor } from './terminal-highlighting.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 
@@ -28,6 +29,7 @@ interface Props {
   readonly fontSize: number;
   readonly terminalHighlightEnabled: boolean;
   readonly terminalHighlightRules: readonly TerminalHighlightRule[];
+  readonly terminalShellSyntaxEnabled: boolean;
   readonly onInput: (sessionId: string, data: string) => void;
   readonly onOutput: (sessionId: string, data: string) => void;
   readonly onReady: (sessionId: string, handle: TerminalUiHandle | undefined) => void;
@@ -72,14 +74,32 @@ function createTransportCommands(bridge: DesktopBridge, transport: Props['transp
 }
 
 export function TerminalPane({ sessionId, title, transport, active, canWrite, theme, fontSize,
-  terminalHighlightEnabled, terminalHighlightRules, onInput, onOutput, onReady, onError }: Props) {
+  terminalHighlightEnabled, terminalHighlightRules, terminalShellSyntaxEnabled, onInput, onOutput, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | undefined>(undefined);
   const fit = useRef<FitAddon | undefined>(undefined);
   const activeRef = useRef(active);
   const canWriteRef = useRef(canWrite);
+  const shellSyntaxEnabledRef = useRef(terminalShellSyntaxEnabled);
+  const shellInputAnchor = useRef<TerminalShellInputAnchor | undefined>(undefined);
   activeRef.current = active;
   canWriteRef.current = canWrite;
+  shellSyntaxEnabledRef.current = terminalShellSyntaxEnabled;
+
+  function beginShellInputAnchor(instance: Terminal): void {
+    if (!shellSyntaxEnabledRef.current || transport === 'serial') return;
+    const buffer = instance.buffer.active;
+    if (buffer.type !== 'normal') return;
+    const cursorLine = buffer.baseY + buffer.cursorY;
+    const existing = shellInputAnchor.current;
+    if (existing && !existing.marker.isDisposed && existing.marker.line === cursorLine) return;
+    clearTerminalShellInputAnchor(shellInputAnchor);
+    const line = buffer.getLine(cursorLine);
+    const promptText = line?.translateToString(true, 0, buffer.cursorX) ?? '';
+    if (!isShellPromptAtCursor(promptText)) return;
+    const marker = instance.registerMarker(0);
+    if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX };
+  }
 
   useLayoutEffect(() => {
     if (!host.current) return;
@@ -93,6 +113,8 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     instance.loadAddon(fitAddon);
     instance.onData(data => {
       if (!canWriteRef.current) return;
+      if (/[\r\n\x03\x04\x0c]/u.test(data)) clearTerminalShellInputAnchor(shellInputAnchor);
+      else beginShellInputAnchor(instance);
       onInput(sessionId, data);
       const sent = commands.write(sessionId, data);
       void sent.then(reply => {
@@ -101,8 +123,10 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     });
     const pasteFromClipboard = () => {
       if (!canWriteRef.current) return;
+      beginShellInputAnchor(instance);
       const pasted = commands.paste(sessionId);
       void pasted.then(reply => {
+        if (!reply.ok) clearTerminalShellInputAnchor(shellInputAnchor);
         if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
       });
     };
@@ -155,6 +179,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     return () => {
       observer.disconnect();
       host.current?.removeEventListener('paste', onPaste);
+      clearTerminalShellInputAnchor(shellInputAnchor);
       onReady(sessionId, undefined);
       instance.dispose();
       terminal.current = undefined;
@@ -165,9 +190,14 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   useLayoutEffect(() => {
     const instance = terminal.current;
     if (!instance) return;
-    const highlights = attachTerminalHighlights(instance, terminalHighlightEnabled, terminalHighlightRules, theme);
+    if (!terminalShellSyntaxEnabled) clearTerminalShellInputAnchor(shellInputAnchor);
+    const highlights = attachTerminalHighlights(instance, {
+      keywordHighlightingEnabled: terminalHighlightEnabled, keywordRules: terminalHighlightRules,
+      shellSyntaxEnabled: terminalShellSyntaxEnabled && transport !== 'serial',
+      getShellInputAnchor: () => shellInputAnchor.current, theme
+    });
     return () => highlights.dispose();
-  }, [terminalHighlightEnabled, terminalHighlightRules, theme]);
+  }, [terminalHighlightEnabled, terminalHighlightRules, terminalShellSyntaxEnabled, theme, transport]);
 
   useLayoutEffect(() => {
     const instance = terminal.current;

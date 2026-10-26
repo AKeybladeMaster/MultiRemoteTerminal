@@ -312,6 +312,7 @@ function Workbench() {
   const [startupGreetingVisible, setStartupGreetingVisible] = useState(false);
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
+  const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -1224,6 +1225,7 @@ function Workbench() {
     setStartupGreetingVisible(preferences.startupGreeting.length > 0);
     setTerminalHighlightEnabled(preferences.terminalHighlightEnabled);
     setTerminalHighlightRules(preferences.terminalHighlightRules);
+    setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
@@ -2974,7 +2976,7 @@ function Workbench() {
                     canWrite={session.state === 'running' && !(macroPlayback?.status === 'running' && macroPlayback.sessionId === session.sessionId) &&
                       !(multiExecView && multiExecView.phase !== 'finished' && multiExecView.targets.some(target => target.sessionId === session.sessionId))}
                     theme={theme} fontSize={fontSize} terminalHighlightEnabled={terminalHighlightEnabled}
-                    terminalHighlightRules={terminalHighlightRules} onReady={terminalReady}
+                    terminalHighlightRules={terminalHighlightRules} terminalShellSyntaxEnabled={terminalShellSyntaxEnabled} onReady={terminalReady}
                     onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
                 </div>
                 {session.transport === 'ssh' && session.state === 'running' &&

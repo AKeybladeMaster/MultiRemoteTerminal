@@ -4075,10 +4075,35 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
     await runPaletteCommand(page, 'New Bash terminal');
     await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
     const versionCommand = "printf 'MRT-BASH:%s\\n' \"$BASH_VERSION\"";
     await sendLine(page, 'Bash session 1', "printf 'MRT-BASH-OUTPUT:%s\\n' $'\\U0001F642'", `MRT-BASH-OUTPUT:${String.fromCodePoint(0x1f642)}`);
+
+    await sendLine(page, 'Bash session 1', "PS1='mrt$ '", 'mrt$');
+    const syntaxPanel = await selectTerminal(page, 'Bash session 1');
+    await syntaxPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type('if true; then echo MRT-SHELL-COLOR; fi');
+    const syntaxRows = syntaxPanel.locator('.xterm-rows');
+    await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+      const rendered = glyphs.map(glyph => glyph.text).join('');
+      const hasColor = (token: string, color: string) => {
+        const start = rendered.lastIndexOf(token);
+        return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
+      };
+      return hasColor('if', 'rgb(223, 143, 255)') && hasColor('true', 'rgb(84, 215, 212)');
+    })).toBe(true);
+    await page.screenshot({ path: 'test-results/bash-shell-syntax-prompt.png' });
+    await page.keyboard.press('Control+C');
+    await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').count()).toBe(0);
 
     const bashPanel = await selectTerminal(page, 'Bash session 1');
     const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
@@ -4410,13 +4435,14 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
     await settings.getByRole('checkbox', { name: 'Highlight matching terminal text' }).check();
     await settings.getByRole('button', { name: 'Add rule', exact: true }).click();
     await settings.getByLabel('Rule 1 pattern').fill('MRT-HIGHLIGHT-\\w+');
     await settings.getByLabel('Rule 1 color').selectOption('cyan');
     await page.screenshot({ path: 'test-results/terminal-highlight-settings.png' });
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
 
     const title = 'PowerShell session 1';
@@ -4453,6 +4479,7 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('checkbox', { name: 'Color shell commands at prompts' })).toBeChecked();
     await expect(settings.getByRole('checkbox', { name: 'Highlight matching terminal text' })).toBeChecked();
     await expect(settings.getByLabel('Rule 1 pattern')).toHaveValue('MRT-HIGHLIGHT-\\w+');
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
