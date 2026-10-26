@@ -378,6 +378,12 @@ export class ReadOnlyTftpServer {
     try {
       opened = await this.openFile(rootDirectory, parsed.result.fileName);
       if (this.listener !== listener) { await opened.handle.close(); return; }
+      if (this.transfers.size >= MAX_ACTIVE_TRANSFERS) {
+        await opened.handle.close().catch(() => undefined);
+        opened = undefined;
+        await this.sendRequestError(listener, remote, 0, 'Server is busy');
+        return;
+      }
       const transfer = new TftpReadTransfer(opened, remote, () => this.transfers.delete(key));
       this.transfers.set(key, transfer);
       opened = undefined;
