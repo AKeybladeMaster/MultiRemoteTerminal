@@ -27,9 +27,22 @@ The exact clipboard value is unchanged before the broker writes to the session. 
 
 Microsoft documents ConPTY input and output streams as UTF-8 ([Pseudoconsoles](https://learn.microsoft.com/en-us/windows/console/pseudoconsoles), [CreatePseudoConsole](https://learn.microsoft.com/en-us/windows/console/createpseudoconsole)). The [MSYS2 terminal guidance](https://www.msys2.org/wiki/Terminals/) warns that interactive line editing when mixing MSYS2 and Windows console paths can be unreliable. This evidence points to the Git Bash/MSYS input-translation path in the tested setup, but does not identify a confirmed upstream defect or universal Git Bash behavior.
 
+## Follow-up controls on 2026-10-26
+
+The host is Windows 11 Pro 10.0.26200.0 with Git for Windows 2.53.0.windows.2, Bash 5.2.37, Node 24.14.1 and Electron 45.0.0.
+
+- The Windows local-terminal E2E pasted U+1F642 through the normal clipboard path into PowerShell and verified `MRT-UNICODE:4:<character>`. This exercises the app's clipboard broker, typed IPC, system ConPTY and xterm display with the same supplementary character.
+- A direct noninteractive Git Bash `-c` invocation preserved U+1F642. This shows that the tested Bash executable can accept and emit the character outside the interactive ConPTY input path; it does not isolate which interactive layer replaces it.
+- The existing typed `writeTerminal` bridge probe also reproduced U+FFFD, so clipboard retrieval and xterm's native paste handling alone do not explain the failure.
+- A standalone Node `node-pty` reproduction was attempted, but its Windows console-list helper failed with `AttachConsole failed` outside the Electron utility-process environment. That run is discarded and is not treated as evidence.
+
+The supported app path still fails only for the interactive Git Bash repro on this host. The PowerShell control and noninteractive Bash command pass; available evidence does not distinguish a Git Bash/MSYS translation defect from a Windows/ConPTY interaction. No input rewrite or alternate PTY backend has been shown safe, so F-002 remains incomplete.
+
 ## Validation
 
 - `corepack pnpm build` — passed on Windows x64; Vite emitted the existing renderer chunk-size advisory.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Git Bash"` — 2 passed, including the expected-failure compatibility regression and the normal Bash acceptance flow.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Windows local terminal workbench|Git Bash supplementary Unicode paste" --workers=1 --reporter=list` — 2 passed: the PowerShell control passed, and the Bash E2E passed as an expected failure after observing U+FFFD in the echoed input and command output. The Bash case also reproduced in 3/3 runs with `--repeat-each=3` earlier in this investigation.
+- `corepack pnpm typecheck`, `corepack pnpm lint` and `git diff --check` — passed on Windows x64.
 
 F-002 remains incomplete until supplementary input works through the supported Git Bash path and packaged shell lifecycle acceptance passes. P-02 remains partial pending real user-managed WSL distribution interoperability and broader Unix-tool coverage.

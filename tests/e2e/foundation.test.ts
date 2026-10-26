@@ -4670,20 +4670,26 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.require).toBe('undefined');
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
-    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
+    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal',
+      'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
       'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
-      'uploadSshFile', 'downloadSshFile', 'cancelSshTransfer',
-      'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
-      'listSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-      'createSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+      'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile', 'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer',
+      'openLocalTextFile', 'reloadLocalTextFile', 'saveLocalTextFile', 'closeLocalTextFile',
+      'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
+      'chooseTftpRoot', 'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
+      'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
+      'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences',
+      'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
+      'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential', 'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault',
+      'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
       'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-      'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onFtpTransferProgress', 'onSshTransferProgress']);
+      'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);
