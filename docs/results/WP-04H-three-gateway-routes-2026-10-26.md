@@ -19,7 +19,7 @@
 - Focused SSH/domain/contract/broker tests — **124/124 passed**, including cleanup of all four SSH clients and all three nested channels after a target authentication failure.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
 - `corepack pnpm build` — passed, including the Windows native addon and production renderer. Vite reported the existing 963.72 kB renderer chunk-size warning.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH saved-profile jump routes verify every hop" --reporter=line` — **1 passed**. The Windows loopback E2E covers one-, two- and three-gateway terminal routes; two- and three-gateway SFTP routes; three-gateway local, remote and dynamic tunnel roundtrips; independent trust, exact relayed bytes, target subsystem policy, tunnel unbind and cleanup.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH saved-profile jump routes verify every hop" --reporter=line` — **1 passed**. The Windows loopback E2E covers one-, two- and three-gateway terminal routes; two- and three-gateway SFTP routes with no PTY or shell at the SFTP target; three-gateway local, remote and dynamic tunnel roundtrips; independent trust, exact relayed bytes, target subsystem policy, tunnel unbind and cleanup.
 - `git diff --check` — passed.
 
 ## Limitations

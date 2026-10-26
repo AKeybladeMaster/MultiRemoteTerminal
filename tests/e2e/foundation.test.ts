@@ -1949,10 +1949,13 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
               acceptShell().write('MRT-JUMP-TARGET-READY\r\n');
             });
           }
-          if (role === 'sftp') session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
-            fixtureEvents.push(`${name}:shell`);
-            acceptShell().end();
-          });
+          if (role === 'sftp') {
+            session.on('pty', (accept: () => void) => { fixtureEvents.push(`${name}:pty`); accept(); });
+            session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+              fixtureEvents.push(`${name}:shell`);
+              acceptShell().end();
+            });
+          }
           if (role === 'terminal' || role === 'sftp') session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
             if (role === 'sftp') sftpRequests++;
             fixtureEvents.push(`${name}:sftp`);
@@ -2091,6 +2094,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       if (!panelId) throw new Error('Missing routed SFTP panel');
       await expect(page.locator(`#${panelId}`).getByTestId('remote-file-browser').getByText('gateway-sftp.txt', { exact: true }))
         .toBeVisible({ timeout: 15_000 });
+      expect(fixtureEvents.filter(event => event === 'sftp-target:pty')).toHaveLength(0);
       expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
       await page.getByRole('button', { name: 'Close active file session' }).click();
       const confirmation = page.getByRole('alertdialog');
