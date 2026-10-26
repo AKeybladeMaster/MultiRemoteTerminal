@@ -1,6 +1,6 @@
 # ADR-0026: Opt-in read-only loopback TFTP server
 
-**Status:** Accepted for partial WP-10A implementation; transfer acceptance remains open (2026-10-26)
+**Status:** Accepted for partial WP-10A implementation; broader acceptance remains open (2026-10-26)
 
 ## Context
 
@@ -18,8 +18,8 @@ F-022 calls for optional local daemons and P-20 requires controlled server lifec
 
 ## Consequences and limits
 
-The server is unauthenticated and intentionally exposes every permitted top-level file to local processes while running. It has no write path, subdirectory browsing or network-interface selection. A Windows E2E confirms that `curl.exe` receives ERROR 2 for rejected WRQ and traversal requests; the response uses an ephemeral transfer ID. Stop, restart and listener-port release checks also pass. However, both `curl.exe` and a temporary native Node client received DATA block 1 but did not advance after ACK 1. A standalone Node loopback server/client probe reproduced the missing ACK at a separately bound transfer socket without Electron; its client send callback succeeded, but the server received no message. A Python standard-library loopback probe also timed out waiting for the ACK. Windows Firewall is enabled with inbound block policy, but no filtering logs were collected, so the cause is not attributed to the firewall. No protocol or bind-security workaround is accepted until a full transfer and loopback isolation are independently verified. P-20/F-022 remain partial and P-41 remains unverified.
+The server is unauthenticated and intentionally exposes every permitted top-level file to local processes while running. It has no write path, subdirectory browsing or network-interface selection. A resumed Windows E2E audit passed six consecutive exact-byte RRQs; the revised UI-to-worker E2E also passed four consecutive runs while stopping an active transfer before its second ACK, observing no retry and rebinding the transfer-ID port. The earlier ACK timeout remains historical evidence, is not currently reproducible, and has no established cause. Effective Windows Firewall policy blocks inbound traffic and dropped-packet logging is disabled, so the firewall's role in that earlier failure is unknown. The loopback-only bind and RFC transfer-ID behavior remain required. Broader interoperability, machine-to-machine exposure/isolation and P-41's >360-second lifetime remain unverified; P-20/F-022 stay partial and P-41 is not verified.
 
 ## Verification
 
-See [WP-10A results](../results/WP-10A-loopback-tftp-2026-10-26.md). Static checks, focused unit tests, runtime WRQ/traversal rejection and service cleanup checks pass; full transfer, active-stop behavior, local exposure and >360-second lifetime remain open.
+See [WP-10A results](../results/WP-10A-loopback-tftp-2026-10-26.md). Static checks, focused unit tests, exact-byte transfer, runtime WRQ/traversal rejection, active-transfer stop and service cleanup pass; broader interoperability, machine-to-machine exposure/isolation and >360-second lifetime remain open.

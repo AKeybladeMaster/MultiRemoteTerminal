@@ -58,6 +58,13 @@ function tftpRequest(opcode: number, fileName: string): Buffer {
   return Buffer.concat([Buffer.from([0, opcode]), Buffer.from(fileName, 'ascii'), Buffer.from([0]), Buffer.from('octet\0', 'ascii')]);
 }
 
+function tftpAcknowledgement(block: number): Buffer {
+  const packet = Buffer.alloc(4);
+  packet.writeUInt16BE(4, 0);
+  packet.writeUInt16BE(block, 2);
+  return packet;
+}
+
 function curlText(result: SpawnSyncReturns<Buffer>): string {
   return Buffer.concat([result.stderr ?? Buffer.alloc(0), result.stdout ?? Buffer.alloc(0)]).toString('utf8');
 }
@@ -121,8 +128,31 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
     await bindUdpSocket(client, 0);
     clientBound = true;
 
+    const firstDataPromise = receivePacket(client, 5_000, 'first active-transfer DATA block');
+    await sendPacket(client, tftpRequest(1, 'fixture.bin'), listenerPort);
+    const firstData = await firstDataPromise;
+    expect(firstData.packet.readUInt16BE(0)).toBe(3);
+    expect(firstData.packet.readUInt16BE(2)).toBe(1);
+    expect(firstData.packet.byteLength).toBe(516);
+
+    const secondDataPromise = receivePacket(client, 5_000, 'second active-transfer DATA block');
+    await sendPacket(client, tftpAcknowledgement(1), firstData.remote.port);
+    const secondData = await secondDataPromise;
+    expect(secondData.packet.readUInt16BE(0)).toBe(3);
+    expect(secondData.packet.readUInt16BE(2)).toBe(2);
+    expect(secondData.packet.byteLength).toBe(516);
+    expect(secondData.remote.port).toBe(firstData.remote.port);
+
+    const transferRetryAfterStop = receivePacket(client, 1_500, 'transfer retry after server stop')
+      .then(() => undefined, error => error);
     await dialog.getByRole('button', { name: 'Stop server' }).click();
     await expect(serverStatus).toHaveText('Stopped.');
+    expect(await transferRetryAfterStop).toMatchObject({ message: 'Timed out waiting for transfer retry after server stop packet' });
+
+    const stoppedTransferPortProbe = createSocket('udp4');
+    try { await bindUdpSocket(stoppedTransferPortProbe, firstData.remote.port); }
+    finally { try { stoppedTransferPortProbe.close(); } catch { /* The bind itself reports transfer cleanup failures. */ } }
+
     const stoppedPortProbe = createSocket('udp4');
     try { await bindUdpSocket(stoppedPortProbe, listenerPort); }
     finally { try { stoppedPortProbe.close(); } catch { /* The bind itself reports cleanup failures. */ } }
