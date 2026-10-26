@@ -928,6 +928,13 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     const contextualFiles = sshPanel.locator('[data-testid="remote-file-browser"]');
     await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(contextualFiles).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
+    await rm(join(downloadRoot, 'interrupted.bin'), { force: true });
+    stallInterruptedDownload = true;
+    await contextualFiles.getByRole('button', { name: 'Download interrupted.bin', exact: true }).click();
+    await expect(contextualFiles.getByText('Downloading interrupted.bin', { exact: true })).toBeAttached({ timeout: 15_000 });
+    const contextualDownloadStagingFiles = async () => Promise.all((await readDirectory(downloadRoot))
+      .filter(name => name.startsWith('.mrt-')).map(async name => ({ name, size: (await statFile(join(downloadRoot, name))).size })));
+    await expect.poll(async () => (await contextualDownloadStagingFiles()).some(file => file.size > 0), { timeout: 15_000 }).toBe(true);
 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const paneSettings = page.getByRole('dialog', { name: 'Workbench settings' });
@@ -937,9 +944,12 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await paneSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(paneSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await paneSettings.getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(contextualFiles).toHaveCount(0);
+    await expect(contextualFiles).toHaveCount(1);
+    await expect(contextualFiles).toBeHidden();
     await expect(sshPanel.locator('.terminal-panel-layout')).not.toHaveClass(/with-remote-files/u);
     await expect(recoveredSftpPanel.getByTestId('remote-file-browser')).toHaveCount(1);
+    await expect(contextualFiles.getByText('Downloading interrupted.bin', { exact: true })).toBeAttached();
+    await expect.poll(async () => (await contextualDownloadStagingFiles()).some(file => file.size > 0), { timeout: 15_000 }).toBe(true);
 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const restoredPaneSettings = page.getByRole('dialog', { name: 'Workbench settings' });
@@ -951,6 +961,12 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await restoredPaneSettings.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(sshPanel.locator('.terminal-panel-layout')).toHaveClass(/with-remote-files/u);
+    await expect(contextualFiles.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
+    await contextualFiles.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(contextualFiles.getByText('Download cancelled.', { exact: true })).toBeVisible({ timeout: 15_000 });
+    expect(await statFile(join(downloadRoot, 'interrupted.bin')).then(() => true, () => false)).toBe(false);
+    expect((await readDirectory(downloadRoot)).some(name => name.startsWith('.mrt-'))).toBe(false);
+    stallInterruptedDownload = false;
 
     dropFixtureEvents.length = 0;
     sftpDropUploadStartCount = 0;

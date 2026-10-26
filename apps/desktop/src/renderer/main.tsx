@@ -2983,8 +2983,9 @@ function Workbench() {
                       terminalHighlightRules={terminalHighlightRules} terminalShellSyntaxEnabled={terminalShellSyntaxEnabled} onReady={terminalReady}
                       onInput={recordMacroInput} onOutput={observeMacroOutput} onError={showTerminalError} />
                   </div>
-                  {showSftpFilePane &&
-                    <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport="sftp" />}
+                  {session.transport === 'ssh' && session.state === 'running' &&
+                    <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId && showSftpFilePane}
+                      hidden={!showSftpFilePane} transport="sftp" />}
                 </div>}
             </section>;
           })}
