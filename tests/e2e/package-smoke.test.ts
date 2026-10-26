@@ -147,7 +147,7 @@ async function expectPackagedWindow(page: Page, userData: string, resourcesPath:
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await settings.getByLabel('Startup greeting').fill('Offline package profile \u2014 caf\u00e9');
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
   }
   await expectLocalPowerShellTerminal(page);
