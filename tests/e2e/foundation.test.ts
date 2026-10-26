@@ -2275,8 +2275,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const controlSockets = new Set<Socket>();
   const dataSockets = new Set<Socket>();
   let connectionCount = 0;
-  let activeControlSocket: Socket | undefined;
   let interruptedDownloadSocket: Socket | undefined;
+  let interruptedDownloadControlSocket: Socket | undefined;
   let interruptNextDownload = false;
   let acceptedUsername = false;
   let acceptedPassword = false;
@@ -2292,12 +2292,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   let firstDropReplyPending = false;
   const control = createServer(socket => {
     controlSockets.add(socket);
-    activeControlSocket = socket;
     socket.on('error', () => {});
-    socket.once('close', () => {
-      controlSockets.delete(socket);
-      if (activeControlSocket === socket) activeControlSocket = undefined;
-    });
+    socket.once('close', () => controlSockets.delete(socket));
     connectionCount++;
     socket.write('220 MRT FTP fixture ready\r\n');
     let input = '';
@@ -2407,6 +2403,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
       if (remotePath === 'zz-interrupted-download.bin' && interruptNextDownload) {
         interruptNextDownload = false;
         interruptedDownloadSocket = transferSocket;
+        interruptedDownloadControlSocket = socket;
         transferSocket.write(contents.subarray(0, 1024 * 1024));
         return;
       }
@@ -2601,7 +2598,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     };
     remoteFiles.set('zz-interrupted-download.bin', interruptedDownloadContents);
     await browser.getByRole('button', { name: 'Refresh remote folder' }).click();
-    const stagedFilesBeforeInterruptedDownload = (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-'));
+    const readStagedFileNames = async () => (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-'));
+    const stagedFilesBeforeInterruptedDownload = await readStagedFileNames();
     expect(stagedFilesBeforeInterruptedDownload).toEqual([]);
     const remoteFileList = browser.locator('.remote-file-list');
     await remoteFileList.evaluate(element => { element.scrollTop = element.scrollHeight; });
@@ -2609,7 +2607,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     interruptNextDownload = true;
     await browser.getByRole('button', { name: 'Download zz-interrupted-download.bin', exact: true }).click();
     const stagedInterruptedDownloadFiles = async () => {
-      const stagedNames = (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-'));
+      const stagedNames = await readStagedFileNames();
       return Promise.all(stagedNames.map(async name => ({ name, size: (await statFile(join(downloadRoot, name))).size })));
     };
     await expect.poll(async () => (await stagedInterruptedDownloadFiles()).some(file => file.size > 0), { timeout: 15_000 }).toBe(true);
@@ -2618,7 +2616,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     expect(partialInterruptedFiles[0]?.size).toBeGreaterThan(0);
     expect(partialInterruptedFiles[0]?.size).toBeLessThan(interruptedTransferSize);
     const failedDataSocket = interruptedDownloadSocket;
-    const failedControlSocket = activeControlSocket;
+    const failedControlSocket = interruptedDownloadControlSocket;
     if (!failedDataSocket || failedDataSocket.destroyed || !failedControlSocket || failedControlSocket.destroyed) {
       throw new Error('The FTP fixture has no live control and data sockets to reset');
     }
@@ -2626,8 +2624,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     failedControlSocket.resetAndDestroy();
     await expect(browser.getByText('The file transfer failed. Check the connection and server permissions.', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
-    await expect.poll(async () => (await readDirectory(downloadRoot)).filter(name => name.startsWith('.mrt-')).length, { timeout: 15_000 }).toBe(0);
-    expect(await statFile(join(downloadRoot, 'zz-interrupted-download.bin')).then(() => true, () => false)).toBe(false);
+    await expect.poll(async () => (await readStagedFileNames()).length, { timeout: 15_000 }).toBe(0);
+    expect(await readDirectory(downloadRoot)).not.toContain('zz-interrupted-download.bin');
 
     await browser.getByRole('button', { name: 'Refresh remote folder' }).click();
     const reconnectButton = browser.getByRole('button', { name: 'Reconnect to file server' });
