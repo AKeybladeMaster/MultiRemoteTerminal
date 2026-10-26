@@ -82,6 +82,22 @@ test('SQLite migrates schema v4 preferences with the contextual SFTP pane enable
   database.close();
 });
 
+test('SQLite migrates schema v5 preferences with all registered local shells visible by default', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: true,
+      terminalHighlightRules: [], autoSaveSessions: true, terminalShellSyntaxEnabled: true,
+      showSftpBrowserBesideSsh: false }), 5, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.deepEqual(preferences.read(), { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready',
+    terminalHighlightEnabled: true, autoSaveSessions: true, terminalShellSyntaxEnabled: true,
+    showSftpBrowserBesideSsh: false });
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
+});
+
 test('SQLite rejects corrupted or unsupported stored preference records', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();

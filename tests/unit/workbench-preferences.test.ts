@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createWorkbenchPreferencesManager } from '../../packages/application/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS } from '../../packages/domain/src/local-shell-tools.ts';
 
 test('workbench greeting validation preserves Unicode, normalizes newlines, and accepts clearing the greeting', () => {
   assert.deepEqual(normalizeWorkbenchPreferences({ startupGreeting: 'Привет 👋\r\nこんにちは' }), {
@@ -61,6 +62,21 @@ test('workbench preferences migrate shell-coloring schema with contextual SFTP p
     terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false
   });
   assert.equal(normalizeWorkbenchPreferences({ ...previous, showSftpBrowserBesideSsh: 'no' }), undefined);
+});
+
+test('workbench preferences migrate shell visibility defaults and reject unknown or duplicate tools', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: true, terminalHighlightRules: [],
+    autoSaveSessions: true, terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...previous
+  });
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['bash', 'powershell'] })?.visibleLocalShells,
+    ['powershell', 'bash']);
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: [] })?.visibleLocalShells, []);
+  assert.deepEqual(DEFAULT_VISIBLE_LOCAL_SHELLS, ['powershell', 'cmd', 'bash']);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['powershell', 'unknown'] }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: ['bash', 'bash'] }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, visibleLocalShells: 'bash' }), undefined);
 });
 
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {

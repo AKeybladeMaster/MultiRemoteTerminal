@@ -28,6 +28,7 @@ import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts'
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -110,7 +111,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = 'new-powershell' | 'new-cmd' | 'new-bash' | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'local-tftp-server' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
+type CommandName = `new-${LocalShell}` | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'local-tftp-server' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -315,6 +316,7 @@ function Workbench() {
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
+  const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
   const [query, setQuery] = useState('');
@@ -1230,6 +1232,7 @@ function Workbench() {
     setTerminalHighlightRules(preferences.terminalHighlightRules);
     setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
     setShowSftpBrowserBesideSsh(preferences.showSftpBrowserBesideSsh);
+    setVisibleLocalShells(preferences.visibleLocalShells);
   }, []);
 
   const openSshConnect = useCallback((mode: 'terminal' | 'sftp' = 'terminal', host = '', port = 22, savedTitle?: string) => {
@@ -2317,9 +2320,11 @@ function Workbench() {
   }, [pendingCloseId]);
 
   const commands: PaletteCommand[] = [
-    { id: 'new-powershell', label: 'New PowerShell terminal', run: () => { void openTerminal('powershell'); } },
-    { id: 'new-cmd', label: 'New cmd terminal', run: () => { void openTerminal('cmd'); } },
-    { id: 'new-bash', label: 'New Bash terminal', run: () => { void openTerminal('bash'); } },
+    ...LOCAL_SHELL_TOOL_REGISTRY.filter(tool => visibleLocalShells.includes(tool.shell)).map(tool => ({
+      id: `new-${tool.shell}` as const,
+      label: tool.commandLabel,
+      run: () => { void openTerminal(tool.shell); }
+    })),
     { id: 'connect-ssh', label: 'Connect to SSH server', run: () => openSshConnect('terminal') },
     { id: 'connect-sftp', label: 'Connect to SFTP files', run: () => openSshConnect('sftp') },
     { id: 'connect-telnet', label: 'Connect to Telnet server (plaintext)', run: () => openTelnetConnect() },

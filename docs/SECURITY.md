@@ -104,6 +104,8 @@ Every bundled or launched provider has `name`, `source`, `version`, `license`, `
 
 Optional Git for Windows Bash is user-installed and is not redistributed by the application. Opening a Bash terminal is an explicit user action; its normal `--login -i` startup files therefore run as part of launching the selected shell. This is separate from an app-managed profile script, which remains disabled unless previewed and explicitly enabled. The current resolver checks the standard install path but does not enforce a signature or hash; consult [WP-01's provider record](dependencies/WP-01.md) for the observed machine evidence and its limitation.
 
+WP-11A's local shell catalog is a fixed allowlist of the three supported shell IDs. Its persisted visibility choice controls only whether a new-shell action appears in the command palette; it does not accept executable paths, install or remove software, disable existing processes, or prevent reopening a saved shell profile. Launch continues through the existing typed local-terminal command and provider resolver.
+
 ## Release security gate
 
 - [x] Electron checklist reviewed and recorded for pinned Electron 45.0.0; the independent review found no high/critical boundary issue, with remaining evidence gaps tracked in [WP-07H](results/WP-07H-n002-electron-review-follow-up-2026-10-25.md).

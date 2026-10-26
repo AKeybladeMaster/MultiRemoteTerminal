@@ -1,8 +1,10 @@
 import { normalizeTerminalHighlightRules } from './terminal-highlights.ts';
 import type { TerminalHighlightRule } from './terminal-highlights.ts';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS, normalizeVisibleLocalShells } from './local-shell-tools.ts';
+import type { LocalShell } from './local-terminal.ts';
 
-export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 5;
-export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4] as const);
+export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 6;
+export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5] as const);
 export const MAX_STARTUP_GREETING_CODE_POINTS = 512;
 
 export interface WorkbenchPreferences {
@@ -12,11 +14,12 @@ export interface WorkbenchPreferences {
   readonly autoSaveSessions: boolean;
   readonly terminalShellSyntaxEnabled: boolean;
   readonly showSftpBrowserBesideSsh: boolean;
+  readonly visibleLocalShells: readonly LocalShell[];
 }
 
 export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = Object.freeze({
   startupGreeting: '', terminalHighlightEnabled: false, terminalHighlightRules: Object.freeze([]), autoSaveSessions: false,
-  terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true
+  terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS
 });
 
 export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferences | undefined {
@@ -31,10 +34,14 @@ export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferen
   const isShellSyntaxShape = keys.length === 5 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
     Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
     Object.hasOwn(value, 'terminalShellSyntaxEnabled');
-  const isCurrentShape = keys.length === 6 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+  const isSftpPaneShape = keys.length === 6 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
     Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
     Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh');
-  if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isShellSyntaxShape && !isCurrentShape) return undefined;
+  const isCurrentShape = keys.length === 7 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+    Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
+    Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
+    Object.hasOwn(value, 'visibleLocalShells');
+  if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isShellSyntaxShape && !isSftpPaneShape && !isCurrentShape) return undefined;
 
   const inputGreeting = value.startupGreeting;
   if (inputGreeting.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) return undefined;
@@ -48,19 +55,26 @@ export function normalizeWorkbenchPreferences(value: unknown): WorkbenchPreferen
   const terminalHighlightRules = normalizeTerminalHighlightRules(value.terminalHighlightRules);
   if (!terminalHighlightRules) return undefined;
   if (isHighlightShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
-    terminalHighlightRules, autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true });
+    terminalHighlightRules, autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
   if (typeof value.autoSaveSessions !== 'boolean') return undefined;
   if (isSessionSaveShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: false,
-    showSftpBrowserBesideSsh: true });
+    showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
   if (typeof value.terminalShellSyntaxEnabled !== 'boolean') return undefined;
   if (isShellSyntaxShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh: true });
+    showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
+  if (!isSftpPaneShape && !isCurrentShape) return undefined;
   if (typeof value.showSftpBrowserBesideSsh !== 'boolean') return undefined;
+  if (isSftpPaneShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
+    terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
+    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS });
+  const visibleLocalShells = normalizeVisibleLocalShells(value.visibleLocalShells);
+  if (!visibleLocalShells) return undefined;
   return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled, terminalHighlightRules,
     autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh });
+    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells });
 }
 
 export function isWorkbenchPreferences(value: unknown): value is WorkbenchPreferences {

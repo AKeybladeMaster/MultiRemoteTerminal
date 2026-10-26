@@ -4856,6 +4856,49 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
   }
 });
 
+test('local shell tool visibility persists and controls command palette entries after restart', async () => {
+  test.skip(process.platform !== 'win32', 'Local shell tool preference acceptance requires Windows');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-local-shell-tools-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await page.screenshot({ path: 'test-results/local-shell-tools-settings.png' });
+    const powershell = settings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
+    await expect(powershell).toBeChecked();
+    await powershell.uncheck();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.keyboard.press('Control+Shift+P');
+    const palette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(palette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await expect(palette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const restoredPowerShell = restoredSettings.getByRole('checkbox', { name: 'Show PowerShell in command palette' });
+    await expect(restoredPowerShell).not.toBeChecked();
+    await restoredPowerShell.check();
+    await restoredSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(restoredSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await restoredSettings.getByRole('button', { name: 'Close', exact: true }).click();
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('opt-in automatically remembers opened terminal sessions and deduplicates them after restart', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-auto-save-sessions-e2e-'));
   const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });

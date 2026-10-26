@@ -263,6 +263,8 @@ WP-01G independent Standards and Spec review (2026-10-26): no blocking findings.
 **Tests:** package install/disable/remove via approved mechanisms, malicious path, import/export, end-to-end parity review.  
 **Gate:** P-01..P-43 each verified, blocked with explicit rationale or transparently identified as unavailable.
 
+**WP-11A — fixed local shell catalog and persisted palette visibility (partial):** Add a fixed registry for the existing PowerShell, Command Prompt, and Git Bash launch actions. Let users show or hide those actions in the command palette, persist the preference in workbench settings, and retain the existing typed shell-launch path. This does not discover arbitrary executables, install/remove toolpacks, or add WSL integration. Focused domain/SQLite tests and Windows E2E cover legacy settings migration, input validation, visibility persistence across restart, restored palette visibility, and explicit launch. Keep P-21/P-37 PARTIAL; see [WP-11A results](results/WP-11A-local-shell-tool-registry-2026-10-26.md).
+
 ## Suggested merge checkpoints
 
 - `dev-1` can accept small reviewed vertical slices throughout.

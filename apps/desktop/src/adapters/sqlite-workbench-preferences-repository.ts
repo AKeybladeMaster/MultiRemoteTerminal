@@ -28,7 +28,7 @@ export class SqliteWorkbenchPreferencesRepository {
     try {
       const row = this.readStatement.get(SETTINGS_KEY) as unknown as StoredPreferencesRow | undefined;
       if (!row) return DEFAULT_WORKBENCH_PREFERENCES;
-      if ((!LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS.includes(row.schema_version as 1 | 2 | 3 | 4) &&
+      if ((!LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS.includes(row.schema_version as 1 | 2 | 3 | 4 | 5) &&
            row.schema_version !== WORKBENCH_PREFERENCES_SCHEMA_VERSION) ||
           typeof row.value_json !== 'string' || row.value_json.length > 8_192) {
         throw new StorageOperationError('corrupt');

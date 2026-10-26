@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, FormEvent } from 'react';
+import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
+import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS, MAX_TERMINAL_HIGHLIGHT_RULES,
@@ -17,6 +19,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [autoSaveSessions, setAutoSaveSessions] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
+  const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
@@ -35,7 +38,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const greetingIsValid = Boolean(normalizeWorkbenchPreferences({ startupGreeting: greeting }));
   const validatedPreferences = normalizeWorkbenchPreferences({
     startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh
+    showSftpBrowserBesideSsh, visibleLocalShells
   });
   const characterCount = Array.from(greeting).length;
 
@@ -54,6 +57,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setAutoSaveSessions(reply.result.autoSaveSessions);
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
+        setVisibleLocalShells(reply.result.visibleLocalShells);
       }
       else {
         setLoadFailed(true);
@@ -131,6 +135,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setAutoSaveSessions(reply.result.autoSaveSessions);
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
+        setVisibleLocalShells(reply.result.visibleLocalShells);
         onPreferencesSaved(reply.result);
         setStatus('Settings saved.');
       }
@@ -250,6 +255,34 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             Turn this off to keep SSH terminals full width. You can still connect to SFTP in a files-only tab.
           </p>
         </div>
+        <section className="settings-highlights" role="group" aria-labelledby="local-shell-tools-heading"
+          aria-describedby="local-shell-tools-description">
+          <h3 id="local-shell-tools-heading">Local terminal tools</h3>
+          <p className="settings-highlight-help" id="local-shell-tools-description">
+            Choose which shell actions appear in the command palette. This does not install shells or change saved sessions.
+          </p>
+          {LOCAL_SHELL_TOOL_REGISTRY.map(tool => {
+            const inputId = `visible-local-shell-${tool.shell}`;
+            const descriptionId = `${inputId}-description`;
+            return <div key={tool.shell}>
+              <label className="settings-highlight-toggle" htmlFor={inputId}>
+                <input id={inputId} name={`visibleLocalShells.${tool.shell}`} type="checkbox" checked={visibleLocalShells.includes(tool.shell)}
+                  disabled={loading || loadFailed || saving} aria-describedby={descriptionId}
+                  onChange={event => {
+                    const shouldShow = event.target.checked;
+                    setVisibleLocalShells(current => shouldShow
+                      ? LOCAL_SHELL_TOOL_REGISTRY.filter(candidate => candidate.shell === tool.shell || current.includes(candidate.shell))
+                        .map(candidate => candidate.shell)
+                      : current.filter(shell => shell !== tool.shell));
+                    setError(undefined);
+                    setStatus('');
+                  }} />
+                <span>Show {tool.label} in command palette</span>
+              </label>
+              <p className="settings-highlight-help" id={descriptionId}>{tool.description}</p>
+            </div>;
+          })}
+        </section>
         <div className="settings-highlights">
           <label className="settings-highlight-toggle" htmlFor="auto-save-sessions">
             <input id="auto-save-sessions" type="checkbox" checked={autoSaveSessions}
