@@ -98,6 +98,9 @@ function closeSocket(socket: Socket): Promise<void> {
 }
 
 class TftpReadTransfer {
+  private readonly file: OpenTftpFile;
+  private readonly remote: RemoteInfo;
+  private readonly onFinished: () => void;
   private socket: Socket | undefined;
   private currentPacket: Buffer | undefined;
   private currentBlock = 1;
@@ -110,10 +113,14 @@ class TftpReadTransfer {
   private closed = false;
 
   constructor(
-    private readonly file: OpenTftpFile,
-    private readonly remote: RemoteInfo,
-    private readonly onFinished: () => void
-  ) {}
+    file: OpenTftpFile,
+    remote: RemoteInfo,
+    onFinished: () => void
+  ) {
+    this.file = file;
+    this.remote = remote;
+    this.onFinished = onFinished;
+  }
 
   async start(): Promise<void> {
     try {
@@ -253,6 +260,8 @@ class TftpReadTransfer {
 }
 
 export class ReadOnlyTftpServer {
+  private readonly onUnexpectedStop: () => void;
+  private readonly openFile: typeof openRootFile;
   private listener: Socket | undefined;
   private rootDirectory: string | undefined;
   private readonly transfers = new Map<string, TftpReadTransfer>();
@@ -261,7 +270,13 @@ export class ReadOnlyTftpServer {
   private readonly errorSockets = new Set<Socket>();
   private stopping = false;
 
-  constructor(private readonly onUnexpectedStop: () => void = () => {}) {}
+  constructor(
+    onUnexpectedStop: () => void = () => {},
+    openFile: typeof openRootFile = openRootFile
+  ) {
+    this.onUnexpectedStop = onUnexpectedStop;
+    this.openFile = openFile;
+  }
 
   async start(rootDirectory: string, port: number): Promise<number> {
     if (this.listener || this.stopping) throw new TftpServerFailure('BUSY');
@@ -361,7 +376,7 @@ export class ReadOnlyTftpServer {
     this.pendingTransfers.add(key);
     let opened: OpenTftpFile | undefined;
     try {
-      opened = await openRootFile(rootDirectory, parsed.result.fileName);
+      opened = await this.openFile(rootDirectory, parsed.result.fileName);
       if (this.listener !== listener) { await opened.handle.close(); return; }
       const transfer = new TftpReadTransfer(opened, remote, () => this.transfers.delete(key));
       this.transfers.set(key, transfer);

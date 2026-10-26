@@ -1,10 +1,49 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
+import { createSocket } from 'node:dgram';
+import type { Socket } from 'node:dgram';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createTftpServerController } from '../../packages/application/src/tftp-server.ts';
 import type { TftpServerProvider } from '../../packages/application/src/tftp-server.ts';
 import { createCancellationSource } from '../../packages/application/src/cancellation.ts';
+import { ReadOnlyTftpServer } from '../../apps/desktop/src/workers/tftp-server.ts';
 
 const selection = { absolutePath: 'C:\\fixtures\\firmware', folderName: 'firmware' };
+
+function readRequest(fileName: string): Buffer {
+  return Buffer.from(`\u0000\u0001${fileName}\u0000octet\u0000`, 'ascii');
+}
+
+function sendPacket(socket: Socket, packet: Buffer, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.send(packet, port, '127.0.0.1', error => error ? reject(error) : resolve());
+  });
+}
+
+function receivePacket(socket: Socket, timeoutMs: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.removeListener('message', onMessage);
+      socket.removeListener('error', onError);
+    };
+    const onMessage = (packet: Buffer): void => { cleanup(); resolve(packet); };
+    const onError = (error: Error): void => { cleanup(); reject(error); };
+    const timer = setTimeout(() => { cleanup(); reject(new Error('Timed out waiting for TFTP response')); }, timeoutMs);
+    socket.on('message', onMessage);
+    socket.on('error', onError);
+  });
+}
+
+function closeUdpSocket(socket: Socket): Promise<void> {
+  return new Promise(resolve => {
+    socket.once('close', resolve);
+    try { socket.close(); } catch { resolve(); }
+  });
+}
 
 function harness(start: () => Promise<number> = async () => 51_234) {
   const exits = new Set<() => void>();
@@ -65,4 +104,54 @@ test('unexpected TFTP worker exit clears the running status', async () => {
   assert.deepEqual(controller.getStatus(), { state: 'stopped' });
   assert.deepEqual(events, ['running', 'stopped']);
   await controller.closeAll();
+});
+
+test('TFTP server bounds pending file opens and rejects the next request as busy', async () => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), 'mrt-tftp-pending-'));
+  let openCount = 0;
+  let releaseAllOpens = false;
+  const releasePendingOpens: Array<() => void> = [];
+  const openedCountWaiters = new Map<number, () => void>();
+  const server = new ReadOnlyTftpServer(undefined, async () => {
+    openCount++;
+    openedCountWaiters.get(openCount)?.();
+    await new Promise<void>(resolve => {
+      if (releaseAllOpens) resolve();
+      else releasePendingOpens.push(resolve);
+    });
+    return { handle: { close: async () => {} } as unknown as FileHandle, size: 0 };
+  });
+  let client: Socket | undefined;
+
+  try {
+    const port = await server.start(rootDirectory, 0);
+    client = createSocket('udp4');
+
+    for (let requestNumber = 1; requestNumber <= 8; requestNumber++) {
+      let opened!: () => void;
+      const openedPromise = new Promise<void>(resolve => { opened = resolve; });
+      openedCountWaiters.set(requestNumber, opened);
+      await sendPacket(client, readRequest(`pending-${requestNumber}.bin`), port);
+      await openedPromise;
+    }
+
+    const busyReplyPromise = receivePacket(client, 2_000);
+    await sendPacket(client, readRequest('pending-9.bin'), port);
+    const busyReply = await busyReplyPromise;
+    assert.equal(busyReply.readUInt16BE(0), 5);
+    assert.equal(busyReply.readUInt16BE(2), 0);
+    assert.equal(busyReply.toString('ascii', 4, busyReply.length - 1), 'Server is busy');
+  } finally {
+    releaseAllOpens = true;
+    for (const release of releasePendingOpens) release();
+    try {
+      await server.stop();
+    } finally {
+      try {
+        if (client) await closeUdpSocket(client);
+      } finally {
+        await rm(rootDirectory, { recursive: true, force: true });
+      }
+    }
+  }
 });
