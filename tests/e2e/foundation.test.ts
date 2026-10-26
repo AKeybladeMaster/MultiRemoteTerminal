@@ -1793,7 +1793,7 @@ test('Windows master-password vault restores into a different app profile after 
   }
 });
 
-test('SSH saved-profile jump routes verify every hop and clean up one- and two-gateway chains', async () => {
+test('SSH saved-profile jump routes verify every hop and clean up one-, two-, and three-gateway chains', async () => {
   test.setTimeout(120_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
@@ -1949,10 +1949,13 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
               acceptShell().write('MRT-JUMP-TARGET-READY\r\n');
             });
           }
-          if (role === 'sftp') session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
-            fixtureEvents.push(`${name}:shell`);
-            acceptShell().end();
-          });
+          if (role === 'sftp') {
+            session.on('pty', (accept: () => void) => { fixtureEvents.push(`${name}:pty`); accept(); });
+            session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+              fixtureEvents.push(`${name}:shell`);
+              acceptShell().end();
+            });
+          }
           if (role === 'terminal' || role === 'sftp') session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
             if (role === 'sftp') sftpRequests++;
             fixtureEvents.push(`${name}:sftp`);
@@ -1969,7 +1972,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
   let targetEchoListening = false;
   try {
     await mkdir(sftpRoot);
-    await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through two SSH gateways');
+    await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through three SSH gateways');
     await new Promise<void>((resolveListen, rejectListen) => {
       targetEchoServer.once('error', rejectListen);
       targetEchoServer.listen(0, '127.0.0.1', () => {
@@ -1987,6 +1990,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     createFixture('tunnel-gateway-one', 'gateway');
     createFixture('tunnel-gateway-two', 'gateway');
     createFixture('tunnel-target', 'terminal');
+    createFixture('gateway-three', 'gateway');
+    createFixture('tunnel-gateway-three', 'gateway');
     for (const fixture of servers) {
       await new Promise<void>((resolveListen, rejectListen) => {
         fixture.server.once('error', rejectListen);
@@ -2005,7 +2010,10 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const tunnelGatewayOnePort = servers[4]?.address?.port;
     const tunnelGatewayTwoPort = servers[5]?.address?.port;
     const tunnelTargetPort = servers[6]?.address?.port;
-    if (!gatewayOnePort || !gatewayTwoPort || !targetPort || !sftpTargetPort || !tunnelGatewayOnePort || !tunnelGatewayTwoPort || !tunnelTargetPort) {
+    const gatewayThreePort = servers[7]?.address?.port;
+    const tunnelGatewayThreePort = servers[8]?.address?.port;
+    if (!gatewayOnePort || !gatewayTwoPort || !targetPort || !sftpTargetPort || !tunnelGatewayOnePort || !tunnelGatewayTwoPort ||
+        !tunnelTargetPort || !gatewayThreePort || !tunnelGatewayThreePort) {
       throw new Error('The SSH route fixture did not expose all ports');
     }
 
@@ -2021,7 +2029,9 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         window.multiRemoteTerminal.createSavedSession({ kind: 'sftp', name: 'SFTP target profile', host: '127.0.0.1', port: ports.sftpTarget }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway one', host: '127.0.0.1', port: ports.tunnelGatewayOne }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway two', host: '127.0.0.1', port: ports.tunnelGatewayTwo }),
-        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel target', host: '127.0.0.1', port: ports.tunnelTarget })
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel target', host: '127.0.0.1', port: ports.tunnelTarget }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway three', host: '127.0.0.1', port: ports.gatewayThree }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway three', host: '127.0.0.1', port: ports.tunnelGatewayThree })
       ]);
       const ids: string[] = [];
       for (const reply of replies) {
@@ -2030,12 +2040,13 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       }
       return ids;
     }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort, sftpTarget: sftpTargetPort,
-      tunnelGatewayOne: tunnelGatewayOnePort, tunnelGatewayTwo: tunnelGatewayTwoPort, tunnelTarget: tunnelTargetPort });
-    expect(profileIds).toHaveLength(7);
+      tunnelGatewayOne: tunnelGatewayOnePort, tunnelGatewayTwo: tunnelGatewayTwoPort, tunnelTarget: tunnelTargetPort,
+      gatewayThree: gatewayThreePort, tunnelGatewayThree: tunnelGatewayThreePort });
+    expect(profileIds).toHaveLength(9);
     await page.reload();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
 
-    const openRoute = async (secondGateway: boolean): Promise<void> => {
+    const openRoute = async (gatewayCount: 1 | 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
       await page.getByRole('button', { name: 'Actions for saved session Target profile' }).click();
       await page.getByRole('button', { name: 'Connect Target profile through gateways' }).click();
       const dialog = page.getByRole('dialog', { name: 'Connect Target profile through gateways' });
@@ -2043,13 +2054,13 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
       await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
       await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
-      if (secondGateway) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
+      if (gatewayCount >= 2) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
+      if (gatewayCount >= 3) await dialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[7]!);
       await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
-      const trustPorts = secondGateway ? [gatewayOnePort, gatewayTwoPort, targetPort] : [];
-      for (let trustIndex = 0; trustIndex < trustPorts.length; trustIndex += 1) {
+      for (const expectedTrustPort of expectedTrustPorts) {
         const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
         await expect(trust).toBeVisible({ timeout: 15_000 });
-        await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${trustPorts[trustIndex]}`);
+        await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${expectedTrustPort}`);
         await trust.getByRole('button', { name: 'Trust key and connect' }).click();
       }
       const tab = page.getByRole('tab').filter({ hasText: 'Target profile' }).last();
@@ -2057,9 +2068,10 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       const panelId = await tab.getAttribute('aria-controls');
       if (!panelId) throw new Error('Missing routed SSH terminal panel');
       await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-JUMP-TARGET-READY', { timeout: 15_000 });
-      await confirmCloseActiveTerminal(page, secondGateway ? 'Gateway one → Gateway two → Target profile' : 'Gateway one → Target profile');
+      const routeNames = ['Gateway one', ...(gatewayCount >= 2 ? ['Gateway two'] : []), ...(gatewayCount >= 3 ? ['Gateway three'] : []), 'Target profile'];
+      await confirmCloseActiveTerminal(page, routeNames.join(' → '));
     };
-    const openSftpRoute = async (): Promise<void> => {
+    const openSftpRoute = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
       await page.getByRole('button', { name: 'Actions for saved session SFTP target profile' }).click();
       await page.getByRole('button', { name: 'Connect SFTP target profile through gateways' }).click();
       const dialog = page.getByRole('dialog', { name: 'Connect SFTP target profile through gateways' });
@@ -2067,24 +2079,30 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
       await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
       await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
-      await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
+      if (gatewayCount >= 2) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
+      if (gatewayCount >= 3) await dialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[7]!);
       await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
-      for (const port of [sftpTargetPort]) {
+      for (const port of expectedTrustPorts) {
         const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
         await expect(trust).toBeVisible({ timeout: 15_000 });
         await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${port}`);
         await trust.getByRole('button', { name: 'Trust key and connect' }).click();
       }
-      const tab = page.getByRole('tab').filter({ hasText: 'Gateway one → Gateway two → SFTP target profile' }).last();
+      const tab = page.getByRole('tab').filter({ hasText: 'SFTP target profile' }).last();
       await expect(tab).toBeVisible({ timeout: 25_000 });
       const panelId = await tab.getAttribute('aria-controls');
       if (!panelId) throw new Error('Missing routed SFTP panel');
       await expect(page.locator(`#${panelId}`).getByTestId('remote-file-browser').getByText('gateway-sftp.txt', { exact: true }))
         .toBeVisible({ timeout: 15_000 });
+      expect(fixtureEvents.filter(event => event === 'sftp-target:pty')).toHaveLength(0);
       expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
       await page.getByRole('button', { name: 'Close active file session' }).click();
       const confirmation = page.getByRole('alertdialog');
-      await expect(confirmation).toContainText('Gateway one → Gateway two → SFTP target profile');
+      const routeNames = ['Gateway one', ...(gatewayCount >= 2 ? ['Gateway two'] : []),
+        ...(gatewayCount >= 3 ? ['Gateway three'] : []), 'SFTP target profile'];
+      for (const routeName of routeNames) {
+        await expect(confirmation).toContainText(routeName);
+      }
       await confirmation.getByRole('button', { name: 'Close session' }).click();
     };
     const waitForRelayCleanup = async (): Promise<void> => {
@@ -2182,24 +2200,32 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
           : finish(new Error('Routed SOCKS5 proxy closed before the data roundtrip')));
       });
 
-    await openRoute(true);
+    await openRoute(3, [gatewayOnePort, gatewayTwoPort, gatewayThreePort, targetPort]);
     await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(1);
     expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
-    expect(fixtureEvents).toContain('gateway-two:relay:' + targetPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + gatewayThreePort);
+    expect(fixtureEvents).toContain('gateway-three:relay:' + targetPort);
     expect(fixtureEvents.filter(event => event === 'gateway-one:authenticated')).toHaveLength(1);
     expect(fixtureEvents.filter(event => event === 'gateway-two:authenticated')).toHaveLength(1);
+    expect(fixtureEvents.filter(event => event === 'gateway-three:authenticated')).toHaveLength(1);
     expect(fixtureEvents.filter(event => event === 'target:authenticated')).toHaveLength(1);
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
 
-    await openRoute(false);
+    await openRoute(2);
     await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(2);
-    expect(fixtureEvents).toContain('gateway-one:relay:' + targetPort);
-    expect(fixtureEvents.filter(event => event === 'gateway-two:authenticated')).toHaveLength(1);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + targetPort);
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
 
-    await openSftpRoute();
+    await openRoute(1);
+    await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(3);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + targetPort);
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+
+    await openSftpRoute(2, [sftpTargetPort]);
     await expect.poll(() => sftpRequests).toBe(1);
     expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
     expect(fixtureEvents).toContain('gateway-two:relay:' + sftpTargetPort);
@@ -2207,19 +2233,29 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
 
+    await openSftpRoute(3);
+    await expect.poll(() => sftpRequests).toBe(2);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + gatewayThreePort);
+    expect(fixtureEvents).toContain('gateway-three:relay:' + sftpTargetPort);
+    expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+
     if (!targetEchoPort) throw new Error('The tunnel target fixture did not bind');
-    const savedTunnel = await page.evaluate(async ({ targetSessionId, destinationPort }) =>
-      window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name: 'Two-hop TCP check', mode: 'local', bindHost: '127.0.0.1',
+    const localTunnelName = 'Three-hop local TCP check';
+    const savedTunnel = await page.evaluate(async ({ targetSessionId, destinationPort, name }) =>
+      window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name, mode: 'local', bindHost: '127.0.0.1',
         bindPort: 0, targetHost: '127.0.0.1', targetPort: destinationPort }),
-    { targetSessionId: profileIds[6]!, destinationPort: targetEchoPort });
+    { targetSessionId: profileIds[6]!, destinationPort: targetEchoPort, name: localTunnelName });
     expect(savedTunnel.ok).toBe(true);
-    const remoteTunnelName = 'Two-hop remote TCP check';
+    const remoteTunnelName = 'Three-hop remote TCP check';
     const savedRemoteTunnel = await page.evaluate(async ({ targetSessionId, destinationPort, name }) =>
       window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name, mode: 'remote', bindHost: '127.0.0.1',
         bindPort: 0, targetHost: '127.0.0.1', targetPort: destinationPort }),
     { targetSessionId: profileIds[6]!, destinationPort: targetEchoPort, name: remoteTunnelName });
     expect(savedRemoteTunnel.ok).toBe(true);
-    const dynamicTunnelName = 'Two-hop SOCKS5 check';
+    const dynamicTunnelName = 'Three-hop SOCKS5 check';
     const savedDynamicTunnel = await page.evaluate(async ({ targetSessionId, name }) =>
       window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name, mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 0 }),
     { targetSessionId: profileIds[6]!, name: dynamicTunnelName });
@@ -2277,21 +2313,34 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     expectExactTunnelRequestBytes(requestBytesBeforeLocal, payload);
     expect(await localPortRefusesConnections(tunnelPort)).toBe(true);
 
-    const startSelectedTunnelThroughGateways = async (): Promise<void> => {
+    const startSelectedTunnelThroughGateways = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
       await tunnelDialog.getByRole('button', { name: 'Start through gateways' }).click();
       await tunnelDialog.getByLabel('SSH gateway 1').selectOption(profileIds[4]!);
-      await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
+      if (gatewayCount >= 2) await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
+      if (gatewayCount >= 3) await tunnelDialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[8]!);
       await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
+      for (const expectedTrustPort of expectedTrustPorts) {
+        const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+        await expect(trust).toBeVisible({ timeout: 15_000 });
+        await expect(trust.locator('.ssh-host-facts')).toContainText(`127.0.0.1:${expectedTrustPort}`);
+        await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+      }
       await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Active', { timeout: 25_000 });
     };
-    const startSelectedTunnelAndVerifyGatewayRelays = async (): Promise<void> => {
+    const startSelectedTunnelAndVerifyGatewayRelays = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
       const firstGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length;
-      const secondGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length;
-      await startSelectedTunnelThroughGateways();
+      const secondGatewayTargetPort = gatewayCount === 3 ? tunnelGatewayThreePort : tunnelTargetPort;
+      const secondGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${secondGatewayTargetPort}`).length;
+      const thirdGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-three:relay:${tunnelTargetPort}`).length;
+      await startSelectedTunnelThroughGateways(gatewayCount, expectedTrustPorts);
       await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length)
         .toBe(firstGatewayRelays + 1);
-      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${tunnelTargetPort}`).length)
+      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${secondGatewayTargetPort}`).length)
         .toBe(secondGatewayRelays + 1);
+      if (gatewayCount === 3) {
+        await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-three:relay:${tunnelTargetPort}`).length)
+          .toBe(thirdGatewayRelays + 1);
+      }
     };
     const selectedStatusPort = async (pattern: RegExp): Promise<number> => {
       const endpoint = await tunnelDialog.locator('.tunnel-status-card code').innerText();
@@ -2299,14 +2348,28 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       if (!port) throw new Error(`Could not read an active tunnel port from: ${endpoint}`);
       return Number(port);
     };
+    const localTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(localTunnelName, 'u') });
+    await expect(localTunnelItem).toBeVisible();
+    await localTunnelItem.click();
+    await startSelectedTunnelAndVerifyGatewayRelays(3, [tunnelGatewayThreePort]);
+    const threeHopLocalPort = await selectedStatusPort(/Local 127\.0\.0\.1:(\d+)/u);
+    const threeHopLocalPayload = Buffer.from('three-hop-local-forward-bytes');
+    const threeHopRequestBytesBefore = tunneledRequestBytes;
+    const threeHopLocalResponse = await roundTripTunnelTraffic(threeHopLocalPort, threeHopLocalPayload);
+    expect(threeHopLocalResponse).toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), threeHopLocalPayload]));
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expectExactTunnelRequestBytes(threeHopRequestBytesBefore, threeHopLocalPayload);
+    expect(await localPortRefusesConnections(threeHopLocalPort)).toBe(true);
+
     const remoteTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
     await expect(remoteTunnelItem).toBeVisible();
     await remoteTunnelItem.click();
-    await startSelectedTunnelAndVerifyGatewayRelays();
+    await startSelectedTunnelAndVerifyGatewayRelays(3);
     const remotePort = await selectedStatusPort(/SSH server 127\.0\.0\.1:(\d+)/u);
     expect(remoteBindRequests.at(-1)).toBe('127.0.0.1:0');
     expect(fixtureEvents).toContain(`tunnel-target:remote-bound:${remotePort}`);
-    const remotePayload = Buffer.from('two-hop-remote-forward-bytes');
+    const remotePayload = Buffer.from('three-hop-remote-forward-bytes');
     const bytesBeforeRemote = tunneledBytes;
     const requestBytesBeforeRemote = tunneledRequestBytes;
     expect(await roundTripTunnelTraffic(remotePort, remotePayload))
@@ -2324,9 +2387,9 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const dynamicTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(dynamicTunnelName, 'u') });
     await expect(dynamicTunnelItem).toBeVisible();
     await dynamicTunnelItem.click();
-    await startSelectedTunnelAndVerifyGatewayRelays();
+    await startSelectedTunnelAndVerifyGatewayRelays(3);
     const socksPort = await selectedStatusPort(/SOCKS5 proxy 127\.0\.0\.1:(\d+)/u);
-    const socksPayload = Buffer.from('two-hop-dynamic-socks-bytes');
+    const socksPayload = Buffer.from('three-hop-dynamic-socks-bytes');
     const bytesBeforeSocks = tunneledBytes;
     const requestBytesBeforeSocks = tunneledRequestBytes;
     expect(await roundTripDynamicSocks(socksPort, targetEchoPort, socksPayload))

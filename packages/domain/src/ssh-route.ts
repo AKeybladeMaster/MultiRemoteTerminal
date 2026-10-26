@@ -1,7 +1,7 @@
 import { canonicalizeSshHostEndpoint, hostEndpointKey } from './host-trust.ts';
 import type { SshHostEndpoint } from './host-trust.ts';
 
-export const MAX_SSH_GATEWAY_HOPS = 2;
+export const MAX_SSH_GATEWAY_HOPS = 3;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

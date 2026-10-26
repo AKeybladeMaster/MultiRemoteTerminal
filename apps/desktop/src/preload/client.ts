@@ -53,7 +53,7 @@ const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_CREDENTIAL_PROMPT_TIMEOUT_MS = 120_000;
 const SESSION_CREDENTIAL_TIMEOUT_MS = 130_000;
 const SSH_WORKER_OPEN_TIMEOUT_MS = 140_000;
-// Covers two bounded catalog reads, worker startup, and IPC scheduling after three sequential prompts.
+// Covers bounded catalog reads, worker startup, and IPC scheduling after the maximum gateway count plus target prompt.
 const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
 const SSH_TEXT_FILE_TIMEOUT_MS = 60_000;

@@ -79,9 +79,9 @@ test('local tunnel starts through a files-only SSH runtime and closes both liste
   await controller.dispose();
 });
 
-test('saved tunnel gateway routes reach the files-only SSH open in route order', async () => {
+test('saved tunnel three-gateway routes reach the files-only SSH open in route order', async () => {
   const target = { ...profile, host: 'target.test', port: 2222 };
-  const gateways = [{ host: 'jump-one.test', port: 2201 }, { host: 'jump-two.test', port: 2202 }];
+  const gateways = [{ host: 'jump-one.test', port: 2201 }, { host: 'jump-two.test', port: 2202 }, { host: 'jump-three.test', port: 2203 }];
   const { controller, calls } = harness({ getProfile: async () => target });
 
   const result = await controller.start(tunnelId, undefined, gateways);
@@ -90,6 +90,19 @@ test('saved tunnel gateway routes reach the files-only SSH open in route order',
   assert.deepEqual(calls.gatewayRoutes, [gateways]);
   assert.equal(calls.forwarded.length, 1);
   await controller.stop(tunnelId);
+  await controller.dispose();
+});
+
+test('saved tunnel gateway routes reject a fourth hop before opening SSH', async () => {
+  const target = { ...profile, host: 'target.test', port: 2222 };
+  const { controller, calls } = harness({ getProfile: async () => target });
+  const result = await controller.start(tunnelId, undefined, [
+    { host: 'jump-one.test', port: 2201 }, { host: 'jump-two.test', port: 2202 },
+    { host: 'jump-three.test', port: 2203 }, { host: 'jump-four.test', port: 2204 }
+  ]);
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls.opened, []);
   await controller.dispose();
 });
 

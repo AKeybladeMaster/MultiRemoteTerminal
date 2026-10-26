@@ -422,6 +422,7 @@ test('tunnel broker resolves saved SSH gateways against the tunnel profile befor
   const targetId = '44444444-4444-4444-8444-444444444444';
   const gatewayOneId = '11111111-1111-4111-8111-111111111111';
   const gatewayTwoId = '22222222-2222-4222-8222-222222222222';
+  const gatewayThreeId = '33333333-3333-4333-8333-333333333333';
   const badGatewayId = '55555555-5555-4555-8555-555555555555';
   const definition = { id: tunnelId, sessionId: targetId, name: 'Database', mode: 'local' as const, bindHost: '127.0.0.1' as const,
     bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
@@ -429,6 +430,7 @@ test('tunnel broker resolves saved SSH gateways against the tunnel profile befor
     [targetId, { ...emptySavedSession, id: targetId, kind: 'ssh' as const, name: 'Target', host: 'target.example.net', port: 22 }],
     [gatewayOneId, { ...emptySavedSession, id: gatewayOneId, kind: 'ssh' as const, name: 'Gateway one', host: 'first.example.net', port: 2201 }],
     [gatewayTwoId, { ...emptySavedSession, id: gatewayTwoId, kind: 'ssh' as const, name: 'Gateway two', host: 'second.example.net', port: 2202 }],
+    [gatewayThreeId, { ...emptySavedSession, id: gatewayThreeId, kind: 'ssh' as const, name: 'Gateway three', host: 'third.example.net', port: 2203 }],
     [badGatewayId, { ...emptySavedSession, id: badGatewayId, kind: 'sftp' as const, name: 'SFTP profile', host: 'files.example.net', port: 22 }]
   ]);
   const starts: unknown[] = [];
@@ -447,10 +449,10 @@ test('tunnel broker resolves saved SSH gateways against the tunnel profile befor
     }
   };
   const reply = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,
-    payload: { id: tunnelId, gatewayProfileIds: [gatewayOneId, gatewayTwoId] } }, routed, () => {});
+    payload: { id: tunnelId, gatewayProfileIds: [gatewayOneId, gatewayTwoId, gatewayThreeId] } }, routed, () => {});
   assert.equal(reply.ok, true);
   assert.deepEqual(starts, [{ id: tunnelId, cancellation: undefined, gateways: [
-    { host: 'first.example.net', port: 2201 }, { host: 'second.example.net', port: 2202 }
+    { host: 'first.example.net', port: 2201 }, { host: 'second.example.net', port: 2202 }, { host: 'third.example.net', port: 2203 }
   ] }]);
 
   const rejected = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,

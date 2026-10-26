@@ -419,9 +419,10 @@ test('SSH agent authentication asks only for a username and passes an agent cred
   await controller.dispose();
 });
 
-test('SSH jump routes prompt and verify each gateway and destination in route order', async () => {
+test('SSH three-gateway routes prompt and verify every gateway and destination in route order', async () => {
   const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
   const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
+  const gatewayThree = { host: 'gateway-three.example.net', port: 2203 };
   const destination = { host: 'target.example.net', port: 22 };
   const prompts: string[] = [];
   const provider = new FakeProvider();
@@ -429,13 +430,15 @@ test('SSH jump routes prompt and verify each gateway and destination in route or
   trust.decision = { kind: 'trusted' };
   const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'operation-secret' }, prompts), trust);
 
-  const opened = await controller.open(sessionId, destination.host, destination.port, { columns: 80, rows: 24 }, [gatewayOne, gatewayTwo]);
+  const opened = await controller.open(sessionId, destination.host, destination.port, { columns: 80, rows: 24 },
+    [gatewayOne, gatewayTwo, gatewayThree]);
 
   assert.equal(opened.ok, true);
   assert.deepEqual(prompts, ['Gateway 1: gateway-one.example.net:2201', 'Gateway 2: gateway-two.example.net:2202',
+    'Gateway 3: gateway-three.example.net:2203',
     'SSH destination: target.example.net:22']);
-  assert.deepEqual(provider.gatewayRoutes, [[gatewayOne, gatewayTwo]]);
-  assert.deepEqual(trust.inspected, [gatewayOne, gatewayTwo, destination]);
+  assert.deepEqual(provider.gatewayRoutes, [[gatewayOne, gatewayTwo, gatewayThree]]);
+  assert.deepEqual(trust.inspected, [gatewayOne, gatewayTwo, gatewayThree, destination]);
   assert.ok(provider.gatewayCredentialRefs.every(credentials => credentials.username === '' && credentials.password === ''),
     'gateway credentials are cleared after the operation');
   await controller.dispose();
