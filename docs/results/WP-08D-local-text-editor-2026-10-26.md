@@ -39,4 +39,12 @@
 
 ## Review
 
-Independent Standards and Spec review of the final WP-08D range is pending.
+Final independent review covered `d3a423391a5b233c810d5f87b798433c7a5a966b..3bfb39117217f62cd2910eeaa07f622a80d12573`.
+
+### Standards
+
+No remaining documented-standard violations or baseline smells. The follow-up consolidated local file-open error messages into the shared text-editor error mapper. Native picker selection/dismissal remains explicitly listed as unverified UI evidence.
+
+### Spec
+
+No remaining findings. F-014/P-27 remain partial because syntax profiles and autosave are still open. Local and remote E2Es verify the mixed-line-ending notice and saved bytes use the first detected style. The local E2E's guarded path hook and native-picker automation limitation are accurately documented. No scope creep was identified.
