@@ -425,7 +425,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
             }} />
           <div className="settings-form-meta">
             <span>{powerShellProfileScript.length} / {MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS} UTF-16 code units</span>
-            {!profileScriptIsValid && <span className="dialog-error" role="alert">Remove unsupported control characters and keep the script within the size limit.</span>}
+            {!profileScriptIsValid && <span className="dialog-error" role="alert">Remove control, bidirectional formatting, and Unicode line separator characters, and keep the script within the size limit.</span>}
           </div>
           <p id="powershell-profile-warning" className="settings-profile-warning">
             Scripts are stored locally as plain text. PowerShell can change files and contact network services. Review the exact saved script before each run. It never runs at app startup or when a terminal opens.
@@ -448,7 +448,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
           {profilePreview && profilePreview.sessionId === activePowerShellSessionId && <div className="settings-profile-preview" aria-labelledby="powershell-profile-preview-heading">
             <h4 id="powershell-profile-preview-heading">Exact saved script preview</h4>
             <pre tabIndex={0} aria-label="Exact saved PowerShell script preview">{profilePreview.script}</pre>
-            <p className="settings-highlight-help">Running this sends the script as terminal input. PowerShell will execute its commands in the selected session.</p>
+            <p className="settings-highlight-help">Run only when PowerShell is at an idle prompt. This sends the script as terminal input; if another program is running or waiting for input, it may receive the text instead.</p>
           </div>}
           {profileStatus && <p className="settings-save-status" role="status" aria-live="polite">{profileStatus}</p>}
         </section>

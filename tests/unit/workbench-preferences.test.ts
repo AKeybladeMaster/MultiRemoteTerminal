@@ -106,11 +106,17 @@ test('workbench preferences migrate schema v8 logos with an empty profile script
   assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'x'.repeat(16_001) }), undefined);
 });
 
-test('PowerShell profile text normalizes newlines and rejects controls and oversized scripts', () => {
+test('PowerShell profile text normalizes newlines and rejects unreviewable controls and oversized scripts', () => {
   assert.equal(normalizePowerShellProfileScript('function Say-Hello {\r\n  "hello"\r\n}'),
     'function Say-Hello {\n  "hello"\n}');
   assert.equal(normalizePowerShellProfileScript('Write-Output "bad\u0000text"'), undefined);
   assert.equal(normalizePowerShellProfileScript('Write-Output "bad\u0085text"'), undefined);
+  assert.equal(normalizePowerShellProfileScript('Write-Output "safe"\u202E; Remove-Item *'), undefined,
+    'bidi overrides must not visually disguise reviewed script text');
+  assert.equal(normalizePowerShellProfileScript('Write-Output "safe"\u2066; Remove-Item *\u2069'), undefined,
+    'bidi isolates must not visually disguise reviewed script text');
+  assert.equal(normalizePowerShellProfileScript('Write-Output "safe"\u2028; Remove-Item *'), undefined,
+    'Unicode line separators must not obscure command boundaries');
   assert.equal(normalizePowerShellProfileScript('x'.repeat(MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS + 1)), undefined);
 });
 

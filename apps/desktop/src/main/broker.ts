@@ -146,7 +146,6 @@ export async function dispatchCommand(
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
         parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start' || parsed.result.command === 'tftp.stop' ||
-        parsed.result.command === 'powershell.profile.preview' || parsed.result.command === 'powershell.profile.apply' ||
         parsed.result.command === 'branding.logo.select' ||
         parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {

@@ -12,7 +12,7 @@
 
 ## Validation
 
-- Focused PowerShell profile, local terminal, contract, broker, gesture, workbench preference and SQLite tests: **93/93 passed**.
+- Focused PowerShell profile, local terminal, contract, broker, gesture, workbench preference and SQLite tests: **93/93 passed** before review follow-up. The follow-up adds regression coverage for bidi/control-character rejection and one-time broker activity accounting.
 - `corepack pnpm typecheck`: passed.
 - `corepack pnpm lint`: passed, including import-boundary checks.
 - `corepack pnpm build`: passed for Windows x64; the bundler emitted its existing large-renderer-chunk advisory.
@@ -22,3 +22,10 @@
 ## Security notes and remaining work
 
 The app-managed script is stored as local plain text. It can execute arbitrary PowerShell commands with the user's Windows account permissions; users must review the preview and must not put secrets in the field. This feature does not sandbox script execution or claim that a preview determines whether a script is safe. Native logo-picker acceptance, provider/tool management and the other documented release gates remain open. See [ADR-0029](../adr/ADR-0029-powershell-profile-execution.md).
+
+## Review follow-up
+
+- Standards review found that bidirectional formatting controls and Unicode line separators were accepted even though the preview renders raw text. The regression was run red first. Validation now rejects control characters other than allowed newlines/tabs, bidi formatting controls, and Unicode line/paragraph separators so the preview remains visually stable.
+- Review also found activity was counted twice for preview/apply; an unauthorized apply could count as user activity before gesture authorization. The shared pre-dispatch activity list no longer handles these commands. Broker tests verify denial adds no activity and an authorized preview/apply adds one activity each.
+- The UI and user guide now say to run only at an idle PowerShell prompt because the app cannot detect whether another foreground program may receive terminal input.
+- Follow-up validation: focused cross-layer suite **93/93**; `corepack pnpm typecheck`, `corepack pnpm lint`/import boundaries, `corepack pnpm build` for Windows x64, focused Windows Playwright E2E **1/1**, and `git diff --check` passed. Build retains the existing Vite large-renderer-chunk advisory.

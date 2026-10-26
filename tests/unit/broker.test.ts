@@ -111,7 +111,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
 test('PowerShell profile application requires the trusted main-process gesture before using a saved preview', async () => {
   let authorized = false;
   let applied = 0;
-  const base = actions();
+  let activity = 0;
+  const base = actions(snapshot, () => { activity++; });
   const guarded: CommandActions = {
     ...base,
     authorizePowerShellProfileScript: () => authorized,
@@ -132,11 +133,17 @@ test('PowerShell profile application requires the trusted main-process gesture b
   assert.equal(denied.ok, false);
   if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
   assert.equal(applied, 0, 'unauthorized renderer requests cannot reach profile execution');
+  assert.equal(activity, 0, 'unauthorized profile applies must not count as user activity');
 
   authorized = true;
   const accepted = await dispatchCommand(owner, input, guarded, () => {});
   assert.deepEqual(accepted, { requestId: request.requestId, ok: true, result: {} });
   assert.equal(applied, 1);
+  assert.equal(activity, 1, 'an authorized profile apply records user activity once');
+
+  await dispatchCommand(owner, { command: 'powershell.profile.preview', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId } }, guarded, () => {});
+  assert.equal(activity, 2, 'a profile preview records user activity once');
 });
 
 test('session auto-save requires the persisted opt-in preference at the main-process broker', async () => {

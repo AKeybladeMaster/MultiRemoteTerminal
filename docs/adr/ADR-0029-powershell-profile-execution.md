@@ -11,10 +11,11 @@ P-36 asks for a user-controlled PowerShell profile script with a preview, and F-
 ## Decision
 
 - Store a bounded script as plain text in workbench preferences schema v9. Do not store an executable path, read a user-selected script file, modify the user's normal `$PROFILE`, override execution policy, or execute the text during application startup or terminal creation.
-- Limit the script to 8,000 UTF-16 code units, normalize line endings, reject malformed surrogate pairs and unsupported control characters, and convert normalized newlines to Windows CRLF only when sending to a terminal. This keeps the complete text and final Enter within the local terminal's single-write bound.
+- Limit the script to 8,000 UTF-16 code units, normalize line endings, reject malformed surrogate pairs, unsupported control characters, bidirectional formatting controls, and Unicode line/paragraph separators, and convert normalized newlines to Windows CRLF only when sending to a terminal. This keeps the complete text and final Enter within the local terminal's single-write bound while keeping the preview visually stable.
 - Settings can edit and save the text. A separate preview command returns the exact saved value and a random, short-lived one-use token bound to the selected session. Applying requires a fresh trusted click on the Run button for the same session. The main broker consumes the gesture, the application controller verifies the token and that the stored text has not changed, and the local terminal controller accepts only a running local PowerShell session.
 - The apply IPC payload contains only the session ID and opaque preview token; it never contains script text or a filesystem path. The main process reads the saved text and sends it through the existing terminal provider write capability.
 - Explain in Settings and the user guide that the value is local plain text and can run commands with the user's Windows permissions. Users should not store passwords, tokens or other secrets in it.
+- Warn users to run only at an idle PowerShell prompt; the app verifies that the terminal session is running but cannot detect whether another foreground program or prompt will receive the input.
 
 ## Consequences
 
