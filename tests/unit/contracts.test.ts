@@ -14,6 +14,26 @@ test('accepts only the versioned read-only command', () => {
   });
 });
 
+test('PowerShell profile preview and apply IPC carry only a bounded preview result and opaque IDs', () => {
+  const preview = { command: 'powershell.profile.preview', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId } };
+  const parsedPreview = parseRequest(preview);
+  assert.equal(parsedPreview.ok, true);
+  if (!parsedPreview.ok) return;
+  const previewReply = { requestId: request.requestId, ok: true,
+    result: { previewId: 'c1f3ace8-9464-449b-9459-a41b642dc2a7', script: 'Write-Output "ready"' } };
+  assert.equal(isCommandReply(previewReply, parsedPreview.result), true);
+  assert.equal(isCommandReply({ ...previewReply, result: { ...previewReply.result, script: 'bad\u0000script' } }, parsedPreview.result), false);
+  assert.equal(parseRequest({ ...preview, payload: { ...preview.payload, extra: true } }).ok, false);
+
+  const apply = { command: 'powershell.profile.apply', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId, previewId: previewReply.result.previewId } };
+  assert.equal(parseRequest(apply).ok, true);
+  assert.equal(parseRequest({ ...apply, payload: { ...apply.payload, script: 'Write-Output "arbitrary"' } }).ok, false);
+  const parsedApply = parseRequest(apply);
+  if (parsedApply.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {} }, parsedApply.result), true);
+});
+
 test('rejects malformed, extra, oversized, and incompatible request fields', () => {
   for (const input of [null, [], 'app.describe', {}, { ...request, contractVersion: 2 },
     { ...request, requestId: '../secret' }, { ...request, requestId: 'a'.repeat(100000) },

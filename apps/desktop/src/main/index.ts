@@ -16,13 +16,14 @@ import { createSessionCredentialManager } from '../../../../packages/application
 import { createMacroCatalog } from '../../../../packages/application/src/macros.ts';
 import { createWorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
+import { createPowerShellProfileScriptController } from '../../../../packages/application/src/powershell-profile.ts';
 import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
   SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
   parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
@@ -350,6 +351,7 @@ function boot(): void {
     },
     save(value, cancellation) { return workbenchPreferences.save(value, cancellation); }
   };
+  const powerShellProfileScripts = createPowerShellProfileScriptController(preferences, terminals, randomUUID, () => performance.now());
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/telnet-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, { ...options, env: { ...process.env, MRT_APP_ROOT: app.getAppPath() } })
@@ -519,6 +521,7 @@ function boot(): void {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
+        authorizePowerShellProfileScript: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'powershell-profile-script'),
         authorizeTelnetConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
         authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
         authorizeRdpLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'rdp', host, port),
@@ -669,7 +672,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros,
+        terminals, powerShellProfileScripts, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros,
         preferences: customLogoPreferences.preferences, tunnels,
         tftpServer: {
           getStatus: () => tftpServer.getStatus(),
@@ -705,6 +708,16 @@ function boot(): void {
     const sessionId = parsePasteGestureRequest(input);
     if (!sessionId) return false;
     rendererGestures.issue(event.sender.id, sessionId);
+    return true;
+  });
+  ipcMain.handle(POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const sessionId = parsePasteGestureRequest(input);
+    if (!sessionId) return false;
+    rendererGestures.issue(event.sender.id, sessionId, 'powershell-profile-script');
     return true;
   });
   ipcMain.handle(TELNET_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
@@ -768,6 +781,7 @@ function boot(): void {
     quitRequested = true;
     idleLock.stop();
     credentialVault.lock();
+    powerShellProfileScripts.clear();
     void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
@@ -777,6 +791,7 @@ function boot(): void {
     powerMonitor.removeListener('suspend', lockVaultForSystemEvent);
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
+    ipcMain.removeHandler(POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL);
     ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(FTP_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(RDP_LAUNCH_GESTURE_CHANNEL);

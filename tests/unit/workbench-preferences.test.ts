@@ -4,6 +4,7 @@ import { createWorkbenchPreferencesManager } from '../../packages/application/sr
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS } from '../../packages/domain/src/local-shell-tools.ts';
+import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../packages/domain/src/powershell-profile.ts';
 
 test('workbench greeting validation preserves Unicode, normalizes newlines, and accepts clearing the greeting', () => {
   assert.deepEqual(normalizeWorkbenchPreferences({ startupGreeting: 'Привет 👋\r\nこんにちは' }), {
@@ -93,6 +94,24 @@ test('workbench preferences migrate schema v7 and validate bounded normalized lo
   assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }), undefined);
   assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 'data:image/png;base64,../../bad' }), undefined);
   assert.equal(normalizeWorkbenchPreferences({ ...previous, customLogoDataUrl: 42 }), undefined);
+});
+
+test('workbench preferences migrate schema v8 logos with an empty profile script and reject malformed scripts', () => {
+  const logo = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  const schemaV8 = { startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+    autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: ['powershell', 'bash', 'wsl'], customLogoDataUrl: logo };
+  assert.deepEqual(normalizeWorkbenchPreferences(schemaV8, 8), { ...DEFAULT_WORKBENCH_PREFERENCES, ...schemaV8 });
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'bad\u0000script' }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV8, powerShellProfileScript: 'x'.repeat(16_001) }), undefined);
+});
+
+test('PowerShell profile text normalizes newlines and rejects controls and oversized scripts', () => {
+  assert.equal(normalizePowerShellProfileScript('function Say-Hello {\r\n  "hello"\r\n}'),
+    'function Say-Hello {\n  "hello"\n}');
+  assert.equal(normalizePowerShellProfileScript('Write-Output "bad\u0000text"'), undefined);
+  assert.equal(normalizePowerShellProfileScript('Write-Output "bad\u0085text"'), undefined);
+  assert.equal(normalizePowerShellProfileScript('x'.repeat(MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS + 1)), undefined);
 });
 
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {

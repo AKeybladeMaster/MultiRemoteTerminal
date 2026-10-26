@@ -29,7 +29,7 @@ export class SqliteWorkbenchPreferencesRepository {
     try {
       const row = this.readStatement.get(SETTINGS_KEY) as unknown as StoredPreferencesRow | undefined;
       if (!row) return DEFAULT_WORKBENCH_PREFERENCES;
-      if ((!LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS.includes(row.schema_version as 1 | 2 | 3 | 4 | 5 | 6 | 7) &&
+      if ((!LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS.includes(row.schema_version as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8) &&
            row.schema_version !== WORKBENCH_PREFERENCES_SCHEMA_VERSION) ||
           typeof row.value_json !== 'string' || row.value_json.length > MAX_WORKBENCH_PREFERENCES_JSON_LENGTH) {
         throw new StorageOperationError('corrupt');

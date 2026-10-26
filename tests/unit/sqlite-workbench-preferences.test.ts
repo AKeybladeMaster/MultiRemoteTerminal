@@ -33,11 +33,12 @@ test('SQLite stores and restores the Unicode startup greeting across database re
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('SQLite schema v8 custom-logo preferences survive a WAL database backup and restore', async () => {
+test('SQLite schema v9 logo and profile preferences survive a WAL database backup and restore', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mrt-preferences-backup-'));
   const sourcePath = join(directory, 'source.sqlite');
   const backupPath = join(directory, 'backup.sqlite');
-  const expected = { ...DEFAULT_WORKBENCH_PREFERENCES, customLogoDataUrl: validCustomLogoDataUrl };
+  const expected = { ...DEFAULT_WORKBENCH_PREFERENCES, customLogoDataUrl: validCustomLogoDataUrl,
+    powerShellProfileScript: 'Write-Output "MRT profile restored"' };
   const database = new DatabaseSync(sourcePath, { timeout: 5_000, defensive: true });
   try {
     try {
@@ -157,6 +158,21 @@ test('SQLite migrates schema v7 preferences with the built-in logo fallback', ()
       showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash', 'wsl'] }), 7, '2026-10-26T00:00:00.000Z');
   const preferences = new SqliteWorkbenchPreferencesRepository(database);
   assert.equal(preferences.read().customLogoDataUrl, null);
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  database.close();
+});
+
+test('SQLite migrates schema v8 preferences with an empty PowerShell profile script', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+      autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+      visibleLocalShells: ['powershell', 'bash', 'wsl'], customLogoDataUrl: validCustomLogoDataUrl }), 8, '2026-10-26T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.equal(preferences.read().customLogoDataUrl, validCustomLogoDataUrl);
+  assert.equal(preferences.read().powerShellProfileScript, '');
   assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
     WORKBENCH_PREFERENCES_SCHEMA_VERSION);
   database.close();

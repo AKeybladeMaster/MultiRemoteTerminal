@@ -4399,7 +4399,8 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.require).toBe('undefined');
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
-    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+    expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
+      'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
@@ -4920,6 +4921,66 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByRole('region', { name: 'Startup greeting' })).toHaveCount(0);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('PowerShell profile text persists, stays idle on startup, and runs only after explicit preview and action', async () => {
+  test.skip(process.platform !== 'win32', 'PowerShell profile execution acceptance requires Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-powershell-profile-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  const marker = `MRT-PS-PROFILE-${randomUUID()}`;
+  const script = `Write-Output '${marker}'`;
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+    const firstPanel = await selectTerminal(page, 'PowerShell session 1');
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByLabel('Saved PowerShell script').fill(script);
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const panel = await selectTerminal(page, 'PowerShell session 2');
+    const rows = panel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: 'PowerShell session 2 running' })).toBeVisible({ timeout: 15_000 });
+    await expect(rows).not.toContainText(marker);
+    await expect(firstPanel.locator('.xterm-rows')).not.toContainText(marker);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByLabel('Saved PowerShell script')).toHaveValue(script);
+    const preview = settings.getByRole('button', { name: 'Preview saved script', exact: true });
+    await expect(preview).toBeEnabled();
+    await preview.click();
+    const previewPanel = settings.locator('.settings-profile-preview');
+    await expect(previewPanel).toBeVisible();
+    await expect(previewPanel.locator('pre')).toHaveText(script);
+    await expect(rows).not.toContainText(marker);
+    const runProfile = settings.getByRole('button', { name: 'Run in this PowerShell session', exact: true });
+    await runProfile.focus();
+    await runProfile.press('Enter');
+    await expect(settings.getByText('Script sent to the active PowerShell session.', { exact: true })).toBeVisible();
+    await expect(rows).toContainText(marker, { timeout: 15_000 });
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const restartedPanel = await selectTerminal(page, 'PowerShell session 1');
+    await expect(restartedPanel.locator('.xterm-rows')).not.toContainText(marker);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const restoredSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(restoredSettings.getByLabel('Saved PowerShell script')).toHaveValue(script);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

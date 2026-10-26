@@ -15,6 +15,7 @@ import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferPro
 import type { SessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import type { MacroCatalog } from '../../../../packages/application/src/macros.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
+import type { PowerShellProfileScriptController } from '../../../../packages/application/src/powershell-profile.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
@@ -56,6 +57,7 @@ export interface CommandActions {
   readonly noteUserActivity: () => void;
   readonly readClipboardText: () => Promise<string>;
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
+  readonly authorizePowerShellProfileScript: (sessionId: string) => boolean;
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
   readonly authorizeRdpLaunch: (host: string, port: number) => boolean;
@@ -76,7 +78,9 @@ export interface CommandActions {
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
   readonly selectCustomLogo: () => Promise<Outcome<CustomLogoSelection>>;
   readonly cancellation?: CancellationSignal;
-  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'applyPowerShellProfileScript' |
+    'resize' | 'acknowledgeOutput' | 'close'>;
+  readonly powerShellProfileScripts: Pick<PowerShellProfileScriptController, 'preview' | 'apply'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
     'downloadRemoteFile' | 'readRemoteTextFile' | 'saveRemoteTextFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
@@ -142,6 +146,7 @@ export async function dispatchCommand(
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
         parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start' || parsed.result.command === 'tftp.stop' ||
+        parsed.result.command === 'powershell.profile.preview' || parsed.result.command === 'powershell.profile.apply' ||
         parsed.result.command === 'branding.logo.select' ||
         parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
@@ -153,6 +158,16 @@ export async function dispatchCommand(
       case 'terminal.write': {
         const { sessionId, data } = parsed.result.payload;
         return { requestId, ...await actions.terminals.write(sessionId, data) };
+      }
+      case 'powershell.profile.preview': {
+        actions.noteUserActivity();
+        return { requestId, ...await actions.powerShellProfileScripts.preview(parsed.result.payload.sessionId) };
+      }
+      case 'powershell.profile.apply': {
+        const { sessionId, previewId } = parsed.result.payload;
+        if (!actions.authorizePowerShellProfileScript(sessionId)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return { requestId, ...await actions.powerShellProfileScripts.apply(sessionId, previewId) };
       }
       case 'terminal.paste': {
         if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };

@@ -3,6 +3,7 @@ import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFol
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
   ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply } from '../../../../packages/contracts/src/commands.ts';
+import type { PowerShellProfileScriptPreviewReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
@@ -41,6 +42,7 @@ type ConsumeFtpConsent = (sessionId: string, host: string, port: number, secure:
 type ConsumeRdpLaunch = (host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeVncLaunch = (host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeTftpServerAction = (action: 'choose-root' | 'start', selectionId?: string, port?: number) => boolean | Promise<boolean>;
+type ConsumePowerShellProfileScript = (sessionId: string) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
@@ -79,7 +81,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {},
   listenTunnelStatus: ListenTunnelStatus = () => () => {}, consumeRdpLaunch: ConsumeRdpLaunch = () => false,
   consumeVncLaunch: ConsumeVncLaunch = () => false, consumeTftpServerAction: ConsumeTftpServerAction = () => false,
-  listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}, listenTftpServerStatus: ListenTftpServerStatus = () => () => {}): DesktopBridge {
+  listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}, listenTftpServerStatus: ListenTftpServerStatus = () => () => {},
+  consumePowerShellProfileScript: ConsumePowerShellProfileScript = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -308,6 +311,15 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'terminal.write');
+    },
+    previewPowerShellProfileScript(sessionId: string): Promise<PowerShellProfileScriptPreviewReply> {
+      return send({ command: 'powershell.profile.preview', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId } }, 8_000);
+    },
+    applyPowerShellProfileScript(sessionId: string, previewId: string): Promise<TerminalActionReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumePowerShellProfileScript(sessionId)).then(authorized => authorized
+        ? send({ command: 'powershell.profile.apply', requestId: id, contractVersion: CONTRACT_VERSION, payload: { sessionId, previewId } }, 15_000)
+        : { requestId: id, ...failure('FORBIDDEN') });
     },
     pasteTerminal(sessionId: string): Promise<TerminalActionReply> {
       return pasteTerminalInput(sessionId, 'terminal.paste');

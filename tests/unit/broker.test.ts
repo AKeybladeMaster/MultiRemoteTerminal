@@ -21,6 +21,7 @@ const emptyMacro = { id: '7c08b18a-57cc-4b44-a8b3-2d404850e81c', schemaVersion: 
   createdAt: '2026-10-25T10:00:00.000Z', updatedAt: '2026-10-25T10:00:00.000Z' };
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
+  authorizePowerShellProfileScript: () => false,
   authorizeFtpConsent: () => false, authorizeRdpLaunch: () => false,
   authorizeVncLaunch: () => false, authorizeTftpServerAction: () => false,
   chooseTftpRoot: async () => failure('UNAVAILABLE'), startTftpServer: async () => failure('UNAVAILABLE'),
@@ -32,7 +33,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   discardDroppedUploadHandles: () => {}, terminals: {
     async open(sessionId, launch) { return { ok: true, result: { sessionId, ...launch, state: 'running' } }; },
     async listWslDistributions() { return { ok: true, result: [{ name: 'Ubuntu' }] }; }, cancelWslDistributionDiscovery: noOp,
-    write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+    write: noOp, applyPowerShellProfileScript: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     async openFiles(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
@@ -98,10 +99,44 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
     async stop(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; }
+  }, powerShellProfileScripts: {
+    async preview() { return { ok: true, result: { previewId: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087', script: 'Write-Output "ready"' } }; },
+    apply: noOp
   }, preferences: {
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
     save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
   }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
+});
+
+test('PowerShell profile application requires the trusted main-process gesture before using a saved preview', async () => {
+  let authorized = false;
+  let applied = 0;
+  const base = actions();
+  const guarded: CommandActions = {
+    ...base,
+    authorizePowerShellProfileScript: () => authorized,
+    powerShellProfileScripts: {
+      ...base.powerShellProfileScripts,
+      async apply(sessionId, previewId) {
+        applied++;
+        assert.equal(sessionId, request.requestId);
+        assert.equal(previewId, '18f2f903-7b6f-4c8d-9c42-b63a58c4b087');
+        return { ok: true, result: {} };
+      }
+    }
+  };
+  const input = { command: 'powershell.profile.apply', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId, previewId: '18f2f903-7b6f-4c8d-9c42-b63a58c4b087' } };
+
+  const denied = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(applied, 0, 'unauthorized renderer requests cannot reach profile execution');
+
+  authorized = true;
+  const accepted = await dispatchCommand(owner, input, guarded, () => {});
+  assert.deepEqual(accepted, { requestId: request.requestId, ok: true, result: {} });
+  assert.equal(applied, 1);
 });
 
 test('session auto-save requires the persisted opt-in preference at the main-process broker', async () => {

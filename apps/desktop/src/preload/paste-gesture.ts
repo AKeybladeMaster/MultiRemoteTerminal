@@ -82,6 +82,16 @@ export interface TftpServerActionGestureDocument {
   removeEventListener(type: 'submit', listener: (event: Event) => void, capture: true): void;
 }
 
+export interface PowerShellProfileGestureDocument {
+  addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+}
+
+export interface PowerShellProfileGestureStore {
+  consume(sessionId: string): Promise<boolean>;
+  dispose(): void;
+}
+
 export function installTerminalPasteGestureStore(documentTarget: PasteGestureDocument,
   authorize: (sessionId: string) => Promise<boolean>, now: () => number = () => performance.now()): TerminalPasteGestureStore {
   const gestures = new Map<string, { readonly expiresAt: number }>();
@@ -219,6 +229,39 @@ export function installTftpServerActionGestureStore(documentTarget: TftpServerAc
       documentTarget.removeEventListener('click', observeClick, true);
       documentTarget.removeEventListener('submit', observeSubmit, true);
       gesture = undefined;
+    }
+  });
+}
+
+export function installPowerShellProfileGestureStore(documentTarget: PowerShellProfileGestureDocument,
+  authorize: (sessionId: string) => Promise<boolean>, now: () => number = () => performance.now()): PowerShellProfileGestureStore {
+  const gestures = new Map<string, number>();
+  const observeClick = (event: Event): void => {
+    const click = event as unknown as { readonly type: string; readonly isTrusted: boolean; readonly target: EventTargetElement | null };
+    if (click.type !== 'click' || !click.isTrusted) return;
+    const button = click.target?.closest('button[data-mrt-powershell-profile-trigger]');
+    const sessionId = button?.getAttribute('data-mrt-powershell-profile-trigger');
+    if (!sessionId || !SESSION_ID.test(sessionId)) return;
+    for (const [pendingSessionId, expiresAt] of gestures) if (expiresAt < now()) gestures.delete(pendingSessionId);
+    if (!gestures.has(sessionId) && gestures.size >= MAX_PENDING_GESTURES) {
+      const oldest = gestures.keys().next().value as string | undefined;
+      if (oldest !== undefined) gestures.delete(oldest);
+    }
+    gestures.delete(sessionId);
+    gestures.set(sessionId, now() + GESTURE_TTL_MS);
+  };
+  documentTarget.addEventListener('click', observeClick, true);
+  return Object.freeze({
+    async consume(sessionId: string): Promise<boolean> {
+      const expiresAt = gestures.get(sessionId);
+      gestures.delete(sessionId);
+      if (!SESSION_ID.test(sessionId) || expiresAt === undefined || expiresAt < now()) return false;
+      try { return await authorize(sessionId) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('click', observeClick, true);
+      gestures.clear();
     }
   });
 }

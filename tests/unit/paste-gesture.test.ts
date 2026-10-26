@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
 import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
-  installTftpServerActionGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+  installTftpServerActionGestureStore, installPowerShellProfileGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -279,4 +279,39 @@ test('main TFTP server gestures are sender, action, selection, port, and one-sho
   gate.issueTftpServerAction(11, 'choose-root');
   now += 751;
   assert.equal(gate.consumeTftpServerAction(11, 'choose-root'), false);
+});
+
+test('PowerShell profile execution gesture requires a trusted click on the session-bound action', async () => {
+  let now = 400;
+  let click: ((event: Event) => void) | undefined;
+  const authorized: string[] = [];
+  const documentTarget = {
+    addEventListener(_type: 'click', listener: (event: Event) => void) { click = listener; },
+    removeEventListener(_type: 'click', listener: (event: Event) => void) { if (click === listener) click = undefined; }
+  };
+  const button = {
+    getAttribute(name: string) { return name === 'data-mrt-powershell-profile-trigger' ? firstSession : null; }
+  };
+  const target = { closest(selector: string) {
+    return selector === 'button[data-mrt-powershell-profile-trigger]' ? button : null;
+  } };
+  const gestures = installPowerShellProfileGestureStore(documentTarget, async sessionId => {
+    authorized.push(sessionId);
+    return true;
+  }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'click', isTrusted, target }) as unknown as Event;
+
+  click?.(event(false));
+  assert.equal(await gestures.consume(firstSession), false, 'scripted clicks cannot authorize script execution');
+  click?.(event(true));
+  assert.equal(await gestures.consume(secondSession), false, 'gesture cannot be redirected to another terminal');
+  click?.(event(true));
+  assert.equal(await gestures.consume(firstSession), true);
+  assert.equal(await gestures.consume(firstSession), false, 'gesture is one-shot');
+  assert.deepEqual(authorized, [firstSession]);
+  click?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume(firstSession), false, 'expired gesture cannot authorize execution');
+  gestures.dispose();
+  assert.equal(click, undefined);
 });

@@ -11,6 +11,7 @@ class FakeTerminalProvider implements LocalTerminalProvider {
   readonly events: ((event: LocalTerminalEvent) => void)[] = [];
   readonly opened: string[] = [];
   readonly launches: LocalTerminalLaunch[] = [];
+  readonly writes: Array<{ readonly sessionId: string; readonly data: string }> = [];
   readonly closed: string[] = [];
   openGate?: Promise<void>;
   writeGate?: Promise<void>;
@@ -24,7 +25,7 @@ class FakeTerminalProvider implements LocalTerminalProvider {
   }
   async listWslDistributions() { return [{ name: 'Ubuntu' }]; }
   cancelWslDistributionDiscovery() {}
-  async write(): Promise<void> { await this.writeGate; }
+  async write(sessionId: string, data: string): Promise<void> { this.writes.push({ sessionId, data }); await this.writeGate; }
   async resize(): Promise<void> {}
   async acknowledgeOutput(): Promise<void> {}
   async close(id: string): Promise<void> { this.closed.push(id); }
@@ -103,5 +104,33 @@ test('local terminal controller validates and returns an explicit WSL distributi
     ok: true, result: { sessionId, shell: 'wsl', distribution: 'Ubuntu', state: 'running' }
   });
   assert.deepEqual(provider.launches, [{ shell: 'wsl', distribution: 'Ubuntu' }]);
+  await controller.dispose();
+});
+
+test('PowerShell profile application targets only a running local PowerShell session and writes normalized text once', async () => {
+  const provider = new FakeTerminalProvider();
+  const controller = createLocalTerminalController(provider);
+  const shellSessionId = 'c1f3ace8-9464-449b-9459-a41b642dc2a7';
+  const commandSessionId = '18f2f903-7b6f-4c8d-9c42-b63a58c4b087';
+  await controller.open(shellSessionId, { shell: 'powershell' }, size);
+  await controller.open(commandSessionId, { shell: 'cmd' }, size);
+
+  assert.deepEqual(await controller.applyPowerShellProfileScript(shellSessionId, 'Write-Output "ready"\n$env:MRT_PROFILE = "loaded"'), {
+    ok: true, result: {}
+  });
+  assert.deepEqual(provider.writes, [{ sessionId: shellSessionId,
+    data: 'Write-Output "ready"\r\n$env:MRT_PROFILE = "loaded"\r\n' }]);
+
+  const wrongShell = await controller.applyPowerShellProfileScript(commandSessionId, 'Write-Output "wrong shell"');
+  assert.equal(wrongShell.ok, false);
+  if (!wrongShell.ok) assert.equal(wrongShell.error.code, 'FORBIDDEN');
+  assert.equal((await controller.applyPowerShellProfileScript('c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', 'Write-Output "missing"')).ok, false);
+  assert.equal((await controller.applyPowerShellProfileScript(shellSessionId, 'bad\u0000script')).ok, false);
+  assert.equal(provider.writes.length, 1, 'rejected scripts must not reach the terminal provider');
+  await controller.close(shellSessionId);
+  const closed = await controller.applyPowerShellProfileScript(shellSessionId, 'Write-Output "closed"');
+  assert.equal(closed.ok, false);
+  if (!closed.ok) assert.equal(closed.error.code, 'NOT_FOUND');
+  assert.equal(provider.writes.length, 1);
   await controller.dispose();
 });

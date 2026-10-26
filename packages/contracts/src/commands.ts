@@ -48,6 +48,7 @@ import { isMacroShortcutBinding, isMacroShortcutCode } from '../../domain/src/ma
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
 import { isCustomLogoDataUrl } from '../../domain/src/custom-logo.ts';
 import type { CustomLogoSelection } from '../../domain/src/custom-logo.ts';
 
@@ -55,6 +56,7 @@ export const CONTRACT_VERSION = 1;
 export const COMMAND_CHANNEL = 'mrt:command:v1';
 export const CANCEL_CATALOG_COMMAND_CHANNEL = 'mrt:cancel-catalog:v1';
 export const PASTE_GESTURE_CHANNEL = 'mrt:paste-gesture:v1';
+export const POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL = 'mrt:powershell-profile-script-gesture:v1';
 export const REMOTE_FILE_DROP_CHANNEL = 'mrt:remote-file-drop:v1';
 export const REMOTE_FILE_DROP_TEST_CHANNEL = 'mrt:e2e-remote-file-drop:v1';
 export const TELNET_CONSENT_GESTURE_CHANNEL = 'mrt:telnet-consent-gesture:v1';
@@ -99,6 +101,8 @@ interface Request<C extends string, P extends Record<string, unknown>> {
 export type DescribeRequest = Request<'app.describe', Record<string, never>>;
 export type OpenTerminalRequest = Request<'terminal.open', { readonly sessionId: string; readonly launch: LocalTerminalLaunch; readonly columns: number; readonly rows: number }>;
 export type WriteTerminalRequest = Request<'terminal.write', { readonly sessionId: string; readonly data: string }>;
+export type PreviewPowerShellProfileScriptRequest = Request<'powershell.profile.preview', { readonly sessionId: string }>;
+export type ApplyPowerShellProfileScriptRequest = Request<'powershell.profile.apply', { readonly sessionId: string; readonly previewId: string }>;
 export type PasteTerminalRequest = Request<'terminal.paste', { readonly sessionId: string }>;
 export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
@@ -196,7 +200,8 @@ export type DeleteMacroShortcutRequest = Request<'macro.shortcut.delete', { read
 export type SelectCustomLogoRequest = Request<'branding.logo.select', Record<string, never>>;
 export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<string, never>>;
 export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
-export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
+export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PreviewPowerShellProfileScriptRequest | ApplyPowerShellProfileScriptRequest |
+  PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | UploadDroppedSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
   DiscardRemoteFileDropHandlesRequest |
@@ -275,6 +280,8 @@ export type MacroDefinitionReply = CommandReply<MacroDefinition>;
 export type ListMacroShortcutsReply = CommandReply<readonly MacroShortcutBinding[]>;
 export type MacroShortcutReply = CommandReply<MacroShortcutBinding>;
 export type WorkbenchPreferencesReply = CommandReply<WorkbenchPreferences>;
+export interface PowerShellProfileScriptPreview { readonly previewId: string; readonly script: string; }
+export type PowerShellProfileScriptPreviewReply = CommandReply<PowerShellProfileScriptPreview>;
 export type SelectCustomLogoReply = CommandReply<CustomLogoSelection>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 export type CredentialVaultStatus = 'uninitialized' | 'available' | 'locked' | 'unavailable';
@@ -289,6 +296,8 @@ export interface DesktopBridge {
   listWslDistributions(): Promise<ListWslDistributionsReply>;
   cancelWslDistributionDiscovery(): Promise<TerminalActionReply>;
   writeTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
+  previewPowerShellProfileScript(sessionId: string): Promise<PowerShellProfileScriptPreviewReply>;
+  applyPowerShellProfileScript(sessionId: string, previewId: string): Promise<TerminalActionReply>;
   pasteTerminal(sessionId: string): Promise<TerminalActionReply>;
   resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply>;
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
@@ -481,6 +490,13 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'terminal.write' && exactKeys(payload, ['sessionId', 'data']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
       typeof payload.data === 'string' && payload.data.length <= MAX_TERMINAL_INPUT_CHARS) return { ok: true, result: value as unknown as WriteTerminalRequest };
+  if (value.command === 'powershell.profile.preview' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
+    return { ok: true, result: value as unknown as PreviewPowerShellProfileScriptRequest };
+  }
+  if (value.command === 'powershell.profile.apply' && exactKeys(payload, ['sessionId', 'previewId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) &&
+      typeof payload.previewId === 'string' && UUID.test(payload.previewId)) {
+    return { ok: true, result: value as unknown as ApplyPowerShellProfileScriptRequest };
+  }
   if (value.command === 'terminal.paste' && exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string' && UUID.test(payload.sessionId)) {
     return { ok: true, result: value as unknown as PasteTerminalRequest };
   }
@@ -726,7 +742,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'preferences.save' && exactKeys(payload, ['preferences']) && normalizeWorkbenchPreferences(payload.preferences)) {
     return { ok: true, result: value as unknown as SaveWorkbenchPreferencesRequest };
   }
-  if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
+  if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'powershell.profile.preview', 'powershell.profile.apply',
+    'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.upload-dropped', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel', 'files.drop.discard',
     'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
@@ -823,6 +840,9 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (!exactKeys(value, ['requestId', 'ok', 'result'])) return false;
     if (request.command === 'app.describe') return validSnapshot(value.result);
     if (request.command === 'terminal.open') return validOpenResult(value.result, request.payload.launch);
+    if (request.command === 'powershell.profile.preview') return record(value.result) && exactKeys(value.result, ['previewId', 'script']) &&
+      typeof value.result.previewId === 'string' && UUID.test(value.result.previewId) && typeof value.result.script === 'string' &&
+      normalizePowerShellProfileScript(value.result.script) === value.result.script && value.result.script.length > 0;
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
     if (request.command === 'sftp.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);

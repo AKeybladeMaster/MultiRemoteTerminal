@@ -4,6 +4,7 @@ import { isLocalTerminalLaunch, isTerminalSize, MAX_QUEUED_TERMINAL_INPUT_CHARS,
 import type { LocalTerminalLaunch, TerminalSize } from '../../domain/src/local-terminal.ts';
 import type { WslDistribution } from '../../domain/src/wsl-distributions.ts';
 import { normalizeWslDistributionList } from '../../domain/src/wsl-distributions.ts';
+import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
 
 export type LocalTerminalEvent =
   | { readonly kind: 'data'; readonly sessionId: string; readonly sequence: number; readonly data: string }
@@ -40,6 +41,7 @@ export interface LocalTerminalController {
   listWslDistributions(): Promise<Outcome<readonly WslDistribution[]>>;
   cancelWslDistributionDiscovery(): Promise<Outcome<Record<string, never>>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
+  applyPowerShellProfileScript(sessionId: string, script: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
   close(sessionId: string): Promise<Outcome<Record<string, never>>>;
@@ -143,6 +145,17 @@ export function createLocalTerminalController(
     }
   }
 
+  async function applyPowerShellProfileScript(sessionId: string, script: string): Promise<Outcome<Record<string, never>>> {
+    const session = sessions.get(sessionId);
+    if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
+    if (session.launch.shell !== 'powershell') return failure('FORBIDDEN', 'terminal');
+    const normalized = normalizePowerShellProfileScript(script);
+    if (!normalized || normalized.length === 0) return failure('INVALID_REQUEST');
+    const terminalInput = `${normalized.replace(/\n/gu, '\r\n')}\r\n`;
+    if (terminalInput.length > MAX_TERMINAL_INPUT_CHARS) return failure('INVALID_REQUEST');
+    return write(sessionId, terminalInput);
+  }
+
   async function resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
     if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
@@ -199,7 +212,7 @@ export function createLocalTerminalController(
   }
 
   return Object.freeze({
-    open, listWslDistributions, cancelWslDistributionDiscovery, write, resize, acknowledgeOutput, close, closeAll,
+    open, listWslDistributions, cancelWslDistributionDiscovery, write, applyPowerShellProfileScript, resize, acknowledgeOutput, close, closeAll,
     subscribe(listener: (event: LocalTerminalEvent) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);

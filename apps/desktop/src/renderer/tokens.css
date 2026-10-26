@@ -330,6 +330,11 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .settings-highlight-remove:disabled, .settings-highlight-add:disabled { opacity: .7; cursor: not-allowed; }
 .settings-highlight-add { justify-self: start; }
 .settings-save-status { margin: 0; color: var(--accent); font-size: 12px; }
+.settings-profile-warning { margin: 0; padding: 10px 12px; border-left: 3px solid var(--warning, #e0a458); background: color-mix(in srgb, var(--warning, #e0a458) 9%, transparent); color: var(--text); font-size: 12px; line-height: 1.5; }
+.settings-profile-actions { flex-wrap: wrap; }
+.settings-profile-preview { display: grid; gap: 8px; min-width: 0; }
+.settings-profile-preview h4 { margin: 0; color: var(--text); font-size: 12px; }
+.settings-profile-preview pre { max-height: 260px; overflow: auto; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--terminal-background); color: var(--text); font: 12px/1.5 var(--terminal-font, Consolas, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
 .status-bar { min-width: 0; border-top: 1px solid var(--line); background: var(--surface); }
 .terminal-status, .font-controls { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .terminal-status > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

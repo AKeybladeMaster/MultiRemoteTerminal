@@ -3067,7 +3067,8 @@ function Workbench() {
     </div>
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
-    {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences} />}
+    {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences}
+      activePowerShellSessionId={active?.transport === 'local' && active.shell === 'powershell' && active.state === 'running' ? active.sessionId : undefined} />}
     <TftpServerDialog open={tftpServerOpen} onClose={() => setTftpServerOpen(false)} />
     <WslDistributionDialog open={wslDialogOpen} onClose={closeWslDialog} onSelect={distribution => {
       wslDialogReturnFocus.current = null;
