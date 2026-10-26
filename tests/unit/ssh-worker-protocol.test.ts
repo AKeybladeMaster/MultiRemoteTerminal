@@ -42,6 +42,10 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   assert.equal(parseSshWorkerInput({ ...open, credentials: { ...privateKeyCredentials, privateKey: new Uint8Array(1_048_577) } }), undefined,
     'private-key contents are bounded before use');
   assert.equal(parseSshWorkerInput({ ...open, credentials: { ...privateKeyCredentials, unexpected: 'secret' } }), undefined);
+  const agentCredentials = { username: 'alice', socketPath: String.raw`\\.\pipe\openssh-ssh-agent` };
+  assert.equal(parseSshWorkerInput({ ...open, credentials: agentCredentials })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, credentials: { ...agentCredentials, socketPath: 'C:\\agent.sock' } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...open, credentials: { ...agentCredentials, socketPath: 'tcp://127.0.0.1:10022' } }), undefined);
 
   const openFiles = { ...open, command: 'open-files' } as Record<string, unknown>;
   delete openFiles.size;

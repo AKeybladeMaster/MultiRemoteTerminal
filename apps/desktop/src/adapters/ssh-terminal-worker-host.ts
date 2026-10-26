@@ -40,9 +40,9 @@ const OPEN_TIMEOUT_MS = 140_000;
 const FILE_LIST_TIMEOUT_MS = 30_000;
 
 function copyAuthenticationCredentials(credentials: SshAuthenticationCredentials): SshAuthenticationCredentials {
-  return 'privateKey' in credentials
-    ? { username: credentials.username, privateKey: new Uint8Array(credentials.privateKey), passphrase: credentials.passphrase }
-    : { username: credentials.username, password: credentials.password };
+  if ('privateKey' in credentials) return { username: credentials.username, privateKey: new Uint8Array(credentials.privateKey), passphrase: credentials.passphrase };
+  if ('socketPath' in credentials) return { username: credentials.username, socketPath: credentials.socketPath };
+  return { username: credentials.username, password: credentials.password };
 }
 
 function clearAuthenticationCredentials(credentials: SshAuthenticationCredentials): void {
@@ -50,7 +50,8 @@ function clearAuthenticationCredentials(credentials: SshAuthenticationCredential
   if ('privateKey' in credentials) {
     credentials.privateKey.fill(0);
     credentials.passphrase = '';
-  } else credentials.password = '';
+  } else if ('socketPath' in credentials) credentials.socketPath = '';
+  else credentials.password = '';
 }
 const FILE_TRANSFER_TIMEOUT_MS = 60 * 60_000;
 const REMOTE_TEXT_TIMEOUT_MS = 60_000;

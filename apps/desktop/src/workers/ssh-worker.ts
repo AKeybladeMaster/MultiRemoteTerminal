@@ -175,7 +175,8 @@ function clearRequestCredentials(credentials: SshAuthenticationCredentials): voi
   if ('privateKey' in credentials) {
     credentials.privateKey.fill(0);
     credentials.passphrase = '';
-  } else credentials.password = '';
+  } else if ('socketPath' in credentials) credentials.socketPath = '';
+  else credentials.password = '';
 }
 
 parent.on('message', event => {

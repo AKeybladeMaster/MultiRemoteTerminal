@@ -42,7 +42,13 @@ interface Ssh2AuthenticationContext {
 interface Ssh2ParsedKey {
   readonly type: string;
   getPublicSSH(): string | Buffer;
+  sign(data: Buffer, options?: { readonly hash?: string }): Buffer | Error;
   verify(data: Buffer, signature: Buffer, hashAlgo?: string): boolean | Error;
+}
+interface Ssh2AgentProtocol extends EventEmitter {
+  getIdentitiesReply(request: unknown, keys: readonly Ssh2ParsedKey[]): void;
+  signReply(request: unknown, signature: Buffer): void;
+  failureReply(request: unknown): void;
 }
 interface SftpFixtureAttributes { readonly mode: number; readonly uid: number; readonly gid: number; readonly size: number; readonly atime: number; readonly mtime: number; }
 interface Ssh2FixtureSftp extends EventEmitter {
@@ -59,6 +65,7 @@ interface Ssh2FixtureServer extends EventEmitter {
 }
 interface Ssh2FixturePackage {
   readonly Server: new (configuration: { readonly hostKeys: readonly string[] }, onConnect: (client: EventEmitter) => void) => Ssh2FixtureServer;
+  readonly AgentProtocol: new (isClient: boolean) => Ssh2AgentProtocol;
   readonly utils: {
     generateKeyPairSync(type: 'ed25519', options?: { readonly passphrase?: string; readonly cipher?: string }): { readonly private: string; readonly public: string };
     parseKey(key: string | Buffer): Ssh2ParsedKey | Error;
@@ -715,6 +722,117 @@ test('SSH private-key mode selects the key in main and authenticates a trusted l
     await app?.close();
     for (const client of clients) client.end();
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SSH agent mode signs through a Windows named pipe and authenticates a trusted loopback terminal', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-agent-e2e-'));
+  const agentPipePath = String.raw`\\.\pipe\mrt-ssh-agent-${randomUUID()}`;
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const agentKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const agentPublicKey = ssh2.utils.parseKey(agentKeyPair.public);
+  const agentPrivateKey = ssh2.utils.parseKey(agentKeyPair.private);
+  if (agentPublicKey instanceof Error || agentPrivateKey instanceof Error) throw new Error('The SSH agent fixture key could not be parsed');
+  const agentPublicKeyBytes = Buffer.from(agentPublicKey.getPublicSSH());
+  const fixtureEvents: string[] = [];
+  const fixtureErrors: string[] = [];
+  const clients = new Set<Ssh2FixtureClient>();
+  const agentSockets = new Set<Socket>();
+  let identityRequests = 0;
+  let signRequests = 0;
+  const agentServer = createServer(socket => {
+    agentSockets.add(socket);
+    socket.once('close', () => agentSockets.delete(socket));
+    socket.on('error', error => fixtureErrors.push(`agent socket: ${error.message}`));
+    const protocol = new ssh2.AgentProtocol(false);
+    protocol.on('identities', request => {
+      identityRequests += 1;
+      protocol.getIdentitiesReply(request, [agentPublicKey]);
+    });
+    protocol.on('sign', (request, _key, data, options) => {
+      signRequests += 1;
+      const signature = agentPrivateKey.sign(data, options as { readonly hash?: string });
+      if (signature instanceof Error) protocol.failureReply(request);
+      else protocol.signReply(request, signature);
+    });
+    protocol.on('error', error => fixtureErrors.push(`agent protocol: ${error.message}`));
+    (protocol as unknown as Duplex).pipe(socket).pipe(protocol as unknown as Duplex);
+  });
+  const sshServer = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      fixtureEvents.push(`auth:${context.method}:${context.username}`);
+      const expectedKey = context.method === 'publickey' && context.username === 'mrt-e2e-agent-user' &&
+        context.key?.algo === agentPublicKey.type && context.key.data.equals(agentPublicKeyBytes);
+      if (expectedKey && !context.signature) context.accept();
+      else if (expectedKey && context.signature && context.blob &&
+          agentPublicKey.verify(context.blob, context.signature, context.hashAlgo) === true) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => {
+      fixtureEvents.push('authenticated');
+      client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SSH-AGENT-READY\r\n'));
+      });
+    });
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let agentListening = false;
+  let sshListening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      agentServer.once('error', rejectListen);
+      agentServer.listen(agentPipePath, () => { agentListening = true; resolveListen(); });
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      sshServer.once('error', rejectListen);
+      sshServer.listen(0, '127.0.0.1', () => { sshListening = true; resolveListen(); });
+    });
+    const address = sshServer.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH agent fixture did not bind a loopback port');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-agent-auth',
+      `--mrt-e2e-ssh-agent-pipe=${agentPipePath}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    await dialog.getByLabel('Authentication method').selectOption('agent');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}; errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`)
+      .toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing SSH agent terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-SSH-AGENT-READY', { timeout: 15_000 });
+    expect(fixtureEvents).toContain('auth:publickey:mrt-e2e-agent-user');
+    expect(fixtureEvents).toContain('authenticated');
+    expect(identityRequests).toBeGreaterThan(0);
+    expect(signRequests).toBeGreaterThan(0);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshAgentPromptCount'))).toBe(1);
+    const bodyText = await page.locator('body').innerText();
+    expect(bodyText).not.toContain(agentPipePath);
+    expect(bodyText).not.toContain(agentKeyPair.private);
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    for (const socket of agentSockets) socket.destroy();
+    if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
+    if (agentListening) await new Promise<void>(resolveClose => agentServer.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

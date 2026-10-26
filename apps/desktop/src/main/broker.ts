@@ -2,7 +2,8 @@ import { basename } from 'node:path';
 import { isAppDocument, parseRequest, requestIdOf } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
-import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import { isSshAgentSocketPath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationSelection, SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { SerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import type { FtpFilesController } from '../../../../packages/application/src/ftp-files.ts';
@@ -73,6 +74,7 @@ export interface CommandActions {
   readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
   readonly selectSshPrivateKey: () => Promise<Outcome<SshPrivateKeySelection>>;
+  readonly sshAgentPipePath?: string;
   readonly consumeDroppedUpload: (context: RemoteFileDropContext, token: string) => DroppedUploadSelection | undefined;
   readonly discardDroppedUploadHandles: (context: RemoteFileDropContext, tokens: readonly string[]) => void;
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
@@ -203,35 +205,49 @@ export async function dispatchCommand(
         }
         const route = normalizeSshGatewayRoute(endpoints, { host, port });
         if (!route) return { requestId, ...failure('INVALID_REQUEST') };
-        let privateKey: SshPrivateKeySelection | undefined;
+        let authentication: SshAuthenticationSelection | undefined;
         if (authenticationMethod === 'private-key') {
           const selected = await actions.selectSshPrivateKey();
           if (!selected.ok) return { requestId, ...selected };
-          privateKey = selected.result;
+          authentication = { method: 'private-key', privateKey: selected.result };
+        } else if (authenticationMethod === 'agent') {
+          const socketPath = actions.sshAgentPipePath ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH;
+          if (!isSshAgentSocketPath(socketPath)) return { requestId, ...failure('UNAVAILABLE') };
+          authentication = { method: 'agent', socketPath };
         }
         let savedCredentials;
         if (profileId && authenticationMethod === 'password') {
           const credential = await actions.sessionCredentials.resolveSshCredential(profileId, host, port, actions.cancellation);
-          if (!credential.ok) { privateKey?.data.fill(0); return { requestId, ...credential }; }
+          if (!credential.ok) {
+            if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
+            return { requestId, ...credential };
+          }
           savedCredentials = credential.result;
+          authentication = savedCredentials ? { method: 'password', savedCredentials } : { method: 'password' };
         }
         try {
-          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route, savedCredentials, privateKey) };
+          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route, authentication) };
         } finally {
           if (savedCredentials) {
             savedCredentials.username = '';
             savedCredentials.password = '';
           }
-          privateKey?.data.fill(0);
+          if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
         }
       }
       case 'sftp.open': {
         const { sessionId, host, port } = parsed.result.payload;
         const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
-        if (authenticationMethod !== 'private-key') return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
+        if (authenticationMethod === 'password') return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
+        if (authenticationMethod === 'agent') {
+          const socketPath = actions.sshAgentPipePath ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH;
+          if (!isSshAgentSocketPath(socketPath)) return { requestId, ...failure('UNAVAILABLE') };
+          return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, { method: 'agent', socketPath }) };
+        }
         const selected = await actions.selectSshPrivateKey();
         if (!selected.ok) return { requestId, ...selected };
-        try { return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, selected.result) }; }
+        const authentication: SshAuthenticationSelection = { method: 'private-key', privateKey: selected.result };
+        try { return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, authentication) }; }
         finally { selected.result.data.fill(0); }
       }
       case 'sftp.close': return { requestId, ...await actions.sshTerminals.close(parsed.result.payload.sessionId) };

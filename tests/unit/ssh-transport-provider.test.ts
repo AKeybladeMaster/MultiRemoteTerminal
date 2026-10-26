@@ -231,6 +231,21 @@ test('SSH provider performs public-key authentication and clears the key buffer 
   await provider.close(sessionId);
 });
 
+test('SSH provider uses the validated agent pipe for user authentication and never enables forwarding', async () => {
+  const client = new FakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const socketPath = String.raw`\\.\pipe\openssh-ssh-agent`;
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', socketPath }, size, async () => true);
+
+  assert.equal(client.config?.agent, socketPath);
+  assert.deepEqual(client.config?.authHandler, ['agent']);
+  assert.equal(client.config?.agentForward, false);
+  client.emit('ready');
+  await opened;
+  assert.equal(client.config?.agent, undefined);
+  await provider.close(sessionId);
+});
+
 test('SSH provider opens a bounded jump route over nested channels and closes the complete chain', async () => {
   const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
   const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };

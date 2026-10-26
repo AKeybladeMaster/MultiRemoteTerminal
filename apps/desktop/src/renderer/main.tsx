@@ -3212,7 +3212,9 @@ function Workbench() {
       <section ref={sshConnectDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
         aria-labelledby="ssh-connect-heading" aria-describedby="ssh-connect-description">
         <h2 id="ssh-connect-heading">{sshGatewayTarget ? `Connect ${sshGatewayTarget.name} through gateways` : sshConnectMode === 'sftp' ? 'Connect to SFTP files' : 'Connect to an SSH server'}</h2>
-        <p id="ssh-connect-description">{sshAuthenticationMethod === 'private-key'
+        <p id="ssh-connect-description">{sshAuthenticationMethod === 'agent'
+          ? 'After Connect, enter your SSH username. The Windows OpenSSH agent must be running with your key loaded.'
+          : sshAuthenticationMethod === 'private-key'
           ? 'After Connect, choose a private key file, then enter your SSH username and optional key passphrase in the Windows credential prompt.'
           : sshConnectMode === 'sftp'
             ? 'Connect with SSH credentials and verified host identity. This opens the SFTP file browser without starting a remote shell.'
@@ -3231,9 +3233,10 @@ function Workbench() {
             disabled={Boolean(sshGatewayTarget)} value={sshPort} onChange={event => setSshPort(event.target.value)} />
           <label htmlFor="ssh-authentication-method">Authentication method</label>
           <select id="ssh-authentication-method" value={sshAuthenticationMethod}
-            onChange={event => setSshAuthenticationMethod(event.target.value === 'private-key' ? 'private-key' : 'password')}>
+            onChange={event => setSshAuthenticationMethod(event.target.value === 'private-key' || event.target.value === 'agent' ? event.target.value : 'password')}>
             <option value="password">Password</option>
             <option value="private-key">Private key file</option>
+            <option value="agent">Windows OpenSSH agent</option>
           </select>
           {sshGatewayTarget && <>
             <label htmlFor="ssh-gateway-one">SSH gateway 1</label>

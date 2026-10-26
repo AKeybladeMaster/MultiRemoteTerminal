@@ -543,13 +543,17 @@ export function createSshTransportProvider(
         delete config.password;
         delete config.privateKey;
         delete config.passphrase;
-        const internal = (client as unknown as { config?: { password?: string; privateKey?: Buffer | string; passphrase?: string } }).config;
+        delete config.agent;
+        const clientState = client as unknown as { config?: { password?: string; privateKey?: Buffer | string; passphrase?: string; agent?: unknown }; _agent?: unknown };
+        const internal = clientState.config;
         if (internal?.privateKey instanceof Uint8Array) internal.privateKey.fill(0);
         if (internal) {
           delete internal.password;
           delete internal.privateKey;
           delete internal.passphrase;
+          delete internal.agent;
         }
+        delete clientState._agent;
       }
     };
 
@@ -599,6 +603,10 @@ export function createSshTransportProvider(
         config.privateKey = Buffer.from(hopCredentials.privateKey);
         config.passphrase = hopCredentials.passphrase;
         config.authHandler = ['publickey'];
+      } else if ('socketPath' in hopCredentials) {
+        config.agent = hopCredentials.socketPath;
+        config.authHandler = ['agent'];
+        config.agentForward = false;
       } else {
         config.password = hopCredentials.password;
         config.authHandler = ['password'];

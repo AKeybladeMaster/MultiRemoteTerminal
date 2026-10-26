@@ -17,7 +17,7 @@ import { createMacroCatalog } from '../../../../packages/application/src/macros.
 import { createWorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import { createPowerShellProfileScriptController } from '../../../../packages/application/src/powershell-profile.ts';
-import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
+import { createSshTerminalController, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
@@ -299,6 +299,10 @@ function boot(): void {
   const vncViewer = createVncViewerController(e2eVncViewer ? { async launch() {} } : new WindowsVncViewer(systemDirectory));
   const e2eSshCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-credentials');
   const e2eSshKeyAuth = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-key-auth');
+  const e2eSshAgentAuth = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-agent-auth');
+  const e2eSshAgentPipePath = e2eSshAgentAuth
+    ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ssh-agent-pipe='))?.slice('--mrt-e2e-ssh-agent-pipe='.length)
+    : undefined;
   const e2eSshPrivateKeyPath = e2eSshKeyAuth
     ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ssh-private-key='))?.slice('--mrt-e2e-ssh-private-key='.length)
     : undefined;
@@ -313,18 +317,26 @@ function boot(): void {
   const e2eMasterPassword = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-master-password');
   let e2eSshCredentialPromptCount = 0;
   let e2eSshKeyPromptCount = 0;
+  let e2eSshAgentPromptCount = 0;
   if (e2eSshCredentials) Object.defineProperty(globalThis, '__mrtE2ESshCredentialPromptCount', {
     configurable: false, enumerable: false, get: () => e2eSshCredentialPromptCount
   });
   if (e2eSshKeyAuth) Object.defineProperty(globalThis, '__mrtE2ESshKeyPromptCount', {
     configurable: false, enumerable: false, get: () => e2eSshKeyPromptCount
   });
-  const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eSshKeyAuth || e2eFtpCredentials || e2eMasterPassword
+  if (e2eSshAgentAuth) Object.defineProperty(globalThis, '__mrtE2ESshAgentPromptCount', {
+    configurable: false, enumerable: false, get: () => e2eSshAgentPromptCount
+  });
+  const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eSshKeyAuth || e2eSshAgentAuth || e2eFtpCredentials || e2eMasterPassword
     ? { async prompt(purpose) {
       if (purpose === 'master-password' && e2eMasterPassword) return { kind: 'provided', username: 'MRT test vault', secret: 'mrt-e2e-master-password-v1' };
       if (purpose === 'ssh-key-passphrase' && e2eSshKeyAuth) {
         e2eSshKeyPromptCount += 1;
         return { kind: 'provided', username: 'mrt-e2e-key-user', secret: 'mrt-e2e-key-passphrase' };
+      }
+      if (purpose === 'ssh-agent-username' && e2eSshAgentAuth) {
+        e2eSshAgentPromptCount += 1;
+        return { kind: 'provided', username: 'mrt-e2e-agent-user', secret: '' };
       }
       if (purpose === 'ssh-password' && e2eSshCredentials) {
         e2eSshCredentialPromptCount += 1;
@@ -533,6 +545,7 @@ function boot(): void {
     try {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
+        sshAgentPipePath: e2eSshAgentPipePath ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH,
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
         authorizePowerShellProfileScript: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'powershell-profile-script'),

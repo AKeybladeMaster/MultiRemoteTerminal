@@ -7,6 +7,7 @@ import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/bro
 import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
+import type { SshAuthenticationSelection } from '../../packages/application/src/ssh-terminals.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
 import { failure } from '../../packages/domain/src/errors.ts';
 import type { SerialConfiguration } from '../../packages/domain/src/serial.ts';
@@ -242,8 +243,8 @@ test('saved SSH opens resolve the profile credential in main and clear it after 
       assert.equal(port, 22);
       return { ok: true, result: secret };
     } },
-    sshTerminals: { ...base.sshTerminals, async open(sessionId, host, port, _size, _gateways, credentials) {
-      received = credentials;
+    sshTerminals: { ...base.sshTerminals, async open(sessionId, host, port, _size, _gateways, authentication) {
+      received = authentication?.method === 'password' ? authentication.savedCredentials : undefined;
       return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
     } }
   };
@@ -264,8 +265,9 @@ test('SSH key selection is held in main, passed once to the controller and clear
   const base = actions();
   const wired: CommandActions = { ...base,
     async selectSshPrivateKey() { return { ok: true, result: selected }; },
-    sshTerminals: { ...base.sshTerminals, async open(id, host, port, _size, _gateways, _credentials, privateKey) {
+    sshTerminals: { ...base.sshTerminals, async open(id, host, port, _size, _gateways, authentication) {
       assert.equal(id, sessionId);
+      const privateKey = authentication?.method === 'private-key' ? authentication.privateKey : undefined;
       received = Buffer.from(privateKey?.data ?? []);
       receivedFileName = privateKey?.fileName;
       return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } };
@@ -279,6 +281,44 @@ test('SSH key selection is held in main, passed once to the controller and clear
   assert.deepEqual([...selected.data], new Array(expected.length).fill(0));
   assert.equal(JSON.stringify(reply).includes('one-time-private-key'), false);
   assert.equal(JSON.stringify(reply).includes('id_ed25519'), false);
+});
+
+test('SSH agent selection stays in main and does not resolve saved passwords or expose the pipe to renderer replies', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const socketPath = String.raw`\\.\pipe\mrt-test-agent`;
+  let received: SshAuthenticationSelection | undefined;
+  let resolvedSavedCredential = false;
+  let selectedPrivateKey = false;
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    sshAgentPipePath: socketPath,
+    async selectSshPrivateKey() { selectedPrivateKey = true; return failure('CANCELLED'); },
+    sessionCredentials: { ...base.sessionCredentials, async resolveSshCredential() {
+      resolvedSavedCredential = true;
+      return failure('UNAVAILABLE');
+    } },
+    sshTerminals: { ...base.sshTerminals, async open(_id, _host, _port, _size, _gateways, authentication) {
+      received = authentication;
+      return { ok: true, result: { sessionId, endpoint: { host: 'server.example.net', port: 22 }, state: 'running' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, profileId: '11111111-1111-4111-8111-111111111111',
+      authenticationMethod: 'agent' } }, wired, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(received, { method: 'agent', socketPath });
+  assert.equal(selectedPrivateKey, false);
+  assert.equal(resolvedSavedCredential, false);
+  assert.equal(JSON.stringify(reply).includes('mrt-test-agent'), false);
+
+  const fileOnly = await dispatchCommand(owner, { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: 'd8f87744-bd2c-4c0d-9a18-a4a324dd71fd', host: 'server.example.net', port: 22, authenticationMethod: 'agent' } }, {
+    ...wired, sshTerminals: { ...wired.sshTerminals, async openFiles(_id, _host, _port, authentication) { received = authentication; return { ok: true,
+      result: { sessionId: _id, endpoint: { host: 'server.example.net', port: 22 }, state: 'running' } }; } }
+  }, () => {});
+  assert.equal(fileOnly.ok, true);
+  assert.deepEqual(received, { method: 'agent', socketPath });
 });
 
 test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {

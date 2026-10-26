@@ -107,7 +107,7 @@ export type PasteTerminalRequest = Request<'terminal.paste', { readonly sessionI
 export type ResizeTerminalRequest = Request<'terminal.resize', { readonly sessionId: string; readonly columns: number; readonly rows: number }>;
 export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sessionId: string; readonly sequence: number }>;
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
-export type SshAuthenticationMethod = 'password' | 'private-key';
+export type SshAuthenticationMethod = 'password' | 'private-key' | 'agent';
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
   readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number;
@@ -521,7 +521,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   const validSshOpenKeys = exactKeys(payload, [...sshOpenBaseKeys, ...sshOpenOptionalKeys]) &&
     (!sshOpenHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
     (!sshOpenHasProfile || isSessionDefinitionId(payload.profileId)) &&
-    (!sshOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key');
+    (!sshOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
+      payload.authenticationMethod === 'agent');
   if (value.command === 'ssh.open' && validSshOpenKeys &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
@@ -531,7 +532,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'sftp.open' && exactKeys(payload, sftpOpenHasAuthenticationMethod
     ? ['sessionId', 'host', 'port', 'authenticationMethod'] : ['sessionId', 'host', 'port']) &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
-      (!sftpOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key') &&
+      (!sftpOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
+        payload.authenticationMethod === 'agent') &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as OpenSftpFilesRequest };
   }
