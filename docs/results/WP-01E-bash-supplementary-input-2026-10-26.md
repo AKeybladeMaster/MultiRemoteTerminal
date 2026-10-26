@@ -6,9 +6,7 @@
 
 ## Reproduction
 
-The Windows E2E copies a Bash printf command with format fragment `MRT-OUT%s` and argument `PUT:🙂` to the clipboard, then verifies the exact clipboard text before trusted Ctrl+V. Those pieces produce `MRT-OUTPUT:🙂`, a marker absent from the echoed command. The test waits for this output, marks the run as expected-to-fail only if it observes `MRT-OUTPUT:�` (U+FFFD), and then asserts the intended `MRT-OUTPUT:🙂`. A shell-generated emoji still renders correctly. The regular Bash acceptance E2E continues to pass for BMP Unicode, shell commands, resize, saved-profile reopen, and Ctrl+W closure.
-
-The expected-failure annotation is conditional on observing U+FFFD in the executed output. If the full Unicode character reaches Bash, the regression test passes without the expected-failure annotation.
+The original command-mode reproduction copied a Bash printf command with format fragment `MRT-OUT%s` and argument `PUT:🙂`, verified the clipboard text before trusted Ctrl+V, and observed U+FFFD in the executed output. The current expected-failure test first runs `cat`, pastes `MRT-RAW:🙂`, and checks the `cat` stdin path. It marks the run expected-to-fail when that path displays `MRT-RAW:�` (U+FFFD); otherwise it continues to the original printf round trip, which must also preserve the character. A shell-generated emoji still renders correctly. The regular Bash acceptance E2E passes for BMP Unicode, shell commands, resize, saved-profile reopen, and Ctrl+W closure.
 
 ## Diagnosis
 
@@ -34,15 +32,16 @@ The host is Windows 11 Pro 10.0.26200.0 with Git for Windows 2.53.0.windows.2, B
 - The Windows local-terminal E2E pasted U+1F642 through the normal clipboard path into PowerShell and verified `MRT-UNICODE:4:<character>`. This exercises the app's clipboard broker, typed IPC, system ConPTY and xterm display with the same supplementary character.
 - A direct noninteractive Git Bash `-c` invocation preserved U+1F642. This shows that the tested Bash executable can accept and emit the character outside the interactive ConPTY input path; it does not isolate which interactive layer replaces it.
 - The existing typed `writeTerminal` bridge probe also reproduced U+FFFD, so clipboard retrieval and xterm's native paste handling alone do not explain the failure.
+- A minimized interactive `cat` probe pasted `MRT-RAW:` plus U+1F642 and pressed Enter. The terminal showed the marker twice with U+FFFD in both copies: once from console echo and once from `cat`. Since `cat` reads standard input outside Bash Readline, this locates the corruption before Bash line editing. It still does not distinguish the ConPTY/Windows console input path from Git Bash/MSYS input translation.
 - A standalone Node `node-pty` reproduction was attempted, but its Windows console-list helper failed with `AttachConsole failed` outside the Electron utility-process environment. That run is discarded and is not treated as evidence.
 
-The supported app path still fails only for the interactive Git Bash repro on this host. The PowerShell control and noninteractive Bash command pass; available evidence does not distinguish a Git Bash/MSYS translation defect from a Windows/ConPTY interaction. No input rewrite or alternate PTY backend has been shown safe, so F-002 remains incomplete.
+The supported app path fails for supplementary input in interactive Git Bash before Bash Readline on this host. The PowerShell control and noninteractive Bash command pass; available evidence does not distinguish Git Bash/MSYS input translation from the Windows/ConPTY console input path. No input rewrite or alternate PTY backend has been shown safe, so F-002 remains incomplete.
 
 ## Validation
 
 - `corepack pnpm build` — passed on Windows x64; Vite emitted the existing renderer chunk-size advisory.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Git Bash"` — 2 passed, including the expected-failure compatibility regression and the normal Bash acceptance flow.
-- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Windows local terminal workbench|Git Bash supplementary Unicode paste" --workers=1 --reporter=list` — 2 passed: the PowerShell control passed, and the Bash E2E passed as an expected failure after observing U+FFFD in the echoed input and command output. The Bash case also reproduced in 3/3 runs with `--repeat-each=3` earlier in this investigation.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Git Bash" --workers=1 --reporter=list` — 2 passed, including the expected-failure raw-input regression and the normal Bash acceptance flow.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Windows local terminal workbench|Git Bash supplementary Unicode paste" --workers=1 --reporter=list` — 2 passed: the PowerShell control passed, and the Bash E2E passed as an expected failure after observing U+FFFD in the raw `cat` input path before Bash line editing. The older command-output repro also reproduced in 3/3 runs with `--repeat-each=3` earlier in this investigation.
 - `corepack pnpm typecheck`, `corepack pnpm lint` and `git diff --check` — passed on Windows x64.
 
 F-002 remains incomplete until supplementary input works through the supported Git Bash path and packaged shell lifecycle acceptance passes. P-02 remains partial pending real user-managed WSL distribution interoperability and broader Unix-tool coverage.
