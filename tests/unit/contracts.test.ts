@@ -92,6 +92,9 @@ test('validates SSH connection requests and keeps host approval as a typed event
   const open = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'private-key' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'agent' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload,

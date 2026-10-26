@@ -2,7 +2,7 @@ import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropE
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
-  ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply } from '../../../../packages/contracts/src/commands.ts';
+  ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply, SshAuthenticationMethod } from '../../../../packages/contracts/src/commands.ts';
 import type { PowerShellProfileScriptPreviewReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
@@ -335,14 +335,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-      gatewayProfileIds?: readonly string[], savedProfileId?: string): Promise<OpenSshTerminalReply> {
+      gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply> {
       return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }),
-          ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }) } },
+          ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }),
+          ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } },
       sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
-    openSftpFiles(sessionId: string, host: string, port: number): Promise<OpenSftpFilesReply> {
-      return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, host, port } }, SSH_OPEN_TIMEOUT_MS);
+    openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSftpFilesReply> {
+      return send({ command: 'sftp.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, host, port, ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } }, SSH_OPEN_TIMEOUT_MS);
     },
     writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply> {
       return writeTerminalInput(sessionId, data, 'ssh.write');

@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import type * as Ssh2 from 'ssh2';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshAuthenticationCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import { createSshTransportProvider } from './ssh-transport-provider.ts';
@@ -136,9 +137,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
         await provider.open(request.sessionId, request.endpoint, request.credentials, request.size,
           (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? []);
       } finally {
-        const credentials = request.credentials as { username: string; password: string };
-        credentials.password = '';
-        credentials.username = '';
+        clearRequestCredentials(request.credentials);
         for (const hop of request.gatewayHops ?? []) { hop.credentials.password = ''; hop.credentials.username = ''; }
       }
     } else if (request.command === 'open-files') {
@@ -146,9 +145,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
         await provider.openFiles(request.sessionId, request.endpoint, request.credentials,
           (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence));
       } finally {
-        const credentials = request.credentials as { username: string; password: string };
-        credentials.password = '';
-        credentials.username = '';
+        clearRequestCredentials(request.credentials);
       }
     } else if (request.command === 'tunnel.forward.start') {
       const bindPort = await provider.startForward(request.sessionId, request.definition);
@@ -171,6 +168,14 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
   } catch (error) {
     send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
   }
+}
+
+function clearRequestCredentials(credentials: SshAuthenticationCredentials): void {
+  credentials.username = '';
+  if ('privateKey' in credentials) {
+    credentials.privateKey.fill(0);
+    credentials.passphrase = '';
+  } else credentials.password = '';
 }
 
 parent.on('message', event => {

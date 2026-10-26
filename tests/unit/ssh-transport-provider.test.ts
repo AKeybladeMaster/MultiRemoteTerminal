@@ -212,6 +212,25 @@ test('SSH provider verifies the raw host key, clears its password after auth, an
   await provider.acknowledgeOutput(sessionId, 2);
 });
 
+test('SSH provider performs public-key authentication and clears the key buffer after the server accepts it', async () => {
+  const client = new FakeClient();
+  const key = Buffer.from('one-time-private-key');
+  const expected = Buffer.from(key);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', privateKey: key, passphrase: 'key passphrase' }, size, async () => true);
+
+  assert.deepEqual(client.config?.authHandler, ['publickey']);
+  assert.deepEqual(client.config?.privateKey, expected);
+  assert.equal(client.config?.passphrase, 'key passphrase');
+  const keyBuffer = client.config?.privateKey as Buffer;
+  client.emit('ready');
+  await opened;
+  assert.deepEqual([...keyBuffer], new Array(expected.length).fill(0));
+  assert.equal(client.config?.privateKey, undefined);
+  assert.equal(client.config?.passphrase, undefined);
+  await provider.close(sessionId);
+});
+
 test('SSH provider opens a bounded jump route over nested channels and closes the complete chain', async () => {
   const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
   const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };

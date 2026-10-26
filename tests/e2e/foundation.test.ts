@@ -32,8 +32,17 @@ interface Ssh2AuthenticationContext {
   readonly username: string;
   readonly password: string;
   readonly method: string;
+  readonly key?: { readonly algo: string; readonly data: Buffer };
+  readonly blob?: Buffer;
+  readonly signature?: Buffer;
+  readonly hashAlgo?: string;
   accept(): void;
   reject(): void;
+}
+interface Ssh2ParsedKey {
+  readonly type: string;
+  getPublicSSH(): string | Buffer;
+  verify(data: Buffer, signature: Buffer, hashAlgo?: string): boolean | Error;
 }
 interface SftpFixtureAttributes { readonly mode: number; readonly uid: number; readonly gid: number; readonly size: number; readonly atime: number; readonly mtime: number; }
 interface Ssh2FixtureSftp extends EventEmitter {
@@ -51,7 +60,8 @@ interface Ssh2FixtureServer extends EventEmitter {
 interface Ssh2FixturePackage {
   readonly Server: new (configuration: { readonly hostKeys: readonly string[] }, onConnect: (client: EventEmitter) => void) => Ssh2FixtureServer;
   readonly utils: {
-    generateKeyPairSync(type: 'ed25519'): { readonly private: string };
+    generateKeyPairSync(type: 'ed25519', options?: { readonly passphrase?: string; readonly cipher?: string }): { readonly private: string; readonly public: string };
+    parseKey(key: string | Buffer): Ssh2ParsedKey | Error;
     readonly sftp: {
       readonly OPEN_MODE: { readonly READ: number; readonly WRITE: number; readonly APPEND: number; readonly CREAT: number; readonly TRUNC: number; readonly EXCL: number };
       readonly STATUS_CODE: { readonly OK: number; readonly EOF: number; readonly NO_SUCH_FILE: number; readonly PERMISSION_DENIED: number; readonly FAILURE: number };
@@ -623,6 +633,88 @@ test('SSH quick connect validates the address before any credential prompt and r
     await expect(page.locator('.status-bar')).toContainText('Local');
   } finally {
     await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SSH private-key mode selects the key in main and authenticates a trusted loopback terminal', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-private-key-e2e-'));
+  const privateKeyPath = join(profile, 'id_ed25519');
+  const passphrase = 'mrt-e2e-key-passphrase';
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clientKeyPair = ssh2.utils.generateKeyPairSync('ed25519', { passphrase, cipher: 'aes256-cbc' });
+  const allowedClientKey = ssh2.utils.parseKey(clientKeyPair.public);
+  if (allowedClientKey instanceof Error) throw new Error('The key-auth fixture public key could not be parsed');
+  const allowedClientKeyBytes = Buffer.from(allowedClientKey.getPublicSSH());
+  const fixtureEvents: string[] = [];
+  const fixtureErrors: string[] = [];
+  const clients = new Set<Ssh2FixtureClient>();
+  const server = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      fixtureEvents.push(`auth:${context.method}:${context.username}`);
+      if (context.method === 'publickey' && context.username === 'mrt-e2e-key-user' && context.key?.algo === allowedClientKey.type &&
+          context.key.data.equals(allowedClientKeyBytes) && (!context.signature ||
+            Boolean(context.blob && allowedClientKey.verify(context.blob, context.signature, context.hashAlgo) === true))) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => {
+      fixtureEvents.push('authenticated');
+      client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SSH-PUBLICKEY-READY\r\n'));
+      });
+    });
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await writeFile(privateKeyPath, clientKeyPair.private, { encoding: 'utf8', mode: 0o600 });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The public-key SSH fixture did not bind a loopback port');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-key-auth',
+      `--mrt-e2e-ssh-private-key=${privateKeyPath}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    await dialog.getByLabel('Authentication method').selectOption('private-key');
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture events: ${fixtureEvents.join(', ')}; errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`)
+      .toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing public-key SSH terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-SSH-PUBLICKEY-READY', { timeout: 15_000 });
+    expect(fixtureEvents).toContain('auth:publickey:mrt-e2e-key-user');
+    expect(fixtureEvents).toContain('authenticated');
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshKeyPromptCount'))).toBe(1);
+    const bodyText = await page.locator('body').innerText();
+    expect(bodyText).not.toContain(privateKeyPath);
+    expect(bodyText).not.toContain('PRIVATE KEY');
+    expect(bodyText).not.toContain(passphrase);
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

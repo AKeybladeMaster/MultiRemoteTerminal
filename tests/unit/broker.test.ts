@@ -27,7 +27,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   chooseTftpRoot: async () => failure('UNAVAILABLE'), startTftpServer: async () => failure('UNAVAILABLE'),
   confirmMultilinePaste: async () => false,
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
-  reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined, selectSshDownloadPath: async () => undefined,
+  reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined,
+  selectSshPrivateKey: async () => failure('CANCELLED'), selectSshDownloadPath: async () => undefined,
   resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
   selectCustomLogo: async () => ({ ok: true, result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } }),
   discardDroppedUploadHandles: () => {}, terminals: {
@@ -252,6 +253,32 @@ test('saved SSH opens resolve the profile credential in main and clear it after 
   assert.equal(received?.password, '');
   assert.deepEqual(secret, { username: '', password: '' });
   assert.equal(JSON.stringify(reply).includes('must-not-reach-renderer'), false);
+});
+
+test('SSH key selection is held in main, passed once to the controller and cleared before the reply', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const selected = { data: Buffer.from('one-time-private-key'), fileName: 'id_ed25519' };
+  const expected = Buffer.from(selected.data);
+  let received: Buffer | undefined;
+  let receivedFileName: string | undefined;
+  const base = actions();
+  const wired: CommandActions = { ...base,
+    async selectSshPrivateKey() { return { ok: true, result: selected }; },
+    sshTerminals: { ...base.sshTerminals, async open(id, host, port, _size, _gateways, _credentials, privateKey) {
+      assert.equal(id, sessionId);
+      received = Buffer.from(privateKey?.data ?? []);
+      receivedFileName = privateKey?.fileName;
+      return { ok: true, result: { sessionId: id, endpoint: { host, port }, state: 'running' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, authenticationMethod: 'private-key' } }, wired, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(received, expected);
+  assert.equal(receivedFileName, 'id_ed25519');
+  assert.deepEqual([...selected.data], new Array(expected.length).fill(0));
+  assert.equal(JSON.stringify(reply).includes('one-time-private-key'), false);
+  assert.equal(JSON.stringify(reply).includes('id_ed25519'), false);
 });
 
 test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {

@@ -21,6 +21,21 @@ export interface SshTerminalCredentials {
   password: string;
 }
 
+export interface SshPrivateKeySelection {
+  readonly data: Uint8Array;
+  readonly fileName: string;
+}
+
+export interface SshPrivateKeyCredentials {
+  username: string;
+  privateKey: Uint8Array;
+  passphrase: string;
+}
+
+export type SshAuthenticationCredentials = SshTerminalCredentials | SshPrivateKeyCredentials;
+
+export const MAX_SSH_PRIVATE_KEY_BYTES = 1_048_576;
+
 export interface SshConnectionGatewayCredentials {
   readonly endpoint: SshHostEndpoint;
   readonly credentials: { username: string; password: string };
@@ -43,7 +58,7 @@ export interface SshTerminalProvider {
   open(
     sessionId: string,
     endpoint: SshHostEndpoint,
-    credentials: SshTerminalCredentials,
+    credentials: SshAuthenticationCredentials,
     size: TerminalSize,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops?: readonly SshConnectionGatewayCredentials[],
@@ -51,7 +66,7 @@ export interface SshTerminalProvider {
   openFiles(
     sessionId: string,
     endpoint: SshHostEndpoint,
-    credentials: SshTerminalCredentials,
+    credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
   ): Promise<void>;
   write(sessionId: string, data: string): Promise<void>;
@@ -85,8 +100,8 @@ export type SshTrustEvent =
 
 export interface SshTerminalController {
   open(sessionId: string, host: string, port: number, size: TerminalSize, gatewayEndpoints?: readonly SshHostEndpoint[],
-    savedCredentials?: SshTerminalCredentials): Promise<Outcome<SshTerminalSession>>;
-  openFiles(sessionId: string, host: string, port: number): Promise<Outcome<SshTerminalSession>>;
+    savedCredentials?: SshTerminalCredentials, privateKey?: SshPrivateKeySelection): Promise<Outcome<SshTerminalSession>>;
+  openFiles(sessionId: string, host: string, port: number, privateKey?: SshPrivateKeySelection): Promise<Outcome<SshTerminalSession>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
@@ -164,6 +179,16 @@ function createCancellationSource(): CancellationSource {
       }
     }
   });
+}
+
+function validPrivateKeySelection(value: SshPrivateKeySelection | undefined): value is SshPrivateKeySelection {
+  return typeof value === 'object' && value !== null && value.data instanceof Uint8Array && value.data.byteLength > 0 &&
+    value.data.byteLength <= MAX_SSH_PRIVATE_KEY_BYTES && typeof value.fileName === 'string' &&
+    value.fileName.length > 0 && value.fileName.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value.fileName);
+}
+
+function clearPrivateKeySelection(value: SshPrivateKeySelection | undefined): void {
+  if (typeof value === 'object' && value !== null && value.data instanceof Uint8Array) value.data.fill(0);
 }
 
 export function createSshTerminalController(
@@ -259,13 +284,18 @@ export function createSshTerminalController(
   }
 
   async function openConnection(sessionId: string, host: string, port: number, size?: TerminalSize,
-    gatewayEndpoints: readonly SshHostEndpoint[] = [], savedCredentials?: SshTerminalCredentials): Promise<Outcome<SshTerminalSession>> {
-    if (disposed) return failure('CANCELLED', 'terminal');
-    if (shutdownPromise) return failure('BUSY', 'terminal');
+    gatewayEndpoints: readonly SshHostEndpoint[] = [], savedCredentials?: SshTerminalCredentials,
+    privateKey?: SshPrivateKeySelection): Promise<Outcome<SshTerminalSession>> {
+    if (disposed) { clearPrivateKeySelection(privateKey); return failure('CANCELLED', 'terminal'); }
+    if (shutdownPromise) { clearPrivateKeySelection(privateKey); return failure('BUSY', 'terminal'); }
     const endpoint = canonicalizeSshHostEndpoint({ host, port });
-    if (!SESSION_ID.test(sessionId) || !endpoint || (size !== undefined && !isTerminalSize(size)) || sessions.has(sessionId)) return failure('INVALID_REQUEST');
+    if (!SESSION_ID.test(sessionId) || !endpoint || (size !== undefined && !isTerminalSize(size)) || sessions.has(sessionId) ||
+        (privateKey !== undefined && !validPrivateKeySelection(privateKey)) || (privateKey && savedCredentials)) {
+      clearPrivateKeySelection(privateKey);
+      return failure('INVALID_REQUEST');
+    }
     const gateways = normalizeSshGatewayRoute(gatewayEndpoints, endpoint);
-    if (!gateways) return failure('INVALID_REQUEST');
+    if (!gateways) { clearPrivateKeySelection(privateKey); return failure('INVALID_REQUEST'); }
     const mode = size === undefined ? 'files' : 'terminal';
     const session: SessionState = { sessionId, endpoint, endpoints: [...gateways, endpoint], cancellation: createCancellationSource(), mode,
       state: 'starting', pendingInputChars: 0, pendingEvents: [] };
@@ -273,6 +303,7 @@ export function createSshTerminalController(
 
     let username = '';
     let password = '';
+    let authentication: SshAuthenticationCredentials | undefined;
     const gatewayCredentials: SshConnectionGatewayCredentials[] = [];
     try {
       for (const [index, gatewayEndpoint] of gateways.entries()) {
@@ -287,7 +318,17 @@ export function createSshTerminalController(
         gatewayCredentials.push({ endpoint: gatewayEndpoint, credentials: { username: credential.username, password: credential.secret } });
       }
 
-      if (savedCredentials) {
+      if (privateKey) {
+        const credential = await credentialPrompt.prompt('ssh-key-passphrase', session.cancellation.token,
+          `SSH destination: ${endpoint.host}:${endpoint.port}\nSelected key: ${privateKey.fileName}`);
+        if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
+        if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
+        if (credential.kind !== 'provided') return failOpen(session, credential.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
+        username = credential.username;
+        if (username.length === 0 || username.trim() !== username || username.includes('\0') ||
+            credential.secret.length > 65_536 || credential.secret.includes('\0')) return failOpen(session, 'INVALID_REQUEST');
+        authentication = { username, privateKey: privateKey.data, passphrase: credential.secret };
+      } else if (savedCredentials) {
         username = savedCredentials.username;
         password = savedCredentials.password;
       } else {
@@ -299,10 +340,11 @@ export function createSshTerminalController(
         password = credential.secret;
       }
       if (username.length === 0 || username.trim() !== username || username.includes('\0') || password.includes('\0')) return failOpen(session, 'INVALID_REQUEST');
+      authentication ??= { username, password };
 
       const verifyEndpoint = (remoteEndpoint: SshHostEndpoint, evidence: HostKeyEvidence) => verifyHost(session, remoteEndpoint, evidence);
-      if (size === undefined) await provider.openFiles(sessionId, endpoint, { username, password }, verifyEndpoint);
-      else await provider.open(sessionId, endpoint, { username, password }, size, verifyEndpoint, gatewayCredentials);
+      if (size === undefined) await provider.openFiles(sessionId, endpoint, authentication, verifyEndpoint);
+      else await provider.open(sessionId, endpoint, authentication, size, verifyEndpoint, gatewayCredentials);
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session || session.state === 'closing') {
         await provider.close(sessionId).catch(() => undefined);
         return failOpen(session, 'CANCELLED');
@@ -322,6 +364,12 @@ export function createSshTerminalController(
     } finally {
       username = '';
       password = '';
+      if (authentication && 'privateKey' in authentication) {
+        authentication.username = '';
+        authentication.privateKey.fill(0);
+        authentication.passphrase = '';
+      }
+      clearPrivateKeySelection(privateKey);
       for (const gateway of gatewayCredentials) {
         gateway.credentials.username = '';
         gateway.credentials.password = '';
@@ -334,12 +382,14 @@ export function createSshTerminalController(
   }
 
   async function open(sessionId: string, host: string, port: number, size: TerminalSize,
-    gatewayEndpoints: readonly SshHostEndpoint[] = [], savedCredentials?: SshTerminalCredentials): Promise<Outcome<SshTerminalSession>> {
-    return openConnection(sessionId, host, port, size, gatewayEndpoints, savedCredentials);
+    gatewayEndpoints: readonly SshHostEndpoint[] = [], savedCredentials?: SshTerminalCredentials,
+    privateKey?: SshPrivateKeySelection): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port, size, gatewayEndpoints, savedCredentials, privateKey);
   }
 
-  async function openFiles(sessionId: string, host: string, port: number): Promise<Outcome<SshTerminalSession>> {
-    return openConnection(sessionId, host, port);
+  async function openFiles(sessionId: string, host: string, port: number,
+    privateKey?: SshPrivateKeySelection): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port, undefined, [], undefined, privateKey);
   }
 
   async function write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>> {

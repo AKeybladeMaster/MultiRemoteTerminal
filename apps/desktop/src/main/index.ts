@@ -59,8 +59,10 @@ import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
 import { createNetworkWorkerEnvironment } from './network-worker-environment.ts';
 import { createCustomLogoPicker } from './custom-logo-picker.ts';
 import { createCustomLogoPreferenceAccess } from './custom-logo-preferences.ts';
+import { readSshPrivateKeyFile } from './ssh-private-key-reader.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+
 
 app.setName('MultiRemoteTerminal');
 app.setAppUserModelId('io.github.akeyblademaster.multiremote-terminal');
@@ -296,6 +298,10 @@ function boot(): void {
   const e2eVncViewer = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-vnc-viewer');
   const vncViewer = createVncViewerController(e2eVncViewer ? { async launch() {} } : new WindowsVncViewer(systemDirectory));
   const e2eSshCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-credentials');
+  const e2eSshKeyAuth = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ssh-key-auth');
+  const e2eSshPrivateKeyPath = e2eSshKeyAuth
+    ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ssh-private-key='))?.slice('--mrt-e2e-ssh-private-key='.length)
+    : undefined;
   const e2eFtpCredentials = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-ftp-credentials');
   const e2eFtpExtraCaPath = e2eFtpCredentials
     ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ftp-ca='))?.slice('--mrt-e2e-ftp-ca='.length)
@@ -306,12 +312,20 @@ function boot(): void {
   });
   const e2eMasterPassword = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-master-password');
   let e2eSshCredentialPromptCount = 0;
+  let e2eSshKeyPromptCount = 0;
   if (e2eSshCredentials) Object.defineProperty(globalThis, '__mrtE2ESshCredentialPromptCount', {
     configurable: false, enumerable: false, get: () => e2eSshCredentialPromptCount
   });
-  const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eFtpCredentials || e2eMasterPassword
+  if (e2eSshKeyAuth) Object.defineProperty(globalThis, '__mrtE2ESshKeyPromptCount', {
+    configurable: false, enumerable: false, get: () => e2eSshKeyPromptCount
+  });
+  const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eSshKeyAuth || e2eFtpCredentials || e2eMasterPassword
     ? { async prompt(purpose) {
       if (purpose === 'master-password' && e2eMasterPassword) return { kind: 'provided', username: 'MRT test vault', secret: 'mrt-e2e-master-password-v1' };
+      if (purpose === 'ssh-key-passphrase' && e2eSshKeyAuth) {
+        e2eSshKeyPromptCount += 1;
+        return { kind: 'provided', username: 'mrt-e2e-key-user', secret: 'mrt-e2e-key-passphrase' };
+      }
       if (purpose === 'ssh-password' && e2eSshCredentials) {
         e2eSshCredentialPromptCount += 1;
         return { kind: 'provided', username: 'mrt-e2e-user', secret: 'sftp-e2e-secret' };
@@ -634,6 +648,29 @@ function boot(): void {
           if (result.canceled || !result.filePaths[0]) return undefined;
           const localPath = result.filePaths[0];
           return { localPath, fileName: basename(localPath) };
+        },
+        async selectSshPrivateKey() {
+          let selectedPath: string | undefined;
+          if (e2eSshKeyAuth) {
+            selectedPath = e2eSshPrivateKeyPath;
+            if (!selectedPath) return failure('UNAVAILABLE');
+          } else {
+            const options: Electron.OpenDialogOptions = {
+              title: 'Choose an SSH private key', buttonLabel: 'Use key', properties: ['openFile'],
+              filters: [
+                { name: 'SSH private key files', extensions: ['pem', 'key', 'ppk'] },
+                { name: 'All files', extensions: ['*'] }
+              ]
+            };
+            const currentWindow = window;
+            const result = currentWindow && !currentWindow.isDestroyed()
+              ? await dialog.showOpenDialog(currentWindow, options)
+              : await dialog.showOpenDialog(options);
+            if (result.canceled || !result.filePaths[0]) return failure('CANCELLED');
+            selectedPath = result.filePaths[0];
+          }
+          if (!selectedPath) return failure('INVALID_REQUEST');
+          return readSshPrivateKeyFile(selectedPath);
         },
         consumeDroppedUpload(context, token) {
           return droppedUploads.consume(event.sender.id, context, token);
