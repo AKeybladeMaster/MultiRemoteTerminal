@@ -149,9 +149,9 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
     expect(Number.isInteger(listenerPort) && listenerPort > 0).toBe(true);
 
     if (longLifetimeAcceptance) {
-      const waitStartedAt = Date.now();
+      const waitStartedAt = performance.now();
       await new Promise<void>(resolveLifetime => setTimeout(resolveLifetime, 360_500));
-      expect(Date.now() - waitStartedAt).toBeGreaterThan(360_000);
+      expect(performance.now() - waitStartedAt).toBeGreaterThan(360_000);
       await expect(serverStatus).toContainText('Running at 127.0.0.1:');
     }
 
