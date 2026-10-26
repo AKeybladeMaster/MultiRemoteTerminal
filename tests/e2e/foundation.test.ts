@@ -644,10 +644,11 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
-test('SSH private-key mode selects the key in main and authenticates a trusted loopback terminal', async () => {
+test('SSH private-key mode authenticates a trusted terminal and standalone SFTP session', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-private-key-e2e-'));
   const privateKeyPath = join(profile, 'id_ed25519');
+  const remoteRoot = join(profile, 'remote-files');
   const passphrase = 'mrt-e2e-key-passphrase';
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
@@ -658,6 +659,8 @@ test('SSH private-key mode selects the key in main and authenticates a trusted l
   const fixtureEvents: string[] = [];
   const fixtureErrors: string[] = [];
   const clients = new Set<Ssh2FixtureClient>();
+  let shellRequests = 0;
+  let sftpRequests = 0;
   const server = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
     const client = rawClient as Ssh2FixtureClient;
     clients.add(client);
@@ -676,7 +679,14 @@ test('SSH private-key mode selects the key in main and authenticates a trusted l
       client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
         const session = acceptSession();
         session.on('pty', (accept: () => void) => accept());
-        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SSH-PUBLICKEY-READY\r\n'));
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          shellRequests += 1;
+          acceptShell().write('MRT-SSH-PUBLICKEY-READY\r\n');
+        });
+        session.on('sftp', (acceptSftp: () => Ssh2FixtureSftp) => {
+          sftpRequests += 1;
+          startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp);
+        });
       });
     });
   });
@@ -684,6 +694,8 @@ test('SSH private-key mode selects the key in main and authenticates a trusted l
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   let listening = false;
   try {
+    await mkdir(remoteRoot);
+    await writeFile(join(remoteRoot, 'private-key-sftp.txt'), 'private-key-authenticated SFTP payload');
     await writeFile(privateKeyPath, clientKeyPair.private, { encoding: 'utf8', mode: 0o600 });
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
@@ -714,6 +726,24 @@ test('SSH private-key mode selects the key in main and authenticates a trusted l
     expect(fixtureEvents).toContain('auth:publickey:mrt-e2e-key-user');
     expect(fixtureEvents).toContain('authenticated');
     expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshKeyPromptCount'))).toBe(1);
+
+    const sftpRequestsBeforeStandalone = sftpRequests;
+    await page.getByRole('button', { name: 'Connect to SFTP files', exact: true }).first().click();
+    const sftpDialog = page.getByRole('dialog', { name: 'Connect to SFTP files' });
+    await sftpDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await sftpDialog.getByLabel('Port').fill(String(address.port));
+    await sftpDialog.getByLabel('Authentication method').selectOption('private-key');
+    await sftpDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const sftpTab = page.getByRole('tab').filter({ hasText: /SFTP/ }).first();
+    await expect(sftpTab).toBeVisible({ timeout: 20_000 });
+    const sftpPanelId = await sftpTab.getAttribute('aria-controls');
+    if (!sftpPanelId) throw new Error('Missing private-key SFTP panel');
+    await expect(page.locator('#' + sftpPanelId).getByTestId('remote-file-browser').getByText('private-key-sftp.txt', { exact: true }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(sftpRequests).toBeGreaterThan(sftpRequestsBeforeStandalone);
+    expect(shellRequests).toBe(1);
+    expect(fixtureEvents.filter(event => event === 'authenticated')).toHaveLength(2);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshKeyPromptCount'))).toBe(2);
     const bodyText = await page.locator('body').innerText();
     expect(bodyText).not.toContain(privateKeyPath);
     expect(bodyText).not.toContain('PRIVATE KEY');
