@@ -108,23 +108,23 @@ export function normalizeSessionFolderBundle(value: unknown): SessionFolderBundl
 }
 
 function isLegacySavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
-  return isSavedSessionDefinition(value) && value.kind !== 'ftp' && value.kind !== 'sftp' && value.kind !== 'rdp' && value.kind !== 'vnc' && value.kind !== 'serial';
+  return isPreWslSavedSessionDefinition(value) && value.kind !== 'ftp' && value.kind !== 'sftp' && value.kind !== 'rdp' && value.kind !== 'vnc' && value.kind !== 'serial';
 }
 
 function isPreSftpSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
-  return isSavedSessionDefinition(value) && value.kind !== 'sftp' && value.kind !== 'rdp' && value.kind !== 'vnc' && value.kind !== 'serial';
+  return isPreWslSavedSessionDefinition(value) && value.kind !== 'sftp' && value.kind !== 'rdp' && value.kind !== 'vnc' && value.kind !== 'serial';
 }
 
 function isPreRdpSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
-  return isSavedSessionDefinition(value) && value.kind !== 'rdp' && value.kind !== 'vnc' && value.kind !== 'serial';
+  return isPreWslSavedSessionDefinition(value) && value.kind !== 'rdp' && value.kind !== 'vnc' && value.kind !== 'serial';
 }
 
 function isPreVncSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
-  return isSavedSessionDefinition(value) && value.kind !== 'vnc' && value.kind !== 'serial';
+  return isPreWslSavedSessionDefinition(value) && value.kind !== 'vnc' && value.kind !== 'serial';
 }
 
 function isPreSerialSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {
-  return isSavedSessionDefinition(value) && value.kind !== 'serial';
+  return isPreWslSavedSessionDefinition(value) && value.kind !== 'serial';
 }
 
 function isPreWslSavedSessionDefinition(value: unknown): value is SavedSessionDefinition {

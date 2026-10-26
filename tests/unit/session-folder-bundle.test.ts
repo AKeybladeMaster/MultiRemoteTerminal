@@ -114,6 +114,19 @@ test('version-7 bundles import versions 1 through 6 with their existing kind lim
   assert.ok(normalizeSessionFolderBundle({ ...legacyV6, sessions: [...bundle.sessions, serialSession] }));
 });
 
+test('legacy session-folder bundle versions reject WSL profiles', () => {
+  const bundle = validBundle();
+  const wslSession = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', folderId: childId, kind: 'local', name: 'Ubuntu', shell: 'wsl',
+    distribution: 'Ubuntu', favorite: false, createdAt: timestamp, updatedAt: timestamp } as const;
+  const withWsl = { ...bundle, sessions: [...bundle.sessions, wslSession] };
+
+  assert.deepEqual(normalizeSessionFolderBundle(withWsl), withWsl);
+  for (const version of [1, 2, 3, 4, 5, 6]) {
+    assert.equal(normalizeSessionFolderBundle({ ...withWsl, version }), undefined,
+      `version ${version} predates WSL profile support`);
+  }
+});
+
 test('session-folder bundles reject unsupported shape, secret-bearing records and unknown fields', () => {
   const bundle = validBundle();
   assert.equal(normalizeSessionFolderBundle({ ...bundle, extra: 'value' }), undefined);

@@ -9,7 +9,7 @@
 - Added WSL to the fixed local-shell palette catalog. The user opens an explicit distribution picker; the list has no preselected item, and opening remains disabled until a listed distribution is selected.
 - Added read-only `wsl.exe --list --quiet` discovery through the terminal utility worker. It uses an absolute Windows system-directory path, a five-second timeout, a 128 KiB output cap, UTF-16LE decoding, bounded distribution count/name validation, and cancellation on picker close.
 - Revalidates the selected distribution immediately before launch. A stale saved target fails before PTY creation. The terminal starts the exact selection through ConPTY with `--distribution <name> --exec bash --login`; no default-distro fallback or command-shell interpolation is used.
-- Persists WSL profiles as local definitions with the exact distribution name, adds them to v7 session-folder bundles, preserves v1-v6 imports, and migrates workbench settings to schema v7 while making WSL visible by default.
+- Persists WSL profiles as local definitions with the exact distribution name, adds them to v7 session-folder bundles, preserves v1-v6 imports with their original profile-kind limits, and migrates workbench settings to schema v7 while making WSL visible by default.
 - Added a guarded, unpackaged Windows test harness. It fakes discovery and terminal output; it does not invoke WSL or start Docker-managed infrastructure.
 - Improved picker keyboard behavior with modal shortcut isolation and focus restoration, and wraps long distribution names within the existing dialog layout.
 
@@ -18,6 +18,7 @@
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including import-boundary checks.
 - Focused WSL-related domain/application/catalog/contract/provider/discovery tests — 133 passed, 0 failed.
+- Review follow-up verifies WSL records are rejected by legacy bundle versions 1-6; the focused bundle suite passes 9 tests.
 - `corepack pnpm build` — passed on Windows x64; the native system-directory bridge compiled. Vite reported its existing advisory for a renderer chunk over 500 KiB.
 - `corepack pnpm setup:electron` — passed.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "WSL terminals require an explicit distribution and saved profiles reopen the same target"` — passed, 1/1. The test verifies no default selection, keyboard Tab/Shift+Tab trapping and focus return, Escape cancellation, explicit `Debian Dev` selection, exact `wsl.exe` path and argument vector, saved-profile persistence across app restart, and reopening the same distribution.
