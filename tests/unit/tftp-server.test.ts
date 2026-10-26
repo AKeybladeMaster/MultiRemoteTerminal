@@ -205,6 +205,8 @@ test('TFTP server bounds pending file opens and rejects the next request as busy
     const dataResponses = promotedResponses.filter(({ packet }) => packet.readUInt16BE(0) === 3);
     assert.equal(dataResponses.length, 1, 'only one pending transfer can fill the final active slot');
     assert.equal(busyResponses.length, 7, 'remaining pending transfers are rejected when active capacity is exhausted');
+    assert.ok(busyResponses.every(({ packet }) => packet.toString('ascii', 4, packet.length - 1) === 'Server is busy'),
+      'every transfer rejected at promotion reports the bounded busy response');
   } finally {
     releaseAllOpens = true;
     for (const release of releasePendingOpens) release();
