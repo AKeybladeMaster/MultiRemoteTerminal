@@ -527,11 +527,13 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const hostileShellOutput = `<img src=x onerror='globalThis.__mrtRemoteOutputExecuted = true; require("node:fs").writeFileSync(${hostileOutputPathLiteral}, "owned")'>`;
   const remoteScaleRoot = join(remoteRoot, 'scale');
   const uploadSource = join(profile, 'upload.txt');
+  const dropUploadSource = join(profile, 'dragged-upload.txt');
   const downloadRoot = join(profile, 'downloads');
   await mkdir(downloadRoot);
   await mkdir(remoteScaleRoot);
   await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(join(remoteScaleRoot, `file-${String(index).padStart(3, '0')}.txt`), 'scale fixture')));
   await writeFile(uploadSource, 'private local upload payload');
+  await writeFile(dropUploadSource, 'private dropped upload payload');
   await writeFile(join(remoteRoot, 'remote.txt'), 'remote download payload');
   await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
   await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
@@ -578,7 +580,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
     });
     app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
-      '--mrt-e2e-sftp-transfers', `--mrt-e2e-sftp-upload-file=${uploadSource}`, `--mrt-e2e-sftp-download-root=${downloadRoot}`],
+      '--mrt-e2e-sftp-transfers', '--mrt-e2e-file-drop', `--mrt-e2e-sftp-upload-file=${uploadSource}`, `--mrt-e2e-sftp-download-root=${downloadRoot}`],
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('The loopback SSH fixture did not bind a TCP address');
@@ -727,6 +729,25 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     expect(await statFile(hostileOutputPath).then(() => true, () => false)).toBe(false);
     const contextualFiles = sshPanel.locator('[data-testid="remote-file-browser"]');
     await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(contextualFiles).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
+
+    await page.evaluate(() => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.id = 'mrt-e2e-drop-input';
+      document.body.append(input);
+    });
+    await page.locator('#mrt-e2e-drop-input').setInputFiles(dropUploadSource);
+    await expect.poll(() => page.evaluate(() => typeof (globalThis as unknown as { __mrtE2EFileDrop?: unknown }).__mrtE2EFileDrop))
+      .toBe('object');
+    const dropDispatched = await page.evaluate(({ inputSelector, targetSelector }) => (globalThis as unknown as {
+      __mrtE2EFileDrop?: { dropFromInput(inputSelector: string, targetSelector: string): boolean }
+    }).__mrtE2EFileDrop?.dropFromInput(inputSelector, targetSelector) ?? false, {
+      inputSelector: '#mrt-e2e-drop-input', targetSelector: `#${sshPanelId} [data-testid="remote-file-browser"]`
+    });
+    expect(dropDispatched).toBe(true);
+    await expect(contextualFiles.getByText(/Uploaded dragged-upload\.txt/u)).toBeVisible({ timeout: 15_000 });
+    expect(await readFile(join(remoteRoot, 'dragged-upload.txt'), 'utf8')).toBe('private dropped upload payload');
 
     await contextualFiles.getByRole('button', { name: 'Upload file', exact: true }).click();
     await expect(contextualFiles.getByText(/Uploaded upload.txt/u)).toBeVisible({ timeout: 15_000 });

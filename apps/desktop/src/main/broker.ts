@@ -19,6 +19,8 @@ import type { SessionCredentialManager } from '../../../../packages/application/
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
+import type { DroppedUploadSelection } from './dropped-upload-registry.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { Outcome } from '../../../../packages/domain/src/errors.ts';
@@ -60,6 +62,7 @@ export interface CommandActions {
   readonly resolveFtpTransferConflict: (direction: FtpTransferDirection, fileName: string) => Promise<FtpTransferConflictPolicy | undefined>;
   readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
+  readonly consumeDroppedUpload: (context: RemoteFileDropContext, token: string) => DroppedUploadSelection | undefined;
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
   readonly resolveSshTransferConflict: (direction: FileTransferDirection, fileName: string) => Promise<FileTransferConflictPolicy | undefined>;
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
@@ -226,6 +229,16 @@ export async function dispatchCommand(
         return { requestId, ...await actions.sshTerminals.uploadRemoteFile(sessionId, operationId, selection.localPath, remoteDirectory,
           selection.fileName, conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
       }
+      case 'ssh.files.upload-dropped': {
+        const { sessionId, operationId, remoteDirectory, token } = parsed.result.payload;
+        const selection = actions.consumeDroppedUpload({ transport: 'sftp', sessionId, remoteDirectory }, token);
+        if (!selection) return { requestId, ...failure('NOT_FOUND') };
+        if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        const conflictPolicy = await actions.resolveSshTransferConflict('upload', selection.fileName);
+        if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        return { requestId, ...await actions.sshTerminals.uploadRemoteFile(sessionId, operationId, selection.localPath, remoteDirectory,
+          selection.fileName, conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
+      }
       case 'ssh.files.download': {
         const { sessionId, operationId, remotePath } = parsed.result.payload;
         const fileName = remotePath.slice(remotePath.lastIndexOf('/') + 1);
@@ -314,6 +327,16 @@ export async function dispatchCommand(
         const { sessionId, operationId, remoteDirectory } = parsed.result.payload;
         const selection = await actions.selectFtpUploadFile();
         if (!selection || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        const conflictPolicy = await actions.resolveFtpTransferConflict('upload', selection.fileName);
+        if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
+        return { requestId, ...await actions.ftpFiles.uploadFile(sessionId, operationId, selection.localPath, remoteDirectory,
+          selection.fileName, conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };
+      }
+      case 'ftp.files.upload-dropped': {
+        const { sessionId, operationId, remoteDirectory, token } = parsed.result.payload;
+        const selection = actions.consumeDroppedUpload({ transport: 'ftp', sessionId, remoteDirectory }, token);
+        if (!selection) return { requestId, ...failure('NOT_FOUND') };
+        if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveFtpTransferConflict('upload', selection.fileName);
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         return { requestId, ...await actions.ftpFiles.uploadFile(sessionId, operationId, selection.localPath, remoteDirectory,

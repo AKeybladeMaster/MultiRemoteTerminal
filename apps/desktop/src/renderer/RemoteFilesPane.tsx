@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import type { RemoteFileDropEvent, RemoteFileDropHandle } from '../../../../packages/contracts/src/commands.ts';
 import { RemoteTextEditorDialog } from './RemoteTextEditorDialog.tsx';
 import { VirtualizedList } from './VirtualizedList.tsx';
 
@@ -67,6 +68,8 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
   const [editorPath, setEditorPath] = useState<string>();
   const [editorBusy, setEditorBusy] = useState(false);
   const editorTrigger = useRef<HTMLButtonElement>(null);
+  const dropQueueRunning = useRef(false);
+  const [dropActive, setDropActive] = useState(false);
 
   const load = useCallback(async (path: string, restoreFocus = false) => {
     const generation = ++requestGeneration.current;
@@ -123,21 +126,25 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
     }
   }, [sessionId, transport]);
 
-  const transferFile = useCallback(async (direction: 'upload' | 'download', remotePath: string) => {
-    if (activeTransferId.current) return;
+  const transferFile = useCallback(async (direction: 'upload' | 'download', remotePath: string, droppedFile?: RemoteFileDropHandle): Promise<boolean> => {
+    if (activeTransferId.current) return false;
     const operationId = globalThis.crypto.randomUUID();
     activeTransferId.current = operationId;
     setTransferNotice(undefined);
-    setTransfer({ operationId, direction, fileName: direction === 'download' ? remotePath.slice(remotePath.lastIndexOf('/') + 1) : 'Choose a local file',
+    setTransfer({ operationId, direction, fileName: direction === 'download' ? remotePath.slice(remotePath.lastIndexOf('/') + 1) : droppedFile?.fileName ?? 'Choose a local file',
       bytesTransferred: 0, totalBytes: null, phase: 'preparing', cancelling: false });
     const reply = direction === 'upload'
       ? transport === 'ftp'
-        ? await window.multiRemoteTerminal.uploadFtpFile(sessionId, operationId, remotePath)
-        : await window.multiRemoteTerminal.uploadSshFile(sessionId, operationId, remotePath)
+        ? droppedFile
+          ? await window.multiRemoteTerminal.uploadDroppedFtpFile(sessionId, operationId, remotePath, droppedFile.token)
+          : await window.multiRemoteTerminal.uploadFtpFile(sessionId, operationId, remotePath)
+        : droppedFile
+          ? await window.multiRemoteTerminal.uploadDroppedSshFile(sessionId, operationId, remotePath, droppedFile.token)
+          : await window.multiRemoteTerminal.uploadSshFile(sessionId, operationId, remotePath)
       : transport === 'ftp'
         ? await window.multiRemoteTerminal.downloadFtpFile(sessionId, operationId, remotePath)
         : await window.multiRemoteTerminal.downloadSshFile(sessionId, operationId, remotePath);
-    if (activeTransferId.current !== operationId) return;
+    if (activeTransferId.current !== operationId) return false;
     activeTransferId.current = undefined;
     setTransfer(undefined);
     if (!reply.ok) {
@@ -152,19 +159,48 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
           : 'This SSH server does not provide SFTP file transfers.');
       } else {
         setTransferNotice(reply.error.code === 'NOT_FOUND' && direction === 'upload'
-          ? 'The selected local file is no longer available. Choose it again.'
+          ? droppedFile ? 'The dropped local file is no longer available. Drop it again.' : 'The selected local file is no longer available. Choose it again.'
           : reply.error.code === 'NOT_FOUND' && transport === 'sftp'
             ? 'The remote file is no longer available. Refresh the folder and try again.'
             : reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
               : reply.error.code === 'FORBIDDEN' ? 'The local file or remote destination denied access.'
                 : 'The file transfer failed. Check the connection and server permissions.');
       }
-      return;
+      return false;
     }
     setTransferNotice(reply.result.state === 'skipped' ? `Skipped ${reply.result.fileName}.`
       : `${direction === 'upload' ? 'Uploaded' : 'Downloaded'} ${reply.result.fileName} (${formatFileSize(reply.result.bytesTransferred)}).`);
-    if (direction === 'upload') void load(remotePath);
+    if (direction === 'upload') await load(remotePath);
+    return true;
   }, [listing?.path, load, sessionId, transport]);
+
+  useEffect(() => window.multiRemoteTerminal.onRemoteFilesDropped((event: RemoteFileDropEvent) => {
+    if (event.sessionId !== sessionId || event.transport !== transport || event.remoteDirectory !== listing?.path) return;
+    if (!event.ok) {
+      setTransferNotice(event.error.code === 'OUTPUT_LIMIT'
+        ? 'Drop up to 16 files at a time.'
+        : event.error.code === 'FORBIDDEN' ? 'That file cannot be uploaded from this location.'
+          : event.error.code === 'NOT_FOUND' ? 'A dropped file is no longer available. Drop the files again.'
+            : 'The dropped files could not be prepared for upload.');
+      return;
+    }
+    if (activeTransferId.current || dropQueueRunning.current || editorBusy || loading) {
+      setTransferNotice('Finish the current file operation before dropping more files.');
+      return;
+    }
+    dropQueueRunning.current = true;
+    setTransferNotice(`${event.result.length} ${event.result.length === 1 ? 'file' : 'files'} queued for upload.`);
+    void (async () => {
+      for (let index = 0; index < event.result.length; index++) {
+        const succeeded = await transferFile('upload', event.remoteDirectory, event.result[index]);
+        if (!succeeded) {
+          if (index + 1 < event.result.length) setTransferNotice(`Upload stopped. ${event.result.length - index - 1} dropped ${event.result.length - index === 2 ? 'file was' : 'files were'} not uploaded.`);
+          break;
+        }
+      }
+      dropQueueRunning.current = false;
+    })();
+  }), [editorBusy, listing?.path, loading, sessionId, transferFile, transport]);
 
   const cancelTransfer = useCallback(async () => {
     const current = transfer;
@@ -210,7 +246,22 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
           </>}</span>
       </div>}
   </li>;
-  return <aside className="remote-file-panel" aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser">
+  const dropEnabled = active && Boolean(listing && !loading && !error && !transfer && !editorBusy);
+  return <aside className={`remote-file-panel${dropActive ? ' is-file-drop-active' : ''}`} aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser"
+    data-mrt-remote-file-drop-target={dropEnabled ? 'true' : undefined} data-mrt-remote-file-session-id={dropEnabled ? sessionId : undefined}
+    data-mrt-remote-file-transport={dropEnabled ? transport : undefined} data-mrt-remote-file-directory={dropEnabled ? listing?.path : undefined}
+    onDragEnter={event => { if (dropEnabled && event.dataTransfer.types.includes('Files')) setDropActive(true); }}
+    onDragOver={event => {
+      if (!dropEnabled || !event.dataTransfer.types.includes('Files')) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      setDropActive(true);
+    }}
+    onDragLeave={event => {
+      if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+      setDropActive(false);
+    }}
+    onDrop={event => { event.preventDefault(); setDropActive(false); }}>
     <div className="remote-file-heading">
       <h2>{transport === 'ftp' ? 'FTP files' : transport === 'sftp' ? 'SFTP files' : 'Remote files'}</h2>
       <div className="remote-file-heading-actions">
@@ -226,6 +277,9 @@ export function RemoteFilesPane({ sessionId, active, transport, onReconnect }: R
       <code className="remote-file-path" translate="no" title={displayedPath}>{displayedPath}</code>
     </div>
     {transport === 'ftp' && <p className="remote-file-status">FTP may assign a unique name to each upload; the server-selected name appears when it finishes.</p>}
+    <p className={`remote-file-drop-hint${dropActive ? ' is-active' : ''}`} role={dropActive ? 'status' : undefined}>
+      {dropActive ? `Drop up to 16 files to upload to ${displayedPath}.` : 'Drop up to 16 files here to upload, or choose Upload file.'}
+    </p>
     {loading && <p className="remote-file-status" role="status">Reading remote directory…</p>}
     {error && <p className="remote-file-error" role="alert">{error}</p>}
     {error && transport !== 'sftp' && errorCode !== 'BUSY' && onReconnect && <button type="button" className="remote-file-reconnect"

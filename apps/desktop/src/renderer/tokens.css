@@ -191,7 +191,8 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .terminal-host:focus-within { outline: 2px solid var(--accent); outline-offset: -3px; }
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { scrollbar-width: thin; }
-.remote-file-panel { display: flex; flex: 0 0 clamp(225px, 28vw, 320px); flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
+.remote-file-panel { position: relative; display: flex; flex: 0 0 clamp(225px, 28vw, 320px); flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); }
+.remote-file-panel.is-file-drop-active { outline: 2px dashed var(--accent); outline-offset: -5px; background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
 .remote-file-heading { display: flex; align-items: center; justify-content: space-between; min-height: 43px; padding: 0 11px 0 14px; border-bottom: 1px solid var(--line); }
 .remote-file-heading h2 { margin: 0; font-size: 13px; font-weight: 650; }
 .remote-file-heading-actions, .remote-file-file-actions { display: flex; align-items: center; gap: 6px; }
@@ -204,6 +205,8 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .remote-file-path-row { display: flex; align-items: center; gap: 7px; min-height: 42px; padding: 5px 9px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 55%, transparent); }
 .remote-file-path { min-width: 0; overflow: hidden; color: var(--muted); font: 11px "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .remote-file-status, .remote-file-error { margin: 0; padding: 12px 13px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.remote-file-drop-hint { margin: 0; padding: 7px 13px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.remote-file-drop-hint.is-active { color: var(--text); font-weight: 600; }
 .remote-file-transfer { display: grid; gap: 7px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface-raised); color: var(--text); font-size: 11px; }
 .remote-file-transfer-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .remote-file-transfer-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

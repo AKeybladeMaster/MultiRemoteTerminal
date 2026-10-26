@@ -1,6 +1,6 @@
-import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
+import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
-  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, SaveSshTunnelReply, TunnelStatusReply,
+  ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
@@ -40,6 +40,7 @@ type ConsumeVncLaunch = (host: string, port: number) => boolean | Promise<boolea
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
+type ListenRemoteFilesDropped = Listen;
 const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_CREDENTIAL_PROMPT_TIMEOUT_MS = 120_000;
@@ -71,7 +72,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   consumeTelnetConsent: ConsumeTelnetConsent = () => false, consumeFtpConsent: ConsumeFtpConsent = () => false,
   listenFtpTransfer: ListenFtpTransfer = () => () => {}, listenSshTransfer: ListenSshTransfer = () => () => {},
   listenTunnelStatus: ListenTunnelStatus = () => () => {}, consumeRdpLaunch: ConsumeRdpLaunch = () => false,
-  consumeVncLaunch: ConsumeVncLaunch = () => false): DesktopBridge {
+  consumeVncLaunch: ConsumeVncLaunch = () => false, listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -412,6 +413,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return send({ command: 'ssh.files.upload', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, operationId, remoteDirectory } }, SSH_TRANSFER_TIMEOUT_MS);
     },
+    uploadDroppedSshFile(sessionId: string, operationId: string, remoteDirectory: string, token: string): Promise<SshTransferReply> {
+      return send({ command: 'ssh.files.upload-dropped', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, operationId, remoteDirectory, token } }, SSH_TRANSFER_TIMEOUT_MS);
+    },
     downloadSshFile(sessionId: string, operationId: string, remotePath: string): Promise<SshTransferReply> {
       return send({ command: 'ssh.files.download', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, operationId, remotePath } }, SSH_TRANSFER_TIMEOUT_MS);
@@ -455,6 +460,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     uploadFtpFile(sessionId: string, operationId: string, remoteDirectory: string): Promise<FtpTransferReply> {
       return send({ command: 'ftp.files.upload', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, operationId, remoteDirectory } });
+    },
+    uploadDroppedFtpFile(sessionId: string, operationId: string, remoteDirectory: string, token: string): Promise<FtpTransferReply> {
+      return send({ command: 'ftp.files.upload-dropped', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, operationId, remoteDirectory, token } });
     },
     downloadFtpFile(sessionId: string, operationId: string, remotePath: string): Promise<FtpTransferReply> {
       return send({ command: 'ftp.files.download', requestId: requestId(), contractVersion: CONTRACT_VERSION,
@@ -635,6 +644,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         return listenSshTransfer(value => {
           if (isSshTransferEvent(value)) {
             try { listener(value); } catch { /* A renderer progress handler cannot interrupt IPC ownership. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onRemoteFilesDropped(listener: (event: RemoteFileDropEvent) => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenRemoteFilesDropped(value => {
+          if (isRemoteFileDropEvent(value)) {
+            try { listener(value); } catch { /* A renderer drop observer cannot affect main-process handle ownership. */ }
           }
         });
       } catch { return () => {}; }
