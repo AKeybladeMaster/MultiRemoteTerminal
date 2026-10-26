@@ -34,17 +34,15 @@ export interface SshPrivateKeyCredentials {
 
 export interface SshAgentCredentials {
   username: string;
-  socketPath: string;
+  readonly method: 'agent';
 }
-
-export const WINDOWS_OPENSSH_AGENT_PIPE_PATH = String.raw`\\.\pipe\openssh-ssh-agent`;
 
 export type SshAuthenticationCredentials = SshTerminalCredentials | SshPrivateKeyCredentials | SshAgentCredentials;
 
 export type SshAuthenticationSelection =
   | { readonly method: 'password'; readonly savedCredentials?: SshTerminalCredentials }
   | { readonly method: 'private-key'; readonly privateKey: SshPrivateKeySelection }
-  | { readonly method: 'agent'; readonly socketPath: string };
+  | { readonly method: 'agent' };
 
 export const MAX_SSH_PRIVATE_KEY_BYTES = 1_048_576;
 
@@ -220,14 +218,8 @@ function validAuthenticationSelection(value: SshAuthenticationSelection | undefi
       typeof value.savedCredentials.username === 'string' && value.savedCredentials.username.length <= 512 &&
       typeof value.savedCredentials.password === 'string' && value.savedCredentials.password.length <= 65_536);
   if (value.method === 'private-key') return validPrivateKeySelection(value.privateKey);
-  if (value.method === 'agent') return isSshAgentSocketPath(value.socketPath);
+  if (value.method === 'agent') return Object.keys(value).length === 1;
   return false;
-}
-
-const WINDOWS_SSH_AGENT_PIPE = /^\\\\\.\\pipe\\[A-Za-z0-9._-]{1,128}$/u;
-
-export function isSshAgentSocketPath(value: unknown): value is string {
-  return typeof value === 'string' && WINDOWS_SSH_AGENT_PIPE.test(value);
 }
 
 export function createSshTerminalController(
@@ -344,7 +336,7 @@ export function createSshTerminalController(
     let providerCredentials: SshAuthenticationCredentials | undefined;
     const privateKey = authenticationSelection?.method === 'private-key' ? authenticationSelection.privateKey : undefined;
     const savedCredentials = authenticationSelection?.method === 'password' ? authenticationSelection.savedCredentials : undefined;
-    const agentSocketPath = authenticationSelection?.method === 'agent' ? authenticationSelection.socketPath : undefined;
+    const useAgent = authenticationSelection?.method === 'agent';
     const gatewayCredentials: SshConnectionGatewayCredentials[] = [];
     try {
       for (const [index, gatewayEndpoint] of gateways.entries()) {
@@ -369,7 +361,7 @@ export function createSshTerminalController(
         if (username.length === 0 || username.trim() !== username || username.includes('\0') ||
             credential.secret.length > 65_536 || credential.secret.includes('\0')) return failOpen(session, 'INVALID_REQUEST');
         providerCredentials = { username, privateKey: privateKey.data, passphrase: credential.secret };
-      } else if (agentSocketPath) {
+      } else if (useAgent) {
         const credential = await credentialPrompt.prompt('ssh-agent-username', session.cancellation.token,
           `SSH destination: ${endpoint.host}:${endpoint.port}`);
         if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
@@ -379,7 +371,7 @@ export function createSshTerminalController(
         if (username.length === 0 || username.trim() !== username || username.includes('\0') || credential.secret.length !== 0) {
           return failOpen(session, 'INVALID_REQUEST');
         }
-        providerCredentials = { username, socketPath: agentSocketPath };
+        providerCredentials = { username, method: 'agent' };
       } else if (savedCredentials) {
         username = savedCredentials.username;
         password = savedCredentials.password;
@@ -421,8 +413,7 @@ export function createSshTerminalController(
         if ('privateKey' in providerCredentials) {
           providerCredentials.privateKey.fill(0);
           providerCredentials.passphrase = '';
-        } else if ('socketPath' in providerCredentials) providerCredentials.socketPath = '';
-        else providerCredentials.password = '';
+        } else if (!('method' in providerCredentials)) providerCredentials.password = '';
       }
       clearAuthenticationSelection(authenticationSelection);
       for (const gateway of gatewayCredentials) {

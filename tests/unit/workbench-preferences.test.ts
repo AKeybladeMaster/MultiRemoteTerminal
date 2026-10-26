@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWorkbenchPreferencesManager } from '../../packages/application/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
-import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences,
+  toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 import { DEFAULT_VISIBLE_LOCAL_SHELLS } from '../../packages/domain/src/local-shell-tools.ts';
 import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../packages/domain/src/powershell-profile.ts';
 
@@ -150,6 +151,19 @@ test('preferences manager validates before storage and returns saved values', as
   assert.deepEqual(await manager.save({ startupGreeting: 'bad\u0007value' }),
     { ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
   assert.deepEqual(writes, ['Terminal ready — こんにちは']);
+});
+
+test('startup preferences omit the saved PowerShell script while settings retain it', async () => {
+  const stored = { ...DEFAULT_WORKBENCH_PREFERENCES, powerShellProfileScript: 'Write-Output "private setting"' };
+  const manager = createWorkbenchPreferencesManager({
+    async readWorkbenchPreferences() { return stored; },
+    async saveWorkbenchPreferences(preferences) { return preferences; }
+  });
+
+  const startup = await manager.readStartup();
+  assert.deepEqual(startup, { ok: true, result: toWorkbenchStartupPreferences(stored) });
+  assert.equal(startup.ok && Object.hasOwn(startup.result, 'powerShellProfileScript'), false);
+  assert.deepEqual(await manager.read(), { ok: true, result: stored });
 });
 
 test('preferences manager preserves the corrupt-storage error category', async () => {

@@ -21,6 +21,6 @@ Electron's pinned `nativeImage` API supports decoding PNG input and re-encoding 
 ## Consequences
 
 - The renderer receives normalized image bytes but never a filesystem path. A bounded data URL is stored with non-secret workbench preferences; this avoids a path whose target can disappear or change after selection.
-- The image value is capped at 700,000 characters; the full serialized preference row is capped at 732,768 characters. Old preference rows migrate to schema 8 without a logo.
+- The image value is capped at 700,000 characters. The current full serialized preference row is capped at 748,768 characters, including the schema v9 PowerShell profile-script allowance. At this decision's schema v8, old preference rows migrated without a logo; the subsequent schema v9 migration adds an empty profile script. See [ADR-0029](ADR-0029-powershell-profile-execution.md).
 - Only PNG is accepted in this slice. Other image formats, vector assets, and logo file references are not supported.
 - Acceptance covers invalid/oversized image rejection, v7-to-v8 preference migration, WAL database backup/restore, restart persistence, app-header rendering, and reset to the built-in wordmark on Windows. Direct native-dialog interaction and cancellation remain open.

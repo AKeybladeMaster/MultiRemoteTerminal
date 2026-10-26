@@ -8,7 +8,7 @@ import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/ren
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import type { SshAuthenticationSelection } from '../../packages/application/src/ssh-terminals.ts';
-import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 import { failure } from '../../packages/domain/src/errors.ts';
 import type { SerialConfiguration } from '../../packages/domain/src/serial.ts';
 
@@ -106,6 +106,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     apply: noOp
   }, preferences: {
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
+    readStartup: async () => ({ ok: true, result: toWorkbenchStartupPreferences(DEFAULT_WORKBENCH_PREFERENCES) }),
     save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
   }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
 });
@@ -189,6 +190,7 @@ test('preferences broker accepts changed logos only from the bounded main-proces
   let saveCount = 0;
   const manager = {
     async read() { return { ok: true as const, result: stored }; },
+    async readStartup() { return { ok: true as const, result: toWorkbenchStartupPreferences(stored) }; },
     async save(value: unknown) {
       saveCount++;
       stored = value as typeof DEFAULT_WORKBENCH_PREFERENCES;
@@ -228,6 +230,27 @@ test('preferences broker accepts changed logos only from the bounded main-proces
   assert.equal(cleared.ok, true);
   assert.equal(saveCount, 3);
   assert.equal(stored.customLogoDataUrl, null);
+});
+
+test('startup preference command omits the PowerShell script and Settings can read it explicitly', async () => {
+  const stored = { ...DEFAULT_WORKBENCH_PREFERENCES, powerShellProfileScript: 'Write-Output "private setting"' };
+  const base = actions();
+  const guarded: CommandActions = { ...base, preferences: {
+    ...base.preferences,
+    async read() { return { ok: true, result: stored }; },
+    async readStartup() { return { ok: true, result: toWorkbenchStartupPreferences(stored) }; }
+  } };
+  const startup = await dispatchCommand(owner, { command: 'preferences.get', requestId: request.requestId, contractVersion: 1, payload: {} }, guarded, () => {});
+  assert.equal(startup.ok, true);
+  if (startup.ok) {
+    const result = startup.result as Record<string, unknown>;
+    assert.equal(Object.hasOwn(result, 'powerShellProfileScript'), false);
+    assert.equal(result.startupGreeting, stored.startupGreeting);
+  }
+  const settings = await dispatchCommand(owner, { command: 'preferences.settings.get', requestId: request.requestId,
+    contractVersion: 1, payload: {} }, guarded, () => {});
+  assert.equal(settings.ok, true);
+  if (settings.ok) assert.equal((settings.result as Record<string, unknown>).powerShellProfileScript, stored.powerShellProfileScript);
 });
 
 test('saved SSH opens resolve the profile credential in main and clear it after provider handoff', async () => {
@@ -283,16 +306,14 @@ test('SSH key selection is held in main, passed once to the controller and clear
   assert.equal(JSON.stringify(reply).includes('id_ed25519'), false);
 });
 
-test('SSH agent selection stays in main and does not resolve saved passwords or expose the pipe to renderer replies', async () => {
+test('SSH agent selection stays a semantic auth mode and does not resolve saved passwords', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
-  const socketPath = String.raw`\\.\pipe\mrt-test-agent`;
   let received: SshAuthenticationSelection | undefined;
   let resolvedSavedCredential = false;
   let selectedPrivateKey = false;
   const base = actions();
   const wired: CommandActions = {
     ...base,
-    sshAgentPipePath: socketPath,
     async selectSshPrivateKey() { selectedPrivateKey = true; return failure('CANCELLED'); },
     sessionCredentials: { ...base.sessionCredentials, async resolveSshCredential() {
       resolvedSavedCredential = true;
@@ -307,10 +328,9 @@ test('SSH agent selection stays in main and does not resolve saved passwords or 
     payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, profileId: '11111111-1111-4111-8111-111111111111',
       authenticationMethod: 'agent' } }, wired, () => {});
   assert.equal(reply.ok, true);
-  assert.deepEqual(received, { method: 'agent', socketPath });
+  assert.deepEqual(received, { method: 'agent' });
   assert.equal(selectedPrivateKey, false);
   assert.equal(resolvedSavedCredential, false);
-  assert.equal(JSON.stringify(reply).includes('mrt-test-agent'), false);
 
   const fileOnly = await dispatchCommand(owner, { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId: 'd8f87744-bd2c-4c0d-9a18-a4a324dd71fd', host: 'server.example.net', port: 22, authenticationMethod: 'agent' } }, {
@@ -318,7 +338,7 @@ test('SSH agent selection stays in main and does not resolve saved passwords or 
       result: { sessionId: _id, endpoint: { host: 'server.example.net', port: 22 }, state: 'running' } }; } }
   }, () => {});
   assert.equal(fileOnly.ok, true);
-  assert.deepEqual(received, { method: 'agent', socketPath });
+  assert.deepEqual(received, { method: 'agent' });
 });
 
 test('standalone SFTP broker path opens and closes an SSH-backed files session', async () => {

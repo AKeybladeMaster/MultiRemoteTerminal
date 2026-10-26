@@ -32,7 +32,7 @@ import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../.
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
-import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { WorkbenchStartupPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { normalizeSavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionFolder } from '../../../../packages/domain/src/session-folder.ts';
@@ -1242,7 +1242,7 @@ function Workbench() {
     if (file) void window.multiRemoteTerminal.closeLocalTextFile(file.selectionId);
   }, []);
 
-  const applyWorkbenchPreferences = useCallback((preferences: WorkbenchPreferences) => {
+  const applyWorkbenchPreferences = useCallback((preferences: WorkbenchStartupPreferences) => {
     setStartupGreeting(preferences.startupGreeting);
     setStartupGreetingVisible(preferences.startupGreeting.length > 0);
     setTerminalHighlightEnabled(preferences.terminalHighlightEnabled);

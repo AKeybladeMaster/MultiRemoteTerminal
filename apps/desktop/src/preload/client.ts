@@ -9,7 +9,7 @@ import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/co
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { SshTextFileReply, SshTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
 import type { ListMacrosReply, MacroDefinitionReply, ListMacroShortcutsReply, MacroShortcutReply } from '../../../../packages/contracts/src/commands.ts';
-import type { WorkbenchPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
+import type { WorkbenchPreferencesReply, WorkbenchStartupPreferencesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { CredentialVaultStateReply, SessionCredentialPresenceReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSftpFilesReply } from '../../../../packages/contracts/src/commands.ts';
 import type { OpenSerialTerminalResult } from '../../../../packages/contracts/src/commands.ts';
@@ -566,8 +566,11 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     selectCustomLogo(): Promise<SelectCustomLogoReply> {
       return send({ command: 'branding.logo.select', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} });
     },
-    getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply> {
+    getWorkbenchPreferences(): Promise<WorkbenchStartupPreferencesReply> {
       return send({ command: 'preferences.get', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
+    },
+    getWorkbenchSettingsPreferences(): Promise<WorkbenchPreferencesReply> {
+      return send({ command: 'preferences.settings.get', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);
     },
     saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply> {
       return send({ command: 'preferences.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { preferences } }, 8_000);

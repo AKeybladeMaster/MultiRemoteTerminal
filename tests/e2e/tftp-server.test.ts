@@ -306,3 +306,52 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
     }
   }
 });
+
+test('renderer crash stops the unauthenticated TFTP server', async () => {
+  test.setTimeout(60_000);
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-tftp-renderer-crash-'));
+  const sharedRoot = join(temporaryRoot, 'shared');
+  const profile = join(temporaryRoot, 'profile');
+  let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
+
+  try {
+    await mkdir(sharedRoot);
+    await mkdir(profile);
+    await writeFile(join(sharedRoot, 'fixture.bin'), Buffer.from('tftp cleanup'));
+    const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
+      entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE' && entry[0] !== 'NODE_EXTRA_CA_CERTS'));
+    env.MRT_E2E = '1';
+    application = await electron.launch({
+      args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-tftp-server', `--mrt-e2e-tftp-root=${sharedRoot}`], env
+    });
+    const page = await application.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByTestId('tftp-server-open').click();
+    const dialog = page.getByRole('dialog', { name: 'Local TFTP server' });
+    await dialog.getByRole('button', { name: /Browse/u }).click();
+    await expect(dialog.locator('.tftp-server-folder')).toHaveText(basename(sharedRoot));
+    await dialog.getByLabel('UDP port').fill('0');
+    await dialog.getByRole('button', { name: 'Start server' }).click();
+    const serverStatus = dialog.locator('.tftp-server-status');
+    await expect(serverStatus).toContainText('Running at 127.0.0.1:', { timeout: 15_000 });
+    const serverPort = Number((await serverStatus.innerText()).match(/127\.0\.0\.1:(\d+)/u)?.[1]);
+    expect(Number.isInteger(serverPort) && serverPort > 0).toBe(true);
+
+    await application.evaluate(({ BrowserWindow }) => {
+      const current = BrowserWindow.getAllWindows()[0];
+      if (!current) throw new Error('The workbench window is missing.');
+      return new Promise<void>(resolveCrash => {
+        current.webContents.once('render-process-gone', () => resolveCrash());
+        current.webContents.forcefullyCrashRenderer();
+      });
+    });
+    await expect.poll(() => application!.evaluate(({ app }) => app.isReady())).toBe(true);
+
+    const releasedPortProbe = createSocket('udp4');
+    try { await bindUdpSocket(releasedPortProbe, serverPort); }
+    finally { try { releasedPortProbe.close(); } catch { /* Binding reports listener cleanup failures. */ } }
+  } finally {
+    try { await application?.close(); }
+    finally { await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+  }
+});

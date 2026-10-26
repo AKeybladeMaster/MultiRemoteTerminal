@@ -17,6 +17,7 @@ import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packa
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { parseSshWorkerMessage, SSH_WORKER_PROTOCOL_VERSION } from '../workers/ssh-protocol.ts';
 import type { SshWorkerErrorCode, SshWorkerRequest } from '../workers/ssh-protocol.ts';
+import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from './windows-openssh-agent.ts';
 
 interface PendingRequest {
   readonly resolve: (result: unknown) => void;
@@ -41,7 +42,7 @@ const FILE_LIST_TIMEOUT_MS = 30_000;
 
 function copyAuthenticationCredentials(credentials: SshAuthenticationCredentials): SshAuthenticationCredentials {
   if ('privateKey' in credentials) return { username: credentials.username, privateKey: new Uint8Array(credentials.privateKey), passphrase: credentials.passphrase };
-  if ('socketPath' in credentials) return { username: credentials.username, socketPath: credentials.socketPath };
+  if ('method' in credentials) return { username: credentials.username, method: 'agent' };
   return { username: credentials.username, password: credentials.password };
 }
 
@@ -50,8 +51,7 @@ function clearAuthenticationCredentials(credentials: SshAuthenticationCredential
   if ('privateKey' in credentials) {
     credentials.privateKey.fill(0);
     credentials.passphrase = '';
-  } else if ('socketPath' in credentials) credentials.socketPath = '';
-  else credentials.password = '';
+  } else if (!('method' in credentials)) credentials.password = '';
 }
 const FILE_TRANSFER_TIMEOUT_MS = 60 * 60_000;
 const REMOTE_TEXT_TIMEOUT_MS = 60_000;
@@ -68,7 +68,9 @@ function isCommitAwareFileRequest(request: Extract<SshWorkerRequest, { readonly 
   { readonly command: 'files.upload' | 'files.download' | 'files.write-text' }> {
   return request.command === 'files.upload' || request.command === 'files.download' || request.command === 'files.write-text';
 }
-export type SshWorkerLaunchOptions = { readonly cwd: string; readonly env: { readonly MRT_APP_ROOT: string }; readonly serviceName: string; readonly stdio: 'ignore' };
+export type SshWorkerLaunchOptions = { readonly cwd: string;
+  readonly env: { readonly MRT_APP_ROOT: string; readonly MRT_OPENSSH_AGENT_PIPE: string };
+  readonly serviceName: string; readonly stdio: 'ignore' };
 export type SshWorkerLauncher = (workerPath: string, args: string[], options: SshWorkerLaunchOptions) => UtilityProcess;
 
 function providerErrorCode(code: SshWorkerErrorCode): SshTerminalProviderErrorCode {
@@ -84,6 +86,7 @@ function hasMatchingRemoteTextRevision(value: unknown, remotePath: string): valu
 export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForwardProvider {
   private readonly workerPath: string;
   private readonly appRoot: string;
+  private readonly opensshAgentPipePath: string;
   private readonly launchWorker: SshWorkerLauncher;
   private worker: UtilityProcess | undefined;
   private readonly pending = new Map<string, PendingRequest>();
@@ -91,10 +94,13 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
   private readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   private shuttingDown: Promise<void> | undefined;
 
-  constructor(workerPath: string, appRoot: string, launchWorker: SshWorkerLauncher) {
+  constructor(workerPath: string, appRoot: string, launchWorker: SshWorkerLauncher,
+    opensshAgentPipePath: string = WINDOWS_OPENSSH_AGENT_PIPE_PATH) {
+    if (!isWindowsOpenSshAgentPipePath(opensshAgentPipePath)) throw new SshTerminalProviderError('INVALID_REQUEST');
     this.workerPath = workerPath;
     this.appRoot = appRoot;
     this.launchWorker = launchWorker;
+    this.opensshAgentPipePath = opensshAgentPipePath;
   }
 
   async open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, size: TerminalSize,
@@ -298,7 +304,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     if (this.worker) return this.worker;
     const worker = this.launchWorker(this.workerPath, [], {
       cwd: process.resourcesPath ?? this.appRoot,
-      env: { MRT_APP_ROOT: this.appRoot },
+      env: { MRT_APP_ROOT: this.appRoot, MRT_OPENSSH_AGENT_PIPE: this.opensshAgentPipePath },
       serviceName: 'MultiRemoteTerminal SSH network provider',
       stdio: 'ignore'
     });

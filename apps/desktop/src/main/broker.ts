@@ -2,7 +2,6 @@ import { basename } from 'node:path';
 import { isAppDocument, parseRequest, requestIdOf } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
-import { isSshAgentSocketPath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshAuthenticationSelection, SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import type { SerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
@@ -74,7 +73,6 @@ export interface CommandActions {
   readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
   readonly selectSshPrivateKey: () => Promise<Outcome<SshPrivateKeySelection>>;
-  readonly sshAgentPipePath?: string;
   readonly consumeDroppedUpload: (context: RemoteFileDropContext, token: string) => DroppedUploadSelection | undefined;
   readonly discardDroppedUploadHandles: (context: RemoteFileDropContext, tokens: readonly string[]) => void;
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
@@ -97,7 +95,7 @@ export interface CommandActions {
   readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'enableMasterPassword' | 'disableMasterPassword' | 'resetVault' |
     'hasSshCredential' | 'saveSshCredential' | 'forgetSshCredential' | 'resolveSshCredential'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
-  readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'save'>;
+  readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'readStartup' | 'save'>;
   readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
   readonly tftpServer: Pick<TftpServerController, 'getStatus' | 'stop'>;
 }
@@ -211,9 +209,7 @@ export async function dispatchCommand(
           if (!selected.ok) return { requestId, ...selected };
           authentication = { method: 'private-key', privateKey: selected.result };
         } else if (authenticationMethod === 'agent') {
-          const socketPath = actions.sshAgentPipePath ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH;
-          if (!isSshAgentSocketPath(socketPath)) return { requestId, ...failure('UNAVAILABLE') };
-          authentication = { method: 'agent', socketPath };
+          authentication = { method: 'agent' };
         }
         let savedCredentials;
         if (profileId && authenticationMethod === 'password') {
@@ -240,9 +236,7 @@ export async function dispatchCommand(
         const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
         if (authenticationMethod === 'password') return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port) };
         if (authenticationMethod === 'agent') {
-          const socketPath = actions.sshAgentPipePath ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH;
-          if (!isSshAgentSocketPath(socketPath)) return { requestId, ...failure('UNAVAILABLE') };
-          return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, { method: 'agent', socketPath }) };
+          return { requestId, ...await actions.sshTerminals.openFiles(sessionId, host, port, { method: 'agent' }) };
         }
         const selected = await actions.selectSshPrivateKey();
         if (!selected.ok) return { requestId, ...selected };
@@ -487,7 +481,8 @@ export async function dispatchCommand(
       case 'macro.shortcut.set': return { requestId, ...await actions.macros.setShortcut(parsed.result.payload.macroId, parsed.result.payload.code, actions.cancellation) };
       case 'macro.shortcut.delete': return { requestId, ...await actions.macros.removeShortcut(parsed.result.payload.macroId, actions.cancellation) };
       case 'branding.logo.select': return { requestId, ...await actions.selectCustomLogo() };
-      case 'preferences.get': return { requestId, ...await actions.preferences.read(actions.cancellation) };
+      case 'preferences.get': return { requestId, ...await actions.preferences.readStartup(actions.cancellation) };
+      case 'preferences.settings.get': return { requestId, ...await actions.preferences.read(actions.cancellation) };
       case 'preferences.save': return { requestId, ...await actions.preferences.save(parsed.result.payload.preferences, actions.cancellation) };
       case 'tunnel.list': return { requestId, ...await actions.tunnels.list() };
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };

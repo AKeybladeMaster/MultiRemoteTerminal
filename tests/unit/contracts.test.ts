@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
   parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
-import { MAX_STARTUP_GREETING_CODE_POINTS } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
 const request = { command: 'app.describe', requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1, payload: {} };
 
@@ -520,9 +520,12 @@ test('macro IPC accepts only typed steps and credential-free replies', () => {
 
 test('workbench preference IPC accepts bounded plain Unicode greeting text only', () => {
   const get = { command: 'preferences.get', requestId: request.requestId, contractVersion: 1, payload: {} };
+  const settingsGet = { command: 'preferences.settings.get', requestId: request.requestId, contractVersion: 1, payload: {} };
   const save = { command: 'preferences.save', requestId: request.requestId, contractVersion: 1,
     payload: { preferences: { startupGreeting: 'Terminal ready — こんにちは 👋' } } };
+  const normalizedPreferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Terminal ready — こんにちは 👋' };
   assert.equal(parseRequest(get).ok, true);
+  assert.equal(parseRequest(settingsGet).ok, true);
   const parsed = parseRequest(save);
   assert.equal(parsed.ok, true);
   assert.equal(parseRequest({ ...save, payload: { preferences: { startupGreeting: 'bad\u0000text' } } }).ok, false);
@@ -533,11 +536,24 @@ test('workbench preference IPC accepts bounded plain Unicode greeting text only'
   assert.equal(parseRequest({ ...get, payload: { unexpected: true } }).ok, false);
   if (parsed.ok) {
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
-      result: { startupGreeting: 'Terminal ready — こんにちは 👋' } }, parsed.result), true);
+      result: normalizedPreferences }, parsed.result), true);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
       result: { startupGreeting: 'safe', command: 'whoami' } }, parsed.result), false);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: false,
       error: { code: 'CORRUPT', target: 'application', retryable: false } }, parsed.result), true);
+  }
+  const parsedGet = parseRequest(get);
+  const parsedSettingsGet = parseRequest(settingsGet);
+  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, powerShellProfileScript: 'Write-Output "private setting"' };
+  if (parsedGet.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: toWorkbenchStartupPreferences(preferences) }, parsedGet.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: preferences }, parsedGet.result), false);
+  }
+  if (parsedSettingsGet.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: preferences }, parsedSettingsGet.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+      result: toWorkbenchStartupPreferences(preferences) }, parsedSettingsGet.result), false);
   }
 });
 

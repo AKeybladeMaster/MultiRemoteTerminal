@@ -23,6 +23,8 @@ export interface WorkbenchPreferences {
   readonly powerShellProfileScript: string;
 }
 
+export type WorkbenchStartupPreferences = Omit<WorkbenchPreferences, 'powerShellProfileScript'>;
+
 export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = Object.freeze({
   startupGreeting: '', terminalHighlightEnabled: false, terminalHighlightRules: Object.freeze([]), autoSaveSessions: false,
   terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS,
@@ -112,6 +114,31 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
 
 export function isWorkbenchPreferences(value: unknown): value is WorkbenchPreferences {
   return normalizeWorkbenchPreferences(value) !== undefined;
+}
+
+export function isCurrentWorkbenchPreferences(value: unknown): value is WorkbenchPreferences {
+  return isRecord(value) && Object.hasOwn(value, 'powerShellProfileScript') && isWorkbenchPreferences(value);
+}
+
+export function toWorkbenchStartupPreferences(preferences: WorkbenchPreferences): WorkbenchStartupPreferences {
+  return Object.freeze({
+    startupGreeting: preferences.startupGreeting,
+    terminalHighlightEnabled: preferences.terminalHighlightEnabled,
+    terminalHighlightRules: preferences.terminalHighlightRules,
+    autoSaveSessions: preferences.autoSaveSessions,
+    terminalShellSyntaxEnabled: preferences.terminalShellSyntaxEnabled,
+    showSftpBrowserBesideSsh: preferences.showSftpBrowserBesideSsh,
+    visibleLocalShells: preferences.visibleLocalShells,
+    customLogoDataUrl: preferences.customLogoDataUrl
+  });
+}
+
+export function isWorkbenchStartupPreferences(value: unknown): value is WorkbenchStartupPreferences {
+  if (!isRecord(value) || Object.hasOwn(value, 'powerShellProfileScript')) return false;
+  const expectedKeys = ['startupGreeting', 'terminalHighlightEnabled', 'terminalHighlightRules', 'autoSaveSessions',
+    'terminalShellSyntaxEnabled', 'showSftpBrowserBesideSsh', 'visibleLocalShells', 'customLogoDataUrl'];
+  return Object.keys(value).length === expectedKeys.length && expectedKeys.every(key => Object.hasOwn(value, key)) &&
+    isWorkbenchPreferences(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

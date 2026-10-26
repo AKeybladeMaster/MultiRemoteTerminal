@@ -17,7 +17,7 @@ import { createMacroCatalog } from '../../../../packages/application/src/macros.
 import { createWorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import { createPowerShellProfileScriptController } from '../../../../packages/application/src/powershell-profile.ts';
-import { createSshTerminalController, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../../../../packages/application/src/ssh-terminals.ts';
+import { createSshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTerminalController } from '../../../../packages/application/src/ssh-terminals.ts';
 import { createSshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
@@ -31,6 +31,7 @@ import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
+import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 import { MasterPasswordKeyDeriverAdapter } from '../adapters/master-password-key-deriver.ts';
 import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
@@ -303,6 +304,8 @@ function boot(): void {
   const e2eSshAgentPipePath = e2eSshAgentAuth
     ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ssh-agent-pipe='))?.slice('--mrt-e2e-ssh-agent-pipe='.length)
     : undefined;
+  const opensshAgentPipePath = e2eSshAgentAuth && isWindowsOpenSshAgentPipePath(e2eSshAgentPipePath)
+    ? e2eSshAgentPipePath : WINDOWS_OPENSSH_AGENT_PIPE_PATH;
   const e2eSshPrivateKeyPath = e2eSshKeyAuth
     ? process.argv.find(argument => argument.startsWith('--mrt-e2e-ssh-private-key='))?.slice('--mrt-e2e-ssh-private-key='.length)
     : undefined;
@@ -358,8 +361,8 @@ function boot(): void {
     join(dist, 'host/apps/desktop/src/workers/ssh-worker.js'), app.getAppPath(),
     (workerPath, args, options) => utilityProcess.fork(workerPath, args, {
       ...options,
-      env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env)
-    })
+      env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env, undefined, options.env.MRT_OPENSSH_AGENT_PIPE)
+    }), opensshAgentPipePath
   );
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
   const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
@@ -369,11 +372,14 @@ function boot(): void {
   const workbenchPreferences = createWorkbenchPreferencesManager(storageStore);
   const preferences: WorkbenchPreferencesManager = {
     async read(cancellation) {
+      return workbenchPreferences.read(cancellation);
+    },
+    async readStartup(cancellation) {
       if (delayFirstWorkbenchPreferencesRead) {
         delayFirstWorkbenchPreferencesRead = false;
         await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 4_000));
       }
-      return workbenchPreferences.read(cancellation);
+      return workbenchPreferences.readStartup(cancellation);
     },
     save(value, cancellation) { return workbenchPreferences.save(value, cancellation); }
   };
@@ -440,7 +446,8 @@ function boot(): void {
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = tunnels.closeAll().then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll(), localTextEditor.closeAll()]))
+      shutdownPromise = Promise.all([tunnels.closeAll(), tftpServer.closeAll()])
+        .then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll(), localTextEditor.closeAll()]))
         .then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
@@ -545,7 +552,6 @@ function boot(): void {
     try {
       const reply = await dispatchCommand({ owned, mainFrame, url: frameUrl }, input, {
         describe: () => describeWorkbench({ version: app.getVersion(), platform: process.platform }),
-        sshAgentPipePath: e2eSshAgentPipePath ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH,
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
         authorizePowerShellProfileScript: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'powershell-profile-script'),

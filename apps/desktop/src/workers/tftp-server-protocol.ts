@@ -12,9 +12,11 @@ export type ParsedTftpRequest = { readonly ok: true; readonly result: TftpReadRe
 
 const MAX_REQUEST_BYTES = 1_024;
 const MAX_OPTION_PAIRS = 8;
-const MAX_FILE_NAME_LENGTH = 120;
+const MAX_WINDOWS_FILE_NAME_CODE_UNITS = 255;
 const MAX_ERROR_MESSAGE_LENGTH = 128;
 const RESERVED_WINDOWS_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+const INVALID_WINDOWS_FILE_NAME_CHARACTERS = /[<>:"/\\|?*\u0000-\u001f]/u;
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 function error(code: number, message: string): ParsedTftpRequest {
   return { ok: false, error: { code, message } };
@@ -32,9 +34,16 @@ function readAsciiField(packet: Uint8Array, start: number): { readonly value: st
   return { value, next: end + 1 };
 }
 
+function readUtf8Field(packet: Uint8Array, start: number): { readonly value: string; readonly next: number } | undefined {
+  const end = packet.indexOf(0, start);
+  if (end < 0 || end === start) return undefined;
+  try { return { value: utf8Decoder.decode(packet.subarray(start, end)), next: end + 1 }; }
+  catch { return undefined; }
+}
+
 function safeRootFileName(value: string): boolean {
-  if (value.length === 0 || value.length > MAX_FILE_NAME_LENGTH || value === '.' || value === '..' || /[. ]$/u.test(value)) return false;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._ -]*$/u.test(value)) return false;
+  if (value.length === 0 || value.length > MAX_WINDOWS_FILE_NAME_CODE_UNITS || value === '.' || value === '..' || /[. ]$/u.test(value)) return false;
+  if (INVALID_WINDOWS_FILE_NAME_CHARACTERS.test(value)) return false;
   const stem = value.split('.')[0] ?? '';
   return !RESERVED_WINDOWS_NAMES.test(stem);
 }
@@ -50,7 +59,7 @@ export function parseTftpRequest(packet: Uint8Array): ParsedTftpRequest {
   const fields: string[] = [];
   let cursor = 2;
   while (cursor < packet.byteLength) {
-    const field = readAsciiField(packet, cursor);
+    const field = fields.length === 0 ? readUtf8Field(packet, cursor) : readAsciiField(packet, cursor);
     if (!field) return error(4, 'Malformed request');
     fields.push(field.value);
     cursor = field.next;

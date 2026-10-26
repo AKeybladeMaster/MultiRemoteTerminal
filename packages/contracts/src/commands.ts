@@ -46,8 +46,8 @@ import { isMacroId, isMacroDefinition, normalizeMacroDraft } from '../../domain/
 import type { MacroDefinition, MacroDraft } from '../../domain/src/macro.ts';
 import { isMacroShortcutBinding, isMacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
-import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
-import type { WorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import { isCurrentWorkbenchPreferences, isWorkbenchStartupPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
+import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
 import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
 import { isCustomLogoDataUrl } from '../../domain/src/custom-logo.ts';
 import type { CustomLogoSelection } from '../../domain/src/custom-logo.ts';
@@ -201,6 +201,7 @@ export type SetMacroShortcutRequest = Request<'macro.shortcut.set', { readonly m
 export type DeleteMacroShortcutRequest = Request<'macro.shortcut.delete', { readonly macroId: string }>;
 export type SelectCustomLogoRequest = Request<'branding.logo.select', Record<string, never>>;
 export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<string, never>>;
+export type GetWorkbenchSettingsPreferencesRequest = Request<'preferences.settings.get', Record<string, never>>;
 export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PreviewPowerShellProfileScriptRequest | ApplyPowerShellProfileScriptRequest |
   PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
@@ -219,7 +220,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   EnableCredentialVaultMasterPasswordRequest | DisableCredentialVaultMasterPasswordRequest | ResetCredentialVaultRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
-  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | SaveWorkbenchPreferencesRequest;
+  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -282,6 +283,7 @@ export type MacroDefinitionReply = CommandReply<MacroDefinition>;
 export type ListMacroShortcutsReply = CommandReply<readonly MacroShortcutBinding[]>;
 export type MacroShortcutReply = CommandReply<MacroShortcutBinding>;
 export type WorkbenchPreferencesReply = CommandReply<WorkbenchPreferences>;
+export type WorkbenchStartupPreferencesReply = CommandReply<WorkbenchStartupPreferences>;
 export interface PowerShellProfileScriptPreview { readonly previewId: string; readonly script: string; }
 export type PowerShellProfileScriptPreviewReply = CommandReply<PowerShellProfileScriptPreview>;
 export type SelectCustomLogoReply = CommandReply<CustomLogoSelection>;
@@ -390,7 +392,8 @@ export interface DesktopBridge {
   setMacroShortcut(macroId: string, code: MacroShortcutCode): Promise<MacroShortcutReply>;
   deleteMacroShortcut(macroId: string): Promise<TerminalActionReply>;
   selectCustomLogo(): Promise<SelectCustomLogoReply>;
-  getWorkbenchPreferences(): Promise<WorkbenchPreferencesReply>;
+  getWorkbenchPreferences(): Promise<WorkbenchStartupPreferencesReply>;
+  getWorkbenchSettingsPreferences(): Promise<WorkbenchPreferencesReply>;
   saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
@@ -749,6 +752,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'branding.logo.select' && exactKeys(payload, [])) return { ok: true, result: value as unknown as SelectCustomLogoRequest };
   if (value.command === 'preferences.get' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetWorkbenchPreferencesRequest };
+  if (value.command === 'preferences.settings.get' && exactKeys(payload, [])) return { ok: true, result: value as unknown as GetWorkbenchSettingsPreferencesRequest };
   if (value.command === 'preferences.save' && exactKeys(payload, ['preferences']) && normalizeWorkbenchPreferences(payload.preferences)) {
     return { ok: true, result: value as unknown as SaveWorkbenchPreferencesRequest };
   }
@@ -766,7 +770,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
     'vault.master.enable', 'vault.master.disable', 'vault.reset',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
-    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.save'].includes(value.command)) {
+    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -919,7 +923,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'macro.shortcut.delete') return record(value.result) && exactKeys(value.result, []);
     if (request.command === 'branding.logo.select') return record(value.result) && exactKeys(value.result, ['dataUrl']) &&
       isCustomLogoDataUrl(value.result.dataUrl);
-    if (request.command === 'preferences.get' || request.command === 'preferences.save') return isWorkbenchPreferences(value.result);
+    if (request.command === 'preferences.get') return isWorkbenchStartupPreferences(value.result);
+    if (request.command === 'preferences.settings.get' || request.command === 'preferences.save') return isCurrentWorkbenchPreferences(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

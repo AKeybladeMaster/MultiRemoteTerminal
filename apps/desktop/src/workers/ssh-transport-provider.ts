@@ -19,6 +19,7 @@ import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS 
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import { createSftpFileTransfers } from './sftp-file-transfers.ts';
+import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 
 const CONNECT_TIMEOUT_MS = 130_000;
 const MAX_TERMINAL_EVENT_CHARS = 16_384;
@@ -149,7 +150,9 @@ export function createSshTransportProvider(
   clients: SshTransportClientFactory,
   publish: (event: LocalTerminalEvent) => void,
   connectToDestination: (port: number, host: string) => Socket = connectTcp,
+  opensshAgentPipePath = WINDOWS_OPENSSH_AGENT_PIPE_PATH,
 ): SshTransportProvider {
+  if (!isWindowsOpenSshAgentPipePath(opensshAgentPipePath)) throw new SshTerminalProviderError('INVALID_REQUEST');
   const sessions = new Map<string, RuntimeSession>();
   const disconnectedUploadsByScope = new Map<string, Set<Promise<void>>>();
   const fileTransfers = createSftpFileTransfers();
@@ -603,8 +606,8 @@ export function createSshTransportProvider(
         config.privateKey = Buffer.from(hopCredentials.privateKey);
         config.passphrase = hopCredentials.passphrase;
         config.authHandler = ['publickey'];
-      } else if ('socketPath' in hopCredentials) {
-        config.agent = hopCredentials.socketPath;
+      } else if ('method' in hopCredentials) {
+        config.agent = opensshAgentPipePath;
         config.authHandler = ['agent'];
         config.agentForward = false;
       } else {

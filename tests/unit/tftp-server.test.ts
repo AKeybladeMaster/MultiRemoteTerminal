@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { createSocket } from 'node:dgram';
 import type { RemoteInfo, Socket } from 'node:dgram';
@@ -14,7 +14,7 @@ import { ReadOnlyTftpServer } from '../../apps/desktop/src/workers/tftp-server.t
 const selection = { absolutePath: 'C:\\fixtures\\firmware', folderName: 'firmware' };
 
 function readRequest(fileName: string): Buffer {
-  return Buffer.from(`\u0000\u0001${fileName}\u0000octet\u0000`, 'ascii');
+  return Buffer.concat([Buffer.from([0, 1]), Buffer.from(fileName, 'utf8'), Buffer.from([0]), Buffer.from('octet\0', 'ascii')]);
 }
 
 function sendPacket(socket: Socket, packet: Buffer, port: number): Promise<void> {
@@ -140,6 +140,31 @@ test('unexpected TFTP worker exit clears the running status', async () => {
   assert.deepEqual(controller.getStatus(), { state: 'stopped' });
   assert.deepEqual(events, ['running', 'stopped']);
   await controller.closeAll();
+});
+
+test('read-only TFTP serves a UTF-8 top-level filename longer than the former ASCII limit', async () => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), 'mrt-tftp-unicode-name-'));
+  const fileName = `report-${'界'.repeat(140)}-🙂.bin`;
+  const contents = Buffer.from('unicode filename payload');
+  await writeFile(join(rootDirectory, fileName), contents);
+  const server = new ReadOnlyTftpServer();
+  let client: Socket | undefined;
+  try {
+    const port = await server.start(rootDirectory, 0);
+    client = createSocket('udp4');
+    const responsePromise = receivePacket(client, 2_000);
+    await sendPacket(client, readRequest(fileName), port);
+    const response = await responsePromise;
+    assert.deepEqual([...response.packet.subarray(0, 4)], [0, 3, 0, 1]);
+    assert.deepEqual(response.packet.subarray(4), contents);
+  } finally {
+    try {
+      await server.stop();
+    } finally {
+      try { if (client) await closeUdpSocket(client); }
+      finally { await rm(rootDirectory, { recursive: true, force: true }); }
+    }
+  }
 });
 
 test('TFTP server bounds pending file opens and rejects the next request as busy', async () => {

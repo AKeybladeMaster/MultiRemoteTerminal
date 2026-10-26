@@ -78,7 +78,7 @@ class FakeProvider implements SshTerminalProvider {
   readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshAuthenticationCredentials }> = [];
   readonly privateKeyCopies: Buffer[] = [];
   readonly privateKeyPassphrases: string[] = [];
-  readonly agentSocketPaths: string[] = [];
+  readonly agentMethods: string[] = [];
   readonly passwords: string[] = [];
   readonly gatewayRoutes: SshHostEndpoint[][] = [];
   readonly gatewayCredentialRefs: Array<{ username: string; password: string }> = [];
@@ -99,7 +99,7 @@ class FakeProvider implements SshTerminalProvider {
     if ('privateKey' in credentials) {
       this.privateKeyCopies.push(Buffer.from(credentials.privateKey));
       this.privateKeyPassphrases.push(credentials.passphrase);
-    } else if ('socketPath' in credentials) this.agentSocketPaths.push(credentials.socketPath);
+    } else if ('method' in credentials) this.agentMethods.push(credentials.method);
     else this.passwords.push(credentials.password);
     this.gatewayRoutes.push(gatewayHops.map(hop => ({ ...hop.endpoint })));
     this.gatewayCredentialRefs.push(...gatewayHops.map(hop => hop.credentials));
@@ -112,7 +112,7 @@ class FakeProvider implements SshTerminalProvider {
     if ('privateKey' in credentials) {
       this.privateKeyCopies.push(Buffer.from(credentials.privateKey));
       this.privateKeyPassphrases.push(credentials.passphrase);
-    } else if ('socketPath' in credentials) this.agentSocketPaths.push(credentials.socketPath);
+    } else if ('method' in credentials) this.agentMethods.push(credentials.method);
     else this.passwords.push(credentials.password);
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
   }
@@ -383,7 +383,7 @@ test('SSH private-key bytes are cleared when controller validation rejects the o
   await controller.dispose();
 });
 
-test('SSH agent authentication asks only for a username and accepts only a local Windows named pipe', async () => {
+test('SSH agent authentication asks only for a username and passes an agent credential without OS endpoint details', async () => {
   const provider = new FakeProvider();
   const trust = new FakeTrust();
   trust.decision = { kind: 'trusted' };
@@ -394,24 +394,24 @@ test('SSH agent authentication asks only for a username and accepts only a local
       return { kind: 'provided', username: 'alice', secret: '' };
     }
   }, trust);
-  const socketPath = String.raw`\\.\pipe\openssh-ssh-agent`;
-  const selection = { method: 'agent' as const, socketPath };
+  const selection = { method: 'agent' as const };
 
   const opened = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], selection);
 
   assert.equal(opened.ok, true);
   assert.deepEqual(prompts, ['ssh-agent-username:SSH destination: server.example.net:22']);
-  assert.deepEqual(provider.agentSocketPaths, [socketPath]);
+  assert.deepEqual(provider.agentMethods, ['agent']);
   const credentials = provider.opened[0]?.credentials;
-  assert.ok(credentials && 'socketPath' in credentials);
-  if (credentials && 'socketPath' in credentials) {
-    assert.equal(credentials.socketPath, '');
+  assert.ok(credentials && 'method' in credentials);
+  if (credentials && 'method' in credentials) {
+    assert.equal(credentials.method, 'agent');
     assert.equal(credentials.username, '');
   }
+  const invalidSelection = { method: 'agent' as const, socketPath: String.raw`C:\Users\alice\agent.sock` };
   const invalidPath = await controller.openFiles('22222222-2222-4222-8222-222222222222', 'server.example.net', 22,
-    { method: 'agent', socketPath: 'C:\\Users\\alice\\agent.sock' });
+    invalidSelection);
   assert.equal(invalidPath.ok, false);
-  assert.deepEqual(provider.agentSocketPaths, [socketPath]);
+  assert.deepEqual(provider.agentMethods, ['agent']);
   await controller.dispose();
 });
 

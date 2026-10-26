@@ -4,7 +4,7 @@ import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/hos
 import { isTerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
-import { isSshAgentSocketPath, MAX_SSH_PRIVATE_KEY_BYTES } from '../../../../packages/application/src/ssh-terminals.ts';
+import { MAX_SSH_PRIVATE_KEY_BYTES } from '../../../../packages/application/src/ssh-terminals.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -91,7 +91,7 @@ function isPasswordCredentials(value: unknown): value is SshTerminalCredentials 
 
 function isAuthenticationCredentials(value: unknown): value is SshAuthenticationCredentials {
   if (isPasswordCredentials(value)) return true;
-  if (record(value) && exactKeys(value, ['username', 'socketPath']) && isUsername(value.username) && isSshAgentSocketPath(value.socketPath)) return true;
+  if (record(value) && exactKeys(value, ['username', 'method']) && isUsername(value.username) && value.method === 'agent') return true;
   return record(value) && exactKeys(value, ['username', 'privateKey', 'passphrase']) && isUsername(value.username) &&
     value.privateKey instanceof Uint8Array && value.privateKey.byteLength > 0 && value.privateKey.byteLength <= MAX_SSH_PRIVATE_KEY_BYTES &&
     typeof value.passphrase === 'string' && value.passphrase.length <= MAX_SSH_PASSWORD_LENGTH && !value.passphrase.includes('\0');

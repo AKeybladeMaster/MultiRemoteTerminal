@@ -62,7 +62,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
     setLoadFailed(false);
     setError(undefined);
     closeButton.current?.focus();
-    void window.multiRemoteTerminal.getWorkbenchPreferences().then(reply => {
+    void window.multiRemoteTerminal.getWorkbenchSettingsPreferences().then(reply => {
       if (!active) return;
       if (reply.ok) {
         setGreeting(reply.result.startupGreeting);

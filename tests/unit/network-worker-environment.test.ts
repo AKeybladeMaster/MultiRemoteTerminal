@@ -36,3 +36,13 @@ test('network worker environment accepts only an explicitly supplied FTP test CA
     MRT_E2E_FTP_CA: 'tests/fixtures/ftps-test-cert.pem'
   });
 });
+
+test('SSH worker environment receives only the explicitly selected agent pipe endpoint', () => {
+  const pipePath = String.raw`\\.\pipe\mrt-test-agent`;
+  assert.deepEqual(createNetworkWorkerEnvironment('installed-app', {
+    AWS_SECRET_ACCESS_KEY: 'must-not-cross-process-boundary'
+  }, undefined, pipePath), {
+    MRT_APP_ROOT: 'installed-app',
+    MRT_OPENSSH_AGENT_PIPE: pipePath
+  });
+});

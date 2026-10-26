@@ -2,9 +2,11 @@
 
 ## Implemented behavior
 
-SSH terminal and standalone SFTP opens accept an explicit agent authentication mode. The renderer sends only the typed mode; main selects the fixed Windows OpenSSH pipe, `\\.\pipe\openssh-ssh-agent`. Only the unpackaged, E2E-gated main-process hook can select a temporary pipe for its fixture.
+SSH terminal and standalone SFTP opens accept an explicit agent authentication mode. Renderer IPC and the application port carry the typed mode and username; neither includes a Windows pipe path. The composition root configures the fixed Windows OpenSSH pipe, `\\.\pipe\openssh-ssh-agent`, on the supervised SSH worker. Only the unpackaged, E2E-gated main-process hook can select a temporary pipe for its fixture.
 
 The native credential prompt collects the account username and requires the password field to be empty. The SSH utility worker passes the validated pipe to pinned `ssh2@1.17.0` as its agent, selects public-key agent authentication explicitly, and sets `agentForward: false`. Main, application and worker clear mutable credential fields and temporary references after handoff or authentication. No private key bytes enter the app in agent mode.
+
+The review follow-up keeps the Windows pipe endpoint out of the application authentication port and worker request. The main composition root supplies it only through the supervised utility worker environment; a bounded path validator lives with the Windows adapter. Startup preference IPC also omits the saved PowerShell script; only the explicit Settings read returns the full preference schema.
 
 ## Acceptance evidence
 
@@ -20,6 +22,7 @@ The native credential prompt collects the account username and requires the pass
 - `corepack pnpm lint` — passed, including import-boundary checks.
 - Focused SSH, broker, contract, worker-protocol and credential-prompt unit tests — 108/108 passed; follow-up controller and Windows helper tests — 22/22 passed.
 - `corepack pnpm build` — Windows x64 build passed. Vite reports the existing renderer bundle size advisory (956.81 kB).
+- Review follow-up validation: the focused SSH, broker, IPC, TFTP, and preference suite passed **172/172**; typecheck and lint passed. Windows agent-auth and the PowerShell settings/preview E2Es both passed (**1/1** each).
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SSH agent mode" --workers=1` — 1/1 Windows Electron E2E passed, covering terminal agent auth and standalone SFTP agent auth.
 - `git diff --check` — passed.
 

@@ -233,9 +233,9 @@ test('SSH provider performs public-key authentication and clears the key buffer 
 
 test('SSH provider uses the validated agent pipe for user authentication and never enables forwarding', async () => {
   const client = new FakeClient();
-  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
   const socketPath = String.raw`\\.\pipe\openssh-ssh-agent`;
-  const opened = provider.open(sessionId, endpoint, { username: 'alice', socketPath }, size, async () => true);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {}, undefined, socketPath);
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', method: 'agent' }, size, async () => true);
 
   assert.equal(client.config?.agent, socketPath);
   assert.deepEqual(client.config?.authHandler, ['agent']);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createBridge } from '../../apps/desktop/src/preload/client.ts';
 import { parseRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
-import { DEFAULT_WORKBENCH_PREFERENCES } from '../../packages/domain/src/workbench-preferences.ts';
+import { DEFAULT_WORKBENCH_PREFERENCES, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
 const id = () => '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
 const valid = { requestId: id(), ok: true, result: describeWorkbench({ version: '0.0.0', platform: 'win32' }) };
@@ -13,7 +13,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
@@ -22,7 +22,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'chooseTftpRoot',
     'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-    'selectCustomLogo', 'getWorkbenchPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+    'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
     'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
@@ -438,17 +438,21 @@ test('preload routes VNC launches only after its trusted dialog gesture', async 
 
 test('preload sends typed workbench preference commands and validates Unicode replies', async () => {
   const greeting = 'Terminal ready — こんにちは 👋';
-  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: greeting };
+  const preferences = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: greeting, powerShellProfileScript: 'Write-Output "private setting"' };
+  const startupPreferences = toWorkbenchStartupPreferences(preferences);
   const seen: unknown[] = [];
   const bridge = createBridge(async request => {
     seen.push(request);
-    return { requestId: request.requestId, ok: true, result: preferences };
+    return { requestId: request.requestId, ok: true,
+      result: request.command === 'preferences.get' ? startupPreferences : preferences };
   }, id);
-  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: preferences });
+  assert.deepEqual(await bridge.getWorkbenchPreferences(), { requestId: id(), ok: true, result: startupPreferences });
+  assert.deepEqual(await bridge.getWorkbenchSettingsPreferences(), { requestId: id(), ok: true, result: preferences });
   assert.deepEqual(await bridge.saveWorkbenchPreferences(preferences),
     { requestId: id(), ok: true, result: preferences });
   assert.deepEqual(seen, [
     { command: 'preferences.get', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'preferences.settings.get', requestId: id(), contractVersion: 1, payload: {} },
     { command: 'preferences.save', requestId: id(), contractVersion: 1, payload: { preferences } }
   ]);
 });

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type * as Ssh2 from 'ssh2';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshAuthenticationCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import { createSshTransportProvider } from './ssh-transport-provider.ts';
@@ -15,6 +16,8 @@ if (!parent) throw new Error('SSH worker requires an Electron utility process');
 
 const appRoot = process.env.MRT_APP_ROOT;
 if (!appRoot) throw new Error('SSH worker is missing its application root');
+const opensshAgentPipePath = process.env.MRT_OPENSSH_AGENT_PIPE ?? WINDOWS_OPENSSH_AGENT_PIPE_PATH;
+if (!isWindowsOpenSshAgentPipePath(opensshAgentPipePath)) throw new Error('SSH worker has an invalid OpenSSH agent endpoint');
 const loadFromApp = createRequire(join(appRoot, 'package.json'));
 const ssh2 = loadFromApp('ssh2') as typeof Ssh2;
 
@@ -48,7 +51,7 @@ function requestHostVerification(sessionId: string, endpoint: SshHostEndpoint, e
 const provider = createSshTransportProvider({
   create: () => new ssh2.Client(),
   parseHostKey: ssh2.utils.parseKey
-}, event => send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'event', event }));
+}, event => send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'event', event }), undefined, opensshAgentPipePath);
 
 function errorCode(error: unknown): SshWorkerErrorCode {
   if (error instanceof SshTerminalProviderError) return error.code;
@@ -175,8 +178,7 @@ function clearRequestCredentials(credentials: SshAuthenticationCredentials): voi
   if ('privateKey' in credentials) {
     credentials.privateKey.fill(0);
     credentials.passphrase = '';
-  } else if ('socketPath' in credentials) credentials.socketPath = '';
-  else credentials.password = '';
+  } else if (!('method' in credentials)) credentials.password = '';
 }
 
 parent.on('message', event => {
