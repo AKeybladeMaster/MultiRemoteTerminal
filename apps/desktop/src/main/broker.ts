@@ -63,6 +63,7 @@ export interface CommandActions {
   readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
   readonly consumeDroppedUpload: (context: RemoteFileDropContext, token: string) => DroppedUploadSelection | undefined;
+  readonly discardDroppedUploadHandles: (context: RemoteFileDropContext, tokens: readonly string[]) => void;
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
   readonly resolveSshTransferConflict: (direction: FileTransferDirection, fileName: string) => Promise<FileTransferConflictPolicy | undefined>;
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
@@ -238,6 +239,11 @@ export async function dispatchCommand(
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         return { requestId, ...await actions.sshTerminals.uploadRemoteFile(sessionId, operationId, selection.localPath, remoteDirectory,
           selection.fileName, conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
+      }
+      case 'files.drop.discard': {
+        const { sessionId, transport, remoteDirectory, tokens } = parsed.result.payload;
+        actions.discardDroppedUploadHandles({ sessionId, transport, remoteDirectory }, tokens);
+        return { requestId, ok: true, result: EMPTY_RESULT };
       }
       case 'ssh.files.download': {
         const { sessionId, operationId, remotePath } = parsed.result.payload;

@@ -93,6 +93,15 @@ export class DroppedUploadRegistry {
     return { localPath: handle.localPath, fileName: handle.fileName };
   }
 
+  discard(senderId: number, context: RemoteFileDropContext, tokens: readonly string[]): void {
+    this.prune();
+    for (const token of tokens) {
+      const handle = this.entries.get(token);
+      if (handle?.senderId === senderId && handle.sessionId === context.sessionId && handle.transport === context.transport &&
+          handle.remoteDirectory === context.remoteDirectory) this.entries.delete(token);
+    }
+  }
+
   clearSender(senderId: number): void {
     this.senderGeneration.set(senderId, (this.senderGeneration.get(senderId) ?? 0) + 1);
     for (const [token, handle] of this.entries) if (handle.senderId === senderId) this.entries.delete(token);

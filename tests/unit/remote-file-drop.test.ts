@@ -40,9 +40,21 @@ test('drop registration contract bounds paths and exposes only safe one-use meta
     assert.equal(batch.ok, true);
     assert.equal(registry.pendingCount, MAX_REMOTE_FILE_DROP_COUNT);
     assert.deepEqual(await registry.register(7, context, [path]), { ok: false, error: 'OUTPUT_LIMIT' });
+    if (batch.ok) {
+      const tokens = batch.result.map(file => file.token);
+      registry.discard(8, context, tokens);
+      registry.discard(7, { ...context, remoteDirectory: '/other' }, tokens);
+      assert.equal(registry.pendingCount, MAX_REMOTE_FILE_DROP_COUNT);
+      registry.discard(7, context, tokens.slice(0, 2));
+      assert.equal(registry.pendingCount, MAX_REMOTE_FILE_DROP_COUNT - 2);
+      registry.clearSender(7);
+      assert.equal(registry.pendingCount, 0);
+    }
+    const expiring = await registry.register(7, context, [path]);
+    assert.equal(expiring.ok, true);
     now += 10 * 60_000 + 1;
     assert.equal(registry.pendingCount, 0);
-    assert.equal(registry.consume(7, context, tokenFor(2)), undefined);
+    assert.equal(registry.consume(7, context, tokenFor(18)), undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -79,6 +91,7 @@ test('preload drop capture accepts trusted folder drops and rejects synthetic pa
   };
   const inner = { closest: pane.closest.bind(pane) };
   let registrations = 0;
+  let deliveredEvents = 0;
   let submittedPaths: readonly string[] | undefined;
   let eventResult: unknown;
   const store = installRemoteFileDropStore(documentTarget, () => 'C:\\private\\secret.txt', async request => {
@@ -87,8 +100,8 @@ test('preload drop capture accepts trusted folder drops and rejects synthetic pa
     if (!parsed.ok) return parsed;
     submittedPaths = parsed.result.localPaths;
     return { ...context, ok: true, result: [{ token: TOKEN_ID, fileName: 'secret.txt', size: 4 }] };
-  });
-  store.subscribe(event => { eventResult = event; });
+  }, () => {});
+  store.subscribe(event => { eventResult = event; deliveredEvents++; return true; });
   const fire = (isTrusted: boolean, count = 1, prevent: () => void = () => {}) => dropListener?.({
     type: 'drop', isTrusted, target: inner, dataTransfer: { files: Array.from({ length: count }, () => ({ name: 'secret.txt' })) }, preventDefault: prevent
   } as unknown as Event);
@@ -103,6 +116,7 @@ test('preload drop capture accepts trusted folder drops and rejects synthetic pa
   assert.equal(prevented, true);
   assert.equal(registrations, 1);
   assert.deepEqual(submittedPaths, ['C:\\private\\secret.txt']);
+  assert.equal(deliveredEvents, 1);
   assert.equal(isRemoteFileDropEvent(eventResult), true);
   assert.equal(JSON.stringify(eventResult).includes('C:\\private\\secret.txt'), false);
 
@@ -112,4 +126,35 @@ test('preload drop capture accepts trusted folder drops and rejects synthetic pa
   assert.equal((eventResult as { ok: boolean }).ok, false);
   store.dispose();
   assert.equal(removed, true);
+});
+
+test('preload discards a registered batch when no live subscriber accepts its event', async () => {
+  let dropListener: ((event: Event) => void) | undefined;
+  const documentTarget = {
+    addEventListener(_type: 'drop', listener: (event: Event) => void) { dropListener = listener; },
+    removeEventListener() { dropListener = undefined; }
+  };
+  const context = { sessionId: SESSION_ID, transport: 'sftp' as const, remoteDirectory: '/home/user' };
+  const target = {
+    closest(selector: string) { return selector === '[data-mrt-remote-file-drop-target="true"]' ? this : null; },
+    getAttribute(name: string) {
+      return name === 'data-mrt-remote-file-session-id' ? context.sessionId
+        : name === 'data-mrt-remote-file-transport' ? context.transport
+          : name === 'data-mrt-remote-file-directory' ? context.remoteDirectory : null;
+    }
+  };
+  let completeRegistration!: (result: unknown) => void;
+  const discarded: unknown[] = [];
+  const store = installRemoteFileDropStore(documentTarget, () => 'C:\\private\\secret.txt',
+    () => new Promise(resolve => { completeRegistration = resolve; }),
+    (dropContext, tokens) => { discarded.push({ context: dropContext, tokens }); });
+  const unsubscribe = store.subscribe(() => false);
+  dropListener?.({ type: 'drop', isTrusted: true, target, dataTransfer: { files: [{ name: 'secret.txt' }] }, preventDefault() {} } as unknown as Event);
+  unsubscribe();
+
+  completeRegistration({ ...context, ok: true, result: [{ token: TOKEN_ID, fileName: 'secret.txt', size: 4 }] });
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.deepEqual(discarded, [{ context, tokens: [TOKEN_ID] }]);
+  store.dispose();
 });

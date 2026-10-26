@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
+import { CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, CONTRACT_VERSION, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
   SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
+import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
 import { createBridge } from './client.ts';
 import { installRemoteFileDropStore } from './remote-file-drop.ts';
 import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore } from './paste-gesture.ts';
@@ -17,7 +18,9 @@ const rdpLaunchGestures = installExternalViewerLaunchGestureStore(document, 'rdp
 const vncLaunchGestures = installExternalViewerLaunchGestureStore(document, 'vnc', async (host, port) =>
   await ipcRenderer.invoke(VNC_LAUNCH_GESTURE_CHANNEL, { host, port }) === true);
 const remoteFileDrops = installRemoteFileDropStore(document, file => webUtils.getPathForFile(file as File), request =>
-  ipcRenderer.invoke(REMOTE_FILE_DROP_CHANNEL, request));
+  ipcRenderer.invoke(REMOTE_FILE_DROP_CHANNEL, request), (context: RemoteFileDropContext, tokens: readonly string[]) =>
+    ipcRenderer.invoke(COMMAND_CHANNEL, { command: 'files.drop.discard', requestId: globalThis.crypto.randomUUID(), contractVersion: CONTRACT_VERSION,
+      payload: { sessionId: context.sessionId, transport: context.transport, remoteDirectory: context.remoteDirectory, tokens } }));
 void ipcRenderer.invoke(REMOTE_FILE_DROP_TEST_CHANNEL).then(enabled => {
   if (enabled !== true) return;
   contextBridge.exposeInMainWorld('__mrtE2EFileDrop', Object.freeze({

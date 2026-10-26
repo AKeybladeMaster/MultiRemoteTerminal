@@ -26,7 +26,7 @@ export interface RemoteFileDropDocument {
 }
 
 export interface RemoteFileDropStore {
-  subscribe(listener: (event: unknown) => void): () => void;
+  subscribe(listener: (event: unknown) => boolean): () => void;
   simulateDropFromTest(files: readonly unknown[], target: unknown): void;
   dispose(): void;
 }
@@ -45,14 +45,23 @@ export function installRemoteFileDropStore(
   documentTarget: RemoteFileDropDocument,
   getPathForFile: (file: unknown) => string,
   register: (request: unknown) => Promise<unknown>,
+  discard: (context: RemoteFileDropContextAttributes, tokens: readonly string[]) => unknown,
 ): RemoteFileDropStore {
-  const listeners = new Set<(event: unknown) => void>();
+  const listeners = new Set<(event: unknown) => boolean>();
   let disposed = false;
 
-  const notify = (event: RemoteFileDropEvent): void => {
+  const notify = (event: RemoteFileDropEvent): boolean => {
+    let accepted = false;
     for (const listener of listeners) {
-      try { listener(event); } catch { /* Renderer callbacks cannot affect file-handle ownership. */ }
+      try { if (listener(event) === true) accepted = true; } catch { /* Renderer callbacks cannot affect file-handle ownership. */ }
     }
+    return accepted;
+  };
+
+  const discardRegisteredResult = (event: RemoteFileDropEvent & { readonly ok: true }): void => {
+    const context = { sessionId: event.sessionId, transport: event.transport, remoteDirectory: event.remoteDirectory };
+    try { void Promise.resolve(discard(context, event.result.map(file => file.token))).catch(() => {}); }
+    catch { /* Expiry and renderer teardown remain bounded fallbacks for failed cleanup IPC. */ }
   };
 
   const contextFor = (event: TrustedFileDropEvent): RemoteFileDropContextAttributes | undefined => {
@@ -86,9 +95,18 @@ export function installRemoteFileDropStore(
     }
     void register(parsed.result).then(result => {
       if (disposed) return;
-      if (isRemoteFileDropEvent(result) && result.sessionId === context.sessionId && result.transport === context.transport &&
-          result.remoteDirectory === context.remoteDirectory) notify(result);
-      else notify({ ...context, ...failure('UNAVAILABLE') });
+      if (!isRemoteFileDropEvent(result)) {
+        notify({ ...context, ...failure('UNAVAILABLE') });
+        return;
+      }
+      if (result.sessionId !== context.sessionId || result.transport !== context.transport || result.remoteDirectory !== context.remoteDirectory) {
+        if (result.ok) discardRegisteredResult(result);
+        notify({ ...context, ...failure('UNAVAILABLE') });
+        return;
+      }
+      if (result.ok) {
+        if (!notify(result)) discardRegisteredResult(result);
+      } else notify(result);
     }, () => {
       if (!disposed) notify({ ...context, ...failure('UNAVAILABLE') });
     });
@@ -97,7 +115,7 @@ export function installRemoteFileDropStore(
   const observeDrop = (event: Event): void => handleDrop(event);
   documentTarget.addEventListener('drop', observeDrop, true);
   return Object.freeze({
-    subscribe(listener: (event: unknown) => void): () => void {
+    subscribe(listener: (event: unknown) => boolean): () => void {
       if (typeof listener !== 'function' || disposed) return () => {};
       listeners.add(listener);
       return () => listeners.delete(listener);

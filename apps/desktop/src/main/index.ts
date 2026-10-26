@@ -543,6 +543,9 @@ function boot(): void {
         consumeDroppedUpload(context, token) {
           return droppedUploads.consume(event.sender.id, context, token);
         },
+        discardDroppedUploadHandles(context, tokens) {
+          droppedUploads.discard(event.sender.id, context, tokens);
+        },
         async selectSshDownloadPath(fileName: string) {
           const e2eRoot = e2eTransferPath('--mrt-e2e-sftp-download-root=', '--mrt-e2e-sftp-transfers');
           if (e2eRoot) return join(e2eRoot, safeFtpDownloadName(fileName));
