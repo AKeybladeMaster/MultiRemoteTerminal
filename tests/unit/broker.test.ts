@@ -417,6 +417,49 @@ test('SFTP broker resolves selected SSH gateway profiles without opening a termi
     gateways: [{ host: 'gateway.example.net', port: 2201 }] }]);
 });
 
+test('tunnel broker resolves saved SSH gateways against the tunnel profile before startup', async () => {
+  const tunnelId = '33333333-3333-4333-8333-333333333333';
+  const targetId = '44444444-4444-4444-8444-444444444444';
+  const gatewayOneId = '11111111-1111-4111-8111-111111111111';
+  const gatewayTwoId = '22222222-2222-4222-8222-222222222222';
+  const badGatewayId = '55555555-5555-4555-8555-555555555555';
+  const definition = { id: tunnelId, sessionId: targetId, name: 'Database', mode: 'local' as const, bindHost: '127.0.0.1' as const,
+    bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
+  const profiles = new Map([
+    [targetId, { ...emptySavedSession, id: targetId, kind: 'ssh' as const, name: 'Target', host: 'target.example.net', port: 22 }],
+    [gatewayOneId, { ...emptySavedSession, id: gatewayOneId, kind: 'ssh' as const, name: 'Gateway one', host: 'first.example.net', port: 2201 }],
+    [gatewayTwoId, { ...emptySavedSession, id: gatewayTwoId, kind: 'ssh' as const, name: 'Gateway two', host: 'second.example.net', port: 2202 }],
+    [badGatewayId, { ...emptySavedSession, id: badGatewayId, kind: 'sftp' as const, name: 'SFTP profile', host: 'files.example.net', port: 22 }]
+  ]);
+  const starts: unknown[] = [];
+  const base = actions();
+  const routed: CommandActions = { ...base,
+    sessionCatalog: { ...base.sessionCatalog, async get(id) {
+      const found = profiles.get(id as string);
+      return found ? { ok: true, result: found } : { ok: false, error: { code: 'NOT_FOUND', target: 'application', retryable: false } };
+    } },
+    tunnels: { ...base.tunnels,
+      async list() { return { ok: true, result: [{ definition, status: { tunnelId, state: 'stopped' as const } }] }; },
+      async start(id, cancellation, gateways) {
+        starts.push({ id, cancellation, gateways });
+        return { ok: true, result: { tunnelId: id as string, state: 'active' as const, bindHost: '127.0.0.1' as const, bindPort: 52000 } };
+      }
+    }
+  };
+  const reply = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,
+    payload: { id: tunnelId, gatewayProfileIds: [gatewayOneId, gatewayTwoId] } }, routed, () => {});
+  assert.equal(reply.ok, true);
+  assert.deepEqual(starts, [{ id: tunnelId, cancellation: undefined, gateways: [
+    { host: 'first.example.net', port: 2201 }, { host: 'second.example.net', port: 2202 }
+  ] }]);
+
+  const rejected = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,
+    payload: { id: tunnelId, gatewayProfileIds: [badGatewayId] } }, routed, () => {});
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.error.code, 'INVALID_REQUEST');
+  assert.equal(starts.length, 1, 'a non-SSH saved profile is rejected before the tunnel controller starts');
+});
+
 test('macro catalog commands reach only the typed catalog and count as user activity', async () => {
   const calls: string[] = [];
   const updateCalls: unknown[] = [];

@@ -1799,9 +1799,21 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const clients = new Set<Ssh2FixtureClient>();
   const relaySockets = new Set<Socket>();
+  const tunneledSockets = new Set<Socket>();
   const fixtureEvents: string[] = [];
   const sftpRoot = join(profile, 'remote-sftp');
   let sftpRequests = 0;
+  let targetEchoPort: number | undefined;
+  let tunneledBytes = 0;
+  const targetEchoServer = createServer(socket => {
+    tunneledSockets.add(socket);
+    socket.once('close', () => tunneledSockets.delete(socket));
+    socket.on('error', () => {});
+    socket.on('data', data => {
+      tunneledBytes += data.length;
+      socket.write(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), data]));
+    });
+  });
   const servers: Array<{ readonly name: string; readonly server: Ssh2FixtureServer; address?: AddressInfo }> = [];
   const createFixture = (name: string, role: 'gateway' | 'terminal' | 'sftp'): Ssh2FixtureServer => {
     const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
@@ -1840,6 +1852,28 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
           socket.once('connect', () => fixtureEvents.push(`${name}:relay:${info.destPort}`));
           channel.pipe(socket).pipe(channel);
         });
+        if (role === 'terminal') client.on('tcpip', (acceptChannel: () => Duplex, rejectChannel: () => void, rawInfo: unknown) => {
+          const info = rawInfo as { readonly destIP: string; readonly destPort: number };
+          if (info.destIP !== '127.0.0.1' || info.destPort !== targetEchoPort) {
+            fixtureEvents.push(`target:rejected:${info.destIP}:${info.destPort}`);
+            rejectChannel();
+            return;
+          }
+          fixtureEvents.push('target:tunnel-forward');
+          const channel = acceptChannel();
+          const socket = connectTcp(info.destPort, '127.0.0.1');
+          tunneledSockets.add(socket);
+          socket.once('close', () => tunneledSockets.delete(socket));
+          const closeForward = (): void => {
+            if (!socket.destroyed) socket.destroy();
+            if (!channel.destroyed) channel.destroy();
+          };
+          socket.once('error', closeForward);
+          socket.once('close', closeForward);
+          channel.once('error', closeForward);
+          channel.once('close', closeForward);
+          channel.pipe(socket).pipe(channel);
+        });
         if (role !== 'gateway') client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
           const session = acceptSession();
           if (role === 'terminal') {
@@ -1866,13 +1900,27 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     return server;
   };
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let targetEchoListening = false;
   try {
     await mkdir(sftpRoot);
     await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through two SSH gateways');
+    await new Promise<void>((resolveListen, rejectListen) => {
+      targetEchoServer.once('error', rejectListen);
+      targetEchoServer.listen(0, '127.0.0.1', () => {
+        const address = targetEchoServer.address();
+        if (!address || typeof address === 'string') { rejectListen(new Error('The tunnel destination did not bind a loopback port')); return; }
+        targetEchoPort = address.port;
+        targetEchoListening = true;
+        resolveListen();
+      });
+    });
     createFixture('gateway-one', 'gateway');
     createFixture('gateway-two', 'gateway');
     createFixture('target', 'terminal');
     createFixture('sftp-target', 'sftp');
+    createFixture('tunnel-gateway-one', 'gateway');
+    createFixture('tunnel-gateway-two', 'gateway');
+    createFixture('tunnel-target', 'terminal');
     for (const fixture of servers) {
       await new Promise<void>((resolveListen, rejectListen) => {
         fixture.server.once('error', rejectListen);
@@ -1888,7 +1936,12 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const gatewayTwoPort = servers[1]?.address?.port;
     const targetPort = servers[2]?.address?.port;
     const sftpTargetPort = servers[3]?.address?.port;
-    if (!gatewayOnePort || !gatewayTwoPort || !targetPort || !sftpTargetPort) throw new Error('The SSH route fixture did not expose all ports');
+    const tunnelGatewayOnePort = servers[4]?.address?.port;
+    const tunnelGatewayTwoPort = servers[5]?.address?.port;
+    const tunnelTargetPort = servers[6]?.address?.port;
+    if (!gatewayOnePort || !gatewayTwoPort || !targetPort || !sftpTargetPort || !tunnelGatewayOnePort || !tunnelGatewayTwoPort || !tunnelTargetPort) {
+      throw new Error('The SSH route fixture did not expose all ports');
+    }
 
     app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -1899,7 +1952,10 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway one', host: '127.0.0.1', port: ports.gatewayOne }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway two', host: '127.0.0.1', port: ports.gatewayTwo }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Target profile', host: '127.0.0.1', port: ports.target }),
-        window.multiRemoteTerminal.createSavedSession({ kind: 'sftp', name: 'SFTP target profile', host: '127.0.0.1', port: ports.sftpTarget })
+        window.multiRemoteTerminal.createSavedSession({ kind: 'sftp', name: 'SFTP target profile', host: '127.0.0.1', port: ports.sftpTarget }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway one', host: '127.0.0.1', port: ports.tunnelGatewayOne }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway two', host: '127.0.0.1', port: ports.tunnelGatewayTwo }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel target', host: '127.0.0.1', port: ports.tunnelTarget })
       ]);
       const ids: string[] = [];
       for (const reply of replies) {
@@ -1907,8 +1963,9 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
         ids.push(reply.result.id);
       }
       return ids;
-    }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort, sftpTarget: sftpTargetPort });
-    expect(profileIds).toHaveLength(4);
+    }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort, sftpTarget: sftpTargetPort,
+      tunnelGatewayOne: tunnelGatewayOnePort, tunnelGatewayTwo: tunnelGatewayTwoPort, tunnelTarget: tunnelTargetPort });
+    expect(profileIds).toHaveLength(7);
     await page.reload();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
 
@@ -1997,11 +2054,79 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
+
+    if (!targetEchoPort) throw new Error('The tunnel target fixture did not bind');
+    const savedTunnel = await page.evaluate(async ({ targetSessionId, destinationPort }) =>
+      window.multiRemoteTerminal.saveSshTunnel({ sessionId: targetSessionId, name: 'Two-hop TCP check', mode: 'local', bindHost: '127.0.0.1',
+        bindPort: 0, targetHost: '127.0.0.1', targetPort: destinationPort }),
+    { targetSessionId: profileIds[6]!, destinationPort: targetEchoPort });
+    expect(savedTunnel.ok).toBe(true);
+    await page.getByTestId('tunnel-manager-open').click();
+    const tunnelDialog = page.getByRole('dialog', { name: 'Port forwarding' });
+    await expect(tunnelDialog.getByRole('button', { name: 'Start tunnel' })).toBeVisible();
+    await tunnelDialog.getByRole('button', { name: 'Start through gateways' }).click();
+    await tunnelDialog.getByLabel('SSH gateway 1').selectOption(profileIds[4]!);
+    await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
+    const shellCountBeforeTunnel = fixtureEvents.filter(event => event.endsWith(':shell')).length;
+    const sftpRequestsBeforeTunnel = sftpRequests;
+    await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
+    const expectedTrustPorts = [tunnelGatewayOnePort, tunnelGatewayTwoPort, tunnelTargetPort].map(String);
+    const approvedTrustPorts: string[] = [];
+    for (let hop = 0; hop < expectedTrustPorts.length; hop += 1) {
+      const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+      await expect(trust).toBeVisible({ timeout: 15_000 });
+      const facts = await trust.locator('.ssh-host-facts').textContent() ?? '';
+      const observedPort = facts.match(/127\.0\.0\.1:(\d+)/)?.[1];
+      expect(observedPort).toBeDefined();
+      expect(expectedTrustPorts).toContain(observedPort);
+      expect(approvedTrustPorts).not.toContain(observedPort);
+      if (observedPort) approvedTrustPorts.push(observedPort);
+      await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+    }
+    expect([...approvedTrustPorts].sort()).toEqual([...expectedTrustPorts].sort());
+    await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Active', { timeout: 25_000 });
+    expect(fixtureEvents).toContain(`tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`);
+    expect(fixtureEvents).toContain(`tunnel-gateway-two:relay:${tunnelTargetPort}`);
+    expect(fixtureEvents.filter(event => event.endsWith(':shell'))).toHaveLength(shellCountBeforeTunnel);
+    expect(sftpRequests).toBe(sftpRequestsBeforeTunnel);
+
+    const tunnelPort = await page.evaluate(async () => {
+      const reply = await window.multiRemoteTerminal.listSshTunnels();
+      if (!reply.ok) throw new Error(`Tunnel status query failed (${reply.error.code})`);
+      const active = reply.result.find(item => item.status.state === 'active');
+      if (!active || active.status.state !== 'active') throw new Error('Gateway routed tunnel did not become active');
+      return active.status.bindPort;
+    });
+    const payload = 'exact-forwarded-bytes';
+    const echoed = await new Promise<string>((resolveEcho, rejectEcho) => {
+      const socket = connectTcp(tunnelPort, '127.0.0.1');
+      let received = '';
+      const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for the gateway-routed forward')); }, 10_000);
+      socket.once('error', error => { clearTimeout(timer); rejectEcho(error); });
+      socket.once('connect', () => socket.write(Buffer.from(payload)));
+      socket.on('data', chunk => {
+        received += chunk.toString('utf8');
+        if (received.includes(`MRT-GATEWAY-TUNNEL:${payload}`)) {
+          clearTimeout(timer);
+          socket.destroy();
+          resolveEcho(received);
+        }
+      });
+    });
+    expect(echoed).toContain(`MRT-GATEWAY-TUNNEL:${payload}`);
+    expect(tunneledBytes).toBe(Buffer.byteLength(payload));
+    expect(fixtureEvents).toContain('target:tunnel-forward');
+    await tunnelDialog.getByRole('button', { name: 'Stop tunnel' }).click();
+    await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Stopped', { timeout: 15_000 });
+    await expect.poll(() => relaySockets.size).toBe(0);
+    await expect.poll(() => tunneledSockets.size).toBe(0);
   } finally {
     await app?.close();
     for (const client of clients) client.end();
     for (const socket of relaySockets) socket.destroy();
+    for (const socket of tunneledSockets) socket.destroy();
     for (const fixture of servers) await new Promise<void>(resolveClose => fixture.server.close(() => resolveClose()));
+    if (targetEchoListening) await new Promise<void>(resolveClose => targetEchoServer.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

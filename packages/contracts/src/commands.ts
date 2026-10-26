@@ -190,7 +190,7 @@ export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string
   readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number } |
   { readonly id?: string; readonly sessionId: string; readonly name: string; readonly mode: 'dynamic'; readonly bindHost: '127.0.0.1'; readonly bindPort: number }>;
 export type DeleteSshTunnelRequest = Request<'tunnel.delete', { readonly id: string }>;
-export type StartSshTunnelRequest = Request<'tunnel.start', { readonly id: string }>;
+export type StartSshTunnelRequest = Request<'tunnel.start', { readonly id: string; readonly gatewayProfileIds?: readonly string[] }>;
 export type StopSshTunnelRequest = Request<'tunnel.stop', { readonly id: string }>;
 export type ListMacrosRequest = Request<'macro.list', Record<string, never>>;
 export type CreateMacroRequest = Request<'macro.create', { readonly name: string; readonly description?: string; readonly steps: MacroDraft['steps'] }>;
@@ -383,7 +383,7 @@ export interface DesktopBridge {
   listSshTunnels(): Promise<ListSshTunnelsReply>;
   saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply>;
   deleteTunnel(id: string): Promise<TerminalActionReply>;
-  startTunnel(id: string): Promise<TunnelStatusReply>;
+  startTunnel(id: string, gatewayProfileIds?: readonly string[]): Promise<TunnelStatusReply>;
   stopTunnel(id: string): Promise<TunnelStatusReply>;
   listMacros(): Promise<ListMacrosReply>;
   createMacro(draft: MacroDraft): Promise<MacroDefinitionReply>;
@@ -736,10 +736,14 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSshTunnelsRequest };
   if (value.command === 'tunnel.save' && normalizeSshTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveSshTunnelRequest };
-  if ((value.command === 'tunnel.delete' || value.command === 'tunnel.start' || value.command === 'tunnel.stop') &&
+  const tunnelStartHasGateways = value.command === 'tunnel.start' && Object.hasOwn(payload, 'gatewayProfileIds');
+  if (value.command === 'tunnel.start' && exactKeys(payload, ['id', ...(tunnelStartHasGateways ? ['gatewayProfileIds'] : [])]) &&
+      isTunnelId(payload.id) && (!tunnelStartHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds))) {
+    return { ok: true, result: value as unknown as StartSshTunnelRequest };
+  }
+  if ((value.command === 'tunnel.delete' || value.command === 'tunnel.stop') &&
       exactKeys(payload, ['id']) && isTunnelId(payload.id)) {
     if (value.command === 'tunnel.delete') return { ok: true, result: value as unknown as DeleteSshTunnelRequest };
-    if (value.command === 'tunnel.start') return { ok: true, result: value as unknown as StartSshTunnelRequest };
     return { ok: true, result: value as unknown as StopSshTunnelRequest };
   }
   if (value.command === 'macro.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListMacrosRequest };

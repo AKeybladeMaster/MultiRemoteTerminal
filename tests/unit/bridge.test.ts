@@ -46,9 +46,11 @@ test('preload routes tunnel manager requests and validates runtime status events
   const definition = { id: tunnelId, sessionId: savedSessionId, name: 'Database', mode: 'local' as const, bindHost: '127.0.0.1' as const,
     bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
   const seen: string[] = [];
+  const tunnelStartPayloads: unknown[] = [];
   let deliverStatus: ((value: unknown) => void) | undefined;
   const bridge = createBridge(async request => {
     seen.push(request.command);
+    if (request.command === 'tunnel.start') tunnelStartPayloads.push(request.payload);
     const result = request.command === 'tunnel.list' ? [{ definition, status: { tunnelId, state: 'stopped' } }]
       : request.command === 'tunnel.save' ? definition
       : request.command === 'tunnel.start' ? { tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 }
@@ -62,6 +64,8 @@ test('preload routes tunnel manager requests and validates runtime status events
   assert.equal((await bridge.saveSshTunnel({ sessionId: savedSessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: 'db.internal', targetPort: 5432 })).ok, true);
   assert.equal((await bridge.startTunnel(tunnelId)).ok, true);
+  const gatewayIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  assert.equal((await bridge.startTunnel(tunnelId, gatewayIds)).ok, true);
   assert.equal((await bridge.stopTunnel(tunnelId)).ok, true);
   assert.equal((await bridge.deleteTunnel(tunnelId)).ok, true);
   let statuses = 0;
@@ -69,7 +73,8 @@ test('preload routes tunnel manager requests and validates runtime status events
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 });
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 });
   unsubscribe();
-  assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
+  assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
+  assert.deepEqual(tunnelStartPayloads, [{ id: tunnelId }, { id: tunnelId, gatewayProfileIds: gatewayIds }]);
   assert.equal(statuses, 1);
 });
 

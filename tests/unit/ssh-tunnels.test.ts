@@ -26,7 +26,8 @@ function harness(overrides: {
   saved.set(tunnelId, definition);
   const events: TunnelStatusEvent[] = [];
   const sshEvents = new Set<(event: LocalTerminalEvent) => void>();
-  const calls = { opened: [] as string[], closed: [] as string[], forwarded: [] as string[], forwardModes: [] as string[], stopped: [] as string[] };
+  const calls = { opened: [] as string[], gatewayRoutes: [] as (readonly { readonly host: string; readonly port: number }[])[],
+    closed: [] as string[], forwarded: [] as string[], forwardModes: [] as string[], stopped: [] as string[] };
   const catalog: SshTunnelCatalog = {
     async listSshTunnels() { return [...saved.values()]; },
     async getSshTunnel(id) { return overrides.getTunnel ? overrides.getTunnel(id) : saved.get(id); },
@@ -41,9 +42,11 @@ function harness(overrides: {
     return overrides.getProfile ? overrides.getProfile(id) : id === profileId ? profile : undefined;
   } };
   const ssh: Pick<SshTerminalController, 'openFiles' | 'close' | 'subscribe'> = {
-    async openFiles(sessionId) {
+    async openFiles(sessionId, host, port, authentication, gateways) {
       calls.opened.push(sessionId);
-      return overrides.open ? overrides.open(sessionId, 'gateway.test', 22) : { ok: true, result: { sessionId, endpoint: { host: 'gateway.test', port: 22 }, state: 'running' } };
+      calls.gatewayRoutes.push(gateways ?? []);
+      return overrides.open ? overrides.open(sessionId, host, port, authentication, gateways)
+        : { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
     },
     async close(sessionId) { calls.closed.push(sessionId); return { ok: true, result: {} }; },
     subscribe(listener) { sshEvents.add(listener); return () => sshEvents.delete(listener); }
@@ -73,6 +76,55 @@ test('local tunnel starts through a files-only SSH runtime and closes both liste
   assert.deepEqual(calls.closed, [runtimeId]);
   assert.deepEqual(events.map(event => event.state), ['starting', 'active', 'stopping', 'stopped']);
   assert.equal((await controller.list()).ok, true);
+  await controller.dispose();
+});
+
+test('saved tunnel gateway routes reach the files-only SSH open in route order', async () => {
+  const target = { ...profile, host: 'target.test', port: 2222 };
+  const gateways = [{ host: 'jump-one.test', port: 2201 }, { host: 'jump-two.test', port: 2202 }];
+  const { controller, calls } = harness({ getProfile: async () => target });
+
+  const result = await controller.start(tunnelId, undefined, gateways);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.gatewayRoutes, [gateways]);
+  assert.equal(calls.forwarded.length, 1);
+  await controller.stop(tunnelId);
+  await controller.dispose();
+});
+
+test('tunnel gateway routes reject endpoint overlap before opening SSH', async () => {
+  const { controller, calls } = harness();
+
+  const result = await controller.start(tunnelId, undefined, [{ host: 'GATEWAY.TEST.', port: 22 }]);
+
+  assert.deepEqual(result, { ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
+  assert.deepEqual(calls.opened, []);
+  await controller.dispose();
+});
+
+test('same-route concurrent tunnel starts coalesce while a different route is busy', async () => {
+  let releaseOpen!: (value: Awaited<ReturnType<SshTerminalController['openFiles']>>) => void;
+  const target = { ...profile, host: 'target.test', port: 2222 };
+  const open: SshTerminalController['openFiles'] = (sessionId, host, port) => new Promise(resolve => {
+    assert.equal(sessionId, runtimeId);
+    assert.equal(host, target.host);
+    assert.equal(port, target.port);
+    releaseOpen = resolve;
+  });
+  const { controller, calls } = harness({ getProfile: async () => target, open });
+  const firstRoute = [{ host: 'JUMP-ONE.TEST.', port: 2201 }];
+  const first = controller.start(tunnelId, undefined, firstRoute);
+  await new Promise(resolve => setImmediate(resolve));
+  const same = controller.start(tunnelId, undefined, [{ host: 'jump-one.test', port: 2201 }]);
+  const different = await controller.start(tunnelId, undefined, [{ host: 'jump-two.test', port: 2202 }]);
+  assert.deepEqual(different, { ok: false, error: { code: 'BUSY', target: 'terminal', retryable: true } });
+
+  releaseOpen({ ok: true, result: { sessionId: runtimeId, endpoint: { host: target.host, port: target.port }, state: 'running' } });
+  const [firstResult, sameResult] = await Promise.all([first, same]);
+  assert.deepEqual(sameResult, firstResult);
+  assert.equal(calls.opened.length, 1);
+  await controller.stop(tunnelId);
   await controller.dispose();
 });
 

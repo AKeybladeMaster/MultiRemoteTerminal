@@ -650,8 +650,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     deleteTunnel(id: string): Promise<TerminalActionReply> {
       return send(voidRequest('tunnel.delete', { id }), 8_000);
     },
-    startTunnel(id: string): Promise<TunnelStatusReply> {
-      return send({ command: 'tunnel.start', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, SSH_OPEN_TIMEOUT_MS);
+    startTunnel(id: string, gatewayProfileIds?: readonly string[]): Promise<TunnelStatusReply> {
+      return send({ command: 'tunnel.start', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { id, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }) } },
+      sshOpenTimeout(gatewayProfileIds?.length ?? 0));
     },
     stopTunnel(id: string): Promise<TunnelStatusReply> {
       return send({ command: 'tunnel.stop', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { id } }, 10_000);
