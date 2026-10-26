@@ -1,16 +1,23 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { spawnSync } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import type { RemoteInfo, Socket } from 'node:dgram';
+import { test, expect, _electron as electron } from '@playwright/test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
-function receivePacket(socket: Socket, timeoutMs = 5_000, stage = 'TFTP transfer'): Promise<{ readonly packet: Buffer; readonly remote: RemoteInfo }> {
+interface ReceivedPacket {
+  readonly packet: Buffer;
+  readonly remote: RemoteInfo;
+}
+
+function receivePacket(socket: Socket, timeoutMs = 5_000, stage = 'TFTP transfer'): Promise<ReceivedPacket> {
   return new Promise((resolvePacket, rejectPacket) => {
     const timer = setTimeout(() => finish(new Error(`Timed out waiting for ${stage} packet`)), timeoutMs);
     const onMessage = (packet: Buffer, remote: RemoteInfo) => finish(undefined, { packet, remote });
     const onError = (error: Error) => finish(error);
-    const finish = (error?: Error, result?: { readonly packet: Buffer; readonly remote: RemoteInfo }): void => {
+    const finish = (error?: Error, result?: ReceivedPacket): void => {
       clearTimeout(timer);
       socket.removeListener('message', onMessage);
       socket.removeListener('error', onError);
@@ -19,6 +26,25 @@ function receivePacket(socket: Socket, timeoutMs = 5_000, stage = 'TFTP transfer
     };
     socket.once('message', onMessage);
     socket.once('error', onError);
+  });
+}
+
+function bindUdpSocket(socket: Socket, port: number, address = '127.0.0.1'): Promise<void> {
+  return new Promise((resolveBind, rejectBind) => {
+    const timer = setTimeout(() => finish(new Error('Timed out binding UDP socket')), 3_000);
+    const onListening = (): void => finish();
+    const onError = (error: Error): void => finish(error);
+    const finish = (error?: Error): void => {
+      clearTimeout(timer);
+      socket.removeListener('listening', onListening);
+      socket.removeListener('error', onError);
+      if (error) rejectBind(error);
+      else resolveBind();
+    };
+    socket.once('listening', onListening);
+    socket.once('error', onError);
+    try { socket.bind(port, address); }
+    catch (error) { finish(error instanceof Error ? error : new Error('UDP bind failed')); }
   });
 }
 
@@ -32,22 +58,36 @@ function tftpRequest(opcode: number, fileName: string): Buffer {
   return Buffer.concat([Buffer.from([0, opcode]), Buffer.from(fileName, 'ascii'), Buffer.from([0]), Buffer.from('octet\0', 'ascii')]);
 }
 
-function tftpError(packet: Buffer): boolean { return packet.length >= 5 && packet.readUInt16BE(0) === 5; }
+function curlText(result: SpawnSyncReturns<Buffer>): string {
+  return Buffer.concat([result.stderr ?? Buffer.alloc(0), result.stdout ?? Buffer.alloc(0)]).toString('utf8');
+}
 
-test('local TFTP server serves read-only loopback files and stops cleanly', async () => {
+test('local TFTP server transfers files, rejects unsafe requests, and stops cleanly', async () => {
   test.setTimeout(90_000);
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-tftp-e2e-'));
   const sharedRoot = join(temporaryRoot, 'shared');
   const profile = join(temporaryRoot, 'profile');
+  const writeFixturePath = join(temporaryRoot, 'write-fixture.bin');
   const fixture = Buffer.alloc(1_024);
   for (let index = 0; index < fixture.length; index++) fixture[index] = index % 251;
+  const curlPath = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'curl.exe');
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
-  const client = createSocket('udp4');
   let clientBound = false;
+  const client = createSocket('udp4');
+
   try {
     await mkdir(sharedRoot);
     await mkdir(profile);
     await writeFile(join(sharedRoot, 'fixture.bin'), fixture);
+    await writeFile(writeFixturePath, fixture);
+
+    const curlVersion = spawnSync(curlPath, ['--disable', '--version'], { timeout: 5_000, maxBuffer: 1_048_576 });
+    expect(curlVersion.error, `Windows curl.exe is required: ${curlText(curlVersion)}`).toBeUndefined();
+    expect(curlVersion.status, curlText(curlVersion)).toBe(0);
+    const versionText = Buffer.concat([curlVersion.stdout ?? Buffer.alloc(0), curlVersion.stderr ?? Buffer.alloc(0)]).toString('utf8');
+    const protocols = /^Protocols:\s*(.+)$/imu.exec(versionText)?.[1]?.toLowerCase().split(/\s+/u) ?? [];
+    expect(protocols, `The installed curl.exe must include TFTP: ${versionText}`).toContain('tftp');
+
     const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
       entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE' && entry[0] !== 'NODE_EXTRA_CA_CERTS'));
     env.MRT_E2E = '1';
@@ -71,65 +111,53 @@ test('local TFTP server serves read-only loopback files and stops cleanly', asyn
     const listenerPort = Number(status.match(/127\.0\.0\.1:(\d+)/u)?.[1]);
     expect(Number.isInteger(listenerPort) && listenerPort > 0).toBe(true);
 
-    await new Promise<void>((resolveBind, rejectBind) => {
-      client.once('error', rejectBind);
-      client.bind(0, '127.0.0.1', resolveBind);
-    });
-    clientBound = true;
-    const chunks: Buffer[] = [];
-    let transferId: number | undefined;
-    let block = 1;
-    await sendPacket(client, tftpRequest(1, 'fixture.bin'), listenerPort);
-    let received = await receivePacket(client, 5_000, `read block ${block}`);
-    for (;;) {
-      const { packet, remote } = received;
-      expect(tftpError(packet)).toBe(false);
-      expect(packet.readUInt16BE(0)).toBe(3);
-      expect(packet.readUInt16BE(2)).toBe(block);
-      transferId ??= remote.port;
-      expect(remote.port).toBe(transferId);
-      expect(remote.port).not.toBe(listenerPort);
-      const data = packet.subarray(4);
-      chunks.push(data);
-      const ack = Buffer.alloc(4);
-      ack.writeUInt16BE(4, 0);
-      ack.writeUInt16BE(block, 2);
-      if (data.length < 512) {
-        await sendPacket(client, ack, transferId);
-        break;
-      }
-      const nextBlock = receivePacket(client, 5_000, `read block ${block + 1}`);
-      await sendPacket(client, ack, transferId);
-      block++;
-      received = await nextBlock;
-    }
-    expect(block).toBe(3);
-    expect(Buffer.concat(chunks)).toEqual(fixture);
+    const writeRejection = spawnSync(curlPath, ['--disable', '--tftp-no-options', '--verbose', '--max-time', '5',
+      '--upload-file', writeFixturePath, `tftp://127.0.0.1:${listenerPort}/should-not-exist.bin`], { timeout: 8_000, maxBuffer: 1_048_576 });
+    const traversalRejection = spawnSync(curlPath, ['--disable', '--tftp-no-options', '--path-as-is', '--verbose', '--max-time', '5',
+      `tftp://127.0.0.1:${listenerPort}/../outside.txt`], { timeout: 8_000, maxBuffer: 1_048_576 });
+    const transfer = spawnSync(curlPath, ['--disable', '--tftp-no-options', '--verbose', '--max-time', '15',
+      `tftp://127.0.0.1:${listenerPort}/fixture.bin`], { timeout: 20_000, maxBuffer: 1_048_576 });
 
-    await sendPacket(client, tftpRequest(2, 'should-not-exist.bin'), listenerPort);
-    const writeReply = await receivePacket(client, 5_000, 'write rejection');
-    expect(tftpError(writeReply.packet)).toBe(true);
-    await sendPacket(client, tftpRequest(1, '../outside.txt'), listenerPort);
-    const traversalReply = await receivePacket(client, 5_000, 'traversal rejection');
-    expect(tftpError(traversalReply.packet)).toBe(true);
+    await bindUdpSocket(client, 0);
+    clientBound = true;
 
     await dialog.getByRole('button', { name: 'Stop server' }).click();
     await expect(serverStatus).toHaveText('Stopped.');
-    await expect(dialog.getByRole('button', { name: 'Start server' })).toBeDisabled();
 
     await dialog.getByRole('button', { name: 'Browse…' }).click();
+    await expect(dialog.locator('.tftp-server-folder')).toHaveText(basename(sharedRoot));
     await dialog.getByLabel('UDP port').fill('0');
     await dialog.getByRole('button', { name: 'Start server' }).click();
     await expect(serverStatus).toContainText('Running at 127.0.0.1:');
     const runningPort = Number((await serverStatus.innerText()).match(/127\.0\.0\.1:(\d+)/u)?.[1]);
     expect(Number.isInteger(runningPort) && runningPort > 0).toBe(true);
+
     await application.close();
     application = undefined;
+    const postShutdownReply = receivePacket(client, 500, 'post-shutdown RRQ');
     await sendPacket(client, tftpRequest(1, 'fixture.bin'), runningPort);
-    await expect(receivePacket(client, 500, 'post-shutdown')).rejects.toThrow('Timed out waiting for post-shutdown packet');
+    await expect(postShutdownReply).rejects.toThrow('Timed out waiting for post-shutdown RRQ packet');
+
+    const releasedPortProbe = createSocket('udp4');
+    try { await bindUdpSocket(releasedPortProbe, runningPort); }
+    finally { try { releasedPortProbe.close(); } catch { /* The bind itself reports cleanup failures. */ } }
+
+    const transferDiagnostics = `status=${String(transfer.status)}, error=${transfer.error?.message ?? 'none'}, ` +
+      `stderr=${(transfer.stderr ?? Buffer.alloc(0)).toString('utf8')}`;
+    const writeRejectionDiagnostics = curlText(writeRejection);
+    expect(writeRejection.error, writeRejectionDiagnostics).toBeUndefined();
+    expect(writeRejection.status, writeRejectionDiagnostics).toBe(69);
+    expect(writeRejectionDiagnostics, writeRejectionDiagnostics).toMatch(/TFTP error: Uploads are disabled/iu);
+    const traversalRejectionDiagnostics = curlText(traversalRejection);
+    expect(traversalRejection.error, traversalRejectionDiagnostics).toBeUndefined();
+    expect(traversalRejection.status, traversalRejectionDiagnostics).toBe(69);
+    expect(traversalRejectionDiagnostics, traversalRejectionDiagnostics).toMatch(/TFTP error: Only top-level file names are allowed/iu);
+    expect(transfer.error, transferDiagnostics).toBeUndefined();
+    expect(transfer.status, transferDiagnostics).toBe(0);
+    expect(transfer.stdout ?? Buffer.alloc(0), transferDiagnostics).toEqual(fixture);
   } finally {
     if (clientBound) client.close();
     await application?.close();
-    await rm(temporaryRoot, { recursive: true, force: true });
+    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

@@ -21,6 +21,7 @@ export class TftpServerFailure extends Error {
 const BIND_ADDRESS = '127.0.0.1';
 const MAX_ACTIVE_TRANSFERS = 8;
 const MAX_PENDING_TRANSFERS = 8;
+const MAX_PENDING_ERROR_RESPONSES = 8;
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const BLOCK_BYTES = 512;
 const RETRY_DELAY_MS = 1_000;
@@ -257,6 +258,7 @@ export class ReadOnlyTftpServer {
   private readonly transfers = new Map<string, TftpReadTransfer>();
   private readonly pendingTransfers = new Set<string>();
   private readonly pendingTasks = new Set<Promise<void>>();
+  private readonly errorSockets = new Set<Socket>();
   private stopping = false;
 
   constructor(private readonly onUnexpectedStop: () => void = () => {}) {}
@@ -324,11 +326,12 @@ export class ReadOnlyTftpServer {
     this.rootDirectory = undefined;
     const transfers = [...this.transfers.values()];
     const pendingTasks = [...this.pendingTasks];
+    const errorSockets = [...this.errorSockets];
     this.transfers.clear();
     this.pendingTransfers.clear();
     try {
       if (listener) await closeSocket(listener);
-      await Promise.allSettled([...transfers.map(transfer => transfer.stop()), ...pendingTasks]);
+      await Promise.allSettled([...errorSockets.map(closeSocket), ...transfers.map(transfer => transfer.stop()), ...pendingTasks]);
     } finally {
       this.stopping = false;
     }
@@ -337,12 +340,12 @@ export class ReadOnlyTftpServer {
   private async handleRequest(listener: Socket, packet: Buffer, remote: RemoteInfo): Promise<void> {
     if (this.listener !== listener) return;
     if (parseTftpAcknowledgement(packet) !== undefined) {
-      this.sendError(listener, remote, 5, 'Unknown transfer ID');
+      await this.sendRequestError(listener, remote, 5, 'Unknown transfer ID');
       return;
     }
     const parsed = parseTftpRequest(packet);
     if (!parsed.ok) {
-      this.sendError(listener, remote, parsed.error.code, parsed.error.message);
+      await this.sendRequestError(listener, remote, parsed.error.code, parsed.error.message);
       return;
     }
     const key = `${remote.address}:${remote.port}/${parsed.result.fileName}`;
@@ -350,7 +353,7 @@ export class ReadOnlyTftpServer {
     if (existing) { existing.resendCurrent(); return; }
     if (this.pendingTransfers.has(key)) return;
     if (this.transfers.size >= MAX_ACTIVE_TRANSFERS || this.pendingTransfers.size >= MAX_PENDING_TRANSFERS) {
-      this.sendError(listener, remote, 0, 'Server is busy');
+      await this.sendRequestError(listener, remote, 0, 'Server is busy');
       return;
     }
     const rootDirectory = this.rootDirectory;
@@ -367,15 +370,45 @@ export class ReadOnlyTftpServer {
     } catch (error) {
       await opened?.handle.close().catch(() => undefined);
       const code = tftpErrorCode(error);
-      this.sendError(listener, remote, code, tftpErrorText(code));
+      await this.sendRequestError(listener, remote, code, tftpErrorText(code));
     } finally {
       this.pendingTransfers.delete(key);
     }
   }
 
-  private sendError(socket: Socket, remote: RemoteInfo, code: number, message: string): void {
-    if (socket !== this.listener) return;
-    try { socket.send(createTftpErrorPacket(code, message), remote.port, remote.address, () => {}); } catch { /* Malformed peers are dropped. */ }
+  private async sendRequestError(listener: Socket, remote: RemoteInfo, code: number, message: string): Promise<void> {
+    if (listener !== this.listener || this.errorSockets.size >= MAX_PENDING_ERROR_RESPONSES) return;
+    const socket = createSocket('udp4');
+    this.errorSockets.add(socket);
+    await new Promise<void>(resolve => {
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        socket.removeListener('listening', onListening);
+        socket.removeListener('error', onError);
+        socket.removeListener('close', onClose);
+        void closeSocket(socket).finally(() => {
+          this.errorSockets.delete(socket);
+          resolve();
+        });
+      };
+      const timer = setTimeout(finish, 2_000);
+      const onError = (): void => finish();
+      const onClose = (): void => finish();
+      const onListening = (): void => {
+        if (listener !== this.listener) { finish(); return; }
+        try {
+          socket.send(createTftpErrorPacket(code, message), remote.port, remote.address, () => finish());
+        } catch { finish(); }
+      };
+      socket.on('error', onError);
+      socket.once('close', onClose);
+      socket.once('listening', onListening);
+      try { socket.bind(0, BIND_ADDRESS); }
+      catch { finish(); }
+    });
   }
 
   private async failUnexpectedly(socket: Socket): Promise<void> {
