@@ -2112,16 +2112,20 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
       expect(sftpRequests).toBe(expectedSftpRequests);
       expect(fixtureEvents.filter(event => ['tunnel-target:pty', 'tunnel-target:shell', 'tunnel-target:sftp'].includes(event))).toEqual([]);
     };
+    const tunnelRequestLengthPrefixBytes = 4;
     const encodeTunnelPayload = (payload: Buffer): Buffer => {
-      const request = Buffer.allocUnsafe(4 + payload.length);
+      const request = Buffer.allocUnsafe(tunnelRequestLengthPrefixBytes + payload.length);
       request.writeUInt32BE(payload.length, 0);
-      payload.copy(request, 4);
+      payload.copy(request, tunnelRequestLengthPrefixBytes);
       return request;
     };
-    const roundTripRemoteForward = (port: number, payload: Buffer): Promise<Buffer> => new Promise((resolveEcho, rejectEcho) => {
+    const expectExactTunnelRequestBytes = (bytesBefore: number, payload: Buffer): void => {
+      expect(tunneledRequestBytes - bytesBefore).toBe(tunnelRequestLengthPrefixBytes + payload.byteLength);
+    };
+    const roundTripTunnelTraffic = (port: number, payload: Buffer): Promise<Buffer> => new Promise((resolveEcho, rejectEcho) => {
       const socket = connectTcp(port, '127.0.0.1');
       const received: Buffer[] = [];
-      const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for the routed remote forward')); }, 10_000);
+      const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for routed tunnel traffic')); }, 10_000);
       socket.once('error', error => { clearTimeout(timer); rejectEcho(error); });
       socket.once('connect', () => socket.write(encodeTunnelPayload(payload)));
       socket.on('data', chunk => received.push(Buffer.from(chunk)));
@@ -2258,15 +2262,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const payload = Buffer.from('exact-forwarded-bytes');
     const expectedEcho = Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), payload]);
     const requestBytesBeforeLocal = tunneledRequestBytes;
-    const echoed = await new Promise<Buffer>((resolveEcho, rejectEcho) => {
-      const socket = connectTcp(tunnelPort, '127.0.0.1');
-      const received: Buffer[] = [];
-      const timer = setTimeout(() => { socket.destroy(); rejectEcho(new Error('Timed out waiting for the gateway-routed forward')); }, 10_000);
-      socket.once('error', error => { clearTimeout(timer); rejectEcho(error); });
-      socket.once('connect', () => socket.write(encodeTunnelPayload(payload)));
-      socket.on('data', chunk => received.push(Buffer.from(chunk)));
-      socket.once('end', () => { clearTimeout(timer); resolveEcho(Buffer.concat(received)); });
-    });
+    const echoed = await roundTripTunnelTraffic(tunnelPort, payload);
     expect(echoed).toEqual(expectedEcho);
     expect(tunneledBytes).toBe(payload.byteLength);
     expect(fixtureEvents).toContain('target:tunnel-forward');
@@ -2275,7 +2271,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect.poll(() => clients.size).toBe(0);
     await expect.poll(() => relaySockets.size).toBe(0);
     await expect.poll(() => tunneledSockets.size).toBe(0);
-    expect(tunneledRequestBytes - requestBytesBeforeLocal).toBe(4 + payload.byteLength);
+    expectExactTunnelRequestBytes(requestBytesBeforeLocal, payload);
     expect(await localPortRefusesConnections(tunnelPort)).toBe(true);
 
     const startSelectedTunnelThroughGateways = async (): Promise<void> => {
@@ -2307,7 +2303,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     const remotePayload = Buffer.from('two-hop-remote-forward-bytes');
     const bytesBeforeRemote = tunneledBytes;
     const requestBytesBeforeRemote = tunneledRequestBytes;
-    expect(await roundTripRemoteForward(remotePort, remotePayload))
+    expect(await roundTripTunnelTraffic(remotePort, remotePayload))
       .toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), remotePayload]));
     expect(tunneledBytes - bytesBeforeRemote).toBe(remotePayload.byteLength);
     await expect.poll(() => remoteSockets.size).toBe(0);
@@ -2318,7 +2314,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
     await expect.poll(() => tunneledSockets.size).toBe(0);
-    expect(tunneledRequestBytes - requestBytesBeforeRemote).toBe(4 + remotePayload.byteLength);
+    expectExactTunnelRequestBytes(requestBytesBeforeRemote, remotePayload);
     expect([...remoteBindings.values()].some(bindings => bindings.has(remotePort))).toBe(false);
     expect(fixtureEvents).toContain(`tunnel-target:remote-unbound:${remotePort}`);
     expect(await localPortRefusesConnections(remotePort)).toBe(true);
@@ -2347,7 +2343,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one- and two-g
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
     await expect.poll(() => tunneledSockets.size).toBe(0);
-    expect(tunneledRequestBytes - requestBytesBeforeSocks).toBe(4 + socksPayload.byteLength);
+    expectExactTunnelRequestBytes(requestBytesBeforeSocks, socksPayload);
     expect(await localPortRefusesConnections(socksPort)).toBe(true);
   } finally {
     await app?.close();
