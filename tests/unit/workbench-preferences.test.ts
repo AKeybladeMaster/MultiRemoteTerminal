@@ -46,6 +46,23 @@ test('workbench preferences migrate session-saving schema with terminal shell co
   assert.equal(normalizeWorkbenchPreferences({ ...previous, terminalShellSyntaxEnabled: 'yes' }), undefined);
 });
 
+test('workbench preferences migrate shell-coloring schema with contextual SFTP pane enabled by default', () => {
+  const previous = { startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' as const }], autoSaveSessions: true,
+    terminalShellSyntaxEnabled: true };
+  assert.deepEqual(normalizeWorkbenchPreferences(previous), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }], autoSaveSessions: true,
+    terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: true
+  });
+  assert.deepEqual(normalizeWorkbenchPreferences({ ...previous, showSftpBrowserBesideSsh: false }), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Ready', terminalHighlightEnabled: true,
+    terminalHighlightRules: [{ pattern: 'error', color: 'red' }], autoSaveSessions: true,
+    terminalShellSyntaxEnabled: true, showSftpBrowserBesideSsh: false
+  });
+  assert.equal(normalizeWorkbenchPreferences({ ...previous, showSftpBrowserBesideSsh: 'no' }), undefined);
+});
+
 test('workbench greeting validation rejects oversized input before normalization scans it', () => {
   const originalReplace = String.prototype.replace;
   let scannedOversizedInput = false;

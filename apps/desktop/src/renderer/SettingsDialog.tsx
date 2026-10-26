@@ -16,6 +16,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [autoSaveSessions, setAutoSaveSessions] = useState(false);
+  const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
@@ -33,7 +34,8 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
   const normalizedRules = normalizeTerminalHighlightRules(terminalHighlightRules);
   const greetingIsValid = Boolean(normalizeWorkbenchPreferences({ startupGreeting: greeting }));
   const validatedPreferences = normalizeWorkbenchPreferences({
-    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled
+    startupGreeting: greeting, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled,
+    showSftpBrowserBesideSsh
   });
   const characterCount = Array.from(greeting).length;
 
@@ -51,6 +53,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
         setAutoSaveSessions(reply.result.autoSaveSessions);
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
+        setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
       }
       else {
         setLoadFailed(true);
@@ -118,7 +121,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
       const reply = await window.multiRemoteTerminal.saveWorkbenchPreferences(validatedPreferences);
       if (!reply.ok) {
         setError(reply.error.code === 'INVALID_REQUEST'
-          ? 'Check the greeting and terminal highlight rules, then save again.'
+          ? 'Check your settings and try again.'
           : workbenchPreferenceFailureMessage('save', reply.error.code));
         setStatus('');
       } else {
@@ -127,6 +130,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
         setTerminalHighlightRules(reply.result.terminalHighlightRules);
         setAutoSaveSessions(reply.result.autoSaveSessions);
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
+        setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
         onPreferencesSaved(reply.result);
         setStatus('Settings saved.');
       }
@@ -206,7 +210,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
       <header className="settings-header">
         <div>
           <h2 id="settings-heading">Workbench settings</h2>
-          <p id="settings-description">Choose which connections to remember, set a startup greeting, and color matching terminal text.</p>
+          <p id="settings-description">Choose which connections to remember, control SSH file panes, set a greeting, and color terminal text.</p>
         </div>
         <button ref={closeButton} type="button" className="quiet-button" disabled={saving} onClick={onClose}>Close</button>
       </header>
@@ -234,6 +238,17 @@ export function SettingsDialog({ onClose, onPreferencesSaved }: {
             onClick={() => void resetCredentialVault()}>
             Delete saved passwords
           </button>
+        </div>
+        <div className="settings-highlights">
+          <label className="settings-highlight-toggle" htmlFor="show-sftp-browser-beside-ssh">
+            <input id="show-sftp-browser-beside-ssh" name="showSftpBrowserBesideSsh" type="checkbox" checked={showSftpBrowserBesideSsh}
+              disabled={loading || loadFailed || saving} aria-describedby="show-sftp-browser-beside-ssh-description"
+              onChange={event => { setShowSftpBrowserBesideSsh(event.target.checked); setError(undefined); setStatus(''); }} />
+            <span>Show the remote file pane beside SSH terminals</span>
+          </label>
+          <p id="show-sftp-browser-beside-ssh-description" className="settings-highlight-help">
+            Turn this off to keep SSH terminals full width. You can still connect to SFTP in a files-only tab.
+          </p>
         </div>
         <div className="settings-highlights">
           <label className="settings-highlight-toggle" htmlFor="auto-save-sessions">

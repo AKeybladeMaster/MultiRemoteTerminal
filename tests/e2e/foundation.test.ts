@@ -893,7 +893,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(recoveredSftpTab).toBeVisible({ timeout: 20_000 });
     const recoveredSftpPanelId = await recoveredSftpTab.getAttribute('aria-controls');
     if (!recoveredSftpPanelId) throw new Error('Missing recovered standalone SFTP panel');
-    const recoveredRemoteBrowser = page.locator(`#${recoveredSftpPanelId} [data-testid="remote-file-browser"]`);
+    const recoveredSftpPanel = page.locator(`#${recoveredSftpPanelId}`);
+    const recoveredRemoteBrowser = recoveredSftpPanel.getByTestId('remote-file-browser');
     await expect(recoveredRemoteBrowser.getByText('interrupted.bin', { exact: true })).toBeVisible({ timeout: 15_000 });
     await recoveredRemoteBrowser.getByRole('button', { name: 'Download interrupted.bin', exact: true }).click();
     await expect(recoveredRemoteBrowser.getByText('Downloaded interrupted.bin (4 MB).', { exact: true })).toBeVisible({ timeout: 15_000 });
@@ -927,6 +928,29 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     const contextualFiles = sshPanel.locator('[data-testid="remote-file-browser"]');
     await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(contextualFiles).toHaveAttribute('data-mrt-remote-file-drop-target', 'true');
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const paneSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const showSftpPane = paneSettings.getByRole('checkbox', { name: 'Show the remote file pane beside SSH terminals' });
+    await expect(showSftpPane).toBeChecked();
+    await showSftpPane.uncheck();
+    await paneSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(paneSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await paneSettings.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(contextualFiles).toHaveCount(0);
+    await expect(sshPanel.locator('.terminal-panel-layout')).not.toHaveClass(/with-remote-files/u);
+    await expect(recoveredSftpPanel.getByTestId('remote-file-browser')).toHaveCount(1);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const restoredPaneSettings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const restoredShowSftpPane = restoredPaneSettings.getByRole('checkbox', { name: 'Show the remote file pane beside SSH terminals' });
+    await expect(restoredShowSftpPane).not.toBeChecked();
+    await restoredShowSftpPane.check();
+    await restoredPaneSettings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(restoredPaneSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await restoredPaneSettings.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(contextualFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(sshPanel.locator('.terminal-panel-layout')).toHaveClass(/with-remote-files/u);
 
     dropFixtureEvents.length = 0;
     sftpDropUploadStartCount = 0;
