@@ -12,10 +12,17 @@ interface ReceivedPacket {
   readonly remote: RemoteInfo;
 }
 
-function receivePacket(socket: Socket, timeoutMs = 5_000, stage = 'TFTP transfer'): Promise<ReceivedPacket> {
+function receivePacket(
+  socket: Socket,
+  timeoutMs = 5_000,
+  stage = 'TFTP transfer',
+  matches: (packet: Buffer, remote: RemoteInfo) => boolean = () => true
+): Promise<ReceivedPacket> {
   return new Promise((resolvePacket, rejectPacket) => {
     const timer = setTimeout(() => finish(new Error(`Timed out waiting for ${stage} packet`)), timeoutMs);
-    const onMessage = (packet: Buffer, remote: RemoteInfo) => finish(undefined, { packet, remote });
+    const onMessage = (packet: Buffer, remote: RemoteInfo): void => {
+      if (matches(packet, remote)) finish(undefined, { packet, remote });
+    };
     const onError = (error: Error) => finish(error);
     const finish = (error?: Error, result?: ReceivedPacket): void => {
       clearTimeout(timer);
@@ -25,27 +32,6 @@ function receivePacket(socket: Socket, timeoutMs = 5_000, stage = 'TFTP transfer
       else if (result) resolvePacket(result);
     };
     socket.once('message', onMessage);
-    socket.once('error', onError);
-  });
-}
-
-function receivePackets(socket: Socket, count: number, timeoutMs: number, stage: string): Promise<ReceivedPacket[]> {
-  return new Promise((resolvePackets, rejectPackets) => {
-    const packets: ReceivedPacket[] = [];
-    const timer = setTimeout(() => finish(new Error(`Timed out waiting for ${stage} packets (${packets.length}/${count})`)), timeoutMs);
-    const onMessage = (packet: Buffer, remote: RemoteInfo): void => {
-      packets.push({ packet, remote });
-      if (packets.length === count) finish();
-    };
-    const onError = (error: Error): void => finish(error);
-    const finish = (error?: Error): void => {
-      clearTimeout(timer);
-      socket.removeListener('message', onMessage);
-      socket.removeListener('error', onError);
-      if (error) rejectPackets(error);
-      else resolvePackets(packets);
-    };
-    socket.on('message', onMessage);
     socket.once('error', onError);
   });
 }
@@ -220,27 +206,34 @@ test('local TFTP server transfers files, rejects unsafe requests, and stops clea
     const runningPort = Number((await serverStatus.innerText()).match(/127\.0\.0\.1:(\d+)/u)?.[1]);
     expect(Number.isInteger(runningPort) && runningPort > 0).toBe(true);
 
-    const capacityRepliesPromise = receivePackets(client, capacityFileNames.length, 5_000, 'bounded concurrent RRQs');
-    for (const fileName of capacityFileNames) await sendPacket(client, tftpRequest(1, fileName), runningPort);
-    const capacityReplies = await capacityRepliesPromise;
-    const acceptedCapacityReplies = capacityReplies.filter(({ packet }) => packet.readUInt16BE(0) === 3);
-    const rejectedCapacityReplies = capacityReplies.filter(({ packet }) => packet.readUInt16BE(0) === 5);
-    expect(acceptedCapacityReplies).toHaveLength(8);
-    expect(rejectedCapacityReplies).toHaveLength(1);
-    for (const { packet, remote } of acceptedCapacityReplies) {
+    const activeCapacityReplies: ReceivedPacket[] = [];
+    const activeTransferPorts = new Set<number>();
+    for (const fileName of capacityFileNames.slice(0, 8)) {
+      const activeReplyPromise = receivePacket(client, 5_000, 'bounded active TFTP slot', (packet, remote) =>
+        packet.readUInt16BE(0) === 3 && !activeTransferPorts.has(remote.port));
+      await sendPacket(client, tftpRequest(1, fileName), runningPort);
+      const activeReply = await activeReplyPromise;
+      activeCapacityReplies.push(activeReply);
+      activeTransferPorts.add(activeReply.remote.port);
+    }
+    expect(activeCapacityReplies).toHaveLength(8);
+    for (const { packet, remote } of activeCapacityReplies) {
       expect(packet.readUInt16BE(2)).toBe(1);
       expect(remote.address).toBe('127.0.0.1');
       expect(remote.port).not.toBe(runningPort);
     }
-    const capacityTransferPorts = new Set(acceptedCapacityReplies.map(({ remote }) => remote.port));
-    expect(capacityTransferPorts.size).toBe(8);
-    const busyPacket = rejectedCapacityReplies[0]!.packet;
-    expect(busyPacket.readUInt16BE(2)).toBe(0);
-    expect(busyPacket.subarray(4).toString('utf8').replace(/\0$/u, '')).toBe('Server is busy');
+    expect(activeTransferPorts.size).toBe(8);
+    const busyReplyPromise = receivePacket(client, 5_000, 'ninth active TFTP request rejection', packet =>
+      packet.readUInt16BE(0) === 5 && packet.readUInt16BE(2) === 0 && packet.subarray(4).toString('utf8').replace(/\0$/u, '') === 'Server is busy');
+    await sendPacket(client, tftpRequest(1, capacityFileNames[8]!), runningPort);
+    const busyReply = await busyReplyPromise;
+    expect(busyReply.remote.address).toBe('127.0.0.1');
+    expect(busyReply.remote.port).not.toBe(runningPort);
+    expect(activeTransferPorts.has(busyReply.remote.port)).toBe(false);
 
     await dialog.getByRole('button', { name: 'Stop server' }).click();
     await expect(serverStatus).toHaveText('Stopped.');
-    for (const transferPort of capacityTransferPorts) {
+    for (const transferPort of activeTransferPorts) {
       const stoppedTransferPortProbe = createSocket('udp4');
       try { await bindUdpSocket(stoppedTransferPortProbe, transferPort); }
       finally { try { stoppedTransferPortProbe.close(); } catch { /* The bind itself reports transfer cleanup failures. */ } }
