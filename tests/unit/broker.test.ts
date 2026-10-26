@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { dispatchCommand } from '../../apps/desktop/src/main/broker.ts';
+import { createCustomLogoPreferenceAccess } from '../../apps/desktop/src/main/custom-logo-preferences.ts';
 import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/broker.ts';
 import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
@@ -136,6 +137,53 @@ test('custom logo selection uses only the native main-process picker action', as
   assert.deepEqual(reply, { requestId: request.requestId, ok: true,
     result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } });
   assert.equal(activity, 1);
+});
+
+test('preferences broker accepts changed logos only from the bounded main-process picker', async () => {
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==';
+  let stored = DEFAULT_WORKBENCH_PREFERENCES;
+  let saveCount = 0;
+  const manager = {
+    async read() { return { ok: true as const, result: stored }; },
+    async save(value: unknown) {
+      saveCount++;
+      stored = value as typeof DEFAULT_WORKBENCH_PREFERENCES;
+      return { ok: true as const, result: stored };
+    }
+  };
+  const logoAccess = createCustomLogoPreferenceAccess(manager, { async select() { return { ok: true, result: { dataUrl } }; } });
+  const guardedActions: CommandActions = { ...actions(), preferences: logoAccess.preferences, selectCustomLogo: logoAccess.select };
+  const saveRequest = (customLogoDataUrl: string | null) => ({ command: 'preferences.save', requestId: request.requestId,
+    contractVersion: 1, payload: { preferences: { ...DEFAULT_WORKBENCH_PREFERENCES, customLogoDataUrl } } });
+
+  const oversized = Buffer.alloc(524_290);
+  oversized.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52], 0);
+  oversized.writeUInt32BE(1, 16);
+  oversized.writeUInt32BE(1, 20);
+  const tooLargeDataUrl = `data:image/png;base64,${oversized.toString('base64')}`;
+  const overLimit = await dispatchCommand(owner, saveRequest(tooLargeDataUrl), guardedActions, () => {});
+  assert.equal(overLimit.ok, false);
+  if (!overLimit.ok) assert.equal(overLimit.error.code, 'INVALID_REQUEST');
+  assert.equal(saveCount, 0);
+
+  const forged = await dispatchCommand(owner, saveRequest(dataUrl), guardedActions, () => {});
+  assert.equal(forged.ok, false);
+  if (!forged.ok) assert.equal(forged.error.code, 'INVALID_REQUEST');
+  assert.equal(saveCount, 0);
+
+  const selection = await dispatchCommand(owner, { command: 'branding.logo.select', requestId: request.requestId, contractVersion: 1, payload: {} },
+    guardedActions, () => {});
+  assert.equal(selection.ok, true);
+  const accepted = await dispatchCommand(owner, saveRequest(dataUrl), guardedActions, () => {});
+  assert.equal(accepted.ok, true);
+  assert.equal(saveCount, 1);
+
+  const unchanged = await dispatchCommand(owner, saveRequest(dataUrl), guardedActions, () => {});
+  assert.equal(unchanged.ok, true);
+  const cleared = await dispatchCommand(owner, saveRequest(null), guardedActions, () => {});
+  assert.equal(cleared.ok, true);
+  assert.equal(saveCount, 3);
+  assert.equal(stored.customLogoDataUrl, null);
 });
 
 test('saved SSH opens resolve the profile credential in main and clear it after provider handoff', async () => {

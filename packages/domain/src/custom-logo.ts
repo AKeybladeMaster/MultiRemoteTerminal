@@ -30,8 +30,33 @@ export function readCustomLogoPngDimensions(value: unknown): PngDimensions | und
 export function isCustomLogoDataUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length > MAX_CUSTOM_LOGO_DATA_URL_LENGTH || !value.startsWith(PNG_DATA_URL_PREFIX)) return false;
   const base64 = value.slice(PNG_DATA_URL_PREFIX.length);
-  return base64.length >= 16 && base64.length % 4 === 0 && base64.startsWith('iVBORw0KGgo') &&
-    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(base64);
+  if (base64.length < 44 || base64.length % 4 !== 0 || !base64.startsWith('iVBORw0KGgo') ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(base64)) return false;
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  const decodedLength = base64.length / 4 * 3 - padding;
+  if (decodedLength < 33 || decodedLength > MAX_CUSTOM_LOGO_PNG_BYTES) return false;
+  const header = decodeBase64Prefix(base64, 33);
+  return Boolean(header && readCustomLogoPngDimensions(header));
+}
+
+function decodeBase64Prefix(base64: string, byteLength: number): Uint8Array | undefined {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const bytes = new Uint8Array(byteLength);
+  let bits = 0;
+  let value = 0;
+  let offset = 0;
+  for (let index = 0; index < base64.length && offset < byteLength; index++) {
+    const digit = alphabet.indexOf(base64[index] ?? '');
+    if (digit < 0) return undefined;
+    value = (value << 6) | digit;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes[offset++] = (value >>> bits) & 0xff;
+      value &= (1 << bits) - 1;
+    }
+  }
+  return offset === byteLength ? bytes : undefined;
 }
 
 function readUint32(bytes: Uint8Array, offset: number): number {

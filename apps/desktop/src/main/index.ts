@@ -57,6 +57,7 @@ import { isE2ETestHookEnabled } from './e2e-test-hooks.ts';
 import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
 import { createNetworkWorkerEnvironment } from './network-worker-environment.ts';
 import { createCustomLogoPicker } from './custom-logo-picker.ts';
+import { createCustomLogoPreferenceAccess } from './custom-logo-preferences.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 
@@ -406,6 +407,7 @@ function boot(): void {
     if (result.canceled || !result.filePaths[0]) return undefined;
     return result.filePaths[0];
   }, bytes => nativeImage.createFromBuffer(Buffer.from(bytes)));
+  const customLogoPreferences = createCustomLogoPreferenceAccess(preferences, customLogoPicker);
   let shutdownPromise: Promise<void> | undefined;
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
@@ -523,7 +525,7 @@ function boot(): void {
         authorizeVncLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'vnc', host, port),
         authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) =>
           rendererGestures.consumeTftpServerAction(event.sender.id, action, selectionId, port),
-        selectCustomLogo: () => customLogoPicker.select(),
+        selectCustomLogo: () => customLogoPreferences.select(),
         async chooseTftpRoot(cancellation) {
           if (cancellation?.aborted) return failure('CANCELLED');
           if (tftpRootDialogOpen || tftpServer.getStatus().state === 'running') return failure('BUSY');
@@ -667,7 +669,8 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros, preferences, tunnels,
+        terminals, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros,
+        preferences: customLogoPreferences.preferences, tunnels,
         tftpServer: {
           getStatus: () => tftpServer.getStatus(),
           async stop() {

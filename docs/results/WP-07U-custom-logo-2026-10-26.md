@@ -12,7 +12,7 @@
 
 ## Validation
 
-- Focused unit, adapter, bridge, broker, IPC-contract and CSP tests: **112 passed, 0 failed**. Coverage includes malformed and oversized sources, dimensions, normalization, path-free replies, schema-v7 migration, persistence, invalid preference values, and CSP policy.
+- Focused unit, adapter, bridge, broker, IPC-contract and CSP tests: **113 passed, 0 failed** after review fixes. Coverage includes malformed and oversized sources, dimensions, normalization, path-free replies, schema-v7 migration, persistence, invalid preference values, selection authorization, and CSP policy.
 - `corepack pnpm typecheck`: passed.
 - `corepack pnpm lint`: passed, including import-boundary checks.
 - Windows x64 `corepack pnpm build`: passed. Vite reported its existing advisory for a JavaScript chunk above 500 KiB.
@@ -22,9 +22,13 @@
 
 The first E2E attempt correctly rejected the initial fixture: its IHDR CRC was valid but its IDAT CRC was not. The test now uses a generated 1×1 PNG with valid chunk CRCs; the final E2E run passes.
 
+The independent Standards and General reviews found that a renderer could bypass the picker by submitting a forged PNG data URL directly to `preferences.save`. The main process now accepts a changed image only when it exactly matches the last bounded picker result; it still accepts the current stored value or `null`. The shared validator also checks decoded byte length and PNG IHDR dimensions before an IPC preference payload is accepted. Regression tests confirm oversized-IHDR and oversized-byte values are rejected and an unselected valid image is not persisted.
+
 ## Remaining acceptance
 
 The E2E hook supplies a bounded absolute file path to the picker, exercising the real main-process file read and Electron `nativeImage` decode/re-encode path. It does not automate the native Windows file dialog itself, its PNG filter, or its cancellation behavior. P-35 therefore remains **PARTIAL** pending direct native-dialog acceptance. F-009 remains incomplete while profile-script controls remain open.
+
+Direct UI automation was attempted using the installed Computer Use skill. `@oai/sky` initialized, but `list_apps` reported that its native pipe was unavailable on the initial call, a delayed retry, and a retry after kernel reset/reinitialization. No native-dialog action was attempted.
 
 ## Security and limitations
 

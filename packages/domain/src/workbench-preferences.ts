@@ -41,7 +41,7 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
   const isSftpPaneShape = keys.length === 6 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
     Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
     Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh');
-  const isCurrentShape = keys.length === 7 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+  const isPreviousSchemaShape = keys.length === 7 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
     Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
     Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
     Object.hasOwn(value, 'visibleLocalShells');
@@ -50,7 +50,7 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
     Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
     Object.hasOwn(value, 'visibleLocalShells') && Object.hasOwn(value, 'customLogoDataUrl');
   if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isShellSyntaxShape && !isSftpPaneShape &&
-      !isCurrentShape && !isCustomLogoShape) return undefined;
+      !isPreviousSchemaShape && !isCustomLogoShape) return undefined;
 
   const inputGreeting = value.startupGreeting;
   if (inputGreeting.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) return undefined;
@@ -74,7 +74,7 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
   if (isShellSyntaxShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
     showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, customLogoDataUrl: null });
-  if (!isSftpPaneShape && !isCurrentShape && !isCustomLogoShape) return undefined;
+  if (!isSftpPaneShape && !isPreviousSchemaShape && !isCustomLogoShape) return undefined;
   if (typeof value.showSftpBrowserBesideSsh !== 'boolean') return undefined;
   if (isSftpPaneShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
