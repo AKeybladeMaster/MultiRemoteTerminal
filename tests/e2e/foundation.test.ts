@@ -560,7 +560,7 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
   }
 });
 
-test('local text editor auto-detects SQL and supports Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
+test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
   const source = [
@@ -621,6 +621,28 @@ test('local text editor auto-detects SQL and supports Python, JavaScript/TypeScr
     expect(await contents.inputValue()).toBe(sqlWithManyComments);
     expect(await preview.textContent()).toBe(sqlWithManyComments);
 
+    const tomlSource = [
+      '# settings',
+      'title = "TOML # value"',
+      "literal = 'single # value'",
+      'multiline = """first line',
+      '# string content',
+      'last line"""',
+      'created = 1979-05-27 07:32:00',
+      'enabled = true',
+      '[database]',
+      'port = 5432'
+    ].join('\n');
+    await syntax.selectOption('toml');
+    await contents.fill(tomlSource);
+    await expect(preview.locator('[data-token-kind="toml-key"]').first()).toHaveText('title');
+    await expect(preview.locator('[data-token-kind="toml-key"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
+    await expect(preview.locator('[data-token-kind="toml-string"]')).toHaveCount(3);
+    await expect(preview.locator('[data-token-kind="toml-string"]').nth(2)).toContainText('# string content');
+    await expect(preview.locator('[data-token-kind="toml-comment"]')).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="toml-datetime"]').first()).toHaveText('1979-05-27 07:32:00');
+    await expect(preview.locator('[data-token-kind="toml-literal"]').first()).toHaveText('true');
+
     await syntax.selectOption('python');
     await contents.fill('def greet(name: str):\n    print(name)');
     await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
@@ -660,6 +682,29 @@ test('local text editor auto-detects SQL and supports Python, JavaScript/TypeScr
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await editor.getByRole('button', { name: 'Discard and close', exact: true }).click();
     await expect(editor).toBeHidden();
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('local TOML text editor auto-detects the profile and colors keys, strings and numbers', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-toml-e2e-'));
+  const path = join(profile, 'settings.toml');
+  const source = '# local config\n[service]\nname = "terminal"\nport = 443\n';
+  await writeFile(path, source);
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    await expect(editor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(editor.getByRole('textbox', { name: 'File contents' })).toHaveValue(source);
+    await expect(editor.locator('[data-token-kind="toml-key"]').first()).toHaveText('service');
+    await expect(editor.locator('[data-token-kind="toml-string"]').first()).toHaveText('"terminal"');
+    await expect(editor.locator('[data-token-kind="toml-number"]').first()).toHaveText('443');
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -1111,6 +1156,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.py'), 'def remote_preview():\n    print("from SFTP")\n');
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
+    await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1258,6 +1304,16 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(remoteSqlEditor.locator('[data-token-kind="sql-parameter"]').first()).toHaveText('$1');
     await remoteSqlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteSqlEditor).toHaveCount(0);
+    const remoteTomlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.toml', exact: true });
+    await remoteTomlEdit.click();
+    const remoteTomlEditor = page.getByRole('dialog', { name: 'remote.toml' });
+    await expect(remoteTomlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteTomlEditor.locator('[data-token-kind="toml-key"]').first()).toHaveText('server');
+    await expect(remoteTomlEditor.locator('[data-token-kind="toml-key"]').nth(1)).toHaveText('host');
+    await expect(remoteTomlEditor.locator('[data-token-kind="toml-string"]').first()).toHaveText('"localhost"');
+    await expect(remoteTomlEditor.locator('[data-token-kind="toml-number"]').first()).toHaveText('8080');
+    await remoteTomlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteTomlEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();

@@ -2,8 +2,9 @@ export const MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS = 64_000;
 export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
 const MAX_SQL_DOLLAR_TAG_CODE_UNITS = 63;
+const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'sql', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -17,6 +18,7 @@ export type TextSyntaxTokenKind =
   | 'javascript-operator' | 'javascript-function' | 'javascript-type'
   | 'sql-function' | 'sql-keyword' | 'sql-literal' | 'sql-string' | 'sql-comment' | 'sql-number' | 'sql-operator'
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
+  | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
   | 'json-key' | 'json-string' | 'json-number' | 'json-literal' | 'json-punctuation';
 
 export interface TextSyntaxToken {
@@ -119,11 +121,19 @@ const sqlOperators = [
   '@>', '<@', '||', '&&', '~~*', '~~', '~*', '@?', '@@', '+', '-', '*', '/', '%', '=', '<', '>', '~', '!', '@', '#', '&',
   '|', '^', '?', ':', '.', ',', ';', '(', ')', '[', ']'
 ] as const;
+const tomlLiterals = new Set(['false', 'inf', 'nan', 'true']);
+const tomlDateTimePattern = /^(?:\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?)?|\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/u;
+const tomlSpaceDateTimePattern = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?$/u;
+const tomlSpaceDateTimePrefixPattern = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?/u;
+const tomlDecimalIntegerPattern = /^[+-]?(?:0|[1-9](?:_?\d)*)$/u;
+const tomlDecimalFloatPattern = /^[+-]?(?:(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?)$/u;
+const tomlBasedIntegerPattern = /^0(?:x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|o[0-7](?:_?[0-7])*|b[01](?:_?[01])*)$/u;
 
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
+  if (/\.toml$/.test(name)) return 'toml';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -144,7 +154,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
       : profile === 'python' ? scanPython(text, limit, tokens)
         : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
           : profile === 'sql' ? scanSql(text, limit, tokens)
-            : scanJson(text, limit, tokens);
+            : profile === 'toml' ? scanToml(text, limit, tokens)
+              : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1002,6 +1013,162 @@ function isSqlNamePart(character: string): boolean {
 
 function isSqlDollarTagPart(character: string): boolean {
   return isSqlNameStart(character) || isDigit(character);
+}
+
+function scanToml(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  let lineHasContent = false;
+  let inTableHeader = false;
+  let collectionDepth = 0;
+
+  while (index < limit) {
+    const character = text[index]!;
+    if (character === '\n' || character === '\r') {
+      index += character === '\r' && index + 1 < limit && text[index + 1] === '\n' ? 2 : 1;
+      lineHasContent = false;
+      inTableHeader = false;
+      continue;
+    }
+    if (character === ' ' || character === '\t') { index += 1; continue; }
+
+    if (character === '#') {
+      const end = scanLineEnd(text, index, limit);
+      if (!addToken(tokens, index, end, 'toml-comment')) return index;
+      index = end;
+      lineHasContent = true;
+      continue;
+    }
+
+    if (character === '"' || character === '\'') {
+      const end = scanTomlString(text, index, limit);
+      const kind = inTableHeader || isTomlKeyAssignment(text, end, limit) ? 'toml-key' : 'toml-string';
+      if (!addToken(tokens, index, end, kind)) return index;
+      index = end;
+      lineHasContent = true;
+      continue;
+    }
+
+    if (isTomlBareKeyCharacter(character) || character === '+') {
+      let end = index + 1;
+      while (end < limit && isTomlBareKeyCharacter(text[end]!)) end += 1;
+      if (inTableHeader || isTomlKeyAssignment(text, end, limit)) {
+        if (!addToken(tokens, index, end, 'toml-key')) return index;
+      } else {
+        const scalarEnd = scanTomlScalar(text, index, limit);
+        const scalar = text.slice(index, scalarEnd);
+        const signedLiteral = /^[+-](?:inf|nan)$/u.test(scalar);
+        const kind = tomlLiterals.has(scalar) || signedLiteral ? 'toml-literal'
+          : tomlDateTimePattern.test(scalar) || tomlSpaceDateTimePattern.test(scalar) ? 'toml-datetime'
+            : tomlDecimalIntegerPattern.test(scalar) || tomlDecimalFloatPattern.test(scalar) || tomlBasedIntegerPattern.test(scalar)
+              ? 'toml-number' : undefined;
+        if (kind && !addToken(tokens, index, scalarEnd, kind)) return index;
+        end = scalarEnd;
+      }
+      index = end;
+      lineHasContent = true;
+      continue;
+    }
+
+    if (character === '[') {
+      const isTableHeader = !lineHasContent && collectionDepth === 0;
+      const end = index + (text[index + 1] === '[' && index + 1 < limit ? 2 : 1);
+      if (isTableHeader) inTableHeader = true;
+      else collectionDepth += 1;
+      if (!addToken(tokens, index, end, 'toml-operator')) return index;
+      index = end;
+      lineHasContent = true;
+      continue;
+    }
+
+    if (character === ']') {
+      const isArrayTableClose = inTableHeader && index + 1 < limit && text[index + 1] === ']';
+      const end = index + (isArrayTableClose ? 2 : 1);
+      if (inTableHeader) inTableHeader = false;
+      else collectionDepth = Math.max(0, collectionDepth - 1);
+      if (!addToken(tokens, index, end, 'toml-operator')) return index;
+      index = end;
+      lineHasContent = true;
+      continue;
+    }
+
+    if (character === '{') collectionDepth += 1;
+    else if (character === '}') collectionDepth = Math.max(0, collectionDepth - 1);
+    if ('={}.,}'.includes(character)) {
+      if (!addToken(tokens, index, index + 1, 'toml-operator')) return index;
+    }
+    index += 1;
+    lineHasContent = true;
+  }
+  return limit;
+}
+
+function scanTomlString(text: string, start: number, limit: number): number {
+  const quote = text[start]!;
+  const multiline = start + 2 < limit && text[start + 1] === quote && text[start + 2] === quote;
+  const delimiterLength = multiline ? 3 : 1;
+  let index = start + delimiterLength;
+  while (index < limit) {
+    if (quote === '"' && text[index] === '\\') {
+      if (index + 1 < limit && text[index + 1] === '\r' && index + 2 < limit && text[index + 2] === '\n') index += 3;
+      else index += index + 1 < limit ? 2 : 1;
+      continue;
+    }
+    if (text[index] === quote) {
+      if (multiline) {
+        let quoteEnd = index + 1;
+        while (quoteEnd < limit && text[quoteEnd] === quote) quoteEnd += 1;
+        if (quoteEnd - index >= 3) return quoteEnd;
+        index = quoteEnd;
+        continue;
+      } else {
+        return index + 1;
+      }
+    }
+    if (!multiline && (text[index] === '\n' || text[index] === '\r')) return index;
+    index += 1;
+  }
+  return limit;
+}
+
+function scanTomlScalar(text: string, start: number, limit: number): number {
+  const spaceDateTime = tomlSpaceDateTimePrefixPattern.exec(text.slice(start, limit));
+  if (spaceDateTime?.[0]) {
+    const end = start + spaceDateTime[0].length;
+    if (end === limit || isWhitespace(text[end]!) || isTomlScalarDelimiter(text[end]!)) return end;
+  }
+  let index = start;
+  while (index < limit && !isWhitespace(text[index]!) && !isTomlScalarDelimiter(text[index]!)) index += 1;
+  return index;
+}
+
+function isTomlKeyAssignment(text: string, end: number, limit: number): boolean {
+  let index = end;
+  while (index < limit && (text[index] === ' ' || text[index] === '\t')) index += 1;
+  if (text[index] === '=') return true;
+  if (text[index] !== '.') return false;
+
+  const keyLimit = Math.min(limit, index + MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS);
+  while (index < keyLimit && text[index] === '.') {
+    index += 1;
+    while (index < keyLimit && (text[index] === ' ' || text[index] === '\t')) index += 1;
+    const segmentStart = index;
+    if (text[index] === '"' || text[index] === '\'') index = scanTomlString(text, index, keyLimit);
+    else while (index < keyLimit && isTomlBareKeyCharacter(text[index]!)) index += 1;
+    if (index === segmentStart || index >= keyLimit) return false;
+    while (index < keyLimit && (text[index] === ' ' || text[index] === '\t')) index += 1;
+    if (text[index] === '=') return true;
+    if (text[index] !== '.') return false;
+  }
+  return false;
+}
+
+function isTomlBareKeyCharacter(character: string): boolean {
+  return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+    isDigit(character) || character === '_' || character === '-';
+}
+
+function isTomlScalarDelimiter(character: string): boolean {
+  return '#,[]{}='.includes(character);
 }
 
 function scanJson(text: string, limit: number, tokens: TextSyntaxToken[]): number {
