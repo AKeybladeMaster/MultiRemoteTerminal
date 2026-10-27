@@ -23,5 +23,6 @@
 ## References
 
 - [ADR-0049](../adr/ADR-0049-powershell-open-delimiter-continuation-coloring.md)
+- [WP-01N independent review](WP-01N-review.md)
 - Microsoft Learn: [`about_Parsing` line continuation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing)
 - [PowerShell 101: One-liners and the pipeline](https://learn.microsoft.com/en-us/powershell/scripting/learn/ps101/04-pipelines)
