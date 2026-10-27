@@ -5621,8 +5621,14 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
       await app?.close();
     } finally {
       try {
-        for (const client of sshClients) client.end();
-        for (const socket of telnetSockets) socket.destroy();
+        const connectionCleanupErrors: unknown[] = [];
+        for (const socket of telnetSockets) {
+          try { socket.destroy(); } catch (error) { connectionCleanupErrors.push(error); }
+        }
+        for (const client of sshClients) {
+          try { client.end(); } catch (error) { connectionCleanupErrors.push(error); }
+        }
+        if (connectionCleanupErrors.length > 0) throw new AggregateError(connectionCleanupErrors, 'Remote prompt-color fixture connections did not all close cleanly.');
       } finally {
         try {
           if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
