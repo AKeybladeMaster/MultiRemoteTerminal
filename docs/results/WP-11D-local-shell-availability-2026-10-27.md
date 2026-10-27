@@ -1,7 +1,7 @@
 # WP-11D: Local shell availability and saved-profile policy
 
-**Date:** 2026-10-27  
-**Status:** Partial acceptance  
+**Date:** 2026-10-27
+**Status:** Partial acceptance
 **Requirements:** P-21 (partial), P-37 (partial), F-009 (partial)
 
 ## Delivered
