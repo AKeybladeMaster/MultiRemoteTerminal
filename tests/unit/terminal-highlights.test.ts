@@ -7,9 +7,43 @@ import {
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
 import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, getTerminalPromptSyntaxProfile,
-  isPowerShellContinuationPromptAtCursor, isShellContinuationPromptAtCursor, isShellInputAnchorActive } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+  isPowerShellContinuationPromptAtCursor, isShellContinuationPromptAtCursor, isShellInputAnchorActive,
+  readTerminalPowerShellContinuationState } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { Terminal } from '@xterm/xterm';
+
+function createPowerShellInputHarness(prompt: string, input: string, sameRowRemainder = '', wrappedRowRemainder = ''): {
+  readonly terminal: Terminal;
+  readonly anchor: TerminalShellInputAnchor;
+} {
+  const createLine = (text: string, isWrapped: boolean) => {
+    const cells = Array.from(text);
+    return {
+      isWrapped,
+      length: 80,
+      getCell(column: number) {
+        const character = cells[column] ?? '';
+        return { getChars: () => character, getWidth: () => 1, getCode: () => character.codePointAt(0) ?? 0 };
+      }
+    };
+  };
+  const lines = [createLine(`${prompt}${input}${sameRowRemainder}`, false)];
+  if (wrappedRowRemainder.length > 0) lines.push(createLine(wrappedRowRemainder, true));
+  const terminal = {
+    cols: 80,
+    buffer: {
+      active: {
+        type: 'normal', baseY: 0, cursorY: 0, cursorX: prompt.length + input.length,
+        getLine: (lineNumber: number) => lines[lineNumber],
+        getNullCell: () => ({})
+      }
+    }
+  } as unknown as Terminal;
+  const anchor = {
+    marker: { line: 0, isDisposed: false }, startColumn: prompt.length, wrappedMarkers: [], decorations: [], profile: 'powershell'
+  } as unknown as TerminalShellInputAnchor;
+  return { terminal, anchor };
+}
 
 test('shell prompt detection accepts common shell and zsh-style endings and rejects password prompts', () => {
   for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'project ❯ ', 'build ➜ ']) {
@@ -163,4 +197,33 @@ test('bounded shell-input extraction preserves wrapped-row spaces when requested
 
   assert.equal(extractBoundedTerminalHighlightLine(4, readCell)?.text, 'if');
   assert.equal(extractBoundedTerminalHighlightLine(4, readCell, false)?.text, 'if  ');
+});
+
+test('PowerShell continuation state is withheld when the caret is before remaining input', () => {
+  const prompt = 'PS C:\\work> ';
+  const command = 'Get-Item `';
+  const { terminal, anchor } = createPowerShellInputHarness(prompt, command, 'x');
+
+  assert.equal(readTerminalPowerShellContinuationState(terminal, anchor), undefined,
+    'a character after the caret means the input does not end at the visible backtick');
+});
+
+test('PowerShell continuation state is withheld when the remaining input is in a wrapped row', () => {
+  const prompt = 'PS C:\\work> ';
+  const command = 'Get-Item `';
+  const { terminal, anchor } = createPowerShellInputHarness(prompt, command, '', 'x');
+
+  assert.equal(readTerminalPowerShellContinuationState(terminal, anchor), undefined,
+    'a wrapped continuation row after the caret is still part of the same input');
+});
+
+test('PowerShell continuation state remains available when the caret is at the input end', () => {
+  const prompt = 'PS C:\\work> ';
+  const command = 'Get-Item `';
+  const { terminal, anchor } = createPowerShellInputHarness(prompt, command);
+
+  assert.deepEqual(readTerminalPowerShellContinuationState(terminal, anchor), {
+    commandExpected: false,
+    previousTokenIsBareWord: false
+  });
 });

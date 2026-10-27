@@ -208,6 +208,32 @@ function readTerminalInputThroughCursor(
   return input.text.slice(0, inputEnd);
 }
 
+function hasTextAfterTerminalCursor(terminal: Terminal, cursorLine: number): boolean | undefined {
+  const buffer = terminal.buffer.active;
+  if (buffer.type !== 'normal' || terminal.cols > MAX_TERMINAL_HIGHLIGHT_LINE_CODE_UNITS) return undefined;
+  let lineNumber = cursorLine;
+  let firstColumn = buffer.cursorX;
+  let scannedRows = 0;
+  const cellScratch = buffer.getNullCell();
+
+  while (true) {
+    scannedRows += 1;
+    if (scannedRows > MAX_TERMINAL_HIGHLIGHT_ROWS) return undefined;
+    const line = buffer.getLine(lineNumber);
+    if (!line || line.length < terminal.cols || firstColumn < 0 || firstColumn > terminal.cols) return undefined;
+    for (let column = firstColumn; column < terminal.cols; column += 1) {
+      const cell = line.getCell(column, cellScratch);
+      if (!cell) return undefined;
+      if (cell.getCode() !== 0) return true;
+    }
+
+    const nextLine = buffer.getLine(lineNumber + 1);
+    if (!nextLine?.isWrapped) return false;
+    lineNumber += 1;
+    firstColumn = 0;
+  }
+}
+
 export function readTerminalShellContinuationState(
   terminal: Terminal,
   anchor: TerminalShellInputAnchor
@@ -222,6 +248,8 @@ export function readTerminalPowerShellContinuationState(
   anchor: TerminalShellInputAnchor
 ): PowerShellSyntaxContinuationState | undefined {
   if (anchor.profile !== 'powershell') return undefined;
+  const cursorLine = terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
+  if (hasTextAfterTerminalCursor(terminal, cursorLine) !== false) return undefined;
   const input = readTerminalInputThroughCursor(terminal, anchor);
   if (input === undefined) return undefined;
   return highlightPowerShellInputSyntax(input, anchor.continuationState).continuationState;

@@ -10,6 +10,7 @@ WP-01K colors active input at the common `PS <path>>` prompt using the bounded P
 
 - Let the pure domain tokenizer return a small continuation state only when the full bounded input ends with an odd run of backticks outside a string, here-string or comment. Trailing whitespace and an even run do not continue; a truncated preview does not return state.
 - Carry that state only in renderer memory for the same terminal. Recognize PowerShell's secondary prompt only as the exact visible `>>` text, and consume state once when creating the next input anchor.
+- Carry state only when the caret is at the end of the logical input. Check the current row and subsequent xterm-wrapped rows within the existing row and line bounds; if the buffer is incomplete or exceeds those bounds, fail closed without carrying state.
 - Keep the state to command-position flags. Never retain, log, persist, validate or execute the submitted line for coloring.
 - Preserve the existing opt-in preference, buffer/row/token/decoration limits, transient xterm markers and cleanup paths. Do not mix this state with Shell's backslash continuation state.
 
