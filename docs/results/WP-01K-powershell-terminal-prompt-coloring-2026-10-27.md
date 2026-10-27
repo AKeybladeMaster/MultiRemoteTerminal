@@ -13,7 +13,7 @@
 - The renderer applies the existing 2,048-code-unit, 128-row and 64-decoration bounds. It stores no submitted command text for coloring and adds no IPC, shell probing, command resolution, validation, execution, persistence or dependency. PowerShell continuation prompts such as `>>` and custom prompt functions are not interpreted; serial remains excluded.
 - The Windows PowerShell E2E verifies command, parameter and variable colors at a real local prompt and verifies Ctrl+C clears the decorations.
 
-This is bounded lexical coloring, not PowerShell parsing or syntax validation. Prompt detection is heuristic and recognizes only the common `PS <path>>` form. P-30 remains PARTIAL; broader prompt forms, continuation syntax, Shell grammar and interoperability remain open. See [ADR-0046](../adr/ADR-0046-powershell-terminal-prompt-coloring.md).
+This is bounded lexical coloring, not PowerShell parsing or syntax validation. Prompt detection is shape-based and recognizes the common `PS <path>>` form; custom prompts with that same shape are indistinguishable. Other prompt forms and continuation syntax remain open. P-30 remains PARTIAL; broader Shell grammar and interoperability also remain open. See [ADR-0046](../adr/ADR-0046-powershell-terminal-prompt-coloring.md).
 
 ## Diagnosis captured during acceptance
 

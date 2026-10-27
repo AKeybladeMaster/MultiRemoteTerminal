@@ -151,13 +151,15 @@ without changing commands, ANSI sequences or terminal history. It is keyword
 coloring rather than full shell syntax highlighting.
 
 To color active Shell and PowerShell input, enable **Color Shell and PowerShell
-input at prompts** in **Workbench settings**; it is off by default. Shell input is recognized by
-common prompt endings; PowerShell input is recognized by the common
-`PS <path>>` prompt form. The Shell tokenizer also carries bounded lexical
+input at prompts** in **Workbench settings**; it is off by default. Shell input
+is recognized by common prompt endings; PowerShell input is recognized by the
+common `PS <path>>` prompt form. Prompt matching uses visible text, so custom
+prompts with that same form also match. The Shell tokenizer carries bounded lexical
 colors after an unquoted trailing backslash when the next prompt ends in `>`.
 This is a visual aid, not a parser: custom PowerShell prompts, PowerShell
 continuations, quoted Shell continuations and shell-specific grammar are not
-covered. A visible `>` suffix can be ambiguous with a custom Shell prompt.
+covered unless a custom prompt happens to match a supported visible form. A
+visible `>` suffix can be ambiguous with a custom Shell prompt.
 
 Use the theme button or command palette to switch between light and dark themes.
 

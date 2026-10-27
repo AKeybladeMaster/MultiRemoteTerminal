@@ -70,14 +70,11 @@ export interface TerminalHighlightOptions {
 export function getTerminalPromptSyntaxProfile(promptText: string): TerminalPromptSyntaxProfile | undefined {
   const trimmed = promptText.trimEnd();
   if (trimmed === '>>') return undefined;
-  if (/^PS(?:\s+.+)?\s*>$/iu.test(trimmed)) return 'powershell';
+  if (/^PS\s*>$/iu.test(trimmed)) return undefined;
+  if (/^PS\s+\S.*>$/iu.test(trimmed)) return 'powershell';
   const lastCharacter = trimmed.at(-1);
   return lastCharacter === '$' || lastCharacter === '#' || lastCharacter === '%' || lastCharacter === '>' ||
     lastCharacter === '❯' || lastCharacter === '➜' ? 'shell' : undefined;
-}
-
-export function isShellPromptAtCursor(promptText: string): boolean {
-  return getTerminalPromptSyntaxProfile(promptText) !== undefined;
 }
 
 export function isShellContinuationPromptAtCursor(promptText: string): boolean {

@@ -15,7 +15,7 @@ WP-01G through WP-01J add opt-in lexical colors to active Shell input in xterm. 
 
 ## Consequences and limits
 
-PowerShell commands, parameters and other recognized lexical tokens are colored while the user types at the common prompt. Custom PowerShell prompt functions, secondary prompts, continuation syntax and full PowerShell grammar are not detected. This is a visual hint rather than syntax validation. The feature remains opt-in and P-30 remains PARTIAL.
+PowerShell commands, parameters and other recognized lexical tokens are colored while the user types at the common prompt. Prompt detection is shape-based: a custom prompt that emits the same `PS <path>>` form is indistinguishable, while other custom prompt formats and secondary prompts are not detected. Continuation syntax and full PowerShell grammar are not interpreted. This is a visual hint rather than syntax validation. The feature remains opt-in and P-30 remains PARTIAL.
 
 ## Verification
 

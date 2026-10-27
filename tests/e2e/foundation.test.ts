@@ -411,51 +411,51 @@ function hasShellPromptTokenColor(state: ShellPromptDecorationState, token: stri
   return start >= 0 && state.glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
 }
 
-async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
-  let lastDecorationState: ShellPromptDecorationState | undefined;
+type PromptTokenColorExpectation = { readonly label: string; readonly token: string; readonly color: string };
+
+async function expectPromptTokenColors(rows: Locator, syntaxName: string,
+  expectations: readonly PromptTokenColorExpectation[]): Promise<void> {
+  let lastChecks: { label: string; matched: boolean }[] = [];
   try {
     await expect.poll(async () => {
-      lastDecorationState = await readShellPromptDecorationState(rows);
-      return hasShellPromptTokenColor(lastDecorationState, 'if', 'rgb(223, 143, 255)') &&
-        hasShellPromptTokenColor(lastDecorationState, 'true', 'rgb(132, 242, 167)') &&
-        hasShellPromptTokenColor(lastDecorationState, 'fi', 'rgb(223, 143, 255)');
+      const state = await readShellPromptDecorationState(rows);
+      lastChecks = expectations.map(({ label, token, color }) => ({ label, matched: hasShellPromptTokenColor(state, token, color) }));
+      return lastChecks.every(check => check.matched);
     }, { timeout: 10_000 }).toBe(true);
   } catch (error) {
-    const renderedRows = await rows.innerText();
-    throw new Error(`Shell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
+    throw new Error(`${syntaxName} prompt token colors missing; checks=${JSON.stringify(lastChecks)}`, { cause: error });
   }
 }
 
 async function expectShellCommandPrefixColors(rows: Locator): Promise<void> {
-  await expect.poll(async () => {
-    const state = await readShellPromptDecorationState(rows);
-    return hasShellPromptTokenColor(state, 'sudo', 'rgb(84, 215, 212)') &&
-      hasShellPromptTokenColor(state, '-u', 'rgb(248, 211, 107)') &&
-      hasShellPromptTokenColor(state, 'git', 'rgb(84, 215, 212)');
-  }, { timeout: 10_000 }).toBe(true);
+  await expectPromptTokenColors(rows, 'Shell command-prefix', [
+    { label: 'wrapper-command', token: 'sudo', color: 'rgb(84, 215, 212)' },
+    { label: 'wrapper-option', token: '-u', color: 'rgb(248, 211, 107)' },
+    { label: 'wrapped-command', token: 'git', color: 'rgb(84, 215, 212)' }
+  ]);
 }
 
 async function expectShellContinuationColors(rows: Locator): Promise<void> {
-  await expect.poll(async () => {
-    const state = await readShellPromptDecorationState(rows);
-    return hasShellPromptTokenColor(state, 'git', 'rgb(84, 215, 212)') &&
-      hasShellPromptTokenColor(state, '--version', 'rgb(248, 211, 107)');
-  }, { timeout: 10_000 }).toBe(true);
+  await expectPromptTokenColors(rows, 'Shell continuation', [
+    { label: 'command', token: 'git', color: 'rgb(84, 215, 212)' },
+    { label: 'option', token: '--version', color: 'rgb(248, 211, 107)' }
+  ]);
 }
 
 async function expectPowerShellPromptTokenColors(rows: Locator): Promise<void> {
-  let lastDecorationState: ShellPromptDecorationState | undefined;
-  try {
-    await expect.poll(async () => {
-      lastDecorationState = await readShellPromptDecorationState(rows);
-      return hasShellPromptTokenColor(lastDecorationState, 'Get-ChildItem', 'rgb(84, 215, 212)') &&
-        hasShellPromptTokenColor(lastDecorationState, '-Path', 'rgb(248, 211, 107)') &&
-        hasShellPromptTokenColor(lastDecorationState, '$HOME', 'rgb(150, 194, 255)');
-    }, { timeout: 10_000 }).toBe(true);
-  } catch (error) {
-    const renderedRows = await rows.innerText();
-    throw new Error(`PowerShell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
-  }
+  await expectPromptTokenColors(rows, 'PowerShell', [
+    { label: 'command', token: 'Get-ChildItem', color: 'rgb(84, 215, 212)' },
+    { label: 'parameter', token: '-Path', color: 'rgb(248, 211, 107)' },
+    { label: 'variable', token: '$HOME', color: 'rgb(150, 194, 255)' }
+  ]);
+}
+
+async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
+  await expectPromptTokenColors(rows, 'Shell', [
+    { label: 'opening-keyword', token: 'if', color: 'rgb(223, 143, 255)' },
+    { label: 'builtin', token: 'true', color: 'rgb(132, 242, 167)' },
+    { label: 'closing-keyword', token: 'fi', color: 'rgb(223, 143, 255)' }
+  ]);
 }
 
 async function expectShellStringColorsAcrossRows(rows: Locator, startMarker: string, endMarker: string): Promise<void> {
