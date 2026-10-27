@@ -8,11 +8,15 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select shell and JSON from the file name', () => {
+test('automatic syntax profiles select shell, PowerShell and JSON from the file name', () => {
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
+  for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
+  }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.json'), 'json');
   assert.equal(resolveTextSyntaxProfile('auto', 'notes.txt'), 'plain');
   assert.equal(resolveTextSyntaxProfile('json', 'script.sh'), 'json');
+  assert.equal(resolveTextSyntaxProfile('shell', 'script.ps1'), 'shell');
 });
 
 test('shell syntax preview colors commands, keywords, options, variables, strings, comments and operators', () => {
@@ -32,6 +36,99 @@ test('shell syntax preview colors commands, keywords, options, variables, string
     { text: 'fi', kind: 'shell-keyword' },
     { text: '# finished', kind: 'shell-comment' }
   ]);
+});
+
+test('PowerShell syntax preview colors command forms, keywords, parameters, variables, strings, numbers, types and operators', () => {
+  const source = [
+    'function Get-Items {',
+    '  $root = Get-ChildItem -Path ${HOME} -Filter \'*.ps1\'',
+    '  if ($root.Count -gt 0 -and $true) {',
+    '    Write-Output "$root"',
+    '  }',
+    '}'
+  ].join('\n');
+  const tokens = highlightTextSyntax(source, 'powershell').tokens
+    .map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: 'function', kind: 'powershell-keyword' },
+    { text: 'Get-Items', kind: 'powershell-command' },
+    { text: '{', kind: 'powershell-operator' },
+    { text: '$root', kind: 'powershell-variable' },
+    { text: '=', kind: 'powershell-operator' },
+    { text: 'Get-ChildItem', kind: 'powershell-command' },
+    { text: '-Path', kind: 'powershell-parameter' },
+    { text: '${HOME}', kind: 'powershell-variable' },
+    { text: '-Filter', kind: 'powershell-parameter' },
+    { text: "'*.ps1'", kind: 'powershell-string' },
+    { text: 'if', kind: 'powershell-keyword' },
+    { text: '(', kind: 'powershell-operator' },
+    { text: '$root', kind: 'powershell-variable' },
+    { text: '.', kind: 'powershell-operator' },
+    { text: '-gt', kind: 'powershell-operator' },
+    { text: '0', kind: 'powershell-number' },
+    { text: '-and', kind: 'powershell-operator' },
+    { text: '$true', kind: 'powershell-variable' },
+    { text: ')', kind: 'powershell-operator' },
+    { text: '{', kind: 'powershell-operator' },
+    { text: 'Write-Output', kind: 'powershell-command' },
+    { text: '"$root"', kind: 'powershell-string' },
+    { text: '}', kind: 'powershell-operator' },
+    { text: '}', kind: 'powershell-operator' }
+  ]);
+});
+
+test('PowerShell syntax preview keeps comments and here-strings opaque and recognizes type literals', () => {
+  const source = [
+    "$value = [System.IO.FileInfo]'item.txt'",
+    '$size = 42KB',
+    '# line note',
+    '<# block note #>',
+    '$text = @"',
+    '# still string',
+    'Get-ChildItem -Path $HOME',
+    '"@'
+  ].join('\n');
+  const tokens = highlightTextSyntax(source, 'powershell').tokens
+    .map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '$value', kind: 'powershell-variable' },
+    { text: '=', kind: 'powershell-operator' },
+    { text: '[System.IO.FileInfo]', kind: 'powershell-type' },
+    { text: "'item.txt'", kind: 'powershell-string' },
+    { text: '$size', kind: 'powershell-variable' },
+    { text: '=', kind: 'powershell-operator' },
+    { text: '42KB', kind: 'powershell-number' },
+    { text: '# line note', kind: 'powershell-comment' },
+    { text: '<# block note #>', kind: 'powershell-comment' },
+    { text: '$text', kind: 'powershell-variable' },
+    { text: '=', kind: 'powershell-operator' },
+    { text: '@"\n# still string\nGet-ChildItem -Path $HOME\n"@', kind: 'powershell-string' }
+  ]);
+});
+
+test('PowerShell syntax preview does not color comment markers embedded in barewords', () => {
+  const source = 'Foo#Bar\nFoo<#Bar#>\n# actual comment\n';
+  const comments = highlightTextSyntax(source, 'powershell').tokens
+    .filter(token => token.kind === 'powershell-comment')
+    .map(token => source.slice(token.start, token.end));
+  assert.deepEqual(comments, ['# actual comment']);
+});
+
+test('PowerShell syntax preview never extends a token beyond its code-unit bound', () => {
+  const boundaryCases = [
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}-Path`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}\${}`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 3)}'a''`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}1.2`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}[X]`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 4)}[X[]]`
+  ];
+  for (const source of boundaryCases) {
+    const preview = highlightTextSyntax(source, 'powershell');
+    assert.ok(preview.highlightedThrough <= MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+    assert.ok(preview.tokens.every(token => token.end <= preview.highlightedThrough),
+      `token ended past the preview bound at ${preview.highlightedThrough}`);
+  }
 });
 
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {
@@ -64,6 +161,13 @@ test('syntax preview stops at fixed character and token bounds without splitting
   const manyTokens = highlightTextSyntax('if '.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'shell');
   assert.equal(manyTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyTokens.isTruncated, true);
+
+  const longPowerShell = highlightTextSyntax('x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 1), 'powershell');
+  assert.equal(longPowerShell.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(longPowerShell.isTruncated, true);
+  const manyPowerShellTokens = highlightTextSyntax('$x '.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'powershell');
+  assert.equal(manyPowerShellTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyPowerShellTokens.isTruncated, true);
 });
 
 test('a malformed braced variable does not swallow a later expansion', () => {
