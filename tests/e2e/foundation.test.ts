@@ -560,10 +560,18 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
   }
 });
 
-test('local text editor auto-detects Python and supports JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
+test('local text editor auto-detects SQL and supports Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
-  const path = join(profile, 'example.py');
-  const source = 'def greet(name: str) -> str:\n    value = 2\n    print(f"Hello, {name}!")\n# keep the file unchanged\n';
+  const path = join(profile, 'example.sql');
+  const source = [
+    '-- report query',
+    'SELECT COUNT(*)::BIGINT AS total',
+    'FROM users',
+    'WHERE active = TRUE AND id >= $1;',
+    "SELECT E'Dianne''s data';",
+    '/* outer /* nested */ comment */',
+    'SELECT $body$literal -- comment$body$;'
+  ].join('\n') + '\n';
   await writeFile(path, source);
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
     `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -577,16 +585,21 @@ test('local text editor auto-detects Python and supports JavaScript/TypeScript, 
     const preview = editor.getByTestId('text-editor-code-preview');
     await expect(syntax).toHaveValue('auto');
     await expect(contents).toHaveValue(source);
-    await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
-    await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
-    await expect(preview.locator('[data-token-kind="python-function"]').first()).toHaveText('greet');
-    await expect(preview.locator('[data-token-kind="python-builtin"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
-    await expect(preview.locator('[data-token-kind="python-number"]').first()).toHaveCSS('color', 'rgb(248, 211, 107)');
-    await expect(preview.locator('[data-token-kind="python-string"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
-    await expect(preview.locator('[data-token-kind="python-comment"]').first()).toHaveCSS('color', 'rgb(152, 166, 180)');
+    await expect(preview.locator('[data-token-kind="sql-keyword"]').first()).toHaveText('SELECT');
+    await expect(preview.locator('[data-token-kind="sql-keyword"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
+    await expect(preview.locator('[data-token-kind="sql-function"]').first()).toHaveText('COUNT');
+    await expect(preview.locator('[data-token-kind="sql-function"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
+    await expect(preview.locator('[data-token-kind="sql-type"]').first()).toHaveText('BIGINT');
+    await expect(preview.locator('[data-token-kind="sql-type"]').first()).toHaveCSS('color', 'rgb(105, 170, 252)');
+    await expect(preview.locator('[data-token-kind="sql-string"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
+    await expect(preview.locator('[data-token-kind="sql-comment"]').first()).toHaveCSS('color', 'rgb(152, 166, 180)');
     await syntax.selectOption('plain');
     await expect(preview.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('sql');
+    await expect(preview.locator('[data-token-kind="sql-keyword"]').first()).toHaveText('SELECT');
+
     await syntax.selectOption('python');
+    await contents.fill('def greet(name: str):\n    print(name)');
     await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
 
     await syntax.selectOption('javascript');
@@ -1074,6 +1087,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ps1'), 'Get-ChildItem -Path $HOME\n');
     await writeFile(join(remoteRoot, 'remote.py'), 'def remote_preview():\n    print("from SFTP")\n');
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
+    await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1211,6 +1225,16 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(remoteTypeScriptEditor.locator('[data-token-kind="javascript-number"]').first()).toHaveText('42');
     await remoteTypeScriptEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteTypeScriptEditor).toHaveCount(0);
+    const remoteSqlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.sql', exact: true });
+    await remoteSqlEdit.click();
+    const remoteSqlEditor = page.getByRole('dialog', { name: 'remote.sql' });
+    await expect(remoteSqlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteSqlEditor.locator('[data-token-kind="sql-keyword"]').first()).toHaveText('SELECT');
+    await expect(remoteSqlEditor.locator('[data-token-kind="sql-function"]').first()).toHaveText('COUNT');
+    await expect(remoteSqlEditor.locator('[data-token-kind="sql-type"]').first()).toHaveText('INTEGER');
+    await expect(remoteSqlEditor.locator('[data-token-kind="sql-parameter"]').first()).toHaveText('$1');
+    await remoteSqlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteSqlEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();
