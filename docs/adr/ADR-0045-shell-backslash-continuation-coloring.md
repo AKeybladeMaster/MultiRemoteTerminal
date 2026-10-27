@@ -9,9 +9,9 @@ WP-01G through WP-01I color active Shell input and common command grammar. When 
 ## Decision
 
 - Keep Shell tokenization in the pure domain module. `highlightShellInputSyntax` may accept and return a small `ShellSyntaxContinuationState` with only lexical flags: command position, a fixed wrapper name, pending wrapper option/assignment value, and double-bracket test context.
-- Return continuation state only when the input ends in an unquoted odd run of backslashes. Recognize the next input as a continuation only when its visible normal-buffer prompt ends in `>`; other prompt endings discard the carried state.
+- Return continuation state only when the input ends in an unquoted odd run of backslashes. Recognize the next input as a continuation only when its visible normal-buffer prompt ends in `>`; other prompt endings discard the carried state. The suffix check is heuristic and cannot distinguish a custom primary prompt ending in `>` if the Shell does not display its expected continuation prompt.
 - Keep the state per `TerminalPane` in renderer memory. Before the Enter byte is sent, derive the state from xterm's bounded active-input view. Retain no submitted command text, and do not add shell hooks, process discovery, IPC commands, logging or persistence.
-- Apply the state to the next active input row through the existing shared tokenizer. Clear it after an input line without a trailing continuation, Ctrl+C/Ctrl+D/Ctrl+L, failed input/paste, a nonmatching prompt, disabled coloring, non-normal buffer, or pane teardown.
+- Apply the state to the next active input row through the existing shared tokenizer. Clear it after an input line without a trailing continuation (including Enter on an empty continuation prompt), Ctrl+C/Ctrl+D/Ctrl+L, failed input/paste, a nonmatching prompt, disabled coloring, non-normal buffer, or pane teardown.
 - Keep the current opt-in preference, xterm marker cleanup and 2,048-code-unit, 128-row and 64-decoration bounds. Serial remains excluded.
 
 ## Consequences and limits

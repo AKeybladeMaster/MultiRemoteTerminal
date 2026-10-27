@@ -139,12 +139,8 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       }
       if (data === '\r' || data === '\n') {
         const anchor = shellInputAnchor.current;
-        const buffer = instance.buffer.active;
-        const line = buffer.type === 'normal' ? buffer.getLine(buffer.baseY + buffer.cursorY) : undefined;
-        const promptText = buffer.type === 'normal' ? line?.translateToString(true, 0, buffer.cursorX) ?? '' : '';
         shellContinuationState.current = shellSyntaxEnabledRef.current && transport !== 'serial'
-          ? anchor ? readTerminalShellContinuationState(instance, anchor)
-            : shellContinuationState.current && isShellContinuationPromptAtCursor(promptText) ? shellContinuationState.current : undefined
+          ? anchor ? readTerminalShellContinuationState(instance, anchor) : undefined
           : undefined;
         clearTerminalShellInputAnchor(shellInputAnchor);
       } else if (/[\r\n\x03\x04\x0c]/u.test(data)) {

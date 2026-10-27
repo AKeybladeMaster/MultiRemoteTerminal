@@ -5777,6 +5777,23 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await page.keyboard.press('Enter');
     await expect(syntaxRows).toContainText(/git version /i);
 
+    await sendLine(page, 'Bash session 1', "PS1='MRT-PRIMARY>' PS2='MRT-SECONDARY>'", 'MRT-PRIMARY>');
+    await expect.poll(async () => (await syntaxRows.innerText()).split('MRT-PRIMARY>').length - 1).toBeGreaterThan(1);
+    const primaryPromptCount = (await syntaxRows.innerText()).split('MRT-PRIMARY>').length - 1;
+    await syntaxPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type('true ' + String.fromCharCode(92));
+    await page.keyboard.press('Enter');
+    await expect(syntaxRows).toContainText('MRT-SECONDARY>');
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await syntaxRows.innerText()).split('MRT-PRIMARY>').length - 1)
+      .toBeGreaterThan(primaryPromptCount);
+    await page.keyboard.type('echo MRT-EMPTY-PS2');
+    await expect.poll(async () => hasShellPromptTokenColor(await readShellPromptDecorationState(syntaxRows),
+      'echo', 'rgb(132, 242, 167)'), { timeout: 10_000 }).toBe(true);
+    await page.keyboard.press('Control+C');
+    await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+
     const bashPanel = await selectTerminal(page, 'Bash session 1');
     const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
     await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);

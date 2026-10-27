@@ -154,7 +154,8 @@ To color common Shell builtins and command input, enable **Color shell commands
 and builtins at prompts** in **Workbench settings**. The lexical colors also
 continue after an unquoted trailing backslash when the next prompt ends in `>`.
 This is a bounded visual aid, not a Shell parser; quoted continuations and
-shell-specific grammar are not covered.
+shell-specific grammar are not covered. A visible `>` suffix is used as a
+prompt heuristic, so a custom primary prompt ending in `>` can be ambiguous.
 
 Use the theme button or command palette to switch between light and dark themes.
 
