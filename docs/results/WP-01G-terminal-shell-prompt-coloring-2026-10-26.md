@@ -17,7 +17,8 @@ This improves readability for common typed shell commands, including Bash, and r
 
 - `node --test tests/unit/workbench-preferences.test.ts tests/unit/sqlite-workbench-preferences.test.ts tests/unit/terminal-highlights.test.ts` — 21/21 passed, covering prompt endings, anchor marker disposal, schema-v3 migration defaults, opt-in validation and persistence.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "terminal keyword highlighting|Git Bash runs in a local terminal" --reporter=line` — 2/2 Windows Electron E2Es passed. Git Bash input under a custom zsh-style `❯` prompt shows the expected `if` and `true` token colors; Ctrl+C removes the active token decorations; settings persist across restart, while keyword coloring continues to preserve independent ANSI colors.
-- The focused E2E exercises local Git Bash. SSH and Telnet panes use the same renderer path but have not received dedicated WP-01G UI acceptance.
+- `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "shell prompt coloring works in SSH and Telnet" --reporter=line --workers=1` — 1/1 Windows Electron E2E passed. Trusted loopback SSH and explicitly acknowledged loopback Telnet both color `if` and `true` under a `❯` prompt; Ctrl+C removes the active token decorations. The Telnet fixture strips option negotiation and subnegotiation frames before echoing user input.
+- Dedicated local Git Bash, SSH and Telnet Windows UI acceptance now exercises the shared prompt-coloring renderer path. The Git Bash case also verifies preference persistence across restart and independent ANSI colors for existing keyword highlights.
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
 - `corepack pnpm build` — passed on Windows x64 with Node.js 24.14.1. The renderer bundle is 941.37 kB minified / 257.45 kB gzip and triggers Vite's 500 kB advisory.
@@ -26,7 +27,7 @@ This improves readability for common typed shell commands, including Bash, and r
 
 ## Independent review
 
-- **Spec:** No blocking findings. P-30 remains PARTIAL; the result explicitly limits dedicated WP-01G E2E evidence to local Git Bash and leaves SSH/Telnet acceptance unverified.
+- **Spec:** The initial review found no blocking findings. Its original diff covered dedicated UI acceptance only for local Git Bash; the remote acceptance follow-up below closes that evidence gap. P-30 remains PARTIAL.
 - **Standards:** No documented-standard breaches. The marker cleanup evidence gap is resolved by unit and Windows E2E assertions, and xterm cell extraction is shared by both keyword and shell decorators.
 
 Reviewers performed static review of the pinned diff and did not rerun tests; the validation results above were run after the cleanup follow-up.

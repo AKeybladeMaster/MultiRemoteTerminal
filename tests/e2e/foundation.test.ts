@@ -5454,6 +5454,180 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
   }
 });
 
+test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style prompt', async () => {
+  test.setTimeout(90_000);
+  test.skip(process.platform !== 'win32', 'Windows Electron acceptance is required for remote terminal prompt coloring');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-remote-shell-color-e2e-'));
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const sshHostKey = ssh2.utils.generateKeyPairSync('ed25519');
+  const sshClients = new Set<Ssh2FixtureClient>();
+  const sshFixtureErrors: string[] = [];
+  let sshShellCount = 0;
+  const sshServer = new ssh2.Server({ hostKeys: [sshHostKey.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    sshClients.add(client);
+    client.once('close', () => sshClients.delete(client));
+    client.on('error', error => sshFixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        sshShellCount += 1;
+        const stream = acceptShell();
+        stream.write('mrt ❯ ');
+        stream.on('data', (data: Buffer) => stream.write(data));
+      });
+    }));
+  });
+  sshServer.on('error', error => sshFixtureErrors.push(error.message));
+
+  const telnetSockets = new Set<Socket>();
+  let telnetReceivedInput = '';
+  const telnetServer = createServer(socket => {
+    telnetSockets.add(socket);
+    socket.once('close', () => telnetSockets.delete(socket));
+    let telnetDecodeState: 'data' | 'iac' | 'option' | 'subnegotiation' | 'subnegotiation-iac' = 'data';
+    socket.write(Buffer.from([255, 251, 1, 255, 251, 3, 255, 253, 3, 255, 251, 0, 255, 253, 0, 255, 253, 24, 255, 253, 31]));
+    socket.write(Buffer.from([255, 250, 24, 1, 255, 240]));
+    socket.write('mrt ❯ ');
+    socket.on('data', data => {
+      const printableBytes: number[] = [];
+      for (const byte of data) {
+        switch (telnetDecodeState) {
+          case 'data':
+            if (byte === 255) telnetDecodeState = 'iac';
+            else if (byte >= 0x20 && byte <= 0x7e) printableBytes.push(byte);
+            break;
+          case 'iac':
+            if (byte === 250) telnetDecodeState = 'subnegotiation';
+            else if (byte >= 251 && byte <= 254) telnetDecodeState = 'option';
+            else telnetDecodeState = 'data';
+            break;
+          case 'option':
+            telnetDecodeState = 'data';
+            break;
+          case 'subnegotiation':
+            if (byte === 255) telnetDecodeState = 'subnegotiation-iac';
+            break;
+          case 'subnegotiation-iac':
+            if (byte === 240) telnetDecodeState = 'data';
+            else telnetDecodeState = 'subnegotiation';
+            break;
+        }
+      }
+      const printable = Buffer.from(printableBytes);
+      if (printable.length > 0) {
+        telnetReceivedInput += printable.toString('ascii');
+        socket.write(printable);
+      }
+    });
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let sshListening = false;
+  let telnetListening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      sshServer.once('error', rejectListen);
+      sshServer.listen(0, '127.0.0.1', () => { sshListening = true; resolveListen(); });
+    });
+    const sshAddress = sshServer.address();
+    if (!sshAddress || typeof sshAddress === 'string') throw new Error('The prompt-color SSH fixture did not bind a TCP address');
+    await new Promise<void>((resolveListen, rejectListen) => {
+      telnetServer.once('error', rejectListen);
+      telnetServer.listen(0, '127.0.0.1', resolveListen);
+    });
+    telnetListening = true;
+    const telnetAddress = telnetServer.address() as AddressInfo;
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const sshDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await sshDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await sshDialog.getByLabel('Port').fill(String(sshAddress.port));
+    await sshDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog, `SSH fixture errors: ${sshFixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    const sshTab = page.getByRole('tab').filter({ hasText: `127.0.0.1:${sshAddress.port} - SSH` }).last();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const sshPanelId = await sshTab.getAttribute('aria-controls');
+    if (!sshPanelId) throw new Error('Missing prompt-color SSH panel');
+    const sshPanel = page.locator(`#${sshPanelId}`);
+    await expect(sshPanel.locator('.xterm-rows')).toContainText('mrt ❯ ', { timeout: 10_000 });
+    await sshPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(sshPanel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type('if true; then echo MRT; fi');
+
+    const assertShellTokenColors = async (panel: Locator): Promise<void> => {
+      const rows = panel.locator('.xterm-rows');
+      let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean; hasCommand: boolean } | undefined;
+      try {
+        await expect.poll(async () => {
+          lastDecorationState = await rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+            const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+            const rendered = glyphs.map(glyph => glyph.text).join('');
+            const hasColor = (token: string, color: string) => {
+              const start = rendered.lastIndexOf(token);
+              return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
+            };
+            return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasCommand: hasColor('true', 'rgb(84, 215, 212)') };
+          });
+          return lastDecorationState.hasKeyword && lastDecorationState.hasCommand;
+        }, { timeout: 10_000 }).toBe(true);
+      } catch (error) {
+        const renderedRows = await rows.innerText();
+        throw new Error(`Shell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
+      }
+      await page.keyboard.press('Control+C');
+      await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+    };
+    await assertShellTokenColors(sshPanel);
+    expect(sshShellCount).toBe(1);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(1);
+
+    await page.getByRole('button', { name: 'Connect to Telnet (plaintext)', exact: true }).first().click();
+    const telnetDialog = page.getByRole('dialog', { name: 'Connect to a Telnet server' });
+    await expect(telnetDialog.getByText('Telnet traffic is sent in plaintext.')).toBeVisible();
+    await telnetDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await telnetDialog.getByLabel('Port').fill(String(telnetAddress.port));
+    await telnetDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const telnetTab = page.getByRole('tab').filter({ hasText: /Telnet \(plaintext\)/ }).last();
+    await expect(telnetTab).toBeVisible({ timeout: 15_000 });
+    const telnetPanelId = await telnetTab.getAttribute('aria-controls');
+    if (!telnetPanelId) throw new Error('Missing prompt-color Telnet panel');
+    const telnetPanel = page.locator(`#${telnetPanelId}`);
+    await expect(telnetPanel.locator('.xterm-rows')).toContainText('mrt ❯ ', { timeout: 10_000 });
+    await telnetPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(telnetPanel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type('if true; then echo MRT; fi');
+    await expect.poll(() => telnetReceivedInput.includes('if true; then echo MRT; fi'), { timeout: 10_000 }).toBe(true);
+    await expect(telnetPanel.locator('.xterm-rows')).toContainText('if true; then echo MRT; fi', { timeout: 10_000 });
+    await assertShellTokenColors(telnetPanel);
+  } finally {
+    await app?.close();
+    for (const client of sshClients) client.end();
+    for (const socket of telnetSockets) socket.destroy();
+    if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
+    if (telnetListening && telnetServer.listening) await new Promise<void>(resolveClose => telnetServer.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('Git Bash supplementary Unicode paste survives a full command round trip', async () => {
   test.skip(process.platform !== 'win32', 'ConPTY compatibility evidence is required on Windows');
   test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash compatibility check');
