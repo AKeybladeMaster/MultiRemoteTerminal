@@ -281,6 +281,10 @@ WP-01K independent General, Spec and Standards review (2026-10-27): the first Sp
 
 WP-01L implementation and Windows verification are recorded in [acceptance results](results/WP-01L-powershell-backtick-continuation-2026-10-27.md); independent review outcome is recorded in [WP-01L review](results/WP-01L-review.md).
 
+**WP-01M — Common natural PowerShell continuation coloring (partial):** Extend the existing bounded tokenizer to carry command-position flags after selected trailing pipeline, binary, assignment, logical and array-separator operators. Allow trailing whitespace after those natural operators, but do not infer continuation from a string, comment, truncated preview, or unrecognized token. Carry state once to the exact `>>` prompt only when xterm establishes an unambiguous caret-at-end position; preserve the existing row, input, decoration and cleanup bounds, and retain no command text. Cover pipeline coloring end to end on Windows by entering `Get-Process |`, verifying command/parameter colors on the `>>` row, then cancelling. Leading-pipe paste, open-delimiter tracking, quoted continuation, other natural continuation forms and full PowerShell grammar remain unsupported; P-30 stays PARTIAL. See [ADR-0048](adr/ADR-0048-powershell-natural-continuation-coloring.md).
+
+WP-01M implementation and Windows verification are recorded in [acceptance results](results/WP-01M-powershell-natural-continuations-2026-10-27.md).
+
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
 **Requires:** MVP/provider registry.  
