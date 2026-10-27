@@ -1209,7 +1209,17 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
-    await writeFile(join(remoteRoot, 'remote.yaml'), '# app config\nserver:\n  host: localhost\n  port: 8080\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n');
+    const remoteYamlSource = `# app config
+server:
+  host: localhost
+  port: 8080
+script:
+  - command: |1-
+     # block body stays opaque
+     enabled: true
+    name: next
+${'# preview cap\n'.repeat(4_100)}`;
+    await writeFile(join(remoteRoot, 'remote.yaml'), remoteYamlSource);
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1372,12 +1382,15 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
     await expect(remoteYamlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]').first()).toHaveText('# app config');
-    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
+    await expect(remoteYamlEditor.locator('[data-token-kind]')).toHaveCount(4_096);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').first()).toHaveText('server');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').nth(1)).toHaveText('host');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-number"]').first()).toHaveText('8080');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
+    await expect(remoteYamlEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await remoteYamlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteYamlSource);
+    expect(await remoteYamlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteYamlSource);
     await remoteYamlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteYamlEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);

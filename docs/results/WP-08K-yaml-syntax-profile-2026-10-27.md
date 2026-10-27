@@ -11,7 +11,7 @@
 
 ## Review follow-up
 
-Independent review caught flow-map values being considered as keys, core scalars being classified word-by-word, sequence indicators inside scalars receiving operator colors, alias-key colons being absorbed, and compact sequence mappings using the wrong block-scalar indentation base. These cases are now covered by domain regressions; local and SFTP Windows E2Es verify compact block-scalar text stays opaque while following sibling keys remain colored.
+Independent review caught flow-map values being considered as keys, core scalars being classified word-by-word, sequence indicators inside scalars receiving operator colors, alias-key colons being absorbed, and compact sequence mappings using the wrong block-scalar indentation base. These cases are now covered by domain regressions; local and SFTP Windows E2Es verify compact block-scalar text stays opaque while following sibling keys remain colored. Additional regressions cover flow-sequence pairs, nested compact-sequence mappings and low-token malformed-input scan bounds. Both editors verify the 4,096-token preview cap while retaining the full YAML source; anchor and alias names share one bounded property-name scanner.
 
 ## Verification
 
@@ -20,8 +20,8 @@ Independent review caught flow-map values being considered as keys, core scalars
 | `corepack pnpm build` | Passed. Existing Vite bundle-size advisory remains; the renderer bundle is 991.51 kB before gzip. |
 | `corepack pnpm typecheck` | Passed. |
 | `corepack pnpm lint` | Passed, including static import-boundary checks. |
-| `node --test tests/unit/text-syntax.test.ts` | Passed, 23/23. Covers profile detection, whole keys/scalars/comments, flow syntax, tags/anchors/aliases, directives, block scalars and preview limits. |
-| `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "local text editor auto-detects SQL\|local YAML text editor auto-detects\|SFTP sessions verify trust" --reporter=line` | Passed, 3/3 Windows Electron E2Es. Covers manual YAML selection, local `.yaml` auto-detection and cap/full-text retention, and remote SFTP `.yaml` auto-detection. |
+| `node --test tests/unit/text-syntax.test.ts` | Passed, 24/24. Covers profile detection, whole keys/scalars/comments, flow syntax and sequence pairs, tags/anchors/aliases, directives, nested block scalars, preview limits and a low-token malformed-input performance bound. |
+| `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "local text editor auto-detects SQL\|local YAML text editor auto-detects\|SFTP sessions verify trust" --reporter=line` | Passed, 3/3 Windows Electron E2Es. Covers manual YAML selection, local and remote `.yaml` auto-detection, block-scalar opacity, and 4,096-token notices with full source retention in both editors. |
 | `git diff --check` | Passed. |
 
 ## Limitations and security

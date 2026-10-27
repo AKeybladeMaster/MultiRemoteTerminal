@@ -500,6 +500,7 @@ test('YAML syntax preview recognizes flow collections, tags, anchors, aliases, d
     '%TAG !example! tag:example.com,2026:',
     '--- !<tag:clarkevans.com,2002:invoice>',
     'flow: {quoted: "value", adjacent:true, words: this is true, nested: [one, "item", -2, {enabled: false}]}',
+    'sequencePairs: [foo: bar, baz: qux, "quoted pair": value]',
     'anchor: &base {name: origin}',
     'copy: *base # reuse',
     'aliasKey: {*base: value}',
@@ -514,6 +515,11 @@ test('YAML syntax preview recognizes flow collections, tags, anchors, aliases, d
     '     # sequence body stays opaque',
     '     enabled: true',
     '    name: next',
+    'nestedTasks:',
+    '  - - command: |1-',
+    '       # nested sequence body stays opaque',
+    '       enabled: true',
+    '      nested name: next',
     'after: true'
   ].join('\n');
   const preview = highlightTextSyntax(source, 'yaml');
@@ -542,6 +548,13 @@ test('YAML syntax preview recognizes flow collections, tags, anchors, aliases, d
   assert.ok(values('yaml-string').includes('     enabled: true'));
   assert.equal(values('yaml-comment').includes('     # sequence body stays opaque'), false);
   assert.ok(values('yaml-key').includes('name'));
+  assert.ok(values('yaml-key').includes('foo'));
+  assert.ok(values('yaml-key').includes('baz'));
+  assert.ok(values('yaml-key').includes('"quoted pair"'));
+  assert.ok(values('yaml-key').includes('nested name'));
+  assert.ok(values('yaml-string').includes('bar'));
+  assert.ok(values('yaml-string').includes('qux'));
+  assert.ok(values('yaml-string').includes('       # nested sequence body stays opaque'));
   assert.ok(values('yaml-key').includes('after'));
 });
 
@@ -569,6 +582,25 @@ test('YAML syntax preview bounds implicit-key lookahead, characters and token ou
   const manyComments = highlightTextSyntax('# comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'yaml');
   assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyComments.isTruncated, true);
+});
+
+test('YAML syntax preview keeps malformed low-token flow input within a linear allowance', () => {
+  function medianRuntime(codeUnits: number): number {
+    const input = `[${'}'.repeat(codeUnits - 1)}`;
+    highlightTextSyntax(input, 'yaml');
+    const samples = Array.from({ length: 5 }, () => {
+      const start = performance.now();
+      const preview = highlightTextSyntax(input, 'yaml');
+      assert.equal(preview.tokens.length, 1);
+      return performance.now() - start;
+    }).sort((left, right) => left - right);
+    return samples[2]!;
+  }
+
+  const smaller = medianRuntime(16_000);
+  const boundedPreview = medianRuntime(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.ok(boundedPreview <= smaller * 8 + 10,
+    `64,000 malformed flow code units took ${boundedPreview.toFixed(1)}ms after 16,000 took ${smaller.toFixed(1)}ms`);
 });
 
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {

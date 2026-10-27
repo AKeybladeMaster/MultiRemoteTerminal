@@ -1200,7 +1200,9 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     if (character === ' ' || character === '\t') { index += 1; continue; }
     const currentFlow = flowStack.at(-1);
     const flowMapKeyExpected = currentFlow?.kind === 'mapping' && currentFlow.expectsKey;
-    const canStartImplicitKey = flowMapKeyExpected || (flowStack.length === 0 && nodePositionExpected);
+    const flowSequencePairKeyExpected = currentFlow?.kind === 'sequence' && nodePositionExpected;
+    const canStartImplicitKey = flowMapKeyExpected || flowSequencePairKeyExpected ||
+      (flowStack.length === 0 && nodePositionExpected);
 
     const documentMarkerEnd = scanYamlDocumentMarker(text, index, limit);
     if (documentMarkerEnd > index) {
@@ -1232,7 +1234,9 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
 
     if (character === '"' || character === '\'') {
       const end = scanYamlQuotedScalar(text, index, limit);
-      const keyColon = canStartImplicitKey ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, true) : -1;
+      const keyColon = canStartImplicitKey
+        ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, true, flowSequencePairKeyExpected)
+        : -1;
       const isKey = canStartImplicitKey && keyColon >= end;
       if (!addToken(tokens, index, end, isKey ? 'yaml-key' : 'yaml-string')) return index;
       index = end;
@@ -1242,14 +1246,14 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     }
 
     if (nodePositionExpected && character === '&' && index + 1 < limit && !isYamlPropertyDelimiter(text[index + 1]!)) {
-      const end = scanYamlAnchor(text, index, limit);
+      const end = scanYamlPropertyName(text, index, limit);
       if (!addToken(tokens, index, end, 'yaml-anchor')) return index;
       index = end;
       continue;
     }
 
     if (nodePositionExpected && character === '*' && index + 1 < limit && !isYamlPropertyDelimiter(text[index + 1]!)) {
-      const end = scanYamlAlias(text, index, limit);
+      const end = scanYamlPropertyName(text, index, limit);
       if (!addToken(tokens, index, end, 'yaml-alias')) return index;
       index = end;
       nodePositionExpected = false;
@@ -1325,7 +1329,7 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     }
 
     const keyColon = canStartImplicitKey
-      ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, false)
+      ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, false, flowSequencePairKeyExpected)
       : -1;
     if (keyColon > index) {
       if (!addToken(tokens, index, keyColon, 'yaml-key')) return index;
@@ -1372,7 +1376,14 @@ function scanYamlQuotedScalar(text: string, start: number, limit: number): numbe
   return limit;
 }
 
-function findYamlKeyColon(text: string, start: number, limit: number, flowMapKeyExpected: boolean, quotedKey: boolean): number {
+function findYamlKeyColon(
+  text: string,
+  start: number,
+  limit: number,
+  flowMapKeyExpected: boolean,
+  quotedKey: boolean,
+  flowSequencePairKeyExpected = false
+): number {
   const keyLimit = Math.min(limit, start + MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS);
   let index = start;
   while (index < keyLimit) {
@@ -1385,7 +1396,7 @@ function findYamlKeyColon(text: string, start: number, limit: number, flowMapKey
       continue;
     }
     if (character === '#' && (index === start || isWhitespace(text[index - 1]!))) return -1;
-    if (flowMapKeyExpected && ',]}'.includes(character)) return -1;
+    if ((flowMapKeyExpected || flowSequencePairKeyExpected) && ',]}'.includes(character)) return -1;
     if (character === ':' && (isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected)) return index;
     index += 1;
   }
@@ -1406,14 +1417,7 @@ function scanYamlPlainScalar(text: string, start: number, limit: number, inFlowC
   return contentEnd;
 }
 
-function scanYamlAnchor(text: string, start: number, limit: number): number {
-  let index = start + 1;
-  while (index < limit && !isYamlPropertyDelimiter(text[index]!) &&
-      !(text[index] === ':' && isYamlSeparatedColon(text, index, limit))) index += 1;
-  return index;
-}
-
-function scanYamlAlias(text: string, start: number, limit: number): number {
+function scanYamlPropertyName(text: string, start: number, limit: number): number {
   let index = start + 1;
   while (index < limit && !isYamlPropertyDelimiter(text[index]!) &&
       !(text[index] === ':' && isYamlSeparatedColon(text, index, limit))) index += 1;
@@ -1446,11 +1450,11 @@ function isYamlBlockIndicator(text: string, index: number, limit: number): boole
 }
 
 function isYamlLinePrefix(text: string, index: number): boolean {
-  return yamlLineStart(text, index) === index;
+  return index === 0 || text[index - 1] === '\n' || text[index - 1] === '\r';
 }
 
 function scanYamlDocumentMarker(text: string, index: number, limit: number): number {
-  if (!isYamlLinePrefix(text, index) || index + 3 > limit) return index;
+  if ((text[index] !== '-' && text[index] !== '.') || !isYamlLinePrefix(text, index) || index + 3 > limit) return index;
   const marker = text.slice(index, index + 3);
   if (marker !== '---' && marker !== '...') return index;
   const following = index + 3 < limit ? text[index + 3] : undefined;
@@ -1458,9 +1462,9 @@ function scanYamlDocumentMarker(text: string, index: number, limit: number): num
 }
 
 function isYamlDirective(text: string, index: number, limit: number): boolean {
-  if (!isYamlLinePrefix(text, index)) return false;
+  if (text[index] !== '%') return false;
   const directive = text.startsWith('%YAML', index) ? '%YAML' : text.startsWith('%TAG', index) ? '%TAG' : undefined;
-  if (!directive) return false;
+  if (!directive || !isYamlLinePrefix(text, index)) return false;
   const following = index + directive.length < limit ? text[index + directive.length] : undefined;
   return following === undefined || isWhitespace(following);
 }
@@ -1543,12 +1547,15 @@ function yamlLineIndent(text: string, index: number): number {
 function yamlBlockScalarParentIndent(text: string, index: number): number {
   const lineStart = yamlLineStart(text, index);
   const lineIndent = yamlLineIndent(text, index);
-  const sequenceIndicator = lineStart + lineIndent;
-  if (text[sequenceIndicator] !== '-' || !isWhitespace(text[sequenceIndicator + 1] ?? '')) return lineIndent;
+  let compactMappingKey = lineStart + lineIndent;
+  while (text[compactMappingKey] === '-' && isWhitespace(text[compactMappingKey + 1] ?? '')) {
+    compactMappingKey += 2;
+    while (compactMappingKey < index && isWhitespace(text[compactMappingKey]!)) compactMappingKey += 1;
+  }
 
-  const compactMappingKey = sequenceIndicator + 2;
+  if (compactMappingKey === lineStart + lineIndent || compactMappingKey >= index) return lineIndent;
   const keyColon = findYamlKeyColon(text, compactMappingKey, index, false, false);
-  return keyColon > compactMappingKey ? lineIndent + 2 : lineIndent;
+  return keyColon > compactMappingKey ? compactMappingKey - lineStart : lineIndent;
 }
 
 function yamlLineStart(text: string, index: number): number {
