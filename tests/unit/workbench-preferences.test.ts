@@ -4,7 +4,7 @@ import { createWorkbenchPreferencesManager } from '../../packages/application/sr
 import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences,
   toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
-import { DEFAULT_VISIBLE_LOCAL_SHELLS } from '../../packages/domain/src/local-shell-tools.ts';
+import { DEFAULT_ENABLED_LOCAL_SHELLS, DEFAULT_VISIBLE_LOCAL_SHELLS, normalizeEnabledLocalShells } from '../../packages/domain/src/local-shell-tools.ts';
 import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, normalizeEnabledOptionalConnections } from '../../packages/domain/src/optional-connection-tools.ts';
 import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../packages/domain/src/powershell-profile.ts';
 
@@ -123,6 +123,26 @@ test('optional connection preferences use a fixed allowlist and migrate schema v
   });
   assert.deepEqual(normalizeWorkbenchPreferences({ ...schemaV9, enabledOptionalConnections: ['ftp'] })?.enabledOptionalConnections, ['ftp']);
   assert.equal(normalizeWorkbenchPreferences({ ...schemaV9, enabledOptionalConnections: ['unknown'] }), undefined);
+});
+
+test('local shell availability is independent from palette visibility and migrates schema v10 enabled', () => {
+  const schemaV10 = { startupGreeting: 'Ready', terminalHighlightEnabled: false, terminalHighlightRules: [],
+    autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
+    visibleLocalShells: ['powershell', 'bash', 'wsl'], customLogoDataUrl: null, powerShellProfileScript: '',
+    enabledOptionalConnections: ['ftp'] };
+  assert.deepEqual(DEFAULT_ENABLED_LOCAL_SHELLS, ['powershell', 'cmd', 'bash', 'wsl']);
+  assert.deepEqual(normalizeEnabledLocalShells(['wsl', 'bash']), ['bash', 'wsl']);
+  assert.deepEqual(normalizeEnabledLocalShells([]), []);
+  assert.equal(normalizeEnabledLocalShells(['bash', 'bash']), undefined);
+  assert.equal(normalizeEnabledLocalShells(['unknown']), undefined);
+  assert.deepEqual(normalizeWorkbenchPreferences(schemaV10, 10), {
+    ...DEFAULT_WORKBENCH_PREFERENCES, ...schemaV10, enabledLocalShells: DEFAULT_ENABLED_LOCAL_SHELLS
+  });
+  const currentSchema = { ...schemaV10, enabledLocalShells: ['cmd'] };
+  assert.deepEqual(normalizeWorkbenchPreferences(currentSchema)?.enabledLocalShells, ['cmd']);
+  assert.deepEqual(normalizeWorkbenchPreferences(currentSchema)?.enabledOptionalConnections, ['ftp']);
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV10, enabledLocalShells: ['cmd', 'cmd'] }), undefined);
+  assert.equal(normalizeWorkbenchPreferences({ ...schemaV10, enabledLocalShells: ['unknown'] }), undefined);
 });
 
 test('PowerShell profile text normalizes newlines and rejects unreviewable controls and oversized scripts', () => {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, FormEvent } from 'react';
-import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
+import { DEFAULT_ENABLED_LOCAL_SHELLS, DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, OPTIONAL_CONNECTION_TOOL_REGISTRY } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
@@ -31,6 +31,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
   const [autoSaveSessions, setAutoSaveSessions] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [enabledLocalShells, setEnabledLocalShells] = useState<readonly LocalShell[]>(DEFAULT_ENABLED_LOCAL_SHELLS);
   const [enabledOptionalConnections, setEnabledOptionalConnections] = useState<readonly OptionalConnectionId[]>(DEFAULT_ENABLED_OPTIONAL_CONNECTIONS);
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,7 +56,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
   const profileActionBusy = profilePreviewBusy || profileApplyBusy;
   const validatedPreferences = normalizeWorkbenchPreferences({
     startupGreeting: greeting, powerShellProfileScript, terminalHighlightEnabled, terminalHighlightRules, autoSaveSessions, terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh, visibleLocalShells, enabledOptionalConnections, customLogoDataUrl
+    showSftpBrowserBesideSsh, visibleLocalShells, enabledLocalShells, enabledOptionalConnections, customLogoDataUrl
   });
   const characterCount = Array.from(greeting).length;
 
@@ -77,6 +78,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
         setVisibleLocalShells(reply.result.visibleLocalShells);
+        setEnabledLocalShells(reply.result.enabledLocalShells);
         setEnabledOptionalConnections(reply.result.enabledOptionalConnections);
         setCustomLogoDataUrl(reply.result.customLogoDataUrl);
       }
@@ -165,6 +167,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
         setTerminalShellSyntaxEnabled(reply.result.terminalShellSyntaxEnabled);
         setShowSftpBrowserBesideSsh(reply.result.showSftpBrowserBesideSsh);
         setVisibleLocalShells(reply.result.visibleLocalShells);
+        setEnabledLocalShells(reply.result.enabledLocalShells);
         setEnabledOptionalConnections(reply.result.enabledOptionalConnections);
         setCustomLogoDataUrl(reply.result.customLogoDataUrl);
         onPreferencesSaved(reply.result);
@@ -415,6 +418,34 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
                     setStatus('');
                   }} />
                 <span>Show {tool.label} in command palette</span>
+              </label>
+              <p className="settings-highlight-help" id={descriptionId}>{tool.description}</p>
+            </div>;
+          })}
+        </section>
+        <section className="settings-highlights" role="group" aria-labelledby="local-shell-availability-heading"
+          aria-describedby="local-shell-availability-description">
+          <h3 id="local-shell-availability-heading">Local shell availability</h3>
+          <p className="settings-highlight-help" id="local-shell-availability-description">
+            Disabled shells cannot start new sessions or reopen saved profiles. Existing sessions stay open and can be closed, and saved profiles are kept. If PowerShell is disabled, the app skips its startup terminal without choosing another shell.
+          </p>
+          {LOCAL_SHELL_TOOL_REGISTRY.map(tool => {
+            const inputId = `enabled-local-shell-${tool.shell}`;
+            const descriptionId = `${inputId}-description`;
+            return <div key={tool.shell}>
+              <label className="settings-highlight-toggle" htmlFor={inputId}>
+                <input id={inputId} name={`enabledLocalShells.${tool.shell}`} type="checkbox" checked={enabledLocalShells.includes(tool.shell)}
+                  disabled={loading || loadFailed || saving} aria-describedby={descriptionId}
+                  onChange={event => {
+                    const shouldEnable = event.target.checked;
+                    setEnabledLocalShells(current => shouldEnable
+                      ? LOCAL_SHELL_TOOL_REGISTRY.filter(candidate => candidate.shell === tool.shell || current.includes(candidate.shell))
+                        .map(candidate => candidate.shell)
+                      : current.filter(shell => shell !== tool.shell));
+                    setError(undefined);
+                    setStatus('');
+                  }} />
+                <span>Allow {tool.label} sessions</span>
               </label>
               <p className="settings-highlight-help" id={descriptionId}>{tool.description}</p>
             </div>;

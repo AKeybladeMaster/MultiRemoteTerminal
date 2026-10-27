@@ -28,7 +28,7 @@ import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts'
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell, LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
-import { DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
+import { DEFAULT_ENABLED_LOCAL_SHELLS, DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
 import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
@@ -325,9 +325,9 @@ function Workbench() {
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
+  const [enabledLocalShells, setEnabledLocalShells] = useState<readonly LocalShell[]>(DEFAULT_ENABLED_LOCAL_SHELLS);
   const [enabledOptionalConnections, setEnabledOptionalConnections] = useState<readonly OptionalConnectionId[]>(DEFAULT_ENABLED_OPTIONAL_CONNECTIONS);
   const [customLogoDataUrl, setCustomLogoDataUrl] = useState<string | null>(null);
-  const [workbenchPreferencesSettled, setWorkbenchPreferencesSettled] = useState(false);
   const [workbenchPreferencesLoaded, setWorkbenchPreferencesLoaded] = useState(false);
   const [pendingCloseId, setPendingCloseId] = useState<string>();
   const [tabContextMenu, setTabContextMenu] = useState<TerminalTabContextMenu>();
@@ -423,6 +423,7 @@ function Workbench() {
   const fileOnlySshSessionIds = useRef(new Set<string>());
   const visibleFileOnlySshSessionIds = useRef(new Set<string>());
   const pendingOpenRequests = useRef(new Map<string, PendingOpenRequest>());
+  const startupTerminalRequested = useRef(false);
   const nextOrdinal = useRef<Record<LocalShell, number>>({ powershell: 0, cmd: 0, bash: 0, wsl: 0 });
   const nextSshOrdinal = useRef(0);
   const nextTelnetOrdinal = useRef(0);
@@ -1205,11 +1206,15 @@ function Workbench() {
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   const openWslDialog = useCallback(() => {
+    if (!workbenchPreferencesLoaded || !enabledLocalShells.includes('wsl')) {
+      setAlert('WSL terminals are disabled in Workbench settings. Enable WSL to list or open distributions.');
+      return;
+    }
     const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     wslDialogReturnFocus.current = paletteOpen ? paletteReturnFocus.current ?? activeElement : activeElement;
     if (paletteOpen) paletteReturnFocus.current = null;
     setWslDialogOpen(true);
-  }, [paletteOpen]);
+  }, [enabledLocalShells, paletteOpen, workbenchPreferencesLoaded]);
 
   const closeWslDialog = useCallback(() => setWslDialogOpen(false), []);
 
@@ -1257,9 +1262,9 @@ function Workbench() {
     setTerminalShellSyntaxEnabled(preferences.terminalShellSyntaxEnabled);
     setShowSftpBrowserBesideSsh(preferences.showSftpBrowserBesideSsh);
     setVisibleLocalShells(preferences.visibleLocalShells);
+    setEnabledLocalShells(preferences.enabledLocalShells);
     setEnabledOptionalConnections(preferences.enabledOptionalConnections);
     setCustomLogoDataUrl(preferences.customLogoDataUrl);
-    setWorkbenchPreferencesSettled(true);
     setWorkbenchPreferencesLoaded(true);
   }, []);
 
@@ -1528,10 +1533,19 @@ function Workbench() {
     if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
   }), []);
 
-  const openTerminal = useCallback(async (launch: LocalTerminalLaunch, savedTitle?: string, rememberWhenOpened = true) => {
-    setPaletteOpen(false);
-    setQuery('');
-    setAlert(undefined);
+  const openTerminal = useCallback(async (launch: LocalTerminalLaunch, savedTitle?: string, rememberWhenOpened = true,
+    dismissPalette = true) => {
+    if (!workbenchPreferencesLoaded || !enabledLocalShells.includes(launch.shell)) {
+      setAlert(workbenchPreferencesLoaded
+        ? `${shellName(launch.shell)} terminals are disabled in Workbench settings. Enable this shell to start or reopen a session.`
+        : 'Local shell availability could not be confirmed. Check Workbench settings and try again.');
+      return;
+    }
+    if (dismissPalette) {
+      setPaletteOpen(false);
+      setQuery('');
+      setAlert(undefined);
+    }
     const sessionId = crypto.randomUUID();
     const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, launch, 80, 24);
     pendingOpenRequests.current.set(sessionId, { transport: 'local', cancelled: false, reply: replyPromise });
@@ -1541,7 +1555,9 @@ function Workbench() {
     pendingOpenRequests.current.delete(sessionId);
     setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     if (!reply.ok) {
-      if (reply.error.code !== 'CANCELLED') setAlert(launch.shell === 'bash'
+      if (reply.error.code !== 'CANCELLED') setAlert(reply.error.code === 'NOT_SUPPORTED'
+        ? `${shellName(launch.shell)} terminals are disabled in Workbench settings. Enable this shell to start or reopen a session.`
+        : launch.shell === 'bash'
         ? 'Could not start Bash. Check that Git for Windows is installed.'
         : launch.shell === 'wsl'
           ? `Could not open ${launch.distribution}. It may have been removed from WSL; choose an installed distribution and try again.`
@@ -1558,7 +1574,7 @@ function Workbench() {
     }
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
-  }, [rememberOpenedSession]);
+  }, [enabledLocalShells, rememberOpenedSession, workbenchPreferencesLoaded]);
 
   const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [],
     savedProfileId?: string, authenticationMethod: SshAuthenticationMethod = 'password') => {
@@ -1886,9 +1902,14 @@ function Workbench() {
       if (!active) return;
       setStatus(reply.ok ? `Ready · ${reply.result.platform} · version ${reply.result.version}` : `Unavailable (${reply.error.code})`);
     });
-    void openTerminal({ shell: 'powershell' }, undefined, false);
     return () => { active = false; };
-  }, [openTerminal]);
+  }, []);
+
+  useEffect(() => {
+    if (!workbenchPreferencesLoaded || startupTerminalRequested.current) return;
+    startupTerminalRequested.current = true;
+    if (enabledLocalShells.includes('powershell')) void openTerminal({ shell: 'powershell' }, undefined, false, false);
+  }, [enabledLocalShells, openTerminal, workbenchPreferencesLoaded]);
 
   useEffect(() => {
     let active = true;
@@ -1898,12 +1919,10 @@ function Workbench() {
         applyWorkbenchPreferences(reply.result);
       } else {
         setAlert(workbenchPreferenceFailureMessage('load', reply.error.code));
-        setWorkbenchPreferencesSettled(true);
       }
     }).catch(() => {
       if (active) {
         setAlert(workbenchPreferenceFailureMessage('load', undefined));
-        setWorkbenchPreferencesSettled(true);
       }
     });
     return () => { active = false; };
@@ -2375,6 +2394,8 @@ function Workbench() {
     }
   }, [pendingCloseId]);
 
+  const isLocalShellEnabled = (shell: LocalShell): boolean =>
+    workbenchPreferencesLoaded && enabledLocalShells.includes(shell);
   const isOptionalConnectionEnabled = (id: OptionalConnectionId): boolean =>
     workbenchPreferencesLoaded && enabledOptionalConnections.includes(id);
   const tftpProviderEnabled = isOptionalConnectionEnabled('tftp');
@@ -2382,7 +2403,7 @@ function Workbench() {
     tftpServerStatus.state === 'running');
   const tftpServerActionLabel = tftpProviderEnabled ? 'Local TFTP server' : 'Manage local TFTP server';
   const commands: PaletteCommand[] = [
-    ...LOCAL_SHELL_TOOL_REGISTRY.filter(tool => workbenchPreferencesSettled && visibleLocalShells.includes(tool.shell)).map(tool => ({
+    ...LOCAL_SHELL_TOOL_REGISTRY.filter(tool => isLocalShellEnabled(tool.shell) && visibleLocalShells.includes(tool.shell)).map(tool => ({
       id: `new-${tool.shell}` as const,
       label: tool.commandLabel,
       run: () => { if (tool.shell === 'wsl') openWslDialog(); else void openTerminal({ shell: tool.shell }); }
@@ -2465,15 +2486,28 @@ function Workbench() {
     const menuId = `session:${session.id}`;
     const menuOpen = openSavedActionsMenuId === menuId;
     const credentialStatus = session.kind === 'ssh' ? savedSshCredentialStatus[session.id] ?? 'none' : undefined;
+    const localShellUnavailable = session.kind === 'local' && !isLocalShellEnabled(session.shell);
+    const localShellDisabledDetail = session.kind === 'local' && localShellUnavailable
+      ? workbenchPreferencesLoaded ? ' · Disabled in settings' : ' · Settings unavailable'
+      : '';
+    const localShellUnavailableLabel = session.kind !== 'local' ? `Open ${session.name}`
+      : !workbenchPreferencesLoaded ? `Open ${session.name} (unavailable: Workbench settings could not be loaded)`
+        : localShellUnavailable ? `Open ${session.name} (disabled: enable ${shellName(session.shell)} in Workbench settings)`
+          : `Open ${session.name}`;
     return <li className="saved-session-row" key={session.id} style={{ paddingInlineStart: `${Math.min(depth, 8) * 10}px` }}>
-      <button className="saved-session-open" type="button" aria-label={`Open ${session.name}`} onClick={() => openSavedSession(session)}>
+      <button className="saved-session-open" type="button"
+        aria-label={localShellUnavailableLabel}
+        title={session.kind === 'local' && localShellUnavailable ? !workbenchPreferencesLoaded
+          ? 'Local shell settings are unavailable. Reload Workbench settings before opening this saved profile.'
+          : `${shellName(session.shell)} is disabled. Enable it in Workbench settings to reopen this saved profile.` : undefined}
+        disabled={localShellUnavailable} onClick={() => openSavedSession(session)}>
         <span className={`shell-glyph ${session.kind === 'local' ? session.shell : session.kind}`} aria-hidden="true">
           {session.kind === 'local' ? shellBadge(session.shell) : session.kind === 'ssh' ? 'SSH' : session.kind === 'sftp' ? 'SFTP'
             : session.kind === 'telnet' ? 'TELNET' : session.kind === 'rdp' ? 'RDP' : session.kind === 'vnc' ? 'VNC'
               : session.kind === 'serial' ? 'COM' : session.secure ? 'FTPS' : 'FTP'}
         </span>
         <span className="saved-session-name" translate="no">{session.name}</span>
-        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell === 'wsl' ? `WSL · ${session.distribution}` : session.shell
+        <span className="saved-session-detail" translate="no">{session.kind === 'local' ? session.shell === 'wsl' ? `WSL · ${session.distribution}${localShellDisabledDetail}` : `${session.shell}${localShellDisabledDetail}`
           : session.kind === 'serial' ? `${session.configuration.path} · ${session.configuration.baudRate} baud`
             : `${sshEndpointLabel(session.host, session.port)} · ${session.kind === 'ftp' ? session.secure ? 'FTPS' : 'FTP (plaintext)' : session.kind === 'rdp' ? 'RDP · external viewer' : session.kind === 'vnc' ? 'VNC · external viewer' : session.kind.toUpperCase()}`}</span>
       </button>

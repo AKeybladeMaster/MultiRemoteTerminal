@@ -209,14 +209,33 @@ test('SQLite rejects corrupted or unsupported stored preference records', () => 
   database.close();
 });
 
-test('SQLite rejects a current-schema preference record missing the provider allowlist', () => {
+test('SQLite migrates schema v10 with all local shells enabled and persists later availability changes', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();
   database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
     .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false,
       terminalHighlightRules: [], autoSaveSessions: false, terminalShellSyntaxEnabled: false,
       showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash', 'wsl'],
-      customLogoDataUrl: null, powerShellProfileScript: '' }),
+      customLogoDataUrl: null, powerShellProfileScript: '', enabledOptionalConnections: ['ftp'] }),
+    10, '2026-10-27T00:00:00.000Z');
+  const preferences = new SqliteWorkbenchPreferencesRepository(database);
+  assert.deepEqual(preferences.read().enabledLocalShells, DEFAULT_WORKBENCH_PREFERENCES.enabledLocalShells);
+  assert.deepEqual(preferences.read().enabledOptionalConnections, ['ftp']);
+  assert.equal(database.prepare('SELECT schema_version FROM settings WHERE key = ?').get('workbench')?.schema_version,
+    WORKBENCH_PREFERENCES_SCHEMA_VERSION);
+  preferences.save({ ...DEFAULT_WORKBENCH_PREFERENCES, enabledLocalShells: ['cmd', 'bash'] });
+  assert.deepEqual(preferences.read().enabledLocalShells, ['cmd', 'bash']);
+  database.close();
+});
+
+test('SQLite rejects a current-schema preference record missing local shell availability', () => {
+  const database = new DatabaseSync(':memory:');
+  new SqliteHostTrustRepository(database).migrate();
+  database.prepare('INSERT INTO settings (key, value_json, schema_version, updated_at) VALUES (?, ?, ?, ?)')
+    .run('workbench', JSON.stringify({ startupGreeting: 'Ready', terminalHighlightEnabled: false,
+      terminalHighlightRules: [], autoSaveSessions: false, terminalShellSyntaxEnabled: false,
+      showSftpBrowserBesideSsh: true, visibleLocalShells: ['powershell', 'bash', 'wsl'],
+      customLogoDataUrl: null, powerShellProfileScript: '', enabledOptionalConnections: DEFAULT_WORKBENCH_PREFERENCES.enabledOptionalConnections }),
     WORKBENCH_PREFERENCES_SCHEMA_VERSION, '2026-10-26T00:00:00.000Z');
   const preferences = new SqliteWorkbenchPreferencesRepository(database);
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
