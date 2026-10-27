@@ -2,7 +2,7 @@ export const MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS = 64_000;
 export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -12,6 +12,8 @@ export type TextSyntaxTokenKind =
   | 'powershell-comment' | 'powershell-operator' | 'powershell-number' | 'powershell-type'
   | 'python-builtin' | 'python-keyword' | 'python-string' | 'python-comment' | 'python-number' | 'python-operator'
   | 'python-function' | 'python-type'
+  | 'javascript-builtin' | 'javascript-keyword' | 'javascript-string' | 'javascript-comment' | 'javascript-number'
+  | 'javascript-operator' | 'javascript-function' | 'javascript-type'
   | 'json-key' | 'json-string' | 'json-number' | 'json-literal' | 'json-punctuation';
 
 export interface TextSyntaxToken {
@@ -66,12 +68,36 @@ const pythonOperators = [
   '**', '//', '<<', '>>', '+', '-', '*', '/', '%', '@', '&', '|', '^', '~', '<', '>', '=', '(', ')', '[', ']', '{', '}', ',',
   ':', '.', ';'
 ] as const;
+const javascriptKeywords = new Set([
+  'abstract', 'as', 'assert', 'asserts', 'async', 'await', 'break', 'case', 'catch', 'class',
+  'const', 'continue', 'debugger', 'declare', 'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false',
+  'finally', 'for', 'from', 'function', 'if', 'implements', 'import', 'in', 'infer', 'instanceof', 'interface', 'is',
+  'keyof', 'let', 'module', 'namespace', 'new', 'null', 'package', 'private', 'protected', 'public', 'readonly', 'return',
+  'satisfies', 'static', 'super', 'switch', 'this', 'throw', 'true', 'try', 'type', 'typeof', 'unique', 'using', 'var',
+  'while', 'with', 'yield'
+]);
+const javascriptTypeKeywords = new Set(['any', 'bigint', 'boolean', 'never', 'number', 'object', 'string', 'symbol', 'unknown', 'void']);
+const javascriptDeclarationKinds = new Map<string, 'javascript-function' | 'javascript-type'>([
+  ['class', 'javascript-type'], ['enum', 'javascript-type'], ['function', 'javascript-function'],
+  ['interface', 'javascript-type'], ['type', 'javascript-type']
+]);
+const javascriptBuiltins = new Set([
+  'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'Function', 'Infinity', 'Intl', 'JSON', 'Map', 'Math', 'NaN', 'Number',
+  'Object', 'Promise', 'Proxy', 'Reflect', 'RegExp', 'Set', 'String', 'Symbol', 'WeakMap', 'WeakSet', 'console',
+  'globalThis', 'isFinite', 'isNaN', 'parseFloat', 'parseInt', 'undefined'
+]);
+const javascriptOperators = [
+  '>>>=', '===', '!==', '**=', '&&=', '||=', '??=', '<<=', '>>=', '>>>', '...', '=>', '?.', '??', '&&', '||', '==', '!=',
+  '<=', '>=', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**', '<<', '>>', '+', '-', '*', '/', '%', '&',
+  '|', '^', '~', '!', '<', '>', '=', '?', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '#'
+] as const;
 
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
+  if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
   if (/\.(?:sh|bash|zsh|ksh)$/.test(name)) return 'shell';
   if (/\.json$/.test(name)) return 'json';
   return 'plain';
@@ -87,7 +113,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
   const scannedThrough = profile === 'shell' ? scanShell(text, limit, tokens)
     : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
       : profile === 'python' ? scanPython(text, limit, tokens)
-      : scanJson(text, limit, tokens);
+        : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
+          : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -573,6 +600,160 @@ function isPythonNameStart(character: string): boolean {
 
 function isHexDigit(character: string): boolean {
   return isDigit(character) || (character >= 'A' && character <= 'F') || (character >= 'a' && character <= 'f');
+}
+
+function scanJavaScript(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  let declarationKind: 'javascript-function' | 'javascript-type' | undefined;
+  while (index < limit) {
+    const character = text[index]!;
+    if (isWhitespace(character)) { index += 1; continue; }
+
+    if (character === '/' && index + 1 < limit && text[index + 1] === '/') {
+      const end = scanLineEnd(text, index, limit);
+      if (!addToken(tokens, index, end, 'javascript-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    if (character === '/' && index + 1 < limit && text[index + 1] === '*') {
+      const terminator = findTextWithinLimit(text, '*/', index + 2, limit);
+      const end = terminator < 0 ? limit : terminator + 2;
+      if (!addToken(tokens, index, end, 'javascript-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    if (character === '\'' || character === '"' || character === '`') {
+      const end = scanJavaScriptString(text, index, limit);
+      if (!addToken(tokens, index, end, 'javascript-string')) return index;
+      index = end;
+      declarationKind = undefined;
+      continue;
+    }
+
+    if (isDigit(character) || (character === '.' && index + 1 < limit && isDigit(text[index + 1]!))) {
+      const end = scanJavaScriptNumber(text, index, limit);
+      if (!addToken(tokens, index, end, 'javascript-number')) return index;
+      index = end;
+      declarationKind = undefined;
+      continue;
+    }
+
+    if (isJavaScriptNameStart(character)) {
+      const end = scanJavaScriptName(text, index, limit);
+      const word = text.slice(index, end);
+      const declarationToken = declarationKind;
+      if (javascriptKeywords.has(word)) {
+        if (!addToken(tokens, index, end, 'javascript-keyword')) return index;
+        declarationKind = javascriptDeclarationKinds.get(word);
+      } else if (declarationToken !== undefined) {
+        if (!addToken(tokens, index, end, declarationToken)) return index;
+        declarationKind = undefined;
+      } else if (javascriptTypeKeywords.has(word)) {
+        if (!addToken(tokens, index, end, 'javascript-type')) return index;
+      } else if (javascriptBuiltins.has(word)) {
+        if (!addToken(tokens, index, end, 'javascript-builtin')) return index;
+      } else {
+        declarationKind = undefined;
+      }
+      index = end;
+      continue;
+    }
+
+    const operatorEnd = scanJavaScriptOperator(text, index, limit);
+    if (operatorEnd > index) {
+      const operator = text.slice(index, operatorEnd);
+      if (!addToken(tokens, index, operatorEnd, 'javascript-operator')) return index;
+      index = operatorEnd;
+      if (!(declarationKind === 'javascript-function' && operator === '*')) declarationKind = undefined;
+      continue;
+    }
+
+    index += 1;
+    declarationKind = undefined;
+  }
+  return limit;
+}
+
+function scanJavaScriptString(text: string, start: number, limit: number): number {
+  const quote = text[start]!;
+  let index = start + 1;
+  while (index < limit) {
+    if (text[index] === '\\') {
+      if (index + 1 < limit && text[index + 1] === '\r' && index + 2 < limit && text[index + 2] === '\n') index += 3;
+      else index += index + 1 < limit ? 2 : 1;
+      continue;
+    }
+    if (text[index] === quote) { index += 1; break; }
+    if (quote !== '`' && (text[index] === '\n' || text[index] === '\r')) break;
+    index += 1;
+  }
+  return index;
+}
+
+function scanJavaScriptNumber(text: string, start: number, limit: number): number {
+  let index = start;
+  let hasFraction = false;
+  let hasExponent = false;
+  if (text[index] === '.' && index + 1 < limit && isDigit(text[index + 1]!)) {
+    index += 1;
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+    hasFraction = true;
+  } else if (index + 1 < limit && text[index] === '0') {
+    const basePrefix = text[index + 1]!.toLowerCase();
+    if (basePrefix === 'b' || basePrefix === 'o' || basePrefix === 'x') {
+      index += 2;
+      while (index < limit && (text[index] === '_' ||
+          (basePrefix === 'x' && isHexDigit(text[index]!)) ||
+          (basePrefix === 'o' && text[index]! >= '0' && text[index]! <= '7') ||
+          (basePrefix === 'b' && (text[index] === '0' || text[index] === '1')))) index += 1;
+      if (index < limit && text[index] === 'n') index += 1;
+      return index;
+    }
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+  } else {
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+  }
+
+  if (!hasFraction && index < limit && text[index] === '.' &&
+      !(index + 2 < limit && text[index + 1] === '.' && text[index + 2] === '.')) {
+    index += 1;
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+    hasFraction = true;
+  }
+  if (index + 1 < limit && (text[index] === 'e' || text[index] === 'E')) {
+    let exponentStart = index + 1;
+    if (text[exponentStart] === '+' || text[exponentStart] === '-') exponentStart += 1;
+    if (exponentStart < limit && isDigit(text[exponentStart]!)) {
+      index = exponentStart + 1;
+      while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+      hasExponent = true;
+    }
+  }
+  if (!hasFraction && !hasExponent && index < limit && text[index] === 'n') index += 1;
+  return index;
+}
+
+function scanJavaScriptName(text: string, start: number, limit: number): number {
+  let index = start + 1;
+  while (index < limit && isJavaScriptNamePart(text[index]!)) index += 1;
+  return index;
+}
+
+function scanJavaScriptOperator(text: string, start: number, limit: number): number {
+  for (const operator of javascriptOperators) {
+    if (start + operator.length <= limit && text.startsWith(operator, start)) return start + operator.length;
+  }
+  return start;
+}
+
+function isJavaScriptNameStart(character: string): boolean {
+  return character === '_' || character === '$' || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+}
+
+function isJavaScriptNamePart(character: string): boolean {
+  return isJavaScriptNameStart(character) || isDigit(character);
 }
 
 function findTextWithinLimit(text: string, target: string, start: number, limit: number): number {
