@@ -6,8 +6,9 @@ import {
   MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS,
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
-import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellInputAnchorActive, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import type { Terminal } from '@xterm/xterm';
 
 test('shell prompt detection accepts common shell and zsh-style endings and rejects password prompts', () => {
   for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'PS C:\\work> ', 'project ❯ ', 'build ➜ ']) {
@@ -19,22 +20,54 @@ test('shell prompt detection accepts common shell and zsh-style endings and reje
 });
 
 test('shell input anchor cleanup releases its marker and clears state', () => {
-  let disposeCount = 0;
-  const marker = {
-    isDisposed: false,
-    dispose() {
-      disposeCount += 1;
-      this.isDisposed = true;
-    }
+  const createMarker = () => {
+    let disposeCount = 0;
+    const marker = {
+      isDisposed: false,
+      dispose() {
+        disposeCount += 1;
+        this.isDisposed = true;
+      },
+      disposeCount: () => disposeCount
+    };
+    return marker;
   };
-  const anchorRef = { current: { marker: marker as unknown as TerminalShellInputAnchor['marker'], startColumn: 4 } };
+  const marker = createMarker();
+  const wrappedMarker = createMarker();
+  let decorationDisposeCount = 0;
+  const anchorRef = { current: { marker: marker as unknown as TerminalShellInputAnchor['marker'], startColumn: 4,
+    wrappedMarkers: [wrappedMarker as unknown as TerminalShellInputAnchor['marker']],
+    decorations: [{ dispose: () => { decorationDisposeCount += 1; } }] } };
 
   clearTerminalShellInputAnchor(anchorRef);
   assert.equal(anchorRef.current, undefined);
-  assert.equal(disposeCount, 1);
+  assert.equal(marker.disposeCount(), 1);
+  assert.equal(wrappedMarker.disposeCount(), 1);
+  assert.equal(decorationDisposeCount, 1);
 
   clearTerminalShellInputAnchor(anchorRef);
-  assert.equal(disposeCount, 1);
+  assert.equal(marker.disposeCount(), 1);
+  assert.equal(wrappedMarker.disposeCount(), 1);
+  assert.equal(decorationDisposeCount, 1);
+});
+
+test('wrapped shell input recovers within bounds and rejects a broken wrapped chain', () => {
+  const anchor = { marker: { line: 0, isDisposed: false }, startColumn: 0, wrappedMarkers: [], decorations: [] };
+  let reads = 0;
+  const terminal = { buffer: { active: { type: 'normal', getLine: (line: number) => {
+    reads += 1;
+    return { isWrapped: line > 0 };
+  } } } } as unknown as Terminal;
+
+  assert.equal(isShellInputAnchorActive(terminal, anchor as unknown as TerminalShellInputAnchor, 128), true);
+  assert.equal(reads, 1, 'overflow validation should inspect only the cursor row');
+
+  reads = 0;
+  assert.equal(isShellInputAnchorActive(terminal, anchor as unknown as TerminalShellInputAnchor, 127), true);
+  assert.equal(reads, 127, 'returning within bounds should revalidate every intervening row');
+
+  const brokenTerminal = { buffer: { active: { type: 'normal', getLine: (line: number) => ({ isWrapped: line > 0 && line !== 64 }) } } } as unknown as Terminal;
+  assert.equal(isShellInputAnchorActive(brokenTerminal, anchor as unknown as TerminalShellInputAnchor, 127), false);
 });
 
 test('terminal highlight rules validate and return Unicode-safe text ranges', () => {
@@ -94,4 +127,12 @@ test('terminal highlighting bounds cell extraction before copying oversized cell
     { start: 0, end: 1, column: 0, width: 1 }, { start: 1, end: 3, column: 1, width: 2 },
     { start: 3, end: 4, column: 2, width: 1 }, { start: 4, end: 5, column: 3, width: 1 }
   ] });
+});
+
+test('bounded shell-input extraction preserves wrapped-row spaces when requested', () => {
+  const cells = ['i', 'f', ' ', ' '];
+  const readCell = (column: number) => ({ text: cells[column] ?? '', width: 1 });
+
+  assert.equal(extractBoundedTerminalHighlightLine(4, readCell)?.text, 'if');
+  assert.equal(extractBoundedTerminalHighlightLine(4, readCell, false)?.text, 'if  ');
 });

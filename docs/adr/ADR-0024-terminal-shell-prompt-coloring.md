@@ -16,10 +16,10 @@ P-30 asks for readable syntax colors in terminal sessions. WP-01F already colors
 
 ## Consequences and limits
 
-The colors provide a bounded lexical aid for text currently visible in the active input row. Prompt recognition is intentionally simple and accepts only the final `$`, `#`, `%`, `>`, `❯` or `➜` character; it does not identify the shell or prove that a prompt is safe. The two glyph endings support common zsh-style prompt themes but do not add zsh shell or theme support. Wrapped command lines, continuation prompts, full zsh grammar and shell-specific semantic checks are not supported. The tokenizer may color a token differently from the shell's eventual interpretation. With coloring disabled, the renderer does not install the shell token decoration path.
+The colors provide a bounded lexical aid for active input. Prompt recognition is intentionally simple and accepts only the final `$`, `#`, `%`, `>`, `❯` or `➜` character; it does not identify the shell or prove that a prompt is safe. The two glyph endings support common zsh-style prompt themes but do not add zsh shell or theme support. WP-01H adds bounded coloring across physical auto-wrap rows; continuation prompts, full zsh grammar and shell-specific semantic checks remain unsupported. The tokenizer may color a token differently from the shell's eventual interpretation. With coloring disabled, the renderer does not install the shell token decoration path.
 
 The marker, anchor and decorations exist only in renderer memory and follow xterm buffer movement. No terminal input or output value is added to storage or logging. The shell and remote peer retain their existing authority over command execution; this feature makes no command safe to run.
 
 ## Verification
 
-See [WP-01G acceptance results](../results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md) for Windows UI coverage of local Git Bash, SSH and Telnet sessions. P-30 remains PARTIAL until broader shell-aware syntax behavior, wrapped input rows and public-server interoperability are completed.
+See [WP-01G acceptance results](../results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md) for Windows UI coverage of local Git Bash, SSH and Telnet sessions. [ADR-0036](ADR-0036-terminal-wrapped-shell-input-coloring.md) and [WP-01H results](../results/WP-01H-wrapped-shell-input-coloring-2026-10-27.md) extend this decision to bounded wrapped command rows. P-30 remains PARTIAL for broader shell-aware syntax behavior and public-server interoperability.

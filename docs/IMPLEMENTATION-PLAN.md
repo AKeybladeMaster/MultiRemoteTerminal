@@ -250,6 +250,8 @@ WP-01G independent Standards and Spec review (2026-10-26): no blocking findings.
 
 WP-01G remote acceptance review follow-up (2026-10-27): the Windows Git Bash/SSH/Telnet UI run passes 3/3 after fixes. Static Spec review found no issues. Standards review identified and then verified the repair of Electron-close cleanup and duplicated assertions; the final follow-up found no remaining breach or smell. P-30 remains PARTIAL; see [WP-01G results](results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md).
 
+**WP-01H — Wrapped shell input coloring (partial):** Retain the WP-01G prompt anchor across consecutive xterm rows only when each continuation row is marked wrapped. Reconstruct token offsets from bounded xterm cell spans and split decorations across physical rows. Bound each refresh to 2,048 UTF-16 code units, 128 physical rows and 64 decorations; hard line breaks and rows beyond the bound receive no shell token overlays. Windows E2E covers an ordinary unsubmitted Shell command in Git Bash and a long command across physical wraps in SSH and Telnet; Ctrl+C clears all overlays. Git Bash Readline scrolls long input horizontally, so the wrapped-row claim applies only to transports that render input on wrapped xterm rows. Full shell grammar, explicit continuation lines and broad interoperability remain open, so P-30 stays PARTIAL. See [ADR-0036](adr/ADR-0036-terminal-wrapped-shell-input-coloring.md) and [WP-01H results](results/WP-01H-wrapped-shell-input-coloring-2026-10-27.md).
+
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
 **Requires:** MVP/provider registry.  

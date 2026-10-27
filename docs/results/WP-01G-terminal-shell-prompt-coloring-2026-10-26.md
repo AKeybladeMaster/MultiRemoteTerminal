@@ -44,4 +44,6 @@ Reviewers performed static review of the pinned diff and did not rerun tests; th
 
 Prompt endings are heuristic and do not identify a shell. Wrapped command lines and shell continuation prompts are not colored. Shell token colors are lexical hints and do not validate command syntax or safety. The current xterm screen buffer is renderer state; no terminal transcript is written by this feature.
 
+WP-01H later extends the bounded renderer to consecutive wrapped input rows; see [WP-01H evidence](WP-01H-wrapped-shell-input-coloring-2026-10-27.md). Shell continuation prompts and full shell grammar remain unsupported.
+
 See [ADR-0024](../adr/ADR-0024-terminal-shell-prompt-coloring.md), [WP-01F terminal keyword coloring](WP-01F-terminal-highlights-2026-10-25.md) and [WP-08E editor syntax profiles](WP-08E-text-syntax-profiles-2026-10-26.md).

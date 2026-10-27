@@ -44,6 +44,8 @@ export interface BoundedTerminalHighlightLine {
 export interface TerminalShellInputAnchor {
   readonly marker: IMarker;
   readonly startColumn: number;
+  readonly wrappedMarkers: IMarker[];
+  readonly decorations: Disposable[];
 }
 
 export interface TerminalShellInputAnchorRef {
@@ -68,12 +70,35 @@ export function isShellPromptAtCursor(promptText: string): boolean {
 export function clearTerminalShellInputAnchor(anchorRef: TerminalShellInputAnchorRef): void {
   const anchor = anchorRef.current;
   anchorRef.current = undefined;
-  if (anchor && !anchor.marker.isDisposed) anchor.marker.dispose();
+  if (!anchor) return;
+  clearTerminalShellInputDecorations(anchor);
+  if (!anchor.marker.isDisposed) anchor.marker.dispose();
+}
+
+function clearTerminalShellInputDecorations(anchor: TerminalShellInputAnchor): void {
+  while (anchor.decorations.length > 0) anchor.decorations.pop()?.dispose();
+  while (anchor.wrappedMarkers.length > 0) {
+    const marker = anchor.wrappedMarkers.pop();
+    if (marker && !marker.isDisposed) marker.dispose();
+  }
+}
+
+export function isShellInputAnchorActive(terminal: Terminal, anchor: TerminalShellInputAnchor, cursorLine: number): boolean {
+  const buffer = terminal.buffer.active;
+  if (buffer.type !== 'normal' || anchor.marker.isDisposed) return false;
+  const wrappedRowCount = cursorLine - anchor.marker.line;
+  if (wrappedRowCount < 0) return false;
+  if (wrappedRowCount >= MAX_TERMINAL_HIGHLIGHT_ROWS) return buffer.getLine(cursorLine)?.isWrapped ?? false;
+  for (let lineNumber = anchor.marker.line + 1; lineNumber <= cursorLine; lineNumber += 1) {
+    if (!buffer.getLine(lineNumber)?.isWrapped) return false;
+  }
+  return true;
 }
 
 export function extractBoundedTerminalHighlightLine(
   columnCount: number,
-  readCell: (column: number) => TerminalHighlightCellValue | undefined
+  readCell: (column: number) => TerminalHighlightCellValue | undefined,
+  trimTrailingSpaces = true
 ): BoundedTerminalHighlightLine | undefined {
   if (!Number.isSafeInteger(columnCount) || columnCount <= 0) return undefined;
   const cellSpans: TerminalHighlightCellSpan[] = [];
@@ -94,19 +119,57 @@ export function extractBoundedTerminalHighlightLine(
     cellSpans.push({ start, end: fullText.length, column, width: cell.width });
   }
 
-  if (trimmedTextLength === 0) return undefined;
-  return { text: fullText.slice(0, trimmedTextLength), cellSpans };
+  const textLength = trimTrailingSpaces ? trimmedTextLength : fullText.length;
+  if (textLength === 0) return undefined;
+  return { text: fullText.slice(0, textLength), cellSpans };
 }
 
-function extractBoundedTerminalBufferLine(terminal: Terminal, lineNumber: number): BoundedTerminalHighlightLine | undefined {
+function extractBoundedTerminalBufferLine(terminal: Terminal, lineNumber: number, columnCount = terminal.cols,
+  trimTrailingSpaces = true): BoundedTerminalHighlightLine | undefined {
   const buffer = terminal.buffer.active;
   const line = buffer.getLine(lineNumber);
   if (!line) return undefined;
   const cellScratch = buffer.getNullCell();
-  return extractBoundedTerminalHighlightLine(Math.min(line.length, terminal.cols), column => {
+  return extractBoundedTerminalHighlightLine(Math.min(line.length, columnCount), column => {
     const cell = line.getCell(column, cellScratch);
     return cell ? { text: cell.getChars(), width: cell.getWidth() } : undefined;
-  });
+  }, trimTrailingSpaces);
+}
+
+interface TerminalShellInputRow {
+  readonly lineNumber: number;
+  readonly commandStart: number;
+  readonly commandEnd: number;
+  readonly inputTextStart: number;
+  readonly cellSpans: readonly TerminalHighlightCellSpan[];
+}
+
+interface TerminalShellInput {
+  readonly text: string;
+  readonly rows: readonly TerminalShellInputRow[];
+}
+
+function extractTerminalShellInput(terminal: Terminal, anchor: TerminalShellInputAnchor, cursorLine: number): TerminalShellInput | undefined {
+  const buffer = terminal.buffer.active;
+  if (cursorLine - anchor.marker.line >= MAX_TERMINAL_HIGHLIGHT_ROWS ||
+      !isShellInputAnchorActive(terminal, anchor, cursorLine)) {
+    return undefined;
+  }
+  let text = '';
+  const rows: TerminalShellInputRow[] = [];
+  for (let lineNumber = anchor.marker.line; lineNumber <= cursorLine; lineNumber += 1) {
+    const columnCount = lineNumber === cursorLine ? Math.min(terminal.cols, buffer.cursorX + 1) : terminal.cols;
+    const extracted = extractBoundedTerminalBufferLine(terminal, lineNumber, columnCount, false);
+    if (!extracted) return undefined;
+    const inputStartColumn = lineNumber === anchor.marker.line ? anchor.startColumn : 0;
+    const inputStartSpan = extracted.cellSpans.find(span => span.column >= inputStartColumn && span.column < columnCount);
+    const inputTextStart = inputStartSpan?.start ?? extracted.text.length;
+    const lineText = extracted.text.slice(inputTextStart);
+    if (text.length + lineText.length > MAX_TERMINAL_HIGHLIGHT_LINE_CODE_UNITS) return undefined;
+    rows.push({ lineNumber, commandStart: text.length, commandEnd: text.length + lineText.length, inputTextStart, cellSpans: extracted.cellSpans });
+    text += lineText;
+  }
+  return { text, rows };
 }
 
 export function attachTerminalHighlights(
@@ -116,14 +179,16 @@ export function attachTerminalHighlights(
   const rules = normalizeTerminalHighlightRules(options.keywordRules);
   const matcher = options.keywordHighlightingEnabled && rules?.length ? createTerminalHighlightMatcher(rules) : undefined;
   if (!matcher && !options.shellSyntaxEnabled) return { dispose() {} };
-  const decorations: Disposable[] = [];
-  const markers: Disposable[] = [];
+  const keywordDecorations: Disposable[] = [];
+  const keywordMarkers: Disposable[] = [];
   let frame: number | undefined;
   let disposed = false;
 
   function clearDecorations() {
-    while (decorations.length > 0) decorations.pop()?.dispose();
-    while (markers.length > 0) markers.pop()?.dispose();
+    while (keywordDecorations.length > 0) keywordDecorations.pop()?.dispose();
+    while (keywordMarkers.length > 0) keywordMarkers.pop()?.dispose();
+    const inputAnchor = options.getShellInputAnchor();
+    if (inputAnchor) clearTerminalShellInputDecorations(inputAnchor);
   }
 
   function refresh() {
@@ -148,7 +213,7 @@ export function attachTerminalHighlights(
         if (matches.length === 0) continue;
         const marker = terminal.registerMarker(lineNumber - cursorLine);
         if (!marker || marker.isDisposed) continue;
-        markers.push(marker);
+        keywordMarkers.push(marker);
 
         for (const match of matches) {
           const firstSpan = cellSpans.find(span => match.start >= span.start && match.start < span.end);
@@ -165,7 +230,7 @@ export function attachTerminalHighlights(
             foregroundColor,
             layer: 'top'
           });
-          if (decoration) decorations.push(decoration);
+          if (decoration) keywordDecorations.push(decoration);
           remainingMatches -= 1;
           if (remainingMatches <= 0) break;
         }
@@ -174,25 +239,44 @@ export function attachTerminalHighlights(
 
     if (options.shellSyntaxEnabled) {
       const inputAnchor = options.getShellInputAnchor();
-      if (!inputAnchor || inputAnchor.marker.isDisposed || inputAnchor.marker.line !== cursorLine) return;
-      const extracted = extractBoundedTerminalBufferLine(terminal, cursorLine);
-      if (!extracted) return;
-      const startSpan = extracted.cellSpans.find(span => span.column >= inputAnchor.startColumn);
-      if (!startSpan) return;
-      const command = extracted.text.slice(startSpan.start);
-      const tokens = highlightTextSyntax(command, 'shell').tokens.slice(0, MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS);
+      if (!inputAnchor || inputAnchor.marker.isDisposed) return;
+      const input = extractTerminalShellInput(terminal, inputAnchor, cursorLine);
+      if (!input || input.text.length === 0) return;
+      const tokens = highlightTextSyntax(input.text, 'shell').tokens.slice(0, MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS);
+      const inputMarkers = new Map<number, IMarker>([[inputAnchor.marker.line, inputAnchor.marker]]);
+      let remainingDecorations = MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS;
       for (const token of tokens) {
-        const firstSpan = extracted.cellSpans.find(span => span.start <= startSpan.start + token.start &&
-          startSpan.start + token.start < span.end);
-        const tokenEnd = startSpan.start + token.end;
-        const lastSpan = extracted.cellSpans.find(span => span.start < tokenEnd && tokenEnd <= span.end);
         const paletteKey = shellSyntaxPaletteKeys[token.kind];
-        if (!firstSpan || !lastSpan || !paletteKey) continue;
-        const width = lastSpan.column + lastSpan.width - firstSpan.column;
-        if (width <= 0) continue;
-        const decoration = terminal.registerDecoration({ marker: inputAnchor.marker, anchor: 'left', x: firstSpan.column, width,
-          foregroundColor: terminalThemes[options.theme][paletteKey], layer: 'top' });
-        if (decoration) decorations.push(decoration);
+        if (!paletteKey) continue;
+        for (const row of input.rows) {
+          if (remainingDecorations <= 0) break;
+          const commandStart = Math.max(token.start, row.commandStart);
+          const commandEnd = Math.min(token.end, row.commandEnd);
+          if (commandStart >= commandEnd) continue;
+          const rowTokenStart = row.inputTextStart + commandStart - row.commandStart;
+          const rowTokenEnd = row.inputTextStart + commandEnd - row.commandStart;
+          const firstSpan = row.cellSpans.find(span => span.start <= rowTokenStart && rowTokenStart < span.end);
+          const lastSpan = row.cellSpans.find(span => span.start < rowTokenEnd && rowTokenEnd <= span.end);
+          if (!firstSpan || !lastSpan) continue;
+          const width = lastSpan.column + lastSpan.width - firstSpan.column;
+          if (width <= 0) continue;
+          let marker = inputMarkers.get(row.lineNumber);
+          if (!marker) {
+            marker = terminal.registerMarker(row.lineNumber - cursorLine);
+            if (marker && !marker.isDisposed) {
+              inputMarkers.set(row.lineNumber, marker);
+              inputAnchor.wrappedMarkers.push(marker);
+            }
+          }
+          if (!marker || marker.isDisposed) continue;
+          const decoration = terminal.registerDecoration({ marker, anchor: 'left', x: firstSpan.column, width,
+            foregroundColor: terminalThemes[options.theme][paletteKey], layer: 'top' });
+          if (decoration) {
+            inputAnchor.decorations.push(decoration);
+          }
+          remainingDecorations -= 1;
+        }
+        if (remainingDecorations <= 0) break;
       }
     }
   }
