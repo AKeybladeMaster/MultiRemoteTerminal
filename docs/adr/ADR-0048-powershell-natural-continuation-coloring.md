@@ -1,6 +1,6 @@
 # ADR-0048: Selected natural PowerShell continuation coloring
 
-**Status:** Accepted for WP-01M, 2026-10-27
+**Status:** Accepted for WP-01M, 2026-10-27; open-delimiter limit superseded by ADR-0049
 
 ## Context
 
@@ -18,7 +18,7 @@ See Microsoft's [`about_Parsing` line-continuation guidance](https://learn.micro
 
 ## Consequences and limits
 
-Common trailing pipeline and expression operators can color command-position tokens on the `>>` row. Open parentheses/braces/brackets that span rows, quoted continuations, comments after operators, leading-pipe paste, other natural continuation forms and full PowerShell grammar remain unsupported. P-30 remains PARTIAL.
+Common trailing pipeline and expression operators can color command-position tokens on the `>>` row. At WP-01M, open delimiters spanning rows, quoted continuations, comments after operators, leading-pipe paste, other natural continuation forms and full PowerShell grammar remained unsupported. WP-01N adds bounded balanced open-delimiter tracking; see [ADR-0049](ADR-0049-powershell-open-delimiter-continuation-coloring.md). P-30 remains PARTIAL.
 
 ## Verification
 

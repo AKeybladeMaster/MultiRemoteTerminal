@@ -525,7 +525,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
             <span>Color Shell and PowerShell input at prompts</span>
           </label>
           <p id="terminal-shell-syntax-description" className="settings-highlight-help">
-            Colors common Shell and PowerShell commands, keywords, options, variables, strings, and other tokens while you type at recognized prompts. PowerShell continuation colors also cover an unquoted trailing backtick and selected pipeline, binary, assignment, logical, and array-separator operators. This bounded lexical aid does not change terminal input or output.
+            Colors common Shell and PowerShell commands, keywords, options, variables, strings, and other tokens while you type at recognized prompts. PowerShell continuation colors also cover an unquoted trailing backtick, selected natural operators, and balanced open delimiters up to 32 levels. This bounded lexical aid does not change terminal input or output.
           </p>
           <label className="settings-highlight-toggle" htmlFor="terminal-highlight-enabled">
             <input id="terminal-highlight-enabled" type="checkbox" checked={terminalHighlightEnabled}

@@ -1,6 +1,7 @@
 export const MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS = 64_000;
 export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
+const MAX_POWERSHELL_CONTINUATION_DELIMITER_DEPTH = 32;
 const MAX_SQL_DOLLAR_TAG_CODE_UNITS = 63;
 const MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_MARKDOWN_INLINE_LOOKAHEAD_STEPS = 256_000;
@@ -53,9 +54,12 @@ export interface ShellSyntaxInputPreview extends TextSyntaxPreview {
   readonly continuationState?: ShellSyntaxContinuationState | undefined;
 }
 
+export type PowerShellExpectedClosingDelimiter = ')' | ']' | '}';
+
 export interface PowerShellSyntaxContinuationState {
   readonly commandExpected: boolean;
   readonly previousTokenIsBareWord: boolean;
+  readonly expectedClosingDelimiters?: readonly PowerShellExpectedClosingDelimiter[] | undefined;
 }
 
 export interface PowerShellSyntaxInputPreview extends TextSyntaxPreview {
@@ -411,6 +415,11 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
   let index = 0;
   let commandExpected = initialState?.commandExpected ?? true;
   let previousTokenIsBareWord = initialState?.previousTokenIsBareWord ?? false;
+  const initialDelimiterState = copyPowerShellExpectedClosingDelimiters(initialState?.expectedClosingDelimiters);
+  const expectedClosingDelimiters = initialDelimiterState.delimiters;
+  let delimiterStateIsValid = initialDelimiterState.isValid;
+  let hasIncompleteString = false;
+  let hasIncompleteBlockComment = false;
   while (index < limit) {
     const character = text[index]!;
     if (isWhitespace(character)) {
@@ -433,6 +442,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
       } else {
         const close = findTextWithinLimit(text, '#>', index + 2, limit);
         if (close >= 0) end = close + 2;
+        else hasIncompleteBlockComment = true;
       }
       if (!addToken(tokens, start, end, 'powershell-comment')) return { scannedThrough: start };
       if (character === '<' && /[\r\n]/u.test(text.slice(start, end))) commandExpected = true;
@@ -443,17 +453,19 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
 
     const hereStringEnd = scanPowerShellHereString(text, index, limit);
     if (hereStringEnd !== undefined) {
-      if (!addToken(tokens, index, hereStringEnd, 'powershell-string')) return { scannedThrough: index };
-      index = hereStringEnd;
+      if (!addToken(tokens, index, hereStringEnd.end, 'powershell-string')) return { scannedThrough: index };
+      hasIncompleteString ||= !hereStringEnd.isClosed;
+      index = hereStringEnd.end;
       commandExpected = false;
       previousTokenIsBareWord = false;
       continue;
     }
 
     if (character === '\'' || character === '"') {
-      const end = scanPowerShellQuotedString(text, index, limit);
-      if (!addToken(tokens, index, end, 'powershell-string')) return { scannedThrough: index };
-      index = end;
+      const quotedString = scanPowerShellQuotedString(text, index, limit);
+      if (!addToken(tokens, index, quotedString.end, 'powershell-string')) return { scannedThrough: index };
+      hasIncompleteString ||= !quotedString.isClosed;
+      index = quotedString.end;
       commandExpected = false;
       previousTokenIsBareWord = false;
       continue;
@@ -477,7 +489,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
       continue;
     }
 
-    if (character === '[') {
+    if (character === '[' && !isPowerShellEscapedAt(text, index)) {
       const end = scanPowerShellType(text, index, limit);
       if (end !== undefined) {
         if (!addToken(tokens, index, end, 'powershell-type')) return { scannedThrough: index };
@@ -503,8 +515,12 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
     if (operatorEnd > index) {
       const operator = text.slice(index, operatorEnd);
       if (!addToken(tokens, index, operatorEnd, 'powershell-operator')) return { scannedThrough: index };
+      const isEscaped = isPowerShellEscapedAt(text, index);
+      if (delimiterStateIsValid && !applyPowerShellDelimiterOperator(expectedClosingDelimiters, operator, isEscaped)) {
+        delimiterStateIsValid = false;
+      }
       index = operatorEnd;
-      commandExpected = isPowerShellCommandBoundary(operator);
+      commandExpected = !isEscaped && isPowerShellCommandBoundary(operator);
       previousTokenIsBareWord = false;
       continue;
     }
@@ -532,9 +548,43 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
   const isOpaqueContinuation = continuationStart !== undefined && lastToken !== undefined && lastToken.end === limit &&
     lastToken.start < limit && (lastToken.kind === 'powershell-string' || lastToken.kind === 'powershell-comment');
   const hasNaturalContinuation = limit === text.length && isPowerShellNaturalContinuation(text, limit, lastToken);
-  const continuationState = ((continuationStart !== undefined && !isOpaqueContinuation) || hasNaturalContinuation) && limit === text.length
-    ? Object.freeze({ commandExpected, previousTokenIsBareWord }) : undefined;
+  const hasDelimiterContinuation = expectedClosingDelimiters.length > 0;
+  const continuationState = delimiterStateIsValid && !hasIncompleteString && !hasIncompleteBlockComment &&
+    ((continuationStart !== undefined && !isOpaqueContinuation) || hasNaturalContinuation || hasDelimiterContinuation) && limit === text.length
+    ? Object.freeze({ commandExpected, previousTokenIsBareWord,
+      ...(hasDelimiterContinuation ? { expectedClosingDelimiters: Object.freeze([...expectedClosingDelimiters]) } : {}) })
+    : undefined;
   return { scannedThrough: limit, continuationState };
+}
+
+function copyPowerShellExpectedClosingDelimiters(value: unknown): {
+  readonly delimiters: PowerShellExpectedClosingDelimiter[];
+  readonly isValid: boolean;
+} {
+  if (value === undefined) return { delimiters: [], isValid: true };
+  if (!Array.isArray(value) || value.length > MAX_POWERSHELL_CONTINUATION_DELIMITER_DEPTH) {
+    return { delimiters: [], isValid: false };
+  }
+  const delimiters: PowerShellExpectedClosingDelimiter[] = [];
+  for (const item of value as unknown[]) {
+    if (item !== ')' && item !== ']' && item !== '}') return { delimiters: [], isValid: false };
+    delimiters.push(item);
+  }
+  return { delimiters, isValid: true };
+}
+
+function applyPowerShellDelimiterOperator(stack: PowerShellExpectedClosingDelimiter[], operator: string, isEscaped: boolean): boolean {
+  if (isEscaped) return true;
+  const expectedCloser = operator === '(' ? ')' : operator === '[' ? ']' : operator === '{' ? '}' : undefined;
+  if (expectedCloser) {
+    if (stack.length >= MAX_POWERSHELL_CONTINUATION_DELIMITER_DEPTH) return false;
+    stack.push(expectedCloser);
+    return true;
+  }
+  if (operator !== ')' && operator !== ']' && operator !== '}') return true;
+  if (stack.at(-1) !== operator) return false;
+  stack.pop();
+  return true;
 }
 
 function isPowerShellNaturalContinuation(text: string, limit: number, lastToken: TextSyntaxToken | undefined): boolean {
@@ -557,7 +607,12 @@ function powershellLineContinuationStart(text: string, limit: number): number | 
   return (limit - start) % 2 === 1 ? start : undefined;
 }
 
-function scanPowerShellHereString(text: string, start: number, limit: number): number | undefined {
+interface PowerShellStringScanResult {
+  readonly end: number;
+  readonly isClosed: boolean;
+}
+
+function scanPowerShellHereString(text: string, start: number, limit: number): PowerShellStringScanResult | undefined {
   if (text[start] !== '@' || start + 1 >= limit || (text[start + 1] !== '\'' && text[start + 1] !== '"')) return undefined;
   const quote = text[start + 1]!;
   let lineStart = start + 2;
@@ -569,16 +624,17 @@ function scanPowerShellHereString(text: string, start: number, limit: number): n
   const closingMark = `${quote}@`;
   while (lineStart < limit) {
     const lineEnd = scanLineEnd(text, lineStart, limit);
-    if (lineEnd - lineStart === closingMark.length && text.startsWith(closingMark, lineStart)) return lineEnd;
-    if (lineEnd >= limit) return limit;
+    if (lineEnd - lineStart === closingMark.length && text.startsWith(closingMark, lineStart)) return { end: lineEnd, isClosed: true };
+    if (lineEnd >= limit) return { end: limit, isClosed: false };
     lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
   }
-  return limit;
+  return { end: limit, isClosed: false };
 }
 
-function scanPowerShellQuotedString(text: string, start: number, limit: number): number {
+function scanPowerShellQuotedString(text: string, start: number, limit: number): PowerShellStringScanResult {
   const quote = text[start]!;
   let index = start + 1;
+  let isClosed = false;
   while (index < limit) {
     if (quote === '"' && text[index] === '`' && index + 1 < limit) {
       index += 2;
@@ -590,11 +646,12 @@ function scanPowerShellQuotedString(text: string, start: number, limit: number):
         continue;
       }
       index += 1;
+      isClosed = true;
       break;
     }
     index += 1;
   }
-  return index;
+  return { end: index, isClosed };
 }
 
 function scanPowerShellVariable(text: string, start: number, limit: number): number {
