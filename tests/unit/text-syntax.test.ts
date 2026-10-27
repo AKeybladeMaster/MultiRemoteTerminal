@@ -286,6 +286,55 @@ test('PowerShell syntax preview does not carry continuation state from a truncat
   const preview = highlightPowerShellInputSyntax(source);
   assert.equal(preview.isTruncated, true);
   assert.equal(preview.continuationState, undefined);
+  const naturalOperatorSource = ' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS) + '|';
+  assert.equal(highlightPowerShellInputSyntax(naturalOperatorSource).continuationState, undefined,
+    'a natural operator beyond the bounded preview cannot start a continuation');
+});
+
+test('PowerShell input carries bounded lexical state across common natural trailing operators', () => {
+  const firstLine = highlightPowerShellInputSyntax('Get-Process |   ');
+  assert.deepEqual(firstLine.continuationState, { commandExpected: true, previousTokenIsBareWord: false });
+
+  const secondText = 'Select-Object -First 1 |';
+  const secondLine = highlightPowerShellInputSyntax(secondText, firstLine.continuationState);
+  assert.deepEqual(secondLine.tokens.map(token => ({ text: secondText.slice(token.start, token.end), kind: token.kind })), [
+    { text: 'Select-Object', kind: 'powershell-command' },
+    { text: '-First', kind: 'powershell-parameter' },
+    { text: '1', kind: 'powershell-number' },
+    { text: '|', kind: 'powershell-operator' }
+  ]);
+  assert.deepEqual(secondLine.continuationState, { commandExpected: true, previousTokenIsBareWord: false });
+
+  const thirdLine = 'Where-Object';
+  const completed = highlightPowerShellInputSyntax(thirdLine, secondLine.continuationState);
+  assert.deepEqual(completed.tokens.map(token => ({ text: thirdLine.slice(token.start, token.end), kind: token.kind })), [
+    { text: 'Where-Object', kind: 'powershell-command' }
+  ]);
+  assert.equal(completed.continuationState, undefined);
+
+  assert.ok(highlightPowerShellInputSyntax('$value = 1 +').continuationState,
+    'a common binary arithmetic operator also continues input');
+  assert.ok(highlightPowerShellInputSyntax('1 -eq').continuationState,
+    'a PowerShell binary word operator also continues input');
+  assert.ok(highlightPowerShellInputSyntax('1,').continuationState,
+    'an array separator also continues input');
+  for (const operator of ['&&', '||']) {
+    const logicalContinuation = highlightPowerShellInputSyntax(`Get-Process ${operator}`);
+    assert.deepEqual(logicalContinuation.continuationState,
+      { commandExpected: true, previousTokenIsBareWord: false },
+      `${operator} expects a pipeline on the next input row`);
+    const nextCommand = 'Get-Service';
+    assert.deepEqual(highlightPowerShellInputSyntax(nextCommand, logicalContinuation.continuationState).tokens.map(token =>
+      ({ text: nextCommand.slice(token.start, token.end), kind: token.kind })), [
+      { text: 'Get-Service', kind: 'powershell-command' }
+    ], `${operator} continuation colors the next pipeline command`);
+  }
+  assert.equal(highlightPowerShellInputSyntax(`Get-Process ${String.fromCharCode(96)}|`).continuationState, undefined,
+    'a backtick-escaped pipe is not a natural continuation operator');
+  assert.equal(highlightPowerShellInputSyntax('Get-Process | # comment').continuationState, undefined,
+    'a trailing comment is not treated as a final operator');
+  assert.equal(highlightPowerShellInputSyntax('"Get-Process |"').continuationState, undefined,
+    'an operator inside a string does not continue input');
 });
 
 test('PowerShell syntax preview never extends a token beyond its code-unit bound', () => {

@@ -457,6 +457,13 @@ async function expectPowerShellContinuationTokenColors(rows: Locator): Promise<v
   ]);
 }
 
+async function expectPowerShellPipelineContinuationTokenColors(rows: Locator): Promise<void> {
+  await expectPromptTokenColors(rows, 'PowerShell pipeline continuation', [
+    { label: 'command', token: 'Select-Object', color: 'rgb(84, 215, 212)' },
+    { label: 'parameter', token: '-First', color: 'rgb(248, 211, 107)' }
+  ]);
+}
+
 async function expectPowerShellContinuationPrompt(rows: Locator): Promise<void> {
   try {
     await expect.poll(async () => (await rows.innerText()).split(/\r?\n/u).some(row => row.trimEnd() === '>>'),
@@ -5805,6 +5812,23 @@ test('PowerShell prompt coloring reuses bounded profile tokens', async () => {
     await expectPowerShellContinuationTokenColors(rows);
     await page.keyboard.press('Control+C');
     await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const pipelinePanel = await selectTerminal(page, 'PowerShell session 3');
+    const pipelineRows = pipelinePanel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: 'PowerShell session 3 running' })).toBeVisible({ timeout: 15_000 });
+    await expect(pipelineRows).toContainText(/PS .+>/, { timeout: 15_000 });
+    await pipelinePanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(pipelinePanel.locator('.xterm-helper-textarea')).toBeFocused();
+    const pipelineLine = 'Get-Process |';
+    await page.keyboard.type(pipelineLine);
+    await expect(pipelineRows).toContainText(pipelineLine);
+    await page.keyboard.press('Enter');
+    await expectPowerShellContinuationPrompt(pipelineRows);
+    await page.keyboard.type('Select-Object -First 1');
+    await expect(pipelineRows).toContainText('Select-Object -First 1');
+    await expectPowerShellPipelineContinuationTokenColors(pipelineRows);
+    await page.keyboard.press('Control+C');
+    await expect.poll(() => pipelineRows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

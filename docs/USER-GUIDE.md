@@ -158,12 +158,13 @@ prompts with that same form also match. The Shell tokenizer carries bounded lexi
 colors after an unquoted trailing backslash when the next prompt ends in `>`;
 PowerShell carries bounded command-position colors after an unquoted odd trailing
 backtick when the next prompt is exactly `>>` and the caret is at an unambiguous
-end of input. Continuation coloring is omitted if the caret is before remaining text or xterm's
-far-right cursor position makes it unclear whether the caret is before or after
-the last character. This is a visual aid, not a parser:
-quoted continuations, PowerShell's other natural continuation forms, custom prompt
-formats and shell-specific grammar are not interpreted. Visible prompt text can
-match a custom prompt.
+end of input. It also carries colors after selected pipeline, binary, assignment,
+logical or array-separator operators at the end of a line. Continuation colors are
+omitted if the caret is before remaining text or xterm's far-right cursor position makes it unclear whether
+the caret is before or after the last character. This is a visual aid, not a parser:
+quoted continuations, open-delimiter continuations, other PowerShell natural
+continuation forms, custom prompt formats and shell-specific grammar are not
+interpreted. Visible prompt text can match a custom prompt.
 
 Use the theme button or command palette to switch between light and dark themes.
 

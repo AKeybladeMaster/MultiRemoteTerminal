@@ -95,6 +95,12 @@ const powershellSymbolOperators = [
   '+=', '-=', '*=', '/=', '%=', '++', '--', '&&', '||', '??', '?.', '::', '..', '|', '&', '=', '+', '-', '*', '/', '%',
   '!', '<', '>', '{', '}', '(', ')', '[', ']', ':', ';', ',', '.'
 ] as const;
+const powershellNaturalContinuationOperators = new Set([
+  '|', '+', '-', '*', '/', '%', '=', '+=', '-=', '*=', '/=', '%=', '&&', '||', '??', ',',
+  '-and', '-as', '-band', '-bor', '-bxor', '-contains', '-eq', '-f', '-ge', '-gt', '-in', '-is', '-isnot', '-join',
+  '-le', '-like', '-lt', '-match', '-ne', '-notcontains', '-notin', '-notlike', '-notmatch', '-or', '-replace',
+  '-shl', '-shr', '-split', '-xor'
+]);
 const pythonKeywords = new Set([
   'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except',
   'False', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'None', 'nonlocal', 'not',
@@ -525,9 +531,23 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], 
   const lastToken = tokens.at(-1);
   const isOpaqueContinuation = continuationStart !== undefined && lastToken !== undefined && lastToken.end === limit &&
     lastToken.start < limit && (lastToken.kind === 'powershell-string' || lastToken.kind === 'powershell-comment');
-  const continuationState = continuationStart !== undefined && !isOpaqueContinuation && limit === text.length
+  const hasNaturalContinuation = limit === text.length && isPowerShellNaturalContinuation(text, limit, lastToken);
+  const continuationState = ((continuationStart !== undefined && !isOpaqueContinuation) || hasNaturalContinuation) && limit === text.length
     ? Object.freeze({ commandExpected, previousTokenIsBareWord }) : undefined;
   return { scannedThrough: limit, continuationState };
+}
+
+function isPowerShellNaturalContinuation(text: string, limit: number, lastToken: TextSyntaxToken | undefined): boolean {
+  if (!lastToken || lastToken.kind !== 'powershell-operator' || lastToken.end > limit) return false;
+  if (text.slice(lastToken.end, limit).trim().length > 0) return false;
+  if (isPowerShellEscapedAt(text, lastToken.start)) return false;
+  return powershellNaturalContinuationOperators.has(text.slice(lastToken.start, lastToken.end).toLowerCase());
+}
+
+function isPowerShellEscapedAt(text: string, index: number): boolean {
+  let backtickCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '`'; cursor -= 1) backtickCount += 1;
+  return backtickCount % 2 === 1;
 }
 
 function powershellLineContinuationStart(text: string, limit: number): number | undefined {
@@ -645,7 +665,8 @@ function scanPowerShellSymbolOperator(text: string, start: number, limit: number
 }
 
 function isPowerShellCommandBoundary(operator: string): boolean {
-  return operator === '|' || operator === ';' || operator === '&' || operator === '=' || operator === '+=' ||
+  return operator === '|' || operator === '||' || operator === '&&' || operator === ';' || operator === '&' ||
+    operator === '=' || operator === '+=' ||
     operator === '-=' || operator === '*=' || operator === '/=' || operator === '%=' || operator === '{' ||
     operator === '}' || operator === '(' || operator === ',';
 }
