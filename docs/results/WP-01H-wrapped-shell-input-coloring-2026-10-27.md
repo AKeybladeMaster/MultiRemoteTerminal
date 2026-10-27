@@ -20,3 +20,7 @@ P-30 remains PARTIAL. Shell grammar is lexical, continuation prompts and explici
 - `node --test tests/unit/terminal-highlights.test.ts` passed 8/8, including bounded overflow retention, in-range chain revalidation and rejection of a broken wrap chain.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "Git Bash runs in a local terminal|shell prompt coloring works in SSH and Telnet|terminal keyword highlighting saves rules" --reporter=line` passed 3/3. Git Bash covers ordinary prompt coloring; loopback SSH/Telnet cover physical wrapped input and Ctrl+C overlay cleanup; keyword E2E covers the unchanged output-highlighting path.
 - After review fixes, `corepack pnpm typecheck`, `corepack pnpm lint` (including import-boundary checks) and `git diff --check` passed. The final focused E2E rerun passed 3/3.
+
+## Review
+
+The initial Standards review identified a stale architecture paragraph and duplicated marker-presence waits; both were corrected. The initial Spec review identified row-limit anchor loss, an outdated WP-01G limitation in ADR-0024 and missing direct evidence for a token split across wrapped rows. WP-01H now retains the anchor without rendering over-limit decorations, revalidates the chain on return within bounds, updates the ADR wording and verifies the quoted string token's start and end colors on separate SSH/Telnet rows. Final Standards and Spec follow-up reviews found no remaining violations, smells, missing behavior or incorrect behavior.
