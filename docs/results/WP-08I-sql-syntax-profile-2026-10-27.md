@@ -3,6 +3,8 @@
 **Date:** 2026-10-27 · **Requirements:** F-014, P-27
 **Status:** Partial slice accepted; broader F-014/P-27 work remains open.
 
+Review disposition: [WP-08I review outcome](WP-08I-review.md).
+
 ## Delivered
 
 - Added a shared `sql` syntax profile to the pure domain tokenizer. Auto detection covers `.sql`, `.pgsql` and `.psql`; the profile can also be selected manually in local and SFTP editors.
