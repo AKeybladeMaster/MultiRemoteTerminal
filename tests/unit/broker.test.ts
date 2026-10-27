@@ -904,10 +904,10 @@ test('VNC IPC dispatch consumes an explicit one-shot approval before launching T
     error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
 });
 
-test('disabled optional providers block all new entry points while existing work can continue and close', async () => {
+test('disabled optional providers and shells block starts while existing work can continue and close', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const base = actions();
-  const disabledPreferences = { ...DEFAULT_WORKBENCH_PREFERENCES, enabledOptionalConnections: [] };
+  const disabledPreferences = { ...DEFAULT_WORKBENCH_PREFERENCES, enabledLocalShells: [], enabledOptionalConnections: [] };
   const gated: CommandActions = {
     ...base,
     authorizeTelnetConsent: () => true,
@@ -920,6 +920,9 @@ test('disabled optional providers block all new entry points while existing work
     preferences: { ...base.preferences, read: async () => ({ ok: true, result: disabledPreferences }) }
   };
   const attempts = [
+    { command: 'terminal.open', payload: { sessionId, launch: { shell: 'bash' }, columns: 80, rows: 24 } },
+    { command: 'terminal.open', payload: { sessionId, launch: { shell: 'wsl', distribution: 'Ubuntu' }, columns: 80, rows: 24 } },
+    { command: 'wsl.distributions.list', payload: {} },
     { command: 'telnet.open', payload: { sessionId, host: 'example.net', port: 23, columns: 80, rows: 24 } },
     { command: 'serial.ports.list', payload: {} },
     { command: 'serial.open', payload: { sessionId, configuration: {
@@ -939,24 +942,35 @@ test('disabled optional providers block all new entry points while existing work
 
   const existingWrite = await dispatchCommand(owner, { command: 'telnet.write', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, data: 'continue\n' } }, gated, () => {});
+  const existingLocalWrite = await dispatchCommand(owner, { command: 'terminal.write', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, data: 'continue\n' } }, gated, () => {});
+  const existingLocalClose = await dispatchCommand(owner, { command: 'terminal.close', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId } }, gated, () => {});
   const existingList = await dispatchCommand(owner, { command: 'ftp.files.list', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, path: '/' } }, gated, () => {});
   const closeServer = await dispatchCommand(owner, { command: 'tftp.stop', requestId: request.requestId, contractVersion: 1,
     payload: {} }, gated, () => {});
   assert.equal(existingWrite.ok, true);
+  assert.equal(existingLocalWrite.ok, true);
+  assert.equal(existingLocalClose.ok, true);
   assert.equal(existingList.ok, true);
   assert.equal(closeServer.ok, true);
 });
 
-test('optional provider starts fail closed when persisted settings cannot be read', async () => {
+test('provider starts and WSL discovery fail closed when persisted settings cannot be read', async () => {
   const base = actions();
   const unavailable: CommandActions = { ...base,
     preferences: { ...base.preferences, read: async () => failure('UNAVAILABLE') }
   };
-  const reply = await dispatchCommand(owner, { command: 'rdp.launch', requestId: request.requestId, contractVersion: 1,
-    payload: { host: 'desktop.example.net', port: 3389 } }, unavailable, () => {});
-  assert.deepEqual(reply, { requestId: request.requestId, ok: false,
-    error: { code: 'UNAVAILABLE', target: 'application', retryable: true } });
+  for (const attempt of [
+    { command: 'rdp.launch', payload: { host: 'desktop.example.net', port: 3389 } },
+    { command: 'terminal.open', payload: { sessionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', launch: { shell: 'powershell' }, columns: 80, rows: 24 } },
+    { command: 'wsl.distributions.list', payload: {} }
+  ]) {
+    const reply = await dispatchCommand(owner, { ...attempt, requestId: request.requestId, contractVersion: 1 }, unavailable, () => {});
+    assert.deepEqual(reply, { requestId: request.requestId, ok: false,
+      error: { code: 'UNAVAILABLE', target: 'application', retryable: true } });
+  }
 });
 
 test('only validated local, SSH or Telnet terminal open, write and close commands count as user activity', async () => {

@@ -20,6 +20,9 @@ export const DEFAULT_VISIBLE_LOCAL_SHELLS: readonly LocalShell[] = Object.freeze
   LOCAL_SHELL_TOOL_REGISTRY.map(tool => tool.shell)
 );
 
+/** New local sessions are enabled by default; this policy is separate from palette visibility. */
+export const DEFAULT_ENABLED_LOCAL_SHELLS: readonly LocalShell[] = DEFAULT_VISIBLE_LOCAL_SHELLS;
+
 export function normalizeVisibleLocalShells(value: unknown, allowWsl = true): readonly LocalShell[] | undefined {
   const acceptedLength = allowWsl ? LOCAL_SHELL_TOOL_REGISTRY.length : LOCAL_SHELL_TOOL_REGISTRY.length - 1;
   if (!Array.isArray(value) || value.length > acceptedLength) return undefined;
@@ -29,4 +32,8 @@ export function normalizeVisibleLocalShells(value: unknown, allowWsl = true): re
     selected.add(candidate);
   }
   return Object.freeze(LOCAL_SHELL_TOOL_REGISTRY.filter(tool => selected.has(tool.shell)).map(tool => tool.shell));
+}
+
+export function normalizeEnabledLocalShells(value: unknown): readonly LocalShell[] | undefined {
+  return normalizeVisibleLocalShells(value);
 }

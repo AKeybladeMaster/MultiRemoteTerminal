@@ -5938,6 +5938,99 @@ test('local shell tool visibility persists and controls command palette entries 
   }
 });
 
+test('local shell availability blocks new and saved-profile launches while preserving active sessions and profiles', async () => {
+  test.setTimeout(60_000);
+  test.skip(process.platform !== 'win32', 'Local shell availability acceptance requires Windows');
+  test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash availability acceptance test');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-local-shell-availability-e2e-'));
+  const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.keyboard.press('Control+Shift+P');
+    const initialPalette = page.getByRole('dialog', { name: 'Command palette' });
+    const initialBashCommand = initialPalette.getByRole('button', { name: 'New Bash terminal', exact: true });
+    await expect(initialBashCommand).toBeVisible({ timeout: 15_000 });
+    await initialBashCommand.click();
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
+    await sendLine(page, 'Bash session 1', "printf 'MRT-SHELL-AVAILABLE\\n'", 'MRT-SHELL-AVAILABLE');
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Availability Bash');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const savedBash = page.getByRole('button', { name: 'Open Availability Bash', exact: true });
+    await expect(savedBash).toBeVisible();
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('heading', { name: 'Local shell availability' }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-results/local-shell-availability-settings.png' });
+    await expect(settings.getByRole('checkbox', { name: 'Allow Bash sessions' })).toBeChecked();
+    await settings.getByRole('checkbox', { name: 'Allow Bash sessions' }).uncheck();
+    await settings.getByRole('checkbox', { name: 'Allow PowerShell sessions' }).uncheck();
+    await settings.getByRole('checkbox', { name: 'Allow WSL distribution sessions' }).uncheck();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    const disabledSavedBash = page.getByRole('button', {
+      name: 'Open Availability Bash (disabled: enable Bash in Workbench settings)', exact: true
+    });
+    await expect(disabledSavedBash).toBeDisabled();
+    await expect(page.locator('.saved-session-detail')).toContainText('Disabled in settings');
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible();
+    await sendLine(page, 'Bash session 1', "printf 'MRT-SHELL-STILL-RUNNING\\n'", 'MRT-SHELL-STILL-RUNNING');
+    const brokerDenial = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(
+      crypto.randomUUID(), { shell: 'bash' }, 80, 24));
+    expect(brokerDenial).toMatchObject({ ok: false, error: { code: 'NOT_SUPPORTED' } });
+    const wslDenial = await page.evaluate(() => window.multiRemoteTerminal.listWslDistributions());
+    expect(wslDenial).toMatchObject({ ok: false, error: { code: 'NOT_SUPPORTED' } });
+
+    await page.getByRole('tab', { name: /Bash session 1/ }).focus();
+    await page.keyboard.press('Control+W');
+    const closeConfirmation = page.getByRole('alertdialog');
+    await expect(closeConfirmation).toContainText('Bash session');
+    await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toHaveCount(0);
+
+    await app.close();
+    app = await launch();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.keyboard.press('Control+Shift+P');
+    const restoredPalette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(restoredPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab')).toHaveCount(0);
+    await expect(page.getByRole('button', {
+      name: 'Open Availability Bash (disabled: enable Bash in Workbench settings)', exact: true
+    })).toBeDisabled();
+    await expect(restoredPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
+    await expect(restoredPalette.getByRole('button', { name: 'New Bash terminal', exact: true })).toHaveCount(0);
+    await expect(restoredPalette.getByRole('button', { name: 'New WSL terminal', exact: true })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByRole('checkbox', { name: 'Allow Bash sessions' })).not.toBeChecked();
+    await expect(settings.getByRole('checkbox', { name: 'Allow PowerShell sessions' })).not.toBeChecked();
+    await settings.getByRole('checkbox', { name: 'Allow Bash sessions' }).check();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open Availability Bash', exact: true })).toBeEnabled();
+    await runPaletteCommand(page, 'New Bash terminal');
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
+    await sendLine(page, 'Bash session 1', "printf 'MRT-SHELL-REENABLED\\n'", 'MRT-SHELL-REENABLED');
+    await page.getByRole('button', { name: 'Open Availability Bash', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Availability Bash', exact: true })).toBeVisible({ timeout: 15_000 });
+    await sendLine(page, 'Availability Bash', "printf 'MRT-SAVED-SHELL-REOPENED\\n'", 'MRT-SAVED-SHELL-REOPENED');
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('opt-in automatically remembers opened terminal sessions and deduplicates them after restart', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-auto-save-sessions-e2e-'));
   const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });

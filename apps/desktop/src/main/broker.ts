@@ -32,6 +32,7 @@ import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-ro
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { Outcome } from '../../../../packages/domain/src/errors.ts';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
+import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { MAX_SERIAL_INPUT_CHARS } from '../../../../packages/domain/src/serial.ts';
 
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
@@ -163,10 +164,15 @@ export async function dispatchCommand(
   const { requestId } = parsed.result;
   try {
     const optionalConnection = OPTIONAL_CONNECTION_FOR_COMMAND[parsed.result.command];
-    if (optionalConnection) {
+    const localShell: LocalShell | undefined = parsed.result.command === 'terminal.open' ? parsed.result.payload.launch.shell
+      : parsed.result.command === 'wsl.distributions.list' ? 'wsl' : undefined;
+    if (optionalConnection || localShell) {
       const preferences = await actions.preferences.read(actions.cancellation);
       if (!preferences.ok) return { requestId, ...preferences };
-      if (!preferences.result.enabledOptionalConnections.includes(optionalConnection)) {
+      if (optionalConnection && !preferences.result.enabledOptionalConnections.includes(optionalConnection)) {
+        return { requestId, ...failure('NOT_SUPPORTED') };
+      }
+      if (localShell && !preferences.result.enabledLocalShells.includes(localShell)) {
         return { requestId, ...failure('NOT_SUPPORTED') };
       }
     }

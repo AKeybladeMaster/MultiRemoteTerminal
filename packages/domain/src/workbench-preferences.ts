@@ -1,14 +1,14 @@
 import { normalizeTerminalHighlightRules } from './terminal-highlights.ts';
 import type { TerminalHighlightRule } from './terminal-highlights.ts';
-import { DEFAULT_VISIBLE_LOCAL_SHELLS, normalizeVisibleLocalShells } from './local-shell-tools.ts';
+import { DEFAULT_ENABLED_LOCAL_SHELLS, DEFAULT_VISIBLE_LOCAL_SHELLS, normalizeEnabledLocalShells, normalizeVisibleLocalShells } from './local-shell-tools.ts';
 import type { LocalShell } from './local-terminal.ts';
 import { isCustomLogoDataUrl, MAX_CUSTOM_LOGO_DATA_URL_LENGTH } from './custom-logo.ts';
 import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from './powershell-profile.ts';
 import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, normalizeEnabledOptionalConnections } from './optional-connection-tools.ts';
 import type { OptionalConnectionId } from './optional-connection-tools.ts';
 
-export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 10;
-export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9] as const);
+export const WORKBENCH_PREFERENCES_SCHEMA_VERSION = 11;
+export const LEGACY_WORKBENCH_PREFERENCES_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const);
 export const MAX_STARTUP_GREETING_CODE_POINTS = 512;
 export const MAX_WORKBENCH_PREFERENCES_JSON_LENGTH = MAX_CUSTOM_LOGO_DATA_URL_LENGTH +
   MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS * 2 + 32_768;
@@ -21,6 +21,7 @@ export interface WorkbenchPreferences {
   readonly terminalShellSyntaxEnabled: boolean;
   readonly showSftpBrowserBesideSsh: boolean;
   readonly visibleLocalShells: readonly LocalShell[];
+  readonly enabledLocalShells: readonly LocalShell[];
   readonly enabledOptionalConnections: readonly OptionalConnectionId[];
   readonly customLogoDataUrl: string | null;
   readonly powerShellProfileScript: string;
@@ -31,6 +32,7 @@ export type WorkbenchStartupPreferences = Omit<WorkbenchPreferences, 'powerShell
 export const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = Object.freeze({
   startupGreeting: '', terminalHighlightEnabled: false, terminalHighlightRules: Object.freeze([]), autoSaveSessions: false,
   terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS,
+  enabledLocalShells: DEFAULT_ENABLED_LOCAL_SHELLS,
   enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, customLogoDataUrl: null, powerShellProfileScript: ''
 });
 
@@ -67,8 +69,15 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
     Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
     Object.hasOwn(value, 'visibleLocalShells') && Object.hasOwn(value, 'customLogoDataUrl') &&
     Object.hasOwn(value, 'powerShellProfileScript') && Object.hasOwn(value, 'enabledOptionalConnections');
+  const isLocalShellAvailabilityShape = keys.length === 11 && Object.hasOwn(value, 'terminalHighlightEnabled') &&
+    Object.hasOwn(value, 'terminalHighlightRules') && Object.hasOwn(value, 'autoSaveSessions') &&
+    Object.hasOwn(value, 'terminalShellSyntaxEnabled') && Object.hasOwn(value, 'showSftpBrowserBesideSsh') &&
+    Object.hasOwn(value, 'visibleLocalShells') && Object.hasOwn(value, 'customLogoDataUrl') &&
+    Object.hasOwn(value, 'powerShellProfileScript') && Object.hasOwn(value, 'enabledOptionalConnections') &&
+    Object.hasOwn(value, 'enabledLocalShells');
   if (!isGreetingOnlyShape && !isHighlightShape && !isSessionSaveShape && !isShellSyntaxShape && !isSftpPaneShape &&
-      !isPreviousSchemaShape && !isCustomLogoShape && !isPowerShellProfileShape && !isOptionalConnectionsShape) return undefined;
+      !isPreviousSchemaShape && !isCustomLogoShape && !isPowerShellProfileShape && !isOptionalConnectionsShape &&
+      !isLocalShellAvailabilityShape) return undefined;
 
   const inputGreeting = value.startupGreeting;
   if (inputGreeting.length > MAX_STARTUP_GREETING_CODE_POINTS * 2) return undefined;
@@ -84,24 +93,27 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
   if (isHighlightShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: false, terminalShellSyntaxEnabled: false, showSftpBrowserBesideSsh: true,
     visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS,
-    customLogoDataUrl: null, powerShellProfileScript: '' });
+    enabledLocalShells: DEFAULT_ENABLED_LOCAL_SHELLS, customLogoDataUrl: null, powerShellProfileScript: '' });
   if (typeof value.autoSaveSessions !== 'boolean') return undefined;
   if (isSessionSaveShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: false,
     showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS,
-    enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, customLogoDataUrl: null, powerShellProfileScript: '' });
+    enabledLocalShells: DEFAULT_ENABLED_LOCAL_SHELLS, enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS,
+    customLogoDataUrl: null, powerShellProfileScript: '' });
   if (typeof value.terminalShellSyntaxEnabled !== 'boolean') return undefined;
   if (isShellSyntaxShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
     showSftpBrowserBesideSsh: true, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS,
-    enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, customLogoDataUrl: null, powerShellProfileScript: '' });
+    enabledLocalShells: DEFAULT_ENABLED_LOCAL_SHELLS, enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS,
+    customLogoDataUrl: null, powerShellProfileScript: '' });
   if (!isSftpPaneShape && !isPreviousSchemaShape && !isCustomLogoShape && !isPowerShellProfileShape &&
-      !isOptionalConnectionsShape) return undefined;
+      !isOptionalConnectionsShape && !isLocalShellAvailabilityShape) return undefined;
   if (typeof value.showSftpBrowserBesideSsh !== 'boolean') return undefined;
   if (isSftpPaneShape) return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled,
     terminalHighlightRules, autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
     showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells: DEFAULT_VISIBLE_LOCAL_SHELLS, customLogoDataUrl: null,
-    enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS, powerShellProfileScript: '' });
+    enabledLocalShells: DEFAULT_ENABLED_LOCAL_SHELLS, enabledOptionalConnections: DEFAULT_ENABLED_OPTIONAL_CONNECTIONS,
+    powerShellProfileScript: '' });
   let visibleLocalShells: readonly LocalShell[] | undefined;
   if (sourceSchemaVersion === 6) {
     const previousShells = normalizeVisibleLocalShells(value.visibleLocalShells, false);
@@ -111,21 +123,25 @@ export function normalizeWorkbenchPreferences(value: unknown, sourceSchemaVersio
     visibleLocalShells = normalizeVisibleLocalShells(value.visibleLocalShells);
   }
   if (!visibleLocalShells) return undefined;
-  const customLogoDataUrl = isCustomLogoShape || isPowerShellProfileShape || isOptionalConnectionsShape
+  const customLogoDataUrl = isCustomLogoShape || isPowerShellProfileShape || isOptionalConnectionsShape || isLocalShellAvailabilityShape
     ? value.customLogoDataUrl === null ? null : isCustomLogoDataUrl(value.customLogoDataUrl) ? value.customLogoDataUrl : undefined
     : null;
   if (customLogoDataUrl === undefined) return undefined;
-  const powerShellProfileScript = isPowerShellProfileShape || isOptionalConnectionsShape
+  const powerShellProfileScript = isPowerShellProfileShape || isOptionalConnectionsShape || isLocalShellAvailabilityShape
     ? normalizePowerShellProfileScript(value.powerShellProfileScript)
     : '';
   if (powerShellProfileScript === undefined) return undefined;
-  const enabledOptionalConnections = isOptionalConnectionsShape
+  const enabledOptionalConnections = isOptionalConnectionsShape || isLocalShellAvailabilityShape
     ? normalizeEnabledOptionalConnections(value.enabledOptionalConnections)
     : DEFAULT_ENABLED_OPTIONAL_CONNECTIONS;
   if (!enabledOptionalConnections) return undefined;
+  const enabledLocalShells = isLocalShellAvailabilityShape
+    ? normalizeEnabledLocalShells(value.enabledLocalShells)
+    : DEFAULT_ENABLED_LOCAL_SHELLS;
+  if (!enabledLocalShells) return undefined;
   return Object.freeze({ startupGreeting, terminalHighlightEnabled: value.terminalHighlightEnabled, terminalHighlightRules,
     autoSaveSessions: value.autoSaveSessions, terminalShellSyntaxEnabled: value.terminalShellSyntaxEnabled,
-    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells, enabledOptionalConnections,
+    showSftpBrowserBesideSsh: value.showSftpBrowserBesideSsh, visibleLocalShells, enabledLocalShells, enabledOptionalConnections,
     customLogoDataUrl, powerShellProfileScript });
 }
 
@@ -135,6 +151,7 @@ export function isWorkbenchPreferences(value: unknown): value is WorkbenchPrefer
 
 export function isCurrentWorkbenchPreferences(value: unknown): value is WorkbenchPreferences {
   return isRecord(value) && Object.hasOwn(value, 'powerShellProfileScript') && Object.hasOwn(value, 'enabledOptionalConnections') &&
+    Object.hasOwn(value, 'enabledLocalShells') &&
     isWorkbenchPreferences(value);
 }
 
@@ -147,6 +164,7 @@ export function toWorkbenchStartupPreferences(preferences: WorkbenchPreferences)
     terminalShellSyntaxEnabled: preferences.terminalShellSyntaxEnabled,
     showSftpBrowserBesideSsh: preferences.showSftpBrowserBesideSsh,
     visibleLocalShells: preferences.visibleLocalShells,
+    enabledLocalShells: preferences.enabledLocalShells,
     enabledOptionalConnections: preferences.enabledOptionalConnections,
     customLogoDataUrl: preferences.customLogoDataUrl
   });
@@ -155,7 +173,8 @@ export function toWorkbenchStartupPreferences(preferences: WorkbenchPreferences)
 export function isWorkbenchStartupPreferences(value: unknown): value is WorkbenchStartupPreferences {
   if (!isRecord(value) || Object.hasOwn(value, 'powerShellProfileScript')) return false;
   const expectedKeys = ['startupGreeting', 'terminalHighlightEnabled', 'terminalHighlightRules', 'autoSaveSessions',
-    'terminalShellSyntaxEnabled', 'showSftpBrowserBesideSsh', 'visibleLocalShells', 'enabledOptionalConnections', 'customLogoDataUrl'];
+    'terminalShellSyntaxEnabled', 'showSftpBrowserBesideSsh', 'visibleLocalShells', 'enabledLocalShells',
+    'enabledOptionalConnections', 'customLogoDataUrl'];
   return Object.keys(value).length === expectedKeys.length && expectedKeys.every(key => Object.hasOwn(value, key)) &&
     normalizeWorkbenchPreferences({ ...value, powerShellProfileScript: '' }) !== undefined;
 }
