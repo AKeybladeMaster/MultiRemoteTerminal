@@ -26,3 +26,5 @@ On Windows x64:
 ## Limits
 
 This is a lexical preview, not a TOML parser or validator. Bare-key recognition is ASCII-oriented and dotted-key assignment lookahead is capped at 512 UTF-16 code units. Escape validity, date/time ranges, duplicate keys, table rules and the full Unicode key grammar are not checked. F-014/P-27 remain PARTIAL for broader syntax profiles and autosave.
+
+Review outcome: [WP-08J review](WP-08J-review.md).
