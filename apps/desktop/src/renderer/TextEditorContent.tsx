@@ -36,10 +36,11 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
         <option value="auto">Auto detect</option>
         <option value="plain">Plain text</option>
         <option value="shell">Shell script</option>
+        <option value="powershell">PowerShell</option>
         <option value="json">JSON</option>
       </select>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .sh, .bash, .zsh, .ksh and .json. Colors are visual hints; the file is not validated or executed.
+        Auto detects .ps1, .psm1, .psd1, .pssc, .sh, .bash, .zsh, .ksh and .json. Colors are visual hints; the file is not validated or executed.
       </p>
     </div>
     <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>
