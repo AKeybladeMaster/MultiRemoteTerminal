@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks';
 import {
   highlightTextSyntax,
   highlightShellInputSyntax,
+  highlightPowerShellInputSyntax,
   MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS,
   MAX_TEXT_SYNTAX_PREVIEW_TOKENS,
   resolveTextSyntaxProfile
@@ -255,6 +256,36 @@ test('PowerShell syntax preview does not color comment markers embedded in barew
     .filter(token => token.kind === 'powershell-comment')
     .map(token => source.slice(token.start, token.end));
   assert.deepEqual(comments, ['# actual comment']);
+});
+
+test('PowerShell input carries bounded lexical state only for unquoted odd trailing backticks', () => {
+  const backtick = String.fromCharCode(96);
+  const firstLine = `Get-ChildItem ${backtick}`;
+  const first = highlightPowerShellInputSyntax(firstLine);
+  assert.deepEqual(first.continuationState, { commandExpected: false, previousTokenIsBareWord: false });
+
+  const secondLine = '-Path $HOME';
+  const continued = highlightPowerShellInputSyntax(secondLine, first.continuationState);
+  assert.deepEqual(continued.tokens.map(token => ({ text: secondLine.slice(token.start, token.end), kind: token.kind })), [
+    { text: '-Path', kind: 'powershell-parameter' },
+    { text: '$HOME', kind: 'powershell-variable' }
+  ]);
+  assert.equal(continued.continuationState, undefined);
+
+  assert.equal(highlightPowerShellInputSyntax(`Get-ChildItem ${backtick.repeat(2)}`).continuationState, undefined);
+  assert.equal(highlightPowerShellInputSyntax(`Get-ChildItem ${backtick} `).continuationState, undefined,
+    'trailing whitespace cancels explicit continuation');
+  assert.equal(highlightPowerShellInputSyntax(`'quoted${backtick}`).continuationState, undefined);
+  assert.equal(highlightPowerShellInputSyntax(`"quoted${backtick}`).continuationState, undefined);
+  assert.equal(highlightPowerShellInputSyntax(`# comment${backtick}`).continuationState, undefined);
+  assert.equal(highlightPowerShellInputSyntax(`@"\nstring${backtick}`).continuationState, undefined);
+});
+
+test('PowerShell syntax preview does not carry continuation state from a truncated input', () => {
+  const source = ' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS) + String.fromCharCode(96);
+  const preview = highlightPowerShellInputSyntax(source);
+  assert.equal(preview.isTruncated, true);
+  assert.equal(preview.continuationState, undefined);
 });
 
 test('PowerShell syntax preview never extends a token beyond its code-unit bound', () => {

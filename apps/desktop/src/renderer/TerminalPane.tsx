@@ -3,10 +3,11 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
-import { attachTerminalHighlights, clearTerminalShellInputAnchor, getTerminalPromptSyntaxProfile, isShellContinuationPromptAtCursor,
-  isShellInputAnchorActive, readTerminalShellContinuationState } from './terminal-highlighting.ts';
+import { attachTerminalHighlights, clearTerminalShellInputAnchor, getTerminalPromptSyntaxProfile, isPowerShellContinuationPromptAtCursor,
+  isShellContinuationPromptAtCursor, isShellInputAnchorActive, readTerminalPowerShellContinuationState,
+  readTerminalShellContinuationState } from './terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from './terminal-highlighting.ts';
-import type { ShellSyntaxContinuationState } from '../../../../packages/domain/src/text-syntax.ts';
+import type { PowerShellSyntaxContinuationState, ShellSyntaxContinuationState } from '../../../../packages/domain/src/text-syntax.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 
@@ -44,6 +45,10 @@ interface TerminalTransportCommands {
   readonly resize: (sessionId: string, columns: number, rows: number) => Promise<TerminalActionReply>;
   readonly acknowledge: (sessionId: string, sequence: number) => Promise<TerminalActionReply>;
 }
+
+type TerminalContinuationState =
+  | { readonly profile: 'shell'; readonly state: ShellSyntaxContinuationState }
+  | { readonly profile: 'powershell'; readonly state: PowerShellSyntaxContinuationState };
 
 function createTransportCommands(bridge: DesktopBridge, transport: Props['transport']): TerminalTransportCommands {
   const commands: Record<Props['transport'], TerminalTransportCommands> = {
@@ -84,13 +89,13 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   const canWriteRef = useRef(canWrite);
   const shellSyntaxEnabledRef = useRef(terminalShellSyntaxEnabled);
   const shellInputAnchor = useRef<TerminalShellInputAnchor | undefined>(undefined);
-  const shellContinuationState = useRef<ShellSyntaxContinuationState | undefined>(undefined);
+  const terminalContinuationState = useRef<TerminalContinuationState | undefined>(undefined);
   activeRef.current = active;
   canWriteRef.current = canWrite;
   shellSyntaxEnabledRef.current = terminalShellSyntaxEnabled;
 
   function clearShellInputState(): void {
-    shellContinuationState.current = undefined;
+    terminalContinuationState.current = undefined;
     clearTerminalShellInputAnchor(shellInputAnchor);
   }
 
@@ -110,17 +115,26 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     clearTerminalShellInputAnchor(shellInputAnchor);
     const line = buffer.getLine(cursorLine);
     const promptText = line?.translateToString(true, 0, buffer.cursorX) ?? '';
-    const profile = getTerminalPromptSyntaxProfile(promptText);
+    const pendingContinuation = terminalContinuationState.current;
+    const isPowerShellContinuation = pendingContinuation?.profile === 'powershell' && isPowerShellContinuationPromptAtCursor(promptText);
+    const profile = isPowerShellContinuation ? 'powershell' : getTerminalPromptSyntaxProfile(promptText);
     if (!profile) {
-      shellContinuationState.current = undefined;
+      terminalContinuationState.current = undefined;
       return;
     }
-    const continuationState = profile === 'shell' && shellContinuationState.current && isShellContinuationPromptAtCursor(promptText)
-      ? shellContinuationState.current : undefined;
-    shellContinuationState.current = undefined;
+    terminalContinuationState.current = undefined;
     const marker = instance.registerMarker(0);
-    if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX, wrappedMarkers: [], decorations: [],
-      profile, continuationState };
+    if (marker.isDisposed) return;
+    const anchorBase = { marker, startColumn: buffer.cursorX, wrappedMarkers: [], decorations: [] };
+    if (profile === 'shell') {
+      const continuationState = pendingContinuation?.profile === 'shell' && isShellContinuationPromptAtCursor(promptText)
+        ? pendingContinuation.state : undefined;
+      shellInputAnchor.current = { ...anchorBase, profile, continuationState };
+    } else {
+      const continuationState = isPowerShellContinuation && pendingContinuation?.profile === 'powershell'
+        ? pendingContinuation.state : undefined;
+      shellInputAnchor.current = { ...anchorBase, profile, continuationState };
+    }
   }
 
   useLayoutEffect(() => {
@@ -140,9 +154,15 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       }
       if (data === '\r' || data === '\n') {
         const anchor = shellInputAnchor.current;
-        shellContinuationState.current = shellSyntaxEnabledRef.current && transport !== 'serial'
-          ? anchor?.profile === 'shell' ? readTerminalShellContinuationState(instance, anchor) : undefined
-          : undefined;
+        let continuation: TerminalContinuationState | undefined;
+        if (shellSyntaxEnabledRef.current && transport !== 'serial' && anchor?.profile === 'shell') {
+          const state = readTerminalShellContinuationState(instance, anchor);
+          if (state) continuation = { profile: 'shell', state };
+        } else if (shellSyntaxEnabledRef.current && transport !== 'serial' && anchor?.profile === 'powershell') {
+          const state = readTerminalPowerShellContinuationState(instance, anchor);
+          if (state) continuation = { profile: 'powershell', state };
+        }
+        terminalContinuationState.current = continuation;
         clearTerminalShellInputAnchor(shellInputAnchor);
       } else if (/[\r\n\x03\x04\x0c]/u.test(data)) {
         clearShellInputState();
