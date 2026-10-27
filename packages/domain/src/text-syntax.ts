@@ -3,8 +3,9 @@ export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
 const MAX_SQL_DOLLAR_TAG_CODE_UNITS = 63;
 const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
+const MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS = 1_024;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -19,6 +20,8 @@ export type TextSyntaxTokenKind =
   | 'sql-function' | 'sql-keyword' | 'sql-literal' | 'sql-string' | 'sql-comment' | 'sql-number' | 'sql-operator'
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
+  | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
+  | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
   | 'json-key' | 'json-string' | 'json-number' | 'json-literal' | 'json-punctuation';
 
 export interface TextSyntaxToken {
@@ -127,12 +130,21 @@ const tomlSpaceDateTimePrefixPattern = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\
 const tomlDecimalIntegerPattern = /^[+-]?(?:0|[1-9](?:_?\d)*)$/u;
 const tomlDecimalFloatPattern = /^[+-]?(?:(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?)$/u;
 const tomlBasedIntegerPattern = /^0(?:x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|o[0-7](?:_?[0-7])*|b[01](?:_?[01])*)$/u;
+const yamlNulls = new Set(['null', 'Null', 'NULL', '~']);
+const yamlBooleans = new Set(['true', 'True', 'TRUE', 'false', 'False', 'FALSE']);
+const yamlIntegerPattern = /^[-+]?(?:0|[0-9]+)$/u;
+const yamlOctalPattern = /^0o[0-7]+$/u;
+const yamlHexPattern = /^0x[0-9A-Fa-f]+$/u;
+const yamlFloatPattern = /^[-+]?(?:(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?)$/u;
+const yamlInfinityPattern = /^[-+]?\.inf$/iu;
+const yamlNanPattern = /^\.nan$/iu;
 
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
+  if (/\.(?:yaml|yml)$/.test(name)) return 'yaml';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -154,7 +166,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
         : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
           : profile === 'sql' ? scanSql(text, limit, tokens)
             : profile === 'toml' ? scanToml(text, limit, tokens)
-              : scanJson(text, limit, tokens);
+              : profile === 'yaml' ? scanYaml(text, limit, tokens)
+                : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1168,6 +1181,366 @@ function isTomlBareKeyCharacter(character: string): boolean {
 
 function isTomlScalarDelimiter(character: string): boolean {
   return '#,[]{}='.includes(character);
+}
+
+function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  let nodePositionExpected = true;
+  let mappingColonExpected = false;
+  const flowStack: Array<{ readonly kind: 'sequence' } | { readonly kind: 'mapping'; expectsKey: boolean }> = [];
+
+  while (index < limit) {
+    const character = text[index]!;
+    if (character === '\n' || character === '\r') {
+      index += character === '\r' && index + 1 < limit && text[index + 1] === '\n' ? 2 : 1;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+    if (character === ' ' || character === '\t') { index += 1; continue; }
+    const currentFlow = flowStack.at(-1);
+    const flowMapKeyExpected = currentFlow?.kind === 'mapping' && currentFlow.expectsKey;
+
+    const documentMarkerEnd = scanYamlDocumentMarker(text, index, limit);
+    if (documentMarkerEnd > index) {
+      if (!addToken(tokens, index, documentMarkerEnd, 'yaml-document')) return index;
+      index = documentMarkerEnd;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if (isYamlDirective(text, index, limit)) {
+      const directiveEnd = scanLineEnd(text, index, limit);
+      const commentStart = scanYamlTrailingComment(text, index, directiveEnd);
+      const tokenEnd = commentStart >= 0 ? commentStart : directiveEnd;
+      if (!addToken(tokens, index, tokenEnd, 'yaml-directive')) return index;
+      if (commentStart >= 0 && !addToken(tokens, commentStart, directiveEnd, 'yaml-comment')) return commentStart;
+      index = directiveEnd;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if (character === '#' && (index === 0 || isWhitespace(text[index - 1]!))) {
+      const end = scanLineEnd(text, index, limit);
+      if (!addToken(tokens, index, end, 'yaml-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    if (character === '"' || character === '\'') {
+      const end = scanYamlQuotedScalar(text, index, limit);
+      const keyColon = findYamlKeyColon(text, index, limit, flowMapKeyExpected, true);
+      const isKey = keyColon >= end;
+      if (!addToken(tokens, index, end, isKey ? 'yaml-key' : 'yaml-string')) return index;
+      index = end;
+      nodePositionExpected = false;
+      mappingColonExpected = isKey;
+      continue;
+    }
+
+    if (nodePositionExpected && character === '&' && index + 1 < limit && !isYamlPropertyDelimiter(text[index + 1]!)) {
+      const end = scanYamlAnchor(text, index, limit);
+      if (!addToken(tokens, index, end, 'yaml-anchor')) return index;
+      index = end;
+      continue;
+    }
+
+    if (nodePositionExpected && character === '*' && index + 1 < limit && !isYamlPropertyDelimiter(text[index + 1]!)) {
+      const end = scanYamlProperty(text, index, limit);
+      if (!addToken(tokens, index, end, 'yaml-alias')) return index;
+      index = end;
+      nodePositionExpected = false;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if (nodePositionExpected && character === '!') {
+      const end = scanYamlTag(text, index, limit);
+      if (!addToken(tokens, index, end, 'yaml-tag')) return index;
+      index = end;
+      continue;
+    }
+
+    if (nodePositionExpected && (character === '|' || character === '>')) {
+      const blockScan = scanYamlBlockScalar(text, index, limit, tokens);
+      if (blockScan) {
+        if (blockScan.stoppedAt !== undefined) return blockScan.stoppedAt;
+        index = blockScan.nextIndex;
+        nodePositionExpected = true;
+        mappingColonExpected = false;
+        continue;
+      }
+    }
+
+    if (character === ':' && (mappingColonExpected || isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected)) {
+      if (!addToken(tokens, index, index + 1, 'yaml-operator')) return index;
+      index += 1;
+      const currentFlow = flowStack.at(-1);
+      if (currentFlow?.kind === 'mapping') currentFlow.expectsKey = false;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if ((character === '-' || character === '?') && flowStack.length === 0 && isYamlBlockIndicator(text, index, limit)) {
+      if (!addToken(tokens, index, index + 1, 'yaml-operator')) return index;
+      index += 1;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if ((character === '[' || character === '{') && (flowStack.length > 0 || nodePositionExpected)) {
+      if (!addToken(tokens, index, index + 1, 'yaml-operator')) return index;
+      flowStack.push(character === '{' ? { kind: 'mapping', expectsKey: true } : { kind: 'sequence' });
+      index += 1;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if ((character === ']' || character === '}') &&
+        ((character === ']' && flowStack.at(-1)?.kind === 'sequence') ||
+          (character === '}' && flowStack.at(-1)?.kind === 'mapping'))) {
+      if (!addToken(tokens, index, index + 1, 'yaml-operator')) return index;
+      flowStack.pop();
+      index += 1;
+      nodePositionExpected = false;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    if (character === ',' && flowStack.length > 0) {
+      if (!addToken(tokens, index, index + 1, 'yaml-operator')) return index;
+      const currentFlow = flowStack.at(-1);
+      if (currentFlow?.kind === 'mapping') currentFlow.expectsKey = true;
+      index += 1;
+      nodePositionExpected = true;
+      mappingColonExpected = false;
+      continue;
+    }
+
+    const keyColon = nodePositionExpected || flowMapKeyExpected
+      ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, false)
+      : -1;
+    if (keyColon > index) {
+      if (!addToken(tokens, index, keyColon, 'yaml-key')) return index;
+      index = keyColon;
+      nodePositionExpected = false;
+      mappingColonExpected = true;
+      continue;
+    }
+
+    const scalarEnd = scanYamlPlainScalar(text, index, limit, flowStack.length > 0, flowMapKeyExpected);
+    if (scalarEnd <= index) {
+      index += 1;
+      nodePositionExpected = false;
+      mappingColonExpected = false;
+      continue;
+    }
+    const scalar = text.slice(index, scalarEnd);
+    const kind = yamlNulls.has(scalar) || yamlBooleans.has(scalar) ? 'yaml-literal'
+      : yamlIntegerPattern.test(scalar) || yamlOctalPattern.test(scalar) || yamlHexPattern.test(scalar) ||
+          yamlFloatPattern.test(scalar) || yamlInfinityPattern.test(scalar) || yamlNanPattern.test(scalar)
+        ? 'yaml-number' : 'yaml-string';
+    if (!addToken(tokens, index, scalarEnd, kind)) return index;
+    index = scalarEnd;
+    nodePositionExpected = false;
+    mappingColonExpected = false;
+  }
+  return limit;
+}
+
+function scanYamlQuotedScalar(text: string, start: number, limit: number): number {
+  const quote = text[start]!;
+  let index = start + 1;
+  while (index < limit) {
+    if (quote === '"' && text[index] === '\\') {
+      index += index + 1 < limit ? 2 : 1;
+      continue;
+    }
+    if (text[index] === quote) {
+      if (quote === '\'' && index + 1 < limit && text[index + 1] === '\'') { index += 2; continue; }
+      return index + 1;
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function findYamlKeyColon(text: string, start: number, limit: number, flowMapKeyExpected: boolean, quotedKey: boolean): number {
+  const keyLimit = Math.min(limit, start + MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS);
+  let index = start;
+  while (index < keyLimit) {
+    const character = text[index]!;
+    if (character === '\n' || character === '\r') return -1;
+    if (quotedKey && index === start && (character === '"' || character === '\'')) {
+      const end = scanYamlQuotedScalar(text, index, keyLimit);
+      if (end >= keyLimit) return -1;
+      index = end;
+      continue;
+    }
+    if (character === '#' && (index === start || isWhitespace(text[index - 1]!))) return -1;
+    if (flowMapKeyExpected && ',]}'.includes(character)) return -1;
+    if (character === ':' && (isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected)) return index;
+    index += 1;
+  }
+  return -1;
+}
+
+function scanYamlPlainScalar(text: string, start: number, limit: number, inFlowCollection: boolean, flowMapKeyExpected: boolean): number {
+  let index = start;
+  while (index < limit) {
+    const character = text[index]!;
+    if (isWhitespace(character) || (inFlowCollection && '[]{},'.includes(character))) break;
+    if (character === ':' && (isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected)) break;
+    index += 1;
+  }
+  return index;
+}
+
+function scanYamlAnchor(text: string, start: number, limit: number): number {
+  let index = start + 1;
+  while (index < limit && !isYamlPropertyDelimiter(text[index]!) &&
+      !(text[index] === ':' && isYamlSeparatedColon(text, index, limit))) index += 1;
+  return index;
+}
+
+function scanYamlProperty(text: string, start: number, limit: number): number {
+  let index = start + 1;
+  while (index < limit && !isYamlPropertyDelimiter(text[index]!)) index += 1;
+  return index;
+}
+
+function scanYamlTag(text: string, start: number, limit: number): number {
+  if (text[start + 1] === '<') {
+    let index = start + 2;
+    while (index < limit && text[index] !== '>' && !isWhitespace(text[index]!)) index += 1;
+    return index < limit && text[index] === '>' ? index + 1 : index;
+  }
+  let index = start + 1;
+  while (index < limit && !isWhitespace(text[index]!) && !',]}'.includes(text[index]!)) index += 1;
+  return index;
+}
+
+function isYamlPropertyDelimiter(character: string): boolean {
+  return isWhitespace(character) || ',[]{}'.includes(character);
+}
+
+function isYamlSeparatedColon(text: string, index: number, limit: number): boolean {
+  const next = index + 1 < limit ? text[index + 1] : undefined;
+  return next === undefined || isWhitespace(next) || ',]}'.includes(next);
+}
+
+function isYamlBlockIndicator(text: string, index: number, limit: number): boolean {
+  const next = index + 1 < limit ? text[index + 1] : undefined;
+  return next === undefined || isWhitespace(next);
+}
+
+function isYamlLinePrefix(text: string, index: number): boolean {
+  let lineStart = index;
+  while (lineStart > 0 && text[lineStart - 1] !== '\n' && text[lineStart - 1] !== '\r') lineStart -= 1;
+  return lineStart === index;
+}
+
+function scanYamlDocumentMarker(text: string, index: number, limit: number): number {
+  if (!isYamlLinePrefix(text, index) || index + 3 > limit) return index;
+  const marker = text.slice(index, index + 3);
+  if (marker !== '---' && marker !== '...') return index;
+  const following = index + 3 < limit ? text[index + 3] : undefined;
+  return following === undefined || isWhitespace(following) ? index + 3 : index;
+}
+
+function isYamlDirective(text: string, index: number, limit: number): boolean {
+  if (!isYamlLinePrefix(text, index)) return false;
+  const directive = text.startsWith('%YAML', index) ? '%YAML' : text.startsWith('%TAG', index) ? '%TAG' : undefined;
+  if (!directive) return false;
+  const following = index + directive.length < limit ? text[index + directive.length] : undefined;
+  return following === undefined || isWhitespace(following);
+}
+
+function scanYamlTrailingComment(text: string, start: number, end: number): number {
+  for (let index = start; index < end; index += 1) {
+    if (text[index] === '#' && index > start && isWhitespace(text[index - 1]!)) return index;
+  }
+  return -1;
+}
+
+function scanYamlBlockScalar(
+  text: string,
+  start: number,
+  limit: number,
+  tokens: TextSyntaxToken[]
+): { readonly nextIndex: number; readonly stoppedAt?: number } | undefined {
+  const lineEnd = scanLineEnd(text, start, limit);
+  let headerEnd = start + 1;
+  let explicitIndent: number | undefined;
+  let chompingSeen = false;
+  while (headerEnd < lineEnd) {
+    const character = text[headerEnd]!;
+    if ((character === '+' || character === '-') && !chompingSeen) {
+      chompingSeen = true;
+      headerEnd += 1;
+      continue;
+    }
+    if (character >= '1' && character <= '9' && explicitIndent === undefined) {
+      explicitIndent = Number(character);
+      headerEnd += 1;
+      continue;
+    }
+    break;
+  }
+
+  let commentStart = headerEnd;
+  while (commentStart < lineEnd && (text[commentStart] === ' ' || text[commentStart] === '\t')) commentStart += 1;
+  if (commentStart < lineEnd && text[commentStart] !== '#') return undefined;
+  if (commentStart === headerEnd && commentStart < lineEnd) return undefined;
+
+  if (!addToken(tokens, start, headerEnd, 'yaml-operator')) return { nextIndex: start, stoppedAt: start };
+  if (commentStart < lineEnd && !addToken(tokens, commentStart, lineEnd, 'yaml-comment')) {
+    return { nextIndex: commentStart, stoppedAt: commentStart };
+  }
+
+  const parentIndent = yamlLineIndent(text, start);
+  let requiredIndent = explicitIndent === undefined ? undefined : parentIndent + explicitIndent;
+  let cursor = yamlNextLine(text, lineEnd, limit);
+  while (cursor < limit) {
+    const contentEnd = scanLineEnd(text, cursor, limit);
+    let indentation = 0;
+    while (cursor + indentation < contentEnd && text[cursor + indentation] === ' ') indentation += 1;
+    const blank = cursor + indentation === contentEnd;
+    if (blank) {
+      if (contentEnd > cursor && !addToken(tokens, cursor, contentEnd, 'yaml-string')) {
+        return { nextIndex: cursor, stoppedAt: cursor };
+      }
+      cursor = yamlNextLine(text, contentEnd, limit);
+      continue;
+    }
+    if (requiredIndent === undefined) {
+      if (indentation <= parentIndent) return { nextIndex: cursor };
+      requiredIndent = indentation;
+    }
+    if (indentation < requiredIndent) return { nextIndex: cursor };
+    if (!addToken(tokens, cursor, contentEnd, 'yaml-string')) return { nextIndex: cursor, stoppedAt: cursor };
+    cursor = yamlNextLine(text, contentEnd, limit);
+  }
+  return { nextIndex: limit };
+}
+
+function yamlLineIndent(text: string, index: number): number {
+  let lineStart = index;
+  while (lineStart > 0 && text[lineStart - 1] !== '\n' && text[lineStart - 1] !== '\r') lineStart -= 1;
+  let indentation = 0;
+  while (lineStart + indentation < index && text[lineStart + indentation] === ' ') indentation += 1;
+  return indentation;
+}
+
+function yamlNextLine(text: string, lineEnd: number, limit: number): number {
+  if (lineEnd >= limit) return limit;
+  if (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n') return lineEnd + 2;
+  return lineEnd + 1;
 }
 
 function scanJson(text: string, limit: number, tokens: TextSyntaxToken[]): number {
