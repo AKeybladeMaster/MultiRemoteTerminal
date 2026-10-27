@@ -28,4 +28,4 @@ The first E2E attempts typed immediately after the session showed “running.”
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "PowerShell prompt coloring" --reporter=line` — 1/1 Windows Electron E2E passed.
 - `git diff --check` — passed.
 
-Independent General, Spec and Standards review is required before promotion; its outcome will be recorded separately.
+Independent General, Spec and Standards review found no remaining issues; see [WP-01K review outcome](WP-01K-review.md).
