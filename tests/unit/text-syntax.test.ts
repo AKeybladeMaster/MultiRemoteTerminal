@@ -8,7 +8,10 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML and JSON from the file name', () => {
+  for (const fileName of ['README.MD', 'guide.markdown']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
+  }
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
   for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
@@ -602,6 +605,67 @@ test('YAML syntax preview keeps malformed low-token flow input within a linear a
   const boundedPreview = medianRuntime(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   assert.ok(boundedPreview <= smaller * 8 + 10,
     `64,000 malformed flow code units took ${boundedPreview.toFixed(1)}ms after 16,000 took ${smaller.toFixed(1)}ms`);
+});
+
+test('Markdown syntax preview colors common block and inline forms without parsing fenced code', () => {
+  const source = [
+    '# Release notes',
+    '> A **bold** quote',
+    '- item with `inline` and [guide](https://example.test)',
+    '1. numbered',
+    '---',
+    '```ts',
+    '[not a link] **not emphasis**',
+    '```',
+    '<!-- note -->'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'markdown');
+  const values = (kind: string) => preview.tokens.filter(token => token.kind === kind).map(token => source.slice(token.start, token.end));
+
+  assert.deepEqual(values('markdown-heading'), ['#']);
+  assert.deepEqual(values('markdown-quote'), ['>']);
+  assert.deepEqual(values('markdown-list'), ['-', '1.']);
+  assert.deepEqual(values('markdown-rule'), ['---']);
+  assert.deepEqual(values('markdown-emphasis'), ['**bold**']);
+  assert.deepEqual(values('markdown-code'), ['`inline`', '[not a link] **not emphasis**\n']);
+  assert.deepEqual(values('markdown-link'), ['[guide](https://example.test)']);
+  assert.deepEqual(values('markdown-code-fence'), ['```', '```']);
+  assert.deepEqual(values('markdown-code-info'), ['ts']);
+  assert.deepEqual(values('markdown-comment'), ['<!-- note -->']);
+  assert.equal(preview.isTruncated, false);
+});
+
+test('Markdown syntax preview closes fences only with a matching delimiter and valid indentation', () => {
+  const source = [
+    '~~~lang',
+    '```',
+    '####### not a heading',
+    '    ~~~ not a closing fence',
+    '~~~~  ',
+    '    # not a heading',
+    '# visible heading'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'markdown');
+  const values = (kind: string) => preview.tokens.filter(token => token.kind === kind).map(token => source.slice(token.start, token.end));
+
+  assert.deepEqual(values('markdown-code-fence'), ['~~~', '~~~~']);
+  assert.deepEqual(values('markdown-code'), ['```\n', '####### not a heading\n', '    ~~~ not a closing fence\n']);
+  assert.deepEqual(values('markdown-heading'), ['#']);
+});
+
+test('Markdown syntax preview bounds inline lookahead and token output', () => {
+  const longLink = `[${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}](https://example.test)`;
+  const characterBound = highlightTextSyntax(longLink, 'markdown');
+  assert.equal(characterBound.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(characterBound.isTruncated, true);
+  assert.equal(characterBound.tokens.some(token => token.kind === 'markdown-link'), false);
+  assert.ok(characterBound.tokens.every(token => token.end <= characterBound.highlightedThrough));
+
+  const manySpans = '**bold**\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10);
+  const tokenBound = highlightTextSyntax(manySpans, 'markdown');
+  assert.equal(tokenBound.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.ok(tokenBound.tokens.every(token => token.kind === 'markdown-emphasis'));
+  assert.equal(tokenBound.isTruncated, true);
 });
 
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {

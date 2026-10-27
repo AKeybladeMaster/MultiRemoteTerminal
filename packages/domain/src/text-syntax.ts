@@ -2,10 +2,11 @@ export const MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS = 64_000;
 export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
 const MAX_SQL_DOLLAR_TAG_CODE_UNITS = 63;
+const MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS = 1_024;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -22,6 +23,8 @@ export type TextSyntaxTokenKind =
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
+  | 'markdown-heading' | 'markdown-list' | 'markdown-quote' | 'markdown-rule' | 'markdown-code'
+  | 'markdown-code-fence' | 'markdown-code-info' | 'markdown-link' | 'markdown-emphasis' | 'markdown-comment'
   | 'json-key' | 'json-string' | 'json-number' | 'json-literal' | 'json-punctuation';
 
 export interface TextSyntaxToken {
@@ -142,6 +145,7 @@ const yamlNanPattern = /^\.nan$/iu;
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
+  if (/\.(?:md|markdown)$/.test(name)) return 'markdown';
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
   if (/\.(?:yaml|yml)$/.test(name)) return 'yaml';
@@ -161,7 +165,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
   if (limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1))) limit -= 1;
   const tokens: TextSyntaxToken[] = [];
   const scannedThrough = profile === 'shell' ? scanShell(text, limit, tokens)
-    : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
+    : profile === 'markdown' ? scanMarkdown(text, limit, tokens)
+      : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
       : profile === 'python' ? scanPython(text, limit, tokens)
         : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
           : profile === 'sql' ? scanSql(text, limit, tokens)
@@ -1570,6 +1575,355 @@ function yamlNextLine(text: string, lineEnd: number, limit: number): number {
   if (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n') return lineEnd + 2;
   return lineEnd + 1;
 }
+
+type MarkdownFenceMarker = '`' | '~';
+
+interface MarkdownFenceOpening {
+  readonly marker: MarkdownFenceMarker;
+  readonly length: number;
+  readonly markerStart: number;
+  readonly markerEnd: number;
+  readonly infoStart: number;
+  readonly infoEnd: number;
+}
+
+function scanMarkdown(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  let fence: { readonly marker: MarkdownFenceMarker; readonly length: number } | undefined;
+
+  while (index < limit) {
+    const lineStart = index;
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    const nextLine = markdownNextLine(text, lineEnd, limit);
+
+    if (fence) {
+      const closing = scanMarkdownFenceClosing(text, lineStart, lineEnd, fence);
+      if (closing) {
+        if (!addToken(tokens, closing.start, closing.end, 'markdown-code-fence')) return closing.start;
+        fence = undefined;
+      } else if (!addToken(tokens, lineStart, nextLine, 'markdown-code')) {
+        return lineStart;
+      }
+      index = nextLine;
+      continue;
+    }
+
+    const opening = scanMarkdownFenceOpening(text, lineStart, lineEnd);
+    if (opening) {
+      if (!addToken(tokens, opening.markerStart, opening.markerEnd, 'markdown-code-fence')) return opening.markerStart;
+      if (opening.infoEnd > opening.infoStart && !addToken(tokens, opening.infoStart, opening.infoEnd, 'markdown-code-info')) {
+        return opening.infoStart;
+      }
+      fence = { marker: opening.marker, length: opening.length };
+      index = nextLine;
+      continue;
+    }
+
+    if (isMarkdownThematicBreak(text, lineStart, lineEnd)) {
+      if (!addToken(tokens, lineStart, lineEnd, 'markdown-rule')) return lineStart;
+      index = nextLine;
+      continue;
+    }
+
+    let inlineStart = lineStart;
+    const heading = scanMarkdownHeading(text, lineStart, lineEnd);
+    if (heading) {
+      if (!addToken(tokens, heading.markerStart, heading.markerEnd, 'markdown-heading')) return heading.markerStart;
+      inlineStart = heading.contentStart;
+    } else {
+      const quote = scanMarkdownQuote(text, lineStart, lineEnd);
+      if (quote) {
+        if (!addToken(tokens, quote.markerStart, quote.markerEnd, 'markdown-quote')) return quote.markerStart;
+        inlineStart = quote.contentStart;
+      } else {
+        const list = scanMarkdownListMarker(text, lineStart, lineEnd);
+        if (list) {
+          if (!addToken(tokens, list.markerStart, list.markerEnd, 'markdown-list')) return list.markerStart;
+          inlineStart = list.contentStart;
+        }
+      }
+    }
+
+    const stoppedAt = scanMarkdownInline(text, inlineStart, lineEnd, tokens);
+    if (stoppedAt !== undefined) return stoppedAt;
+    index = nextLine;
+  }
+
+  return limit;
+}
+
+function scanMarkdownInline(
+  text: string,
+  start: number,
+  end: number,
+  tokens: TextSyntaxToken[]
+): number | undefined {
+  let index = start;
+  while (index < end) {
+    const character = text[index]!;
+    if (character === '\\' && index + 1 < end) { index += 2; continue; }
+
+    if (character === '<' && text.startsWith('<!--', index)) {
+      const commentLimit = Math.min(end, index + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
+      const close = findTextWithinLimit(text, '-->', index + 4, commentLimit);
+      if (close >= 0) {
+        const tokenEnd = close + 3;
+        if (!addToken(tokens, index, tokenEnd, 'markdown-comment')) return index;
+        index = tokenEnd;
+        continue;
+      }
+    }
+
+    if (character === '`') {
+      const runEnd = scanMarkdownRun(text, index, end, '`');
+      const runLength = runEnd - index;
+      const closeEnd = findMarkdownCodeSpanEnd(text, runEnd, end, runLength);
+      if (closeEnd !== undefined) {
+        if (!addToken(tokens, index, closeEnd, 'markdown-code')) return index;
+        index = closeEnd;
+        continue;
+      }
+      index = runEnd;
+      continue;
+    }
+
+    const linkStart = character === '!' && text[index + 1] === '[' ? index : character === '[' ? index : -1;
+    if (linkStart >= 0) {
+      const linkEnd = findMarkdownInlineLinkEnd(text, linkStart, end);
+      if (linkEnd !== undefined) {
+        if (!addToken(tokens, linkStart, linkEnd, 'markdown-link')) return linkStart;
+        index = linkEnd;
+        continue;
+      }
+    }
+
+    if (character === '*' || character === '_') {
+      const runEnd = scanMarkdownRun(text, index, end, character);
+      const delimiterLength = runEnd - index;
+      if (delimiterLength <= 2 && isMarkdownEmphasisStart(text, index, end, character, delimiterLength)) {
+        const closeEnd = findMarkdownEmphasisEnd(text, index, runEnd, end, character, delimiterLength);
+        if (closeEnd !== undefined) {
+          if (!addToken(tokens, index, closeEnd, 'markdown-emphasis')) return index;
+          index = closeEnd;
+          continue;
+        }
+      }
+      index = runEnd;
+      continue;
+    }
+
+    index += 1;
+  }
+  return undefined;
+}
+
+function scanMarkdownFenceOpening(text: string, start: number, end: number): MarkdownFenceOpening | undefined {
+  let markerStart = start;
+  let indentation = 0;
+  while (markerStart < end && text[markerStart] === ' ' && indentation <= 3) {
+    markerStart += 1;
+    indentation += 1;
+  }
+  if (indentation > 3 || markerStart >= end) return undefined;
+
+  const marker = text[markerStart];
+  if (marker !== '`' && marker !== '~') return undefined;
+  const markerEnd = scanMarkdownRun(text, markerStart, end, marker);
+  const length = markerEnd - markerStart;
+  if (length < 3) return undefined;
+  if (marker === '`' && text.slice(markerEnd, end).includes('`')) return undefined;
+
+  let infoStart = markerEnd;
+  while (infoStart < end && isMarkdownSpace(text[infoStart]!)) infoStart += 1;
+  let infoEnd = end;
+  while (infoEnd > infoStart && isMarkdownSpace(text[infoEnd - 1]!)) infoEnd -= 1;
+  return { marker, length, markerStart, markerEnd, infoStart, infoEnd };
+}
+
+function scanMarkdownFenceClosing(
+  text: string,
+  start: number,
+  end: number,
+  fence: { readonly marker: MarkdownFenceMarker; readonly length: number }
+): { readonly start: number; readonly end: number } | undefined {
+  let markerStart = start;
+  let indentation = 0;
+  while (markerStart < end && text[markerStart] === ' ' && indentation <= 3) {
+    markerStart += 1;
+    indentation += 1;
+  }
+  if (indentation > 3 || text[markerStart] !== fence.marker) return undefined;
+
+  const markerEnd = scanMarkdownRun(text, markerStart, end, fence.marker);
+  if (markerEnd - markerStart < fence.length) return undefined;
+  for (let index = markerEnd; index < end; index += 1) if (!isMarkdownSpace(text[index]!)) return undefined;
+  return { start: markerStart, end: markerEnd };
+}
+
+function scanMarkdownHeading(
+  text: string,
+  start: number,
+  end: number
+): { readonly markerStart: number; readonly markerEnd: number; readonly contentStart: number } | undefined {
+  const indentation = markdownIndent(text, start, end);
+  if (indentation > 3) return undefined;
+  const markerStart = start + indentation;
+  if (text[markerStart] !== '#') return undefined;
+  const markerEnd = scanMarkdownRun(text, markerStart, end, '#');
+  if (markerEnd - markerStart > 6 || (markerEnd < end && !isMarkdownSpace(text[markerEnd]!))) return undefined;
+  let contentStart = markerEnd;
+  while (contentStart < end && isMarkdownSpace(text[contentStart]!)) contentStart += 1;
+  return { markerStart, markerEnd, contentStart };
+}
+
+function scanMarkdownQuote(
+  text: string,
+  start: number,
+  end: number
+): { readonly markerStart: number; readonly markerEnd: number; readonly contentStart: number } | undefined {
+  const indentation = markdownIndent(text, start, end);
+  if (indentation > 3) return undefined;
+  const markerStart = start + indentation;
+  if (text[markerStart] !== '>') return undefined;
+  let contentStart = markerStart + 1;
+  if (contentStart < end && isMarkdownSpace(text[contentStart]!)) contentStart += 1;
+  return { markerStart, markerEnd: markerStart + 1, contentStart };
+}
+
+function scanMarkdownListMarker(
+  text: string,
+  start: number,
+  end: number
+): { readonly markerStart: number; readonly markerEnd: number; readonly contentStart: number } | undefined {
+  const indentation = markdownIndent(text, start, end);
+  if (indentation > 3) return undefined;
+  const markerStart = start + indentation;
+  if (markerStart >= end) return undefined;
+  let markerEnd = markerStart;
+  const first = text[markerStart]!;
+  if (first === '-' || first === '+' || first === '*') {
+    markerEnd += 1;
+  } else if (isDigit(first)) {
+    while (markerEnd < end && isDigit(text[markerEnd]!) && markerEnd - markerStart < 9) markerEnd += 1;
+    if (markerEnd - markerStart > 9 || (text[markerEnd] !== '.' && text[markerEnd] !== ')')) return undefined;
+    markerEnd += 1;
+  } else {
+    return undefined;
+  }
+
+  if (markerEnd < end && !isMarkdownSpace(text[markerEnd]!)) return undefined;
+  let contentStart = markerEnd;
+  while (contentStart < end && isMarkdownSpace(text[contentStart]!)) contentStart += 1;
+  return { markerStart, markerEnd, contentStart };
+}
+
+function isMarkdownThematicBreak(text: string, start: number, end: number): boolean {
+  const indentation = markdownIndent(text, start, end);
+  if (indentation > 3) return false;
+  const markerStart = start + indentation;
+  const marker = text[markerStart];
+  if (marker !== '-' && marker !== '*' && marker !== '_') return false;
+  let count = 0;
+  for (let index = markerStart; index < end; index += 1) {
+    if (text[index] === marker) count += 1;
+    else if (!isMarkdownSpace(text[index]!)) return false;
+  }
+  return count >= 3;
+}
+
+function markdownIndent(text: string, start: number, end: number): number {
+  let indentation = 0;
+  while (start + indentation < end && text[start + indentation] === ' ' && indentation < 4) indentation += 1;
+  return indentation;
+}
+
+function findMarkdownCodeSpanEnd(text: string, start: number, end: number, runLength: number): number | undefined {
+  const limit = Math.min(end, start + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
+  let index = start;
+  while (index < limit) {
+    if (text[index] !== '`') { index += 1; continue; }
+    const runEnd = scanMarkdownRun(text, index, limit, '`');
+    if (runEnd - index === runLength) return runEnd;
+    index = runEnd;
+  }
+  return undefined;
+}
+
+function findMarkdownInlineLinkEnd(text: string, start: number, end: number): number | undefined {
+  const limit = Math.min(end, start + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
+  const bracketStart = start + (text[start] === '!' ? 1 : 0);
+  if (text[bracketStart] !== '[') return undefined;
+  let bracketDepth = 0;
+  let closeBracket = -1;
+  for (let index = bracketStart + 1; index < limit; index += 1) {
+    if (text[index] === '\\' && index + 1 < limit) { index += 1; continue; }
+    if (text[index] === '[') bracketDepth += 1;
+    else if (text[index] === ']') {
+      if (bracketDepth === 0) { closeBracket = index; break; }
+      bracketDepth -= 1;
+    }
+  }
+  if (closeBracket < 0 || text[closeBracket + 1] !== '(') return undefined;
+
+  let parenthesisDepth = 1;
+  for (let index = closeBracket + 2; index < limit; index += 1) {
+    if (text[index] === '\\' && index + 1 < limit) { index += 1; continue; }
+    if (text[index] === '(') parenthesisDepth += 1;
+    else if (text[index] === ')') {
+      parenthesisDepth -= 1;
+      if (parenthesisDepth === 0) return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function isMarkdownEmphasisStart(text: string, start: number, end: number, delimiter: '*' | '_', length: number): boolean {
+  const contentStart = start + length;
+  if (contentStart >= end || isWhitespace(text[contentStart]!)) return false;
+  if (delimiter === '_' && isMarkdownWordCharacter(text[start - 1])) return false;
+  return length > 0;
+}
+
+function findMarkdownEmphasisEnd(
+  text: string,
+  start: number,
+  contentStart: number,
+  end: number,
+  delimiter: '*' | '_',
+  length: number
+): number | undefined {
+  const limit = Math.min(end, start + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
+  let index = contentStart;
+  while (index < limit) {
+    if (text[index] === '\\' && index + 1 < limit) { index += 2; continue; }
+    if (text[index] !== delimiter) { index += 1; continue; }
+    const runEnd = scanMarkdownRun(text, index, limit, delimiter);
+    if (runEnd - index === length && index > contentStart && !isWhitespace(text[index - 1]!)) {
+      if (delimiter !== '_' || !isMarkdownWordCharacter(text[runEnd])) return runEnd;
+    }
+    index = runEnd;
+  }
+  return undefined;
+}
+
+function scanMarkdownRun(text: string, start: number, end: number, character: string): number {
+  let index = start;
+  while (index < end && text[index] === character) index += 1;
+  return index;
+}
+
+function markdownNextLine(text: string, lineEnd: number, limit: number): number {
+  if (lineEnd >= limit) return limit;
+  if (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n') return lineEnd + 2;
+  return lineEnd + 1;
+}
+
+function isMarkdownWordCharacter(character: string | undefined): boolean {
+  return character !== undefined && (isDigit(character) || character === '_' ||
+    (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z'));
+}
+
+function isMarkdownSpace(character: string): boolean { return character === ' ' || character === '\t'; }
 
 function scanJson(text: string, limit: number, tokens: TextSyntaxToken[]): number {
   let index = 0;

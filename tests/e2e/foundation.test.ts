@@ -650,6 +650,12 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
     await expect(preview.locator('[data-token-kind="yaml-literal"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
     await expect(preview.locator('[data-token-kind="yaml-number"]').first()).toHaveCSS('color', 'rgb(248, 211, 107)');
 
+    await syntax.selectOption('markdown');
+    await contents.fill('# Manual Markdown\n\n**bold** [guide](https://example.test)');
+    await expect(preview.locator('[data-token-kind="markdown-heading"]').first()).toHaveText('#');
+    await expect(preview.locator('[data-token-kind="markdown-emphasis"]').first()).toHaveText('**bold**');
+    await expect(preview.locator('[data-token-kind="markdown-link"]').first()).toContainText('guide');
+
     await syntax.selectOption('python');
     await contents.fill('def greet(name: str):\n    print(name)');
     await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
@@ -758,6 +764,42 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyYamlComments);
     expect(await preview.textContent()).toBe(manyYamlComments);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('local Markdown text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-markdown-e2e-'));
+  const path = join(profile, 'README.md');
+  const source = '# Release notes\n\n> **Important**\n- See `inline code` and [the guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n';
+  await writeFile(path, source);
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(editor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(contents).toHaveValue(source);
+    await expect(preview.locator('[data-token-kind="markdown-heading"]').first()).toHaveText('#');
+    await expect(preview.locator('[data-token-kind="markdown-heading"]').first()).toHaveCSS('color', 'rgb(105, 170, 252)');
+    await expect(preview.locator('[data-token-kind="markdown-quote"]').first()).toHaveText('>');
+    await expect(preview.locator('[data-token-kind="markdown-emphasis"]').first()).toHaveText('**Important**');
+    await expect(preview.locator('[data-token-kind="markdown-code"]').filter({ hasText: 'const hidden = true;' })).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="markdown-code-fence"]')).toHaveCount(2);
+    await expect(preview.locator('[data-token-kind="markdown-link"]').first()).toContainText('the guide');
+
+    const manyMarkdownSpans = '**cap**\n'.repeat(4_100);
+    await contents.fill(manyMarkdownSpans);
+    await expect(preview.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await contents.inputValue()).toBe(manyMarkdownSpans);
+    expect(await preview.textContent()).toBe(manyMarkdownSpans);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -1210,6 +1252,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
+    const remoteMarkdownSource = '# Remote guide\n\n> **bold quote**\n- item with `inline` and [guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n' + '**cap**\n'.repeat(4_100);
+    await writeFile(join(remoteRoot, 'remote.md'), remoteMarkdownSource);
     const remoteYamlSource = `# app config
 server:
   host: localhost
@@ -1396,6 +1440,20 @@ ${'# preview cap\n'.repeat(4_100)}`;
     expect(await remoteYamlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteYamlSource);
     await remoteYamlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteYamlEditor).toHaveCount(0);
+    const remoteMarkdownEdit = sftpPanel.getByRole('button', { name: 'Edit remote.md', exact: true });
+    await remoteMarkdownEdit.click();
+    const remoteMarkdownEditor = page.getByRole('dialog', { name: 'remote.md' });
+    await expect(remoteMarkdownEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-heading"]').first()).toHaveText('#');
+    await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-emphasis"]').first()).toHaveText('**bold quote**');
+    await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-code"]').filter({ hasText: 'const hidden = true;' })).toHaveCount(1);
+    await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-link"]').first()).toContainText('guide');
+    await expect(remoteMarkdownEditor.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(remoteMarkdownEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await remoteMarkdownEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteMarkdownSource);
+    expect(await remoteMarkdownEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteMarkdownSource);
+    await remoteMarkdownEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteMarkdownEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();
