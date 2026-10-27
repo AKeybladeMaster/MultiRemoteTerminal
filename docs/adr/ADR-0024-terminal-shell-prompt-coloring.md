@@ -22,4 +22,4 @@ The marker, anchor and decorations exist only in renderer memory and follow xter
 
 ## Verification
 
-See [WP-01G acceptance results](../results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md). P-30 remains PARTIAL until broader shell-aware syntax behavior and the documented terminal acceptance are completed.
+See [WP-01G acceptance results](../results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md) for Windows UI coverage of local Git Bash, SSH and Telnet sessions. P-30 remains PARTIAL until broader shell-aware syntax behavior, wrapped input rows and public-server interoperability are completed.
