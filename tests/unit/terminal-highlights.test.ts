@@ -6,7 +6,8 @@ import {
   MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS,
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
-import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellInputAnchorActive, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellContinuationPromptAtCursor,
+  isShellInputAnchorActive, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { Terminal } from '@xterm/xterm';
 
@@ -16,6 +17,13 @@ test('shell prompt detection accepts common shell and zsh-style endings and reje
   }
   for (const prompt of ['Password: ', 'Verification code: ', 'ordinary output']) {
     assert.equal(isShellPromptAtCursor(prompt), false, prompt);
+  }
+});
+
+test('shell continuation prompt detection accepts secondary prompts ending in greater-than only', () => {
+  for (const prompt of ['> ', 'quote> ', 'dquote> ']) assert.equal(isShellContinuationPromptAtCursor(prompt), true, prompt);
+  for (const prompt of ['user@host$ ', 'user@host% ', 'ordinary output']) {
+    assert.equal(isShellContinuationPromptAtCursor(prompt), false, prompt);
   }
 });
 

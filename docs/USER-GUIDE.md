@@ -150,6 +150,12 @@ look-around and backreferences are not supported. This colors matching output
 without changing commands, ANSI sequences or terminal history. It is keyword
 coloring rather than full shell syntax highlighting.
 
+To color common Shell builtins and command input, enable **Color shell commands
+and builtins at prompts** in **Workbench settings**. The lexical colors also
+continue after an unquoted trailing backslash when the next prompt ends in `>`.
+This is a bounded visual aid, not a Shell parser; quoted continuations and
+shell-specific grammar are not covered.
+
 Use the theme button or command palette to switch between light and dark themes.
 
 ### PowerShell profile script

@@ -3,8 +3,10 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
-import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellInputAnchorActive, isShellPromptAtCursor } from './terminal-highlighting.ts';
+import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellContinuationPromptAtCursor, isShellInputAnchorActive,
+  isShellPromptAtCursor, readTerminalShellContinuationState } from './terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from './terminal-highlighting.ts';
+import type { ShellSyntaxContinuationState } from '../../../../packages/domain/src/text-syntax.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
 
@@ -82,23 +84,42 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   const canWriteRef = useRef(canWrite);
   const shellSyntaxEnabledRef = useRef(terminalShellSyntaxEnabled);
   const shellInputAnchor = useRef<TerminalShellInputAnchor | undefined>(undefined);
+  const shellContinuationState = useRef<ShellSyntaxContinuationState | undefined>(undefined);
   activeRef.current = active;
   canWriteRef.current = canWrite;
   shellSyntaxEnabledRef.current = terminalShellSyntaxEnabled;
 
+  function clearShellInputState(): void {
+    shellContinuationState.current = undefined;
+    clearTerminalShellInputAnchor(shellInputAnchor);
+  }
+
   function beginShellInputAnchor(instance: Terminal): void {
-    if (!shellSyntaxEnabledRef.current || transport === 'serial') return;
+    if (!shellSyntaxEnabledRef.current || transport === 'serial') {
+      clearShellInputState();
+      return;
+    }
     const buffer = instance.buffer.active;
-    if (buffer.type !== 'normal') return;
+    if (buffer.type !== 'normal') {
+      clearShellInputState();
+      return;
+    }
     const cursorLine = buffer.baseY + buffer.cursorY;
     const existing = shellInputAnchor.current;
     if (existing && isShellInputAnchorActive(instance, existing, cursorLine)) return;
     clearTerminalShellInputAnchor(shellInputAnchor);
     const line = buffer.getLine(cursorLine);
     const promptText = line?.translateToString(true, 0, buffer.cursorX) ?? '';
-    if (!isShellPromptAtCursor(promptText)) return;
+    if (!isShellPromptAtCursor(promptText)) {
+      shellContinuationState.current = undefined;
+      return;
+    }
+    const continuationState = shellContinuationState.current && isShellContinuationPromptAtCursor(promptText)
+      ? shellContinuationState.current : undefined;
+    shellContinuationState.current = undefined;
     const marker = instance.registerMarker(0);
-    if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX, wrappedMarkers: [], decorations: [] };
+    if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX, wrappedMarkers: [], decorations: [],
+      continuationState };
   }
 
   useLayoutEffect(() => {
@@ -112,22 +133,50 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     const fitAddon = new FitAddon();
     instance.loadAddon(fitAddon);
     instance.onData(data => {
-      if (!canWriteRef.current) return;
-      if (/[\r\n\x03\x04\x0c]/u.test(data)) clearTerminalShellInputAnchor(shellInputAnchor);
-      else beginShellInputAnchor(instance);
+      if (!canWriteRef.current) {
+        clearShellInputState();
+        return;
+      }
+      if (data === '\r' || data === '\n') {
+        const anchor = shellInputAnchor.current;
+        const buffer = instance.buffer.active;
+        const line = buffer.type === 'normal' ? buffer.getLine(buffer.baseY + buffer.cursorY) : undefined;
+        const promptText = buffer.type === 'normal' ? line?.translateToString(true, 0, buffer.cursorX) ?? '' : '';
+        shellContinuationState.current = shellSyntaxEnabledRef.current && transport !== 'serial'
+          ? anchor ? readTerminalShellContinuationState(instance, anchor)
+            : shellContinuationState.current && isShellContinuationPromptAtCursor(promptText) ? shellContinuationState.current : undefined
+          : undefined;
+        clearTerminalShellInputAnchor(shellInputAnchor);
+      } else if (/[\r\n\x03\x04\x0c]/u.test(data)) {
+        clearShellInputState();
+      } else beginShellInputAnchor(instance);
       onInput(sessionId, data);
       const sent = commands.write(sessionId, data);
       void sent.then(reply => {
-        if (!reply.ok) onError(`Terminal input could not be sent (${reply.error.code}).`);
+        if (!reply.ok) {
+          clearShellInputState();
+          onError(`Terminal input could not be sent (${reply.error.code}).`);
+        }
+      }).catch(() => {
+        clearShellInputState();
+        onError('Terminal input could not be sent.');
       });
     });
     const pasteFromClipboard = () => {
-      if (!canWriteRef.current) return;
+      if (!canWriteRef.current) {
+        clearShellInputState();
+        return;
+      }
       beginShellInputAnchor(instance);
       const pasted = commands.paste(sessionId);
       void pasted.then(reply => {
-        if (!reply.ok) clearTerminalShellInputAnchor(shellInputAnchor);
+        if (!reply.ok) {
+          clearShellInputState();
+        }
         if (!reply.ok) onError(`Clipboard text could not be pasted (${reply.error.code}).`);
+      }).catch(() => {
+        clearShellInputState();
+        onError('Clipboard text could not be pasted.');
       });
     };
     instance.attachCustomKeyEventHandler(event => {
@@ -179,7 +228,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     return () => {
       observer.disconnect();
       host.current?.removeEventListener('paste', onPaste);
-      clearTerminalShellInputAnchor(shellInputAnchor);
+      clearShellInputState();
       onReady(sessionId, undefined);
       instance.dispose();
       terminal.current = undefined;
@@ -190,7 +239,9 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   useLayoutEffect(() => {
     const instance = terminal.current;
     if (!instance) return;
-    if (!terminalShellSyntaxEnabled) clearTerminalShellInputAnchor(shellInputAnchor);
+    if (!terminalShellSyntaxEnabled) {
+      clearShellInputState();
+    }
     const highlights = attachTerminalHighlights(instance, {
       keywordHighlightingEnabled: terminalHighlightEnabled, keywordRules: terminalHighlightRules,
       shellSyntaxEnabled: terminalShellSyntaxEnabled && transport !== 'serial',
@@ -198,6 +249,10 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     });
     return () => highlights.dispose();
   }, [terminalHighlightEnabled, terminalHighlightRules, terminalShellSyntaxEnabled, theme, transport]);
+
+  useLayoutEffect(() => {
+    if (!canWrite) clearShellInputState();
+  }, [canWrite]);
 
   useLayoutEffect(() => {
     const instance = terminal.current;

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import {
   highlightTextSyntax,
+  highlightShellInputSyntax,
   MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS,
   MAX_TEXT_SYNTAX_PREVIEW_TOKENS,
   resolveTextSyntaxProfile
@@ -86,6 +87,60 @@ test('shell syntax preview preserves wrapper command position across expanded as
     { text: '$HOME', kind: 'shell-variable' },
     { text: 'git', kind: 'shell-command' }
   ]);
+});
+
+test('shell input syntax carries command-wrapper state across explicit backslash continuations', () => {
+  const backslash = String.fromCharCode(92);
+  const firstLine = 'env ' + backslash;
+  const first = highlightShellInputSyntax(firstLine);
+  assert.deepEqual(first.tokens.map(token => ({ text: firstLine.slice(token.start, token.end), kind: token.kind })), [
+    { text: 'env', kind: 'shell-command' }
+  ]);
+  assert.ok(first.continuationState);
+
+  const continuationLine = 'PATH=$PATH git --version';
+  const continuation = highlightShellInputSyntax(continuationLine, first.continuationState);
+  assert.deepEqual(continuation.tokens.map(token => ({
+    text: continuationLine.slice(token.start, token.end), kind: token.kind
+  })), [
+    { text: 'PATH', kind: 'shell-variable' },
+    { text: '$PATH', kind: 'shell-variable' },
+    { text: 'git', kind: 'shell-command' },
+    { text: '--version', kind: 'shell-option' }
+  ]);
+  assert.equal(continuation.continuationState, undefined);
+
+  const optionLine = 'sudo -u ' + backslash;
+  const optionStart = highlightShellInputSyntax(optionLine);
+  const optionContinuation = 'mrtadmin git status';
+  const optionResult = highlightShellInputSyntax(optionContinuation, optionStart.continuationState);
+  assert.deepEqual(optionResult.tokens.map(token => ({
+    text: optionContinuation.slice(token.start, token.end), kind: token.kind
+  })), [{ text: 'git', kind: 'shell-command' }]);
+});
+
+test('shell syntax treats only an odd unquoted trailing backslash as a line continuation', () => {
+  const backslash = String.fromCharCode(92);
+  assert.equal(highlightShellInputSyntax('env ' + backslash.repeat(2)).continuationState, undefined);
+  assert.ok(highlightShellInputSyntax('env ' + backslash.repeat(3)).continuationState);
+
+  const source = 'env ' + backslash + '\ngit --version';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'env', kind: 'shell-command' },
+    { text: 'git', kind: 'shell-command' },
+    { text: '--version', kind: 'shell-option' }
+  ]);
+});
+
+test('shell syntax does not infer a continuation at the bounded preview boundary', () => {
+  const backslash = String.fromCharCode(92);
+  const source = 'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1) + backslash + 'y';
+  const preview = highlightShellInputSyntax(source);
+  assert.equal(preview.isTruncated, true);
+  assert.equal(preview.continuationState, undefined);
 });
 
 test('shell syntax preview treats double-bracket expressions as conditions, not commands', () => {

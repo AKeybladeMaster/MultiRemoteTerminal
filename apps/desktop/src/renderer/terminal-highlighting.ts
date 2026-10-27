@@ -7,8 +7,8 @@ import {
   normalizeTerminalHighlightRules
 } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { TerminalHighlightRule, TerminalHighlightColor } from '../../../../packages/domain/src/terminal-highlights.ts';
-import { highlightTextSyntax } from '../../../../packages/domain/src/text-syntax.ts';
-import type { TextSyntaxTokenKind } from '../../../../packages/domain/src/text-syntax.ts';
+import { highlightShellInputSyntax } from '../../../../packages/domain/src/text-syntax.ts';
+import type { ShellSyntaxContinuationState, TextSyntaxTokenKind } from '../../../../packages/domain/src/text-syntax.ts';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
 
@@ -46,6 +46,7 @@ export interface TerminalShellInputAnchor {
   readonly startColumn: number;
   readonly wrappedMarkers: IMarker[];
   readonly decorations: Disposable[];
+  readonly continuationState?: ShellSyntaxContinuationState | undefined;
 }
 
 export interface TerminalShellInputAnchorRef {
@@ -65,6 +66,10 @@ export function isShellPromptAtCursor(promptText: string): boolean {
   const lastCharacter = trimmed.at(-1);
   return lastCharacter === '$' || lastCharacter === '#' || lastCharacter === '%' || lastCharacter === '>' ||
     lastCharacter === '❯' || lastCharacter === '➜';
+}
+
+export function isShellContinuationPromptAtCursor(promptText: string): boolean {
+  return promptText.trimEnd().endsWith('>');
 }
 
 export function clearTerminalShellInputAnchor(anchorRef: TerminalShellInputAnchorRef): void {
@@ -172,6 +177,21 @@ function extractTerminalShellInput(terminal: Terminal, anchor: TerminalShellInpu
   return { text, rows };
 }
 
+export function readTerminalShellContinuationState(
+  terminal: Terminal,
+  anchor: TerminalShellInputAnchor
+): ShellSyntaxContinuationState | undefined {
+  if (anchor.marker.isDisposed || terminal.buffer.active.type !== 'normal') return undefined;
+  const cursorLine = terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
+  const input = extractTerminalShellInput(terminal, anchor, cursorLine);
+  if (!input) return undefined;
+  const cursorRow = input.rows.find(row => row.lineNumber === cursorLine);
+  const cursorCell = cursorRow?.cellSpans.find(span => span.column === terminal.buffer.active.cursorX);
+  const inputEnd = cursorRow && cursorCell
+    ? cursorRow.commandStart + Math.max(0, cursorCell.start - cursorRow.inputTextStart) : input.text.length;
+  return highlightShellInputSyntax(input.text.slice(0, inputEnd), anchor.continuationState).continuationState;
+}
+
 export function attachTerminalHighlights(
   terminal: Terminal,
   options: TerminalHighlightOptions
@@ -242,7 +262,8 @@ export function attachTerminalHighlights(
       if (!inputAnchor || inputAnchor.marker.isDisposed) return;
       const input = extractTerminalShellInput(terminal, inputAnchor, cursorLine);
       if (!input || input.text.length === 0) return;
-      const tokens = highlightTextSyntax(input.text, 'shell').tokens.slice(0, MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS);
+      const tokens = highlightShellInputSyntax(input.text, inputAnchor.continuationState).tokens
+        .slice(0, MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS);
       const inputMarkers = new Map<number, IMarker>([[inputAnchor.marker.line, inputAnchor.marker]]);
       let remainingDecorations = MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS;
       for (const token of tokens) {
