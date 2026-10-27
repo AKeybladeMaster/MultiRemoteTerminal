@@ -32,6 +32,14 @@ This improves readability for common typed shell commands, including Bash, and r
 
 Reviewers performed static review of the pinned diff and did not rerun tests; the validation results above were run after the cleanup follow-up.
 
+## Remote acceptance follow-up (2026-10-27)
+
+- Final Windows UI run: `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "terminal keyword highlighting|Git Bash runs in a local terminal|shell prompt coloring works in SSH and Telnet" --reporter=line --workers=1` — 3/3 passed after review fixes. The shared color assertion checks the Shell keyword `if` and command `true`; each Git Bash, SSH and Telnet case sends Ctrl+C and waits for decoration cleanup.
+- `corepack pnpm typecheck` and `corepack pnpm lint` passed, including static import-boundary checks. `git diff --check` passed. `corepack pnpm build` passed for the current production source (967.04 kB minified renderer bundle; Vite's 500 kB advisory); later review fixes changed only E2E code.
+- **Spec review:** no missing/partial acceptance behavior, scope creep or incorrect implementation found.
+- **Standards review:** the initial review found cleanup could stop if Electron close rejected and duplicated token-color assertions. The follow-up uses nested `finally` blocks, attempts each Telnet socket and SSH client independently, then closes both listeners and removes the profile. Git Bash, SSH and Telnet now share the color and Ctrl+C cleanup helpers. Final review found no remaining documented-standard breach or smell.
+- Reviews were static and did not rerun tests; the 3/3 Windows result above was run after the final cleanup changes.
+
 ## Limits and follow-up
 
 Prompt endings are heuristic and do not identify a shell. Wrapped command lines and shell continuation prompts are not colored. Shell token colors are lexical hints and do not validate command syntax or safety. The current xterm screen buffer is renderer state; no terminal transcript is written by this feature.

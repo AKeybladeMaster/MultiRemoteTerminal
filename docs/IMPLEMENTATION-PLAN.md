@@ -248,6 +248,8 @@ WP-01F independent Standards, Spec and General review: [review outcome](results/
 
 WP-01G independent Standards and Spec review (2026-10-26): no blocking findings. The review follow-up added cleanup assertions; a later remote-acceptance follow-up verified shell token coloring in SSH and Telnet UI flows; see [WP-01G results](results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md).
 
+WP-01G remote acceptance review follow-up (2026-10-27): the Windows Git Bash/SSH/Telnet UI run passes 3/3 after fixes. Static Spec review found no issues. Standards review identified and then verified the repair of Electron-close cleanup and duplicated assertions; the final follow-up found no remaining breach or smell. P-30 remains PARTIAL; see [WP-01G results](results/WP-01G-terminal-shell-prompt-coloring-2026-10-26.md).
+
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
 **Requires:** MVP/provider registry.  
