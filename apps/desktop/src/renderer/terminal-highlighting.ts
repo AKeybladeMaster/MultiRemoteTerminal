@@ -87,7 +87,8 @@ export function isShellInputAnchorActive(terminal: Terminal, anchor: TerminalShe
   const buffer = terminal.buffer.active;
   if (buffer.type !== 'normal' || anchor.marker.isDisposed) return false;
   const wrappedRowCount = cursorLine - anchor.marker.line;
-  if (wrappedRowCount < 0 || wrappedRowCount >= MAX_TERMINAL_HIGHLIGHT_ROWS) return false;
+  if (wrappedRowCount < 0) return false;
+  if (wrappedRowCount >= MAX_TERMINAL_HIGHLIGHT_ROWS) return buffer.getLine(cursorLine)?.isWrapped ?? false;
   for (let lineNumber = anchor.marker.line + 1; lineNumber <= cursorLine; lineNumber += 1) {
     if (!buffer.getLine(lineNumber)?.isWrapped) return false;
   }
@@ -150,7 +151,8 @@ interface TerminalShellInput {
 
 function extractTerminalShellInput(terminal: Terminal, anchor: TerminalShellInputAnchor, cursorLine: number): TerminalShellInput | undefined {
   const buffer = terminal.buffer.active;
-  if (!isShellInputAnchorActive(terminal, anchor, cursorLine)) {
+  if (cursorLine - anchor.marker.line >= MAX_TERMINAL_HIGHLIGHT_ROWS ||
+      !isShellInputAnchorActive(terminal, anchor, cursorLine)) {
     return undefined;
   }
   let text = '';

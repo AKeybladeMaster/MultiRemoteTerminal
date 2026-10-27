@@ -5603,8 +5603,6 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await sshPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(sshPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.type(wrappedColorCommand);
-    await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-START');
-    await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-END');
     await expectShellInputWrapsAcrossRows(sshPanel.locator('.xterm-rows'), 'MRT-WRAP-START', 'MRT-WRAP-END');
 
     const sshRows = sshPanel.locator('.xterm-rows');
@@ -5629,8 +5627,6 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await expect(telnetPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.type(wrappedColorCommand);
     await expect.poll(() => telnetReceivedInput.includes(wrappedColorCommand), { timeout: 10_000 }).toBe(true);
-    await expect(telnetPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-START');
-    await expect(telnetPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-END');
     await expectShellInputWrapsAcrossRows(telnetPanel.locator('.xterm-rows'), 'MRT-WRAP-START', 'MRT-WRAP-END');
     const telnetRows = telnetPanel.locator('.xterm-rows');
     await expectShellPromptTokenColors(telnetRows);

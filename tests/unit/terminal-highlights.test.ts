@@ -6,8 +6,9 @@ import {
   MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS,
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
-import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellInputAnchorActive, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import type { Terminal } from '@xterm/xterm';
 
 test('shell prompt detection accepts common shell and zsh-style endings and rejects password prompts', () => {
   for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'PS C:\\work> ', 'project ❯ ', 'build ➜ ']) {
@@ -48,6 +49,25 @@ test('shell input anchor cleanup releases its marker and clears state', () => {
   assert.equal(marker.disposeCount(), 1);
   assert.equal(wrappedMarker.disposeCount(), 1);
   assert.equal(decorationDisposeCount, 1);
+});
+
+test('wrapped shell input recovers within bounds and rejects a broken wrapped chain', () => {
+  const anchor = { marker: { line: 0, isDisposed: false }, startColumn: 0, wrappedMarkers: [], decorations: [] };
+  let reads = 0;
+  const terminal = { buffer: { active: { type: 'normal', getLine: (line: number) => {
+    reads += 1;
+    return { isWrapped: line > 0 };
+  } } } } as unknown as Terminal;
+
+  assert.equal(isShellInputAnchorActive(terminal, anchor as unknown as TerminalShellInputAnchor, 128), true);
+  assert.equal(reads, 1, 'overflow validation should inspect only the cursor row');
+
+  reads = 0;
+  assert.equal(isShellInputAnchorActive(terminal, anchor as unknown as TerminalShellInputAnchor, 127), true);
+  assert.equal(reads, 127, 'returning within bounds should revalidate every intervening row');
+
+  const brokenTerminal = { buffer: { active: { type: 'normal', getLine: (line: number) => ({ isWrapped: line > 0 && line !== 64 }) } } } as unknown as Terminal;
+  assert.equal(isShellInputAnchorActive(brokenTerminal, anchor as unknown as TerminalShellInputAnchor, 127), false);
 });
 
 test('terminal highlight rules validate and return Unicode-safe text ranges', () => {
