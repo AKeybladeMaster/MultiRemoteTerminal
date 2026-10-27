@@ -12,7 +12,13 @@ import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, get
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { Terminal } from '@xterm/xterm';
 
-function createPowerShellInputHarness(prompt: string, input: string, sameRowRemainder = '', wrappedRowRemainder = ''): {
+function createPowerShellInputHarness(
+  prompt: string,
+  input: string,
+  sameRowRemainder = '',
+  wrappedRowRemainder = '',
+  cursorColumn = prompt.length + input.length
+): {
   readonly terminal: Terminal;
   readonly anchor: TerminalShellInputAnchor;
 } {
@@ -33,7 +39,7 @@ function createPowerShellInputHarness(prompt: string, input: string, sameRowRema
     cols: 80,
     buffer: {
       active: {
-        type: 'normal', baseY: 0, cursorY: 0, cursorX: prompt.length + input.length,
+        type: 'normal', baseY: 0, cursorY: 0, cursorX: cursorColumn,
         getLine: (lineNumber: number) => lines[lineNumber],
         getNullCell: () => ({})
       }
@@ -215,6 +221,16 @@ test('PowerShell continuation state is withheld when the remaining input is in a
 
   assert.equal(readTerminalPowerShellContinuationState(terminal, anchor), undefined,
     'a wrapped continuation row after the caret is still part of the same input');
+});
+
+test('PowerShell continuation state fails closed for an ambiguous xterm wrap-pending cursor cell', () => {
+  const prompt = 'PS C:\\work> ';
+  const input = `${'x'.repeat(80 - prompt.length - 1)}\``;
+  const { terminal, anchor } = createPowerShellInputHarness(prompt, input, '', '', 79);
+
+  assert.equal(prompt.length + input.length, 80, 'the final character occupies the terminal right margin');
+  assert.equal(readTerminalPowerShellContinuationState(terminal, anchor), undefined,
+    'the xterm buffer API cannot distinguish an after-character cursor from a caret before that occupied cell');
 });
 
 test('PowerShell continuation state remains available when the caret is at the input end', () => {

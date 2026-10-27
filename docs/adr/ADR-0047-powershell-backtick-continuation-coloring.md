@@ -11,12 +11,13 @@ WP-01K colors active input at the common `PS <path>>` prompt using the bounded P
 - Let the pure domain tokenizer return a small continuation state only when the full bounded input ends with an odd run of backticks outside a string, here-string or comment. Trailing whitespace and an even run do not continue; a truncated preview does not return state.
 - Carry that state only in renderer memory for the same terminal. Recognize PowerShell's secondary prompt only as the exact visible `>>` text, and consume state once when creating the next input anchor.
 - Carry state only when the caret is at the end of the logical input. Check the current row and subsequent xterm-wrapped rows within the existing row and line bounds; if the buffer is incomplete or exceeds those bounds, fail closed without carrying state.
+- At the terminal's right margin, xterm may leave `cursorX` on the last occupied cell while delayed wrapping is pending. Its public buffer API does not distinguish that position from a caret before the cell, so fail closed and withhold continuation state in this ambiguous case.
 - Keep the state to command-position flags. Never retain, log, persist, validate or execute the submitted line for coloring.
 - Preserve the existing opt-in preference, buffer/row/token/decoration limits, transient xterm markers and cleanup paths. Do not mix this state with Shell's backslash continuation state.
 
 ## Consequences and limits
 
-Parameters and variables on a continuation row retain their existing token colors when the first line ends in an unquoted odd trailing backtick. Prompt recognition is shape-based, so a custom prompt that is exactly `>>` can match when state is pending. Quoted backticks, PowerShell's natural continuation forms, custom secondary prompts, multiline grammar and full parser behavior are not supported. This remains a visual lexical hint and P-30 remains PARTIAL.
+Parameters and variables on a continuation row retain their existing token colors when the first line ends in an unquoted odd trailing backtick and xterm exposes an unambiguous caret-at-end position. Prompt recognition is shape-based, so a custom prompt that is exactly `>>` can match when state is pending. Quoted backticks, PowerShell's natural continuation forms, custom secondary prompts, right-margin wrap-pending positions, multiline grammar and full parser behavior are not supported. This remains a visual lexical hint and P-30 remains PARTIAL.
 
 ## Verification
 

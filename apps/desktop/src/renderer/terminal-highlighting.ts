@@ -224,7 +224,10 @@ function hasTextAfterTerminalCursor(terminal: Terminal, cursorLine: number): boo
     for (let column = firstColumn; column < terminal.cols; column += 1) {
       const cell = line.getCell(column, cellScratch);
       if (!cell) return undefined;
-      if (cell.getCode() !== 0) return true;
+      if (cell.getCode() !== 0) {
+        // xterm does not expose wrap-pending state, so an occupied final cursor cell is ambiguous.
+        return true;
+      }
     }
 
     const nextLine = buffer.getLine(lineNumber + 1);
