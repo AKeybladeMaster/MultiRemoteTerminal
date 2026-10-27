@@ -87,9 +87,10 @@ again. **Reload** replaces the editor contents after you confirm discarding a
 draft. Closing with unsaved changes also asks for confirmation. Binary files,
 invalid UTF-8 and larger files are not opened by the text editor. Saves are
 explicit. The syntax profile automatically recognizes common Shell (`.sh`, `.bash`,
-`.zsh`, `.ksh`), PowerShell (`.ps1`, `.psm1`, `.psd1`, `.pssc`), Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`) and JSON files; you
+`.zsh`, `.ksh`), PowerShell (`.ps1`, `.psm1`, `.psd1`, `.pssc`), Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`) and JSON files; you
 can choose another profile from **Syntax profile**. Colors are visual hints only:
-the editor does not validate or execute the file. Preview coloring is bounded, while
+the TOML profile colors common keys, strings, values, comments and table headers,
+and the editor does not validate or execute the file. Preview coloring is bounded, while
 the full file remains editable. Autosave is not available. Files with a consistent
 line-ending convention keep it when saved. Mixed line endings use the first
 line-ending style found in the file.

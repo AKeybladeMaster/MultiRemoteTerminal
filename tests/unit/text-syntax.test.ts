@@ -8,7 +8,7 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript, SQL and JSON from the file name', () => {
+test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML and JSON from the file name', () => {
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
   for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
@@ -22,6 +22,7 @@ test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/Typ
   for (const fileName of ['schema.sql', 'migration.PGSQL', 'script.psql']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'sql');
   }
+  assert.equal(resolveTextSyntaxProfile('auto', 'settings.TOML'), 'toml');
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.json'), 'json');
   assert.equal(resolveTextSyntaxProfile('auto', 'notes.txt'), 'plain');
   assert.equal(resolveTextSyntaxProfile('json', 'script.sh'), 'json');
@@ -379,6 +380,70 @@ test('SQL syntax preview keeps tokens within the code-unit and token bounds', ()
       `token ended past the preview bound at ${preview.highlightedThrough}`);
   }
   const manyComments = highlightTextSyntax('-- comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'sql');
+  assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyComments.isTruncated, true);
+});
+
+test('TOML syntax preview colors keys, four string forms, values, comments and table punctuation', () => {
+  const source = [
+    '# root comment',
+    'title = "TOML # value"',
+    'escaped = "line\\nvalue"',
+    "literal = 'literal # value'",
+    'multiline = """first line',
+    '# still string content',
+    'last line"""',
+    'trailingQuote = """ends with a quote""""',
+    'following = "recognized"',
+    "multilineLiteral = '''first literal line",
+    '# still literal content',
+    "last literal line'''",
+    '"quoted.key" = "quoted key works"',
+    'decimal = 1_000',
+    'hex = 0xDEAD_BEEF',
+    'float = -1.25e+2',
+    'positiveFloat = +1.5',
+    'dotted = 1.2',
+    'enabled = true',
+    'disabled = false',
+    'infinite = +inf',
+    'localDate = 1979-05-27',
+    'localDateTime = 1979-05-27 07:32:00',
+    'offsetDateTime = 1979-05-27 07:32:00Z',
+    '[database.connection]',
+    'port = 5432',
+    '[[products]]',
+    'name = "Hammer"'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'toml');
+  const values = (kind: string) => preview.tokens.filter(token => token.kind === kind).map(token => source.slice(token.start, token.end));
+
+  assert.deepEqual(values('toml-comment'), ['# root comment']);
+  assert.deepEqual(values('toml-string'), [
+    '"TOML # value"', '"line\\nvalue"', "'literal # value'", '"""first line\n# still string content\nlast line"""',
+    '"""ends with a quote""""', '"recognized"', "'''first literal line\n# still literal content\nlast literal line'''",
+    '"quoted key works"', '"Hammer"'
+  ]);
+  assert.deepEqual(values('toml-number'), ['1_000', '0xDEAD_BEEF', '-1.25e+2', '+1.5', '1.2', '5432']);
+  assert.deepEqual(values('toml-literal'), ['true', 'false', '+inf']);
+  assert.deepEqual(values('toml-datetime'), ['1979-05-27', '1979-05-27 07:32:00', '1979-05-27 07:32:00Z']);
+  assert.ok(values('toml-key').includes('"quoted.key"'));
+  assert.ok(values('toml-key').includes('database'));
+  assert.ok(values('toml-key').includes('connection'));
+  assert.ok(values('toml-key').includes('products'));
+  assert.ok(values('toml-operator').includes('[['));
+  assert.ok(values('toml-operator').includes(']]'));
+  assert.equal(preview.isTruncated, false);
+});
+
+test('TOML syntax preview remains within code-unit and token bounds', () => {
+  const longString = `value = "${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}"`;
+  const characterBound = highlightTextSyntax(longString, 'toml');
+  assert.equal(characterBound.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(characterBound.isTruncated, true);
+  assert.ok(characterBound.tokens.every(token => token.end <= characterBound.highlightedThrough));
+
+  const manyComments = highlightTextSyntax('# comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'toml');
   assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyComments.isTruncated, true);
 });
