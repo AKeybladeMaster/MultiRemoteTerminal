@@ -318,6 +318,17 @@ test('PowerShell input carries bounded lexical state across common natural trail
     'a PowerShell binary word operator also continues input');
   assert.ok(highlightPowerShellInputSyntax('1,').continuationState,
     'an array separator also continues input');
+  for (const operator of ['&&', '||']) {
+    const logicalContinuation = highlightPowerShellInputSyntax(`Get-Process ${operator}`);
+    assert.deepEqual(logicalContinuation.continuationState,
+      { commandExpected: true, previousTokenIsBareWord: false },
+      `${operator} expects a pipeline on the next input row`);
+    const nextCommand = 'Get-Service';
+    assert.deepEqual(highlightPowerShellInputSyntax(nextCommand, logicalContinuation.continuationState).tokens.map(token =>
+      ({ text: nextCommand.slice(token.start, token.end), kind: token.kind })), [
+      { text: 'Get-Service', kind: 'powershell-command' }
+    ], `${operator} continuation colors the next pipeline command`);
+  }
   assert.equal(highlightPowerShellInputSyntax(`Get-Process ${String.fromCharCode(96)}|`).continuationState, undefined,
     'a backtick-escaped pipe is not a natural continuation operator');
   assert.equal(highlightPowerShellInputSyntax('Get-Process | # comment').continuationState, undefined,

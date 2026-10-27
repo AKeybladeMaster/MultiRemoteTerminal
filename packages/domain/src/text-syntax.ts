@@ -665,7 +665,8 @@ function scanPowerShellSymbolOperator(text: string, start: number, limit: number
 }
 
 function isPowerShellCommandBoundary(operator: string): boolean {
-  return operator === '|' || operator === ';' || operator === '&' || operator === '=' || operator === '+=' ||
+  return operator === '|' || operator === '||' || operator === '&&' || operator === ';' || operator === '&' ||
+    operator === '=' || operator === '+=' ||
     operator === '-=' || operator === '*=' || operator === '/=' || operator === '%=' || operator === '{' ||
     operator === '}' || operator === '(' || operator === ',';
 }
