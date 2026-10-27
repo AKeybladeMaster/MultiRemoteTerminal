@@ -29,3 +29,5 @@ Independent review caught flow-map values being considered as keys, core scalars
 No dependency was added. Preview tokenization does not execute, validate, change or persist file content. The scanner uses a simple indentation approximation for block scalars and does not model YAML grammar, schema selection, tag resolution or plain-scalar folding. The editor's existing guarded local-file E2E path remains separate from native picker acceptance.
 
 See [ADR-0042](../adr/ADR-0042-yaml-text-syntax-profile.md).
+
+Independent Standards, Spec and General review outcome: [WP-08K review](WP-08K-review.md).
