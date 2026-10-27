@@ -398,7 +398,8 @@ async function sendLine(page: Page, title: string, line: string, marker: string 
 }
 
 async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
-  let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean; hasCommand: boolean } | undefined;
+  let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean;
+    hasCommand: boolean; hasClosingKeyword: boolean } | undefined;
   try {
     await expect.poll(async () => {
       lastDecorationState = await rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
@@ -408,14 +409,24 @@ async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
           const start = rendered.lastIndexOf(token);
           return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
         };
-        return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasCommand: hasColor('true', 'rgb(84, 215, 212)') };
+        return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasCommand: hasColor('true', 'rgb(84, 215, 212)'),
+          hasClosingKeyword: hasColor('fi', 'rgb(223, 143, 255)') };
       });
-      return lastDecorationState.hasKeyword && lastDecorationState.hasCommand;
+      return lastDecorationState.hasKeyword && lastDecorationState.hasCommand && lastDecorationState.hasClosingKeyword;
     }, { timeout: 10_000 }).toBe(true);
   } catch (error) {
     const renderedRows = await rows.innerText();
     throw new Error(`Shell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
   }
+}
+
+async function expectShellInputWrapsAcrossRows(rows: Locator, startMarker: string, endMarker: string): Promise<void> {
+  await expect.poll(async () => {
+    const rowTexts = await rows.locator(':scope > div').allTextContents();
+    const startRow = rowTexts.findIndex(text => text.includes(startMarker));
+    const endRow = rowTexts.findIndex(text => text.includes(endMarker));
+    return startRow >= 0 && endRow > startRow;
+  }, { timeout: 10_000 }).toBe(true);
 }
 
 async function clearShellPromptTokenColors(page: Page, rows: Locator): Promise<void> {
@@ -5416,6 +5427,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.type('if true; then echo MRT-SHELL-COLOR; fi');
     const syntaxRows = syntaxPanel.locator('.xterm-rows');
+    await expect(syntaxRows).toContainText('MRT-SHELL-COLOR');
     await expectShellPromptTokenColors(syntaxRows);
     await page.screenshot({ path: 'test-results/bash-shell-syntax-prompt.png' });
     await clearShellPromptTokenColors(page, syntaxRows);
@@ -5475,6 +5487,7 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
   test.setTimeout(90_000);
   test.skip(process.platform !== 'win32', 'Windows Electron acceptance is required for remote terminal prompt coloring');
   const profile = await mkdtemp(join(tmpdir(), 'mrt-remote-shell-color-e2e-'));
+  const wrappedColorCommand = `if true; then echo MRT-WRAP-START${'x'.repeat(300)}MRT-WRAP-END; fi`;
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const sshHostKey = ssh2.utils.generateKeyPairSync('ed25519');
   const sshClients = new Set<Ssh2FixtureClient>();
@@ -5565,6 +5578,7 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 800));
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
@@ -5588,7 +5602,10 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await expect(sshPanel.locator('.xterm-rows')).toContainText('mrt ❯ ', { timeout: 10_000 });
     await sshPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(sshPanel.locator('.xterm-helper-textarea')).toBeFocused();
-    await page.keyboard.type('if true; then echo MRT; fi');
+    await page.keyboard.type(wrappedColorCommand);
+    await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-START');
+    await expect(sshPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-END');
+    await expectShellInputWrapsAcrossRows(sshPanel.locator('.xterm-rows'), 'MRT-WRAP-START', 'MRT-WRAP-END');
 
     const sshRows = sshPanel.locator('.xterm-rows');
     await expectShellPromptTokenColors(sshRows);
@@ -5610,9 +5627,11 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await expect(telnetPanel.locator('.xterm-rows')).toContainText('mrt ❯ ', { timeout: 10_000 });
     await telnetPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(telnetPanel.locator('.xterm-helper-textarea')).toBeFocused();
-    await page.keyboard.type('if true; then echo MRT; fi');
-    await expect.poll(() => telnetReceivedInput.includes('if true; then echo MRT; fi'), { timeout: 10_000 }).toBe(true);
-    await expect(telnetPanel.locator('.xterm-rows')).toContainText('if true; then echo MRT; fi', { timeout: 10_000 });
+    await page.keyboard.type(wrappedColorCommand);
+    await expect.poll(() => telnetReceivedInput.includes(wrappedColorCommand), { timeout: 10_000 }).toBe(true);
+    await expect(telnetPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-START');
+    await expect(telnetPanel.locator('.xterm-rows')).toContainText('MRT-WRAP-END');
+    await expectShellInputWrapsAcrossRows(telnetPanel.locator('.xterm-rows'), 'MRT-WRAP-START', 'MRT-WRAP-END');
     const telnetRows = telnetPanel.locator('.xterm-rows');
     await expectShellPromptTokenColors(telnetRows);
     await clearShellPromptTokenColors(page, telnetRows);

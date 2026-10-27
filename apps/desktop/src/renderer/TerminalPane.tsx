@@ -3,7 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
-import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellPromptAtCursor } from './terminal-highlighting.ts';
+import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellInputAnchorActive, isShellPromptAtCursor } from './terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from './terminal-highlighting.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { DesktopBridge, TerminalActionReply } from '../../../../packages/contracts/src/commands.ts';
@@ -92,13 +92,13 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     if (buffer.type !== 'normal') return;
     const cursorLine = buffer.baseY + buffer.cursorY;
     const existing = shellInputAnchor.current;
-    if (existing && !existing.marker.isDisposed && existing.marker.line === cursorLine) return;
+    if (existing && isShellInputAnchorActive(instance, existing, cursorLine)) return;
     clearTerminalShellInputAnchor(shellInputAnchor);
     const line = buffer.getLine(cursorLine);
     const promptText = line?.translateToString(true, 0, buffer.cursorX) ?? '';
     if (!isShellPromptAtCursor(promptText)) return;
     const marker = instance.registerMarker(0);
-    if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX };
+    if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX, wrappedMarkers: [], decorations: [] };
   }
 
   useLayoutEffect(() => {
