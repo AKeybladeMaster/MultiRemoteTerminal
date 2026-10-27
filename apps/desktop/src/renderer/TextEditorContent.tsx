@@ -35,6 +35,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
       <select id={profileId} value={profile} disabled={disabled} onChange={event => setProfile(event.currentTarget.value as TextSyntaxProfile)}>
         <option value="auto">Auto detect</option>
         <option value="plain">Plain text</option>
+        <option value="markdown">Markdown</option>
         <option value="shell">Shell script</option>
         <option value="powershell">PowerShell</option>
         <option value="python">Python</option>
@@ -45,7 +46,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
         <option value="json">JSON</option>
       </select>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .sql/.pgsql/.psql, .toml, .yaml/.yml, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts, .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
+        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts, .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
       </p>
     </div>
     <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>
@@ -59,6 +60,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
     </div>
     {preview.isTruncated && resolvedProfile !== 'plain' && <p className="remote-text-editor-hint" role="note">
       Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens, whichever comes first; the full file remains editable.
+      {resolvedProfile === 'markdown' && ' Markdown coloring also has a work limit for unusually complex input.'}
     </p>}
   </>;
 }

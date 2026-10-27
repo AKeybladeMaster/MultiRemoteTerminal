@@ -292,6 +292,13 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-syntax-token--toml-datetime, .text-syntax-token--yaml-tag { color: var(--syntax-path); }
 .text-syntax-token--shell-path, .text-syntax-token--powershell-type, .text-syntax-token--python-type,
 .text-syntax-token--javascript-type, .text-syntax-token--sql-type { color: var(--syntax-path); }
+.text-syntax-token--markdown-heading { color: var(--syntax-path); font-weight: 700; }
+.text-syntax-token--markdown-list, .text-syntax-token--markdown-quote, .text-syntax-token--markdown-rule,
+.text-syntax-token--markdown-code-fence { color: var(--syntax-operator); }
+.text-syntax-token--markdown-code, .text-syntax-token--markdown-code-info { color: var(--syntax-string); }
+.text-syntax-token--markdown-link { color: var(--syntax-variable); text-decoration: underline; text-decoration-color: currentColor; }
+.text-syntax-token--markdown-emphasis { color: var(--syntax-keyword); font-style: italic; font-weight: 650; }
+.text-syntax-token--markdown-comment { color: var(--syntax-comment); font-style: italic; }
 @media (forced-colors: active) {
   .text-editor-code-preview { display: none; }
   .remote-text-editor-content { color: CanvasText; -webkit-text-fill-color: CanvasText; caret-color: CanvasText; }
