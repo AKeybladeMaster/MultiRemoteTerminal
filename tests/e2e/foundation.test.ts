@@ -643,6 +643,13 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
     await expect(preview.locator('[data-token-kind="toml-datetime"]').first()).toHaveText('1979-05-27 07:32:00');
     await expect(preview.locator('[data-token-kind="toml-literal"]').first()).toHaveText('true');
 
+    await syntax.selectOption('yaml');
+    await contents.fill('service name: "terminal # app"\nenabled: true\nports: [443, 8443]\n');
+    await expect(preview.locator('[data-token-kind="yaml-key"]').first()).toHaveText('service name');
+    await expect(preview.locator('[data-token-kind="yaml-string"]').first()).toHaveText('"terminal # app"');
+    await expect(preview.locator('[data-token-kind="yaml-literal"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
+    await expect(preview.locator('[data-token-kind="yaml-number"]').first()).toHaveCSS('color', 'rgb(248, 211, 107)');
+
     await syntax.selectOption('python');
     await contents.fill('def greet(name: str):\n    print(name)');
     await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
@@ -714,6 +721,43 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyTomlComments);
     expect(await preview.textContent()).toBe(manyTomlComments);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('local YAML text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-yaml-e2e-'));
+  const path = join(profile, 'settings.yaml');
+  const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\nflow: ["quoted":value]\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n';
+  await writeFile(path, source);
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    await expect(editor.getByLabel('Syntax profile')).toHaveValue('auto');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(contents).toHaveValue(source);
+    await expect(preview.locator('[data-token-kind="yaml-key"]').first()).toHaveText('service name');
+    await expect(preview.locator('[data-token-kind="yaml-string"]').first()).toHaveText('"terminal"');
+    await expect(preview.locator('[data-token-kind="yaml-number"]').first()).toHaveText('443');
+    await expect(preview.locator('[data-token-kind="yaml-literal"]').first()).toHaveText('true');
+    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^"quoted"$/ })).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
+
+    const manyYamlComments = '# preview cap\n'.repeat(4_100);
+    await contents.fill(manyYamlComments);
+    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(4_096);
+    await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await contents.inputValue()).toBe(manyYamlComments);
+    expect(await preview.textContent()).toBe(manyYamlComments);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -1166,6 +1210,18 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
+    const remoteYamlSource = `# app config
+server:
+  host: localhost
+  port: 8080
+pairs: ["quoted":value]
+script:
+  - command: |1-
+     # block body stays opaque
+     enabled: true
+    name: next
+${'# preview cap\n'.repeat(4_100)}`;
+    await writeFile(join(remoteRoot, 'remote.yaml'), remoteYamlSource);
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1323,6 +1379,23 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(remoteTomlEditor.locator('[data-token-kind="toml-number"]').first()).toHaveText('8080');
     await remoteTomlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteTomlEditor).toHaveCount(0);
+    const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
+    await remoteYamlEdit.click();
+    const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
+    await expect(remoteYamlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]').first()).toHaveText('# app config');
+    await expect(remoteYamlEditor.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').first()).toHaveText('server');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').nth(1)).toHaveText('host');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-number"]').first()).toHaveText('8080');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^"quoted"$/ })).toHaveCount(1);
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
+    await expect(remoteYamlEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await remoteYamlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteYamlSource);
+    expect(await remoteYamlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteYamlSource);
+    await remoteYamlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteYamlEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();

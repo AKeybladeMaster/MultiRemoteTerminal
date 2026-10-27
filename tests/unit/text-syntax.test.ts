@@ -8,7 +8,7 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML and JSON from the file name', () => {
+test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML and JSON from the file name', () => {
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
   for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
@@ -23,6 +23,9 @@ test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/Typ
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'sql');
   }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.TOML'), 'toml');
+  for (const fileName of ['settings.yaml', 'inventory.YML']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'yaml');
+  }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.json'), 'json');
   assert.equal(resolveTextSyntaxProfile('auto', 'notes.txt'), 'plain');
   assert.equal(resolveTextSyntaxProfile('json', 'script.sh'), 'json');
@@ -446,6 +449,159 @@ test('TOML syntax preview remains within code-unit and token bounds', () => {
   const manyComments = highlightTextSyntax('# comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'toml');
   assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyComments.isTruncated, true);
+});
+
+test('YAML syntax preview colors keys, YAML 1.2 core scalars, strings and separated comments', () => {
+  const source = [
+    '---',
+    'plain key with spaces: unquoted text',
+    'description: this is true',
+    '"quoted:key": "double # text"',
+    "'single key': 'it''s # text'",
+    'url: https://example.test/a#fragment',
+    'commented: value # line note',
+    'embedded: foo#bar',
+    'emptyValue: null',
+    'tildeValue: ~',
+    'trueValue: TRUE',
+    'legacyWord: yes',
+    'negative: -42',
+    'octal: 0o17',
+    'hex: 0xFF',
+    'float: -.5e+2',
+    'infinity: .Inf',
+    'notANumber: .NaN',
+    'block punctuation: words[inside], braces{} # comment',
+    '...',
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'yaml');
+  const values = (kind: string) => preview.tokens.filter(token => token.kind === kind).map(token => source.slice(token.start, token.end));
+
+  assert.deepEqual(values('yaml-document'), ['---', '...']);
+  assert.deepEqual(values('yaml-comment'), ['# line note', '# comment']);
+  assert.deepEqual(values('yaml-key').slice(0, 6), [
+    'plain key with spaces', 'description', '"quoted:key"', "'single key'", 'url', 'commented'
+  ]);
+  assert.ok(values('yaml-string').includes('"double # text"'));
+  assert.ok(values('yaml-string').includes("'it''s # text'"));
+  assert.ok(values('yaml-string').includes('this is true'));
+  assert.ok(values('yaml-string').includes('https://example.test/a#fragment'));
+  assert.ok(values('yaml-string').includes('foo#bar'));
+  assert.ok(values('yaml-string').includes('yes'));
+  assert.ok(values('yaml-string').includes('words[inside], braces{}'));
+  assert.deepEqual(values('yaml-literal'), ['null', '~', 'TRUE']);
+  assert.deepEqual(values('yaml-number'), ['-42', '0o17', '0xFF', '-.5e+2', '.Inf', '.NaN']);
+  assert.equal(preview.isTruncated, false);
+});
+
+test('YAML syntax preview recognizes flow collections, tags, anchors, aliases, directives and opaque block scalars', () => {
+  const source = [
+    '%YAML 1.2 # version',
+    '%TAG !example! tag:example.com,2026:',
+    '--- !<tag:clarkevans.com,2002:invoice>',
+    'flow: {quoted: "value", adjacent:true, words: this is true, nested: [one, "item", -2, {enabled: false}]}',
+    'sequencePairs: [foo: bar, baz: qux, "quoted pair": value, "adjacent pair":value]',
+    'anchor: &base {name: origin}',
+    'copy: *base # reuse',
+    'aliasKey: {*base: value}',
+    'tagged: !!str literal',
+    'literal: |2-',
+    '  # stays block text',
+    '  echo "not a token"',
+    'next: >+2 # folded block header',
+    '  this is folded text',
+    'tasks:',
+    '  - command: |1-',
+    '     # sequence body stays opaque',
+    '     enabled: true',
+    '    name: next',
+    'nestedTasks:',
+    '  - - command: |1-',
+    '       # nested sequence body stays opaque',
+    '       enabled: true',
+    '      nested name: next',
+    'after: true'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'yaml');
+  const values = (kind: string) => preview.tokens.filter(token => token.kind === kind).map(token => source.slice(token.start, token.end));
+
+  assert.deepEqual(values('yaml-directive'), ['%YAML 1.2 ', '%TAG !example! tag:example.com,2026:']);
+  assert.deepEqual(values('yaml-document'), ['---']);
+  assert.deepEqual(values('yaml-comment'), ['# version', '# reuse', '# folded block header']);
+  assert.ok(values('yaml-tag').includes('!<tag:clarkevans.com,2002:invoice>'));
+  assert.ok(values('yaml-tag').includes('!!str'));
+  assert.ok(values('yaml-anchor').includes('&base'));
+  assert.ok(values('yaml-alias').includes('*base'));
+  assert.ok(values('yaml-operator').includes(':'));
+  assert.equal(values('yaml-key').includes('"value"'), false);
+  assert.equal(values('yaml-key').includes('"item"'), false);
+  assert.equal(values('yaml-key').includes('this is true'), false);
+  assert.ok(values('yaml-string').includes('"value"'));
+  assert.ok(values('yaml-string').includes('"item"'));
+  assert.ok(values('yaml-string').includes('this is true'));
+  assert.ok(values('yaml-key').includes('adjacent'));
+  assert.ok(values('yaml-literal').includes('false'));
+  assert.ok(values('yaml-string').includes('  # stays block text'));
+  assert.ok(values('yaml-string').includes('  echo "not a token"'));
+  assert.ok(values('yaml-string').includes('  this is folded text'));
+  assert.ok(values('yaml-string').includes('     # sequence body stays opaque'));
+  assert.ok(values('yaml-string').includes('     enabled: true'));
+  assert.equal(values('yaml-comment').includes('     # sequence body stays opaque'), false);
+  assert.ok(values('yaml-key').includes('name'));
+  assert.ok(values('yaml-key').includes('foo'));
+  assert.ok(values('yaml-key').includes('baz'));
+  assert.ok(values('yaml-key').includes('"quoted pair"'));
+  assert.ok(values('yaml-key').includes('"adjacent pair"'));
+  assert.ok(values('yaml-key').includes('nested name'));
+  assert.ok(values('yaml-string').includes('bar'));
+  assert.ok(values('yaml-string').includes('qux'));
+  assert.ok(values('yaml-string').includes('       # nested sequence body stays opaque'));
+  assert.ok(values('yaml-key').includes('after'));
+});
+
+test('YAML block indicators inside plain scalars and alias mapping colons stay lexical', () => {
+  const source = 'message: keep this - value\nreferences: {*base: value}\n';
+  const preview = highlightTextSyntax(source, 'yaml');
+  const values = (kind: string) => preview.tokens.filter(token => token.kind === kind).map(token => source.slice(token.start, token.end));
+  assert.ok(values('yaml-string').includes('keep this - value'));
+  assert.ok(values('yaml-alias').includes('*base'));
+  assert.ok(values('yaml-operator').includes(':'));
+  assert.equal(values('yaml-operator').includes('-'), false);
+});
+
+test('YAML syntax preview bounds implicit-key lookahead, characters and token output', () => {
+  const longImplicitKey = `${'k'.repeat(1_025)}: value`;
+  const keyPreview = highlightTextSyntax(longImplicitKey, 'yaml');
+  assert.equal(keyPreview.tokens.some(token => token.kind === 'yaml-key'), false);
+
+  const longScalar = `value: "${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}"`;
+  const characterBound = highlightTextSyntax(longScalar, 'yaml');
+  assert.equal(characterBound.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(characterBound.isTruncated, true);
+  assert.ok(characterBound.tokens.every(token => token.end <= characterBound.highlightedThrough));
+
+  const manyComments = highlightTextSyntax('# comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'yaml');
+  assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyComments.isTruncated, true);
+});
+
+test('YAML syntax preview keeps malformed low-token flow input within a linear allowance', () => {
+  function medianRuntime(codeUnits: number): number {
+    const input = `[${'}'.repeat(codeUnits - 1)}`;
+    highlightTextSyntax(input, 'yaml');
+    const samples = Array.from({ length: 5 }, () => {
+      const start = performance.now();
+      const preview = highlightTextSyntax(input, 'yaml');
+      assert.equal(preview.tokens.length, 1);
+      return performance.now() - start;
+    }).sort((left, right) => left - right);
+    return samples[2]!;
+  }
+
+  const smaller = medianRuntime(16_000);
+  const boundedPreview = medianRuntime(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.ok(boundedPreview <= smaller * 8 + 10,
+    `64,000 malformed flow code units took ${boundedPreview.toFixed(1)}ms after 16,000 took ${smaller.toFixed(1)}ms`);
 });
 
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {
