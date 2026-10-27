@@ -16,4 +16,10 @@ No additional critical, important or minor findings were reported. The reviewer 
 
 ## Final follow-up
 
-Independent Standards and Spec review of the corrected commit range is pending.
+**Corrected review range:** `7f04e294f1685ec2448ff6a51cdb0e3ac90a1fd7...f58ae69f3f08b998b4154443fb8fa3be54e72c20`
+
+- **Standards:** no remaining documented-standard violations and no Fowler baseline smells. The security guide now describes the shared SFTP syntax preview.
+- **Spec:** WP-08G meets its Python-profile scope; no missing behavior, unrequested scope or incorrect behavior was reported. F-014/P-27 remain PARTIAL for the broader gaps documented in the feature matrix.
+- **General review:** no critical, important or minor issues; ready to merge.
+
+The two initial findings were fixed and the feature-level validation was rerun successfully after those changes. Final review reported zero Standards findings and zero Spec findings.
