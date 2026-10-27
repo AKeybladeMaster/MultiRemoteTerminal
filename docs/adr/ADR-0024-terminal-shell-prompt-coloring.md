@@ -16,7 +16,7 @@ P-30 asks for readable syntax colors in terminal sessions. WP-01F already colors
 
 ## Consequences and limits
 
-The colors provide a bounded lexical aid for text currently visible in the active input row. Prompt recognition is intentionally simple and accepts only the final `$`, `#`, `%`, `>`, `❯` or `➜` character; it does not identify the shell or prove that a prompt is safe. The two glyph endings support common zsh-style prompt themes but do not add zsh shell or theme support. Wrapped command lines, continuation prompts, full zsh grammar and shell-specific semantic checks are not supported. The tokenizer may color a token differently from the shell's eventual interpretation. With coloring disabled, the renderer does not install the shell token decoration path.
+The colors provide a bounded lexical aid for active input. Prompt recognition is intentionally simple and accepts only the final `$`, `#`, `%`, `>`, `❯` or `➜` character; it does not identify the shell or prove that a prompt is safe. The two glyph endings support common zsh-style prompt themes but do not add zsh shell or theme support. WP-01H adds bounded coloring across physical auto-wrap rows; continuation prompts, full zsh grammar and shell-specific semantic checks remain unsupported. The tokenizer may color a token differently from the shell's eventual interpretation. With coloring disabled, the renderer does not install the shell token decoration path.
 
 The marker, anchor and decorations exist only in renderer memory and follow xterm buffer movement. No terminal input or output value is added to storage or logging. The shell and remote peer retain their existing authority over command execution; this feature makes no command safe to run.
 
