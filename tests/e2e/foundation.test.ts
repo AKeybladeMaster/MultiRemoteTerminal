@@ -397,6 +397,32 @@ async function sendLine(page: Page, title: string, line: string, marker: string 
   return { panel, rows };
 }
 
+async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
+  let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean; hasCommand: boolean } | undefined;
+  try {
+    await expect.poll(async () => {
+      lastDecorationState = await rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+        const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+        const rendered = glyphs.map(glyph => glyph.text).join('');
+        const hasColor = (token: string, color: string) => {
+          const start = rendered.lastIndexOf(token);
+          return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
+        };
+        return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasCommand: hasColor('true', 'rgb(84, 215, 212)') };
+      });
+      return lastDecorationState.hasKeyword && lastDecorationState.hasCommand;
+    }, { timeout: 10_000 }).toBe(true);
+  } catch (error) {
+    const renderedRows = await rows.innerText();
+    throw new Error(`Shell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
+  }
+}
+
+async function clearShellPromptTokenColors(page: Page, rows: Locator): Promise<void> {
+  await page.keyboard.press('Control+C');
+  await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+}
+
 async function confirmCloseActiveTerminal(page: Page, title: string): Promise<void> {
   await page.getByRole('button', { name: 'Close active terminal' }).click();
   const confirmation = page.getByRole('alertdialog');
@@ -5390,18 +5416,9 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.type('if true; then echo MRT-SHELL-COLOR; fi');
     const syntaxRows = syntaxPanel.locator('.xterm-rows');
-    await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').evaluateAll(spans => {
-      const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
-      const rendered = glyphs.map(glyph => glyph.text).join('');
-      const hasColor = (token: string, color: string) => {
-        const start = rendered.lastIndexOf(token);
-        return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
-      };
-      return hasColor('if', 'rgb(223, 143, 255)') && hasColor('true', 'rgb(84, 215, 212)');
-    })).toBe(true);
+    await expectShellPromptTokenColors(syntaxRows);
     await page.screenshot({ path: 'test-results/bash-shell-syntax-prompt.png' });
-    await page.keyboard.press('Control+C');
-    await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').count()).toBe(0);
+    await clearShellPromptTokenColors(page, syntaxRows);
 
     const bashPanel = await selectTerminal(page, 'Bash session 1');
     const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
@@ -5573,30 +5590,9 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await expect(sshPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.type('if true; then echo MRT; fi');
 
-    const assertShellTokenColors = async (panel: Locator): Promise<void> => {
-      const rows = panel.locator('.xterm-rows');
-      let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean; hasCommand: boolean } | undefined;
-      try {
-        await expect.poll(async () => {
-          lastDecorationState = await rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
-            const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
-            const rendered = glyphs.map(glyph => glyph.text).join('');
-            const hasColor = (token: string, color: string) => {
-              const start = rendered.lastIndexOf(token);
-              return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
-            };
-            return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasCommand: hasColor('true', 'rgb(84, 215, 212)') };
-          });
-          return lastDecorationState.hasKeyword && lastDecorationState.hasCommand;
-        }, { timeout: 10_000 }).toBe(true);
-      } catch (error) {
-        const renderedRows = await rows.innerText();
-        throw new Error(`Shell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
-      }
-      await page.keyboard.press('Control+C');
-      await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
-    };
-    await assertShellTokenColors(sshPanel);
+    const sshRows = sshPanel.locator('.xterm-rows');
+    await expectShellPromptTokenColors(sshRows);
+    await clearShellPromptTokenColors(page, sshRows);
     expect(sshShellCount).toBe(1);
     expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(1);
 
@@ -5617,14 +5613,28 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await page.keyboard.type('if true; then echo MRT; fi');
     await expect.poll(() => telnetReceivedInput.includes('if true; then echo MRT; fi'), { timeout: 10_000 }).toBe(true);
     await expect(telnetPanel.locator('.xterm-rows')).toContainText('if true; then echo MRT; fi', { timeout: 10_000 });
-    await assertShellTokenColors(telnetPanel);
+    const telnetRows = telnetPanel.locator('.xterm-rows');
+    await expectShellPromptTokenColors(telnetRows);
+    await clearShellPromptTokenColors(page, telnetRows);
   } finally {
-    await app?.close();
-    for (const client of sshClients) client.end();
-    for (const socket of telnetSockets) socket.destroy();
-    if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
-    if (telnetListening && telnetServer.listening) await new Promise<void>(resolveClose => telnetServer.close(() => resolveClose()));
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    try {
+      await app?.close();
+    } finally {
+      try {
+        for (const client of sshClients) client.end();
+        for (const socket of telnetSockets) socket.destroy();
+      } finally {
+        try {
+          if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
+        } finally {
+          try {
+            if (telnetListening && telnetServer.listening) await new Promise<void>(resolveClose => telnetServer.close(() => resolveClose()));
+          } finally {
+            await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          }
+        }
+      }
+    }
   }
 });
 
