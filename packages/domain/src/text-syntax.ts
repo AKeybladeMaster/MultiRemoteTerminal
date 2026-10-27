@@ -53,9 +53,12 @@ const pythonDeclarationKinds = new Map<string, 'python-function' | 'python-type'
   ['def', 'python-function'], ['class', 'python-type']
 ]);
 const pythonBuiltins = new Set([
-  'abs', 'all', 'any', 'bool', 'bytes', 'callable', 'chr', 'dict', 'enumerate', 'filter', 'float', 'getattr', 'hasattr',
-  'id', 'input', 'int', 'isinstance', 'iter', 'len', 'list', 'map', 'max', 'min', 'next', 'object', 'open', 'print',
-  'property', 'range', 'repr', 'reversed', 'round', 'set', 'sorted', 'str', 'sum', 'super', 'tuple', 'type', 'zip'
+  'abs', 'aiter', 'all', 'anext', 'any', 'ascii', 'bin', 'bool', 'breakpoint', 'bytearray', 'bytes', 'callable', 'chr',
+  'classmethod', 'compile', 'complex', 'delattr', 'dict', 'dir', 'divmod', 'enumerate', 'eval', 'exec', 'filter', 'float',
+  'format', 'frozendict', 'frozenset', 'getattr', 'globals', 'hasattr', 'hash', 'help', 'hex', 'id', 'input', 'int',
+  'isinstance', 'issubclass', 'iter', 'len', 'list', 'locals', 'map', 'max', 'memoryview', 'min', 'next', 'object', 'oct',
+  'open', 'ord', 'pow', 'print', 'property', 'range', 'repr', 'reversed', 'round', 'set', 'setattr', 'sentinel', 'slice',
+  'sorted', 'staticmethod', 'str', 'sum', 'super', 'tuple', 'type', 'vars', 'zip', '__import__'
 ]);
 const pythonStringPrefixes = new Set(['b', 'br', 'f', 'fr', 'rb', 'rf', 'rt', 'r', 't', 'tr', 'u']);
 const pythonOperators = [

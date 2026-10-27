@@ -179,6 +179,17 @@ test('Python syntax preview colors declarations, keywords, builtins, strings, nu
     { text: ':', kind: 'python-operator' },
     { text: 'pass', kind: 'python-keyword' }
   ]);
+  const builtinsSource = 'result = dir(complex)\n';
+  assert.deepEqual(highlightTextSyntax(builtinsSource, 'python').tokens.map(token => ({
+    text: builtinsSource.slice(token.start, token.end),
+    kind: token.kind
+  })), [
+    { text: '=', kind: 'python-operator' },
+    { text: 'dir', kind: 'python-builtin' },
+    { text: '(', kind: 'python-operator' },
+    { text: 'complex', kind: 'python-builtin' },
+    { text: ')', kind: 'python-operator' }
+  ]);
 });
 
 test('Python syntax preview treats prefixed and triple-quoted strings as opaque', () => {
