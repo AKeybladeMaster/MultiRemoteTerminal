@@ -21,6 +21,11 @@
 - `corepack pnpm build` - passed on Windows x64. Vite reports the existing renderer bundle above 500 KiB.
 - Inspected the Settings screenshot `test-results/local-shell-availability-settings.png` at 1164x734. The new availability controls and their descriptions are readable in the scrolled dialog; this is not an accessibility certification.
 
+## Review
+
+- **Standards:** No documented-rule breach. The review noted two low-severity heuristic concerns: the v11 exact-shape check repeats the v10 preference fields, and `normalizeEnabledLocalShells` delegates to the shared local-shell list validator. Both are retained: explicit key sets make each persisted schema shape auditable, and the named helper makes the availability-list intent clear at its call sites.
+- **Spec:** No WP-11D behavior was missing or incorrect, and no unrequested scope was found. Broader provider lifecycle and platform acceptance remain partial as listed below.
+
 ## Security and remaining acceptance
 
 The preference gates new local-shell entry points; it does not terminate running processes. The main broker is authoritative, saved profiles remain available for re-enabling, and settings-read failure is closed to new starts. P-21/P-37/F-009 remain partial for broader provider lifecycle, native logo-picker acceptance, real WSL interoperability, and Windows 10 and signed-release acceptance.
