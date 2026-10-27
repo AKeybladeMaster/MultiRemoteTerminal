@@ -653,8 +653,8 @@ test('Markdown syntax preview closes fences only with a matching delimiter and v
   assert.deepEqual(values('markdown-heading'), ['#']);
 });
 
-test('Markdown emphasis ignores delimiters inside inline code and keeps the code span colored', () => {
-  const source = '*before `*inside*` after*';
+test('Markdown emphasis respects opaque inline constructs and preserves their token colors', () => {
+  const source = '*before `*inside*` [label](url*part) <!-- * --> after*';
   const tokens = highlightTextSyntax(source, 'markdown').tokens.map(token => ({
     text: source.slice(token.start, token.end),
     kind: token.kind
@@ -663,6 +663,10 @@ test('Markdown emphasis ignores delimiters inside inline code and keeps the code
   assert.deepEqual(tokens, [
     { text: '*before ', kind: 'markdown-emphasis' },
     { text: '`*inside*`', kind: 'markdown-code' },
+    { text: ' ', kind: 'markdown-emphasis' },
+    { text: '[label](url*part)', kind: 'markdown-link' },
+    { text: ' ', kind: 'markdown-emphasis' },
+    { text: '<!-- * -->', kind: 'markdown-comment' },
     { text: ' after*', kind: 'markdown-emphasis' }
   ]);
 });
