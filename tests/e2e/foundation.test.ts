@@ -397,22 +397,28 @@ async function sendLine(page: Page, title: string, line: string, marker: string 
   return { panel, rows };
 }
 
+type ShellPromptDecorationState = { rendered: string; glyphs: { text: string; color: string }[] };
+
+async function readShellPromptDecorationState(rows: Locator): Promise<ShellPromptDecorationState> {
+  return rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+    const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+    return { rendered: glyphs.map(glyph => glyph.text).join(''), glyphs };
+  });
+}
+
+function hasShellPromptTokenColor(state: ShellPromptDecorationState, token: string, color: string): boolean {
+  const start = state.rendered.lastIndexOf(token);
+  return start >= 0 && state.glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
+}
+
 async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
-  let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean;
-    hasBuiltin: boolean; hasClosingKeyword: boolean } | undefined;
+  let lastDecorationState: ShellPromptDecorationState | undefined;
   try {
     await expect.poll(async () => {
-      lastDecorationState = await rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
-        const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
-        const rendered = glyphs.map(glyph => glyph.text).join('');
-        const hasColor = (token: string, color: string) => {
-          const start = rendered.lastIndexOf(token);
-          return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
-        };
-        return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasBuiltin: hasColor('true', 'rgb(132, 242, 167)'),
-          hasClosingKeyword: hasColor('fi', 'rgb(223, 143, 255)') };
-      });
-      return lastDecorationState.hasKeyword && lastDecorationState.hasBuiltin && lastDecorationState.hasClosingKeyword;
+      lastDecorationState = await readShellPromptDecorationState(rows);
+      return hasShellPromptTokenColor(lastDecorationState, 'if', 'rgb(223, 143, 255)') &&
+        hasShellPromptTokenColor(lastDecorationState, 'true', 'rgb(132, 242, 167)') &&
+        hasShellPromptTokenColor(lastDecorationState, 'fi', 'rgb(223, 143, 255)');
     }, { timeout: 10_000 }).toBe(true);
   } catch (error) {
     const renderedRows = await rows.innerText();
@@ -421,16 +427,12 @@ async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
 }
 
 async function expectShellCommandPrefixColors(rows: Locator): Promise<void> {
-  await expect.poll(async () => rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
-    const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
-    const rendered = glyphs.map(glyph => glyph.text).join('');
-    const hasColor = (token: string, color: string) => {
-      const start = rendered.lastIndexOf(token);
-      return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
-    };
-    return hasColor('sudo', 'rgb(84, 215, 212)') && hasColor('-u', 'rgb(248, 211, 107)') &&
-      hasColor('git', 'rgb(84, 215, 212)');
-  }), { timeout: 10_000 }).toBe(true);
+  await expect.poll(async () => {
+    const state = await readShellPromptDecorationState(rows);
+    return hasShellPromptTokenColor(state, 'sudo', 'rgb(84, 215, 212)') &&
+      hasShellPromptTokenColor(state, '-u', 'rgb(248, 211, 107)') &&
+      hasShellPromptTokenColor(state, 'git', 'rgb(84, 215, 212)');
+  }, { timeout: 10_000 }).toBe(true);
 }
 
 async function expectShellStringColorsAcrossRows(rows: Locator, startMarker: string, endMarker: string): Promise<void> {

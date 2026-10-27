@@ -197,12 +197,14 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
   let commandExpected = true;
   let commandPrefixPending = false;
   let commandPrefixOptionValueExpected = false;
+  let shellAssignmentValuePending = false;
   let shellCommandPrefix: string | undefined;
   let insideShellTest = false;
 
   function resetCommandPrefix(): void {
     commandPrefixPending = false;
     commandPrefixOptionValueExpected = false;
+    shellAssignmentValuePending = false;
     shellCommandPrefix = undefined;
   }
 
@@ -219,7 +221,11 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       resetCommandPrefix();
       continue;
     }
-    if (isWhitespace(character)) { index += 1; continue; }
+    if (isWhitespace(character)) {
+      shellAssignmentValuePending = false;
+      index += 1;
+      continue;
+    }
 
     if (character === '#' && (index === 0 || isWhitespace(text[index - 1]!))) {
       const start = index;
@@ -239,7 +245,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       }
       if (!addToken(tokens, start, index, 'shell-string')) return start;
       if (commandPrefixOptionValueExpected) commandPrefixOptionValueExpected = false;
-      else if (commandExpected || commandPrefixPending) consumeShellCommandWord();
+      else if (!shellAssignmentValuePending && (commandExpected || commandPrefixPending)) consumeShellCommandWord();
       continue;
     }
 
@@ -249,7 +255,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
         if (!addToken(tokens, index, end, 'shell-variable')) return index;
         index = end;
         if (commandPrefixOptionValueExpected) commandPrefixOptionValueExpected = false;
-        else if (commandExpected || commandPrefixPending) consumeShellCommandWord();
+        else if (!shellAssignmentValuePending && (commandExpected || commandPrefixPending)) consumeShellCommandWord();
         continue;
       }
     }
@@ -274,7 +280,9 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       commandPrefixOptionValueExpected = false;
       continue;
     }
-    if (shellKeywords.has(word) && !commandPrefixPending && (commandExpected || word === ']]' || (insideShellTest && word === '!'))) {
+    if (shellAssignmentValuePending) continue;
+    if (shellKeywords.has(word) && !commandPrefixPending &&
+        (commandExpected || (insideShellTest && (word === ']]' || word === '!')))) {
       if (!addToken(tokens, start, index, 'shell-keyword')) return start;
       if (word === '[[') {
         insideShellTest = true;
@@ -289,6 +297,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     } else if ((commandExpected || commandPrefixPending) && isShellAssignment(word)) {
       const assignment = word.indexOf('=');
       if (!addToken(tokens, start, start + assignment, 'shell-variable')) return start;
+      shellAssignmentValuePending = true;
     } else if (commandPrefixPending && word.startsWith('-') && word.length > 1) {
       if (!addToken(tokens, start, index, 'shell-option')) return start;
       commandPrefixOptionValueExpected = shellCommandPrefixOptionsWithValues[shellCommandPrefix ?? '']?.has(word) ?? false;

@@ -55,7 +55,7 @@ test('shell syntax preview colors commands, builtins, keywords, options, variabl
 });
 
 test('shell syntax preview classifies common builtins and follows bounded command wrappers', () => {
-  const source = 'if true; then sudo -u admin env PATH=/usr/bin git status; fi';
+  const source = 'if true; then sudo -u admin env PATH="$HOME/bin" git status; fi';
   const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
     text: source.slice(token.start, token.end), kind: token.kind
   }));
@@ -68,9 +68,23 @@ test('shell syntax preview classifies common builtins and follows bounded comman
     { text: '-u', kind: 'shell-option' },
     { text: 'env', kind: 'shell-command' },
     { text: 'PATH', kind: 'shell-variable' },
+    { text: '"$HOME/bin"', kind: 'shell-string' },
     { text: 'git', kind: 'shell-command' },
     { text: ';', kind: 'shell-operator' },
     { text: 'fi', kind: 'shell-keyword' }
+  ]);
+});
+
+test('shell syntax preview preserves wrapper command position across expanded assignments', () => {
+  const source = 'env PATH=$HOME/bin git status';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'env', kind: 'shell-command' },
+    { text: 'PATH', kind: 'shell-variable' },
+    { text: '$HOME', kind: 'shell-variable' },
+    { text: 'git', kind: 'shell-command' }
   ]);
 });
 
@@ -98,6 +112,14 @@ test('shell syntax preview treats double-bracket expressions as conditions, not 
     { text: ';', kind: 'shell-operator' },
     { text: 'fi', kind: 'shell-keyword' }
   ]);
+});
+
+test('shell syntax preview only colors the double-bracket closing marker in condition context', () => {
+  const source = 'echo ]]';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [{ text: 'echo', kind: 'shell-builtin' }]);
 });
 
 test('PowerShell syntax preview colors command forms, keywords, parameters, variables, strings, numbers, types and operators', () => {
