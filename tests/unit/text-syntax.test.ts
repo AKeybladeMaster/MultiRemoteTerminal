@@ -8,7 +8,7 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript and JSON from the file name', () => {
+test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript, SQL and JSON from the file name', () => {
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
   for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
@@ -18,6 +18,9 @@ test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/Typ
   }
   for (const fileName of ['app.js', 'view.JSX', 'worker.mjs', 'legacy.cjs', 'main.ts', 'page.TSX', 'module.mts', 'common.cts', 'types.d.ts']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'javascript');
+  }
+  for (const fileName of ['schema.sql', 'migration.PGSQL', 'script.psql']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'sql');
   }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.json'), 'json');
   assert.equal(resolveTextSyntaxProfile('auto', 'notes.txt'), 'plain');
@@ -333,6 +336,51 @@ test('JavaScript syntax preview keeps tokens within the preview bound', () => {
     assert.ok(preview.tokens.every(token => token.end <= preview.highlightedThrough),
       `token ended past the preview bound at ${preview.highlightedThrough}`);
   }
+});
+
+test('SQL syntax preview colors PostgreSQL-style keywords, types, literals, functions, identifiers and bounded lexemes', () => {
+  const source = [
+    '-- list rows',
+    'CREATE TABLE users (id BIGINT PRIMARY KEY, display_name TEXT NOT NULL, active BOOLEAN DEFAULT TRUE);',
+    "INSERT INTO users (id, display_name) VALUES ($1, E'Dianne''s $1 -- data');",
+    'SELECT "display""name", COUNT(*)::INTEGER FROM users WHERE id >= 1.25e2 AND active = TRUE;',
+    '/* outer /* nested */ block */',
+    'SELECT $body$SELECT -- literal\n/* also literal */$body$;'
+  ].join('\n');
+  const tokens = highlightTextSyntax(source, 'sql').tokens.map(token => ({
+    text: source.slice(token.start, token.end),
+    kind: token.kind
+  }));
+  const values = (kind: string) => tokens.filter(token => token.kind === kind).map(token => token.text);
+
+  assert.deepEqual(values('sql-keyword'), ['CREATE', 'TABLE', 'PRIMARY', 'KEY', 'NOT', 'DEFAULT', 'INSERT', 'INTO', 'VALUES', 'SELECT', 'FROM', 'WHERE', 'AND', 'SELECT']);
+  assert.deepEqual(values('sql-type'), ['BIGINT', 'TEXT', 'BOOLEAN', 'INTEGER']);
+  assert.deepEqual(values('sql-literal'), ['NULL', 'TRUE', 'TRUE']);
+  assert.deepEqual(values('sql-function'), ['COUNT']);
+  assert.deepEqual(values('sql-identifier'), ['"display""name"']);
+  assert.deepEqual(values('sql-number'), ['1.25e2']);
+  assert.deepEqual(values('sql-parameter'), ['$1']);
+  assert.deepEqual(values('sql-string'), ["E'Dianne''s $1 -- data'", '$body$SELECT -- literal\n/* also literal */$body$']);
+  assert.deepEqual(values('sql-comment'), ['-- list rows', '/* outer /* nested */ block */']);
+  assert.ok(values('sql-operator').includes('::'));
+  assert.ok(values('sql-operator').includes('>='));
+});
+
+test('SQL syntax preview keeps tokens within the code-unit and token bounds', () => {
+  for (const source of [
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}'tail`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}/*comment*/`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}$tag$tail`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}$1`
+  ]) {
+    const preview = highlightTextSyntax(source, 'sql');
+    assert.ok(preview.highlightedThrough <= MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+    assert.ok(preview.tokens.every(token => token.end <= preview.highlightedThrough),
+      `token ended past the preview bound at ${preview.highlightedThrough}`);
+  }
+  const manyComments = highlightTextSyntax('-- comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'sql');
+  assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyComments.isTruncated, true);
 });
 
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {

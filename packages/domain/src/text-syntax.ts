@@ -1,8 +1,9 @@
 export const MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS = 64_000;
 export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
+const MAX_SQL_DOLLAR_TAG_CODE_UNITS = 63;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'javascript', 'sql', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -14,6 +15,8 @@ export type TextSyntaxTokenKind =
   | 'python-function' | 'python-type'
   | 'javascript-builtin' | 'javascript-keyword' | 'javascript-string' | 'javascript-comment' | 'javascript-number'
   | 'javascript-operator' | 'javascript-function' | 'javascript-type'
+  | 'sql-function' | 'sql-keyword' | 'sql-literal' | 'sql-string' | 'sql-comment' | 'sql-number' | 'sql-operator'
+  | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'json-key' | 'json-string' | 'json-number' | 'json-literal' | 'json-punctuation';
 
 export interface TextSyntaxToken {
@@ -91,10 +94,36 @@ const javascriptOperators = [
   '<=', '>=', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**', '<<', '>>', '+', '-', '*', '/', '%', '&',
   '|', '^', '~', '!', '<', '>', '=', '?', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '#'
 ] as const;
+const sqlKeywords = new Set([
+  'all', 'alter', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'begin', 'between', 'by', 'case', 'cast', 'check',
+  'collate', 'column', 'commit', 'conflict', 'constraint', 'copy', 'create', 'cross', 'current_date', 'current_time',
+  'current_timestamp', 'database', 'default', 'delete', 'desc', 'distinct', 'do', 'drop', 'else', 'end', 'except',
+  'exists', 'explain', 'fetch', 'for', 'foreign', 'from', 'full', 'grant', 'group', 'having', 'ilike', 'in', 'index',
+  'inner', 'insert', 'intersect', 'into', 'is', 'join', 'key', 'lateral', 'left', 'like', 'limit', 'natural', 'not', 'nulls',
+  'offset', 'on', 'only', 'or', 'order', 'outer', 'over', 'partition', 'primary', 'recursive', 'references',
+  'returning', 'right', 'rollback', 'row', 'select', 'set', 'table', 'then', 'to', 'union', 'unique', 'update',
+  'using', 'values', 'when', 'where', 'window', 'with'
+]);
+const sqlLiterals = new Set(['false', 'null', 'true']);
+const sqlTypes = new Set([
+  'bigint', 'bigserial', 'bit', 'bool', 'boolean', 'bytea', 'char', 'character', 'date', 'decimal', 'double', 'float',
+  'inet', 'int', 'int2', 'int4', 'int8', 'integer', 'interval', 'json', 'jsonb', 'numeric', 'real', 'serial',
+  'smallint', 'smallserial', 'text', 'time', 'timestamp', 'timestamptz', 'uuid', 'varchar', 'xml'
+]);
+const sqlFunctions = new Set([
+  'abs', 'avg', 'array_agg', 'coalesce', 'concat', 'count', 'date_trunc', 'generate_series', 'greatest', 'json_agg',
+  'jsonb_build_object', 'least', 'length', 'lower', 'max', 'min', 'now', 'round', 'string_agg', 'substring', 'sum', 'upper'
+]);
+const sqlOperators = [
+  '!~~*', '!~~', '!~*', '#>>', '->>', '<<=', '>>=', '<=', '>=', '<>', '!=', '::', ':=', '=>', '->', '#>', '#-', '?|', '?&',
+  '@>', '<@', '||', '&&', '~~*', '~~', '~*', '@?', '@@', '+', '-', '*', '/', '%', '=', '<', '>', '~', '!', '@', '#', '&',
+  '|', '^', '?', ':', '.', ',', ';', '(', ')', '[', ']'
+] as const;
 
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
+  if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -114,7 +143,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
     : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
       : profile === 'python' ? scanPython(text, limit, tokens)
         : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
-          : scanJson(text, limit, tokens);
+          : profile === 'sql' ? scanSql(text, limit, tokens)
+            : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -761,6 +791,217 @@ function findTextWithinLimit(text: string, target: string, start: number, limit:
     if (text.startsWith(target, index)) return index;
   }
   return -1;
+}
+
+function scanSql(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  while (index < limit) {
+    const character = text[index]!;
+    if (isWhitespace(character)) { index += 1; continue; }
+
+    if (character === '-' && index + 1 < limit && text[index + 1] === '-') {
+      const end = scanLineEnd(text, index, limit);
+      if (!addToken(tokens, index, end, 'sql-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    if (character === '/' && index + 1 < limit && text[index + 1] === '*') {
+      const end = scanSqlBlockComment(text, index, limit);
+      if (!addToken(tokens, index, end, 'sql-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    const stringEnd = scanSqlString(text, index, limit);
+    if (stringEnd !== undefined) {
+      if (!addToken(tokens, index, stringEnd, 'sql-string')) return index;
+      index = stringEnd;
+      continue;
+    }
+
+    if (character === '"') {
+      const end = scanSqlQuotedIdentifier(text, index, limit);
+      if (!addToken(tokens, index, end, 'sql-identifier')) return index;
+      index = end;
+      continue;
+    }
+
+    if (character === '$') {
+      const stringEnd = scanSqlDollarQuotedString(text, index, limit);
+      if (stringEnd !== undefined) {
+        if (!addToken(tokens, index, stringEnd, 'sql-string')) return index;
+        index = stringEnd;
+        continue;
+      }
+      if (index + 1 < limit && isDigit(text[index + 1]!)) {
+        let end = index + 2;
+        while (end < limit && isDigit(text[end]!)) end += 1;
+        if (!addToken(tokens, index, end, 'sql-parameter')) return index;
+        index = end;
+        continue;
+      }
+    }
+
+    if (isDigit(character) || (character === '.' && index + 1 < limit && isDigit(text[index + 1]!))) {
+      const end = scanSqlNumber(text, index, limit);
+      if (!addToken(tokens, index, end, 'sql-number')) return index;
+      index = end;
+      continue;
+    }
+
+    if (isSqlNameStart(character)) {
+      const end = scanSqlName(text, index, limit);
+      const word = text.slice(index, end).toLowerCase();
+      const kind = sqlLiterals.has(word) ? 'sql-literal'
+        : sqlKeywords.has(word) ? 'sql-keyword'
+          : sqlTypes.has(word) ? 'sql-type'
+            : sqlFunctions.has(word) && isSqlFunctionCall(text, end, limit) ? 'sql-function'
+              : undefined;
+      if (kind && !addToken(tokens, index, end, kind)) return index;
+      index = end;
+      continue;
+    }
+
+    const operatorEnd = scanSqlOperator(text, index, limit);
+    if (operatorEnd > index) {
+      if (!addToken(tokens, index, operatorEnd, 'sql-operator')) return index;
+      index = operatorEnd;
+      continue;
+    }
+
+    index += 1;
+  }
+  return limit;
+}
+
+function scanSqlBlockComment(text: string, start: number, limit: number): number {
+  let index = start + 2;
+  let depth = 1;
+  while (index + 1 < limit) {
+    if (text[index] === '/' && text[index + 1] === '*') {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+    if (text[index] === '*' && text[index + 1] === '/') {
+      depth -= 1;
+      index += 2;
+      if (depth === 0) return index;
+      continue;
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function scanSqlString(text: string, start: number, limit: number): number | undefined {
+  let quoteStart = start;
+  let backslashEscapes = false;
+  const character = text[start]!;
+  if ((character === 'e' || character === 'E') && start + 1 < limit && text[start + 1] === '\'' &&
+      (start === 0 || !isSqlNamePart(text[start - 1]!))) {
+    quoteStart = start + 1;
+    backslashEscapes = true;
+  } else if ((character === 'b' || character === 'B' || character === 'x' || character === 'X') &&
+      start + 1 < limit && text[start + 1] === '\'' && (start === 0 || !isSqlNamePart(text[start - 1]!))) {
+    quoteStart = start + 1;
+  } else if (character !== '\'') {
+    return undefined;
+  }
+
+  let index = quoteStart + 1;
+  while (index < limit) {
+    if (backslashEscapes && text[index] === '\\') {
+      index += index + 1 < limit ? 2 : 1;
+      continue;
+    }
+    if (text[index] === '\'') {
+      if (index + 1 < limit && text[index + 1] === '\'') { index += 2; continue; }
+      return index + 1;
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function scanSqlQuotedIdentifier(text: string, start: number, limit: number): number {
+  let index = start + 1;
+  while (index < limit) {
+    if (text[index] === '"') {
+      if (index + 1 < limit && text[index + 1] === '"') { index += 2; continue; }
+      return index + 1;
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function scanSqlDollarQuotedString(text: string, start: number, limit: number): number | undefined {
+  let tagEnd = start + 1;
+  if (tagEnd < limit && text[tagEnd] !== '$') {
+    if (!isSqlNameStart(text[tagEnd]!)) return undefined;
+    tagEnd += 1;
+    while (tagEnd < limit && isSqlDollarTagPart(text[tagEnd]!)) tagEnd += 1;
+    if (tagEnd - start - 1 > MAX_SQL_DOLLAR_TAG_CODE_UNITS) return undefined;
+    if (tagEnd >= limit || text[tagEnd] !== '$') return undefined;
+  }
+  if (tagEnd >= limit || text[tagEnd] !== '$') return undefined;
+
+  const delimiterEnd = tagEnd + 1;
+  const delimiter = text.slice(start, delimiterEnd);
+  const terminator = findTextWithinLimit(text, delimiter, delimiterEnd, limit);
+  return terminator < 0 ? limit : terminator + delimiter.length;
+}
+
+function scanSqlNumber(text: string, start: number, limit: number): number {
+  let index = start;
+  if (text[index] === '.') index += 1;
+  while (index < limit && isDigit(text[index]!)) index += 1;
+  if (text[index] === '.') {
+    index += 1;
+    while (index < limit && isDigit(text[index]!)) index += 1;
+  }
+  if (index < limit && (text[index] === 'e' || text[index] === 'E')) {
+    let exponentEnd = index + 1;
+    if (text[exponentEnd] === '+' || text[exponentEnd] === '-') exponentEnd += 1;
+    if (exponentEnd < limit && isDigit(text[exponentEnd]!)) {
+      index = exponentEnd + 1;
+      while (index < limit && isDigit(text[index]!)) index += 1;
+    }
+  }
+  return index;
+}
+
+function scanSqlName(text: string, start: number, limit: number): number {
+  let index = start + 1;
+  while (index < limit && isSqlNamePart(text[index]!)) index += 1;
+  return index;
+}
+
+function scanSqlOperator(text: string, start: number, limit: number): number {
+  for (const operator of sqlOperators) {
+    if (start + operator.length <= limit && text.startsWith(operator, start)) return start + operator.length;
+  }
+  return start;
+}
+
+function isSqlFunctionCall(text: string, end: number, limit: number): boolean {
+  let index = end;
+  while (index < limit && isWhitespace(text[index]!)) index += 1;
+  return index < limit && text[index] === '(';
+}
+
+function isSqlNameStart(character: string): boolean {
+  return character === '_' || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+}
+
+function isSqlNamePart(character: string): boolean {
+  return isSqlNameStart(character) || isDigit(character) || character === '$';
+}
+
+function isSqlDollarTagPart(character: string): boolean {
+  return isSqlNameStart(character) || isDigit(character);
 }
 
 function scanJson(text: string, limit: number, tokens: TextSyntaxToken[]): number {
