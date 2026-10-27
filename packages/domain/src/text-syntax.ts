@@ -12,7 +12,7 @@ export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
 export type TextSyntaxTokenKind =
-  | 'shell-command' | 'shell-keyword' | 'shell-option' | 'shell-string' | 'shell-variable' | 'shell-comment' | 'shell-operator' | 'shell-path'
+  | 'shell-command' | 'shell-builtin' | 'shell-keyword' | 'shell-option' | 'shell-string' | 'shell-variable' | 'shell-comment' | 'shell-operator' | 'shell-path'
   | 'powershell-command' | 'powershell-keyword' | 'powershell-parameter' | 'powershell-string' | 'powershell-variable'
   | 'powershell-comment' | 'powershell-operator' | 'powershell-number' | 'powershell-type'
   | 'python-builtin' | 'python-keyword' | 'python-string' | 'python-comment' | 'python-number' | 'python-operator'
@@ -40,8 +40,23 @@ export interface TextSyntaxPreview {
   readonly isTruncated: boolean;
 }
 
-const shellKeywords = new Set(['case', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function', 'if', 'in', 'select', 'then', 'until', 'while']);
-const commandContinuingKeywords = new Set(['case', 'do', 'elif', 'else', 'for', 'function', 'if', 'in', 'select', 'then', 'until', 'while']);
+const shellKeywords = new Set(['!', '[[', ']]', 'case', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
+const commandContinuingKeywords = new Set(['!', 'case', 'do', 'elif', 'else', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
+const shellBuiltins = new Set([
+  '.', '[', 'alias', 'autoload', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'continue',
+  'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help',
+  'history', 'jobs', 'kill', 'let', 'limit', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray',
+  'readonly', 'rehash', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset',
+  'ulimit', 'umask', 'unalias', 'unlimit', 'unset', 'vared', 'wait', 'where', 'whence', 'zle', 'zmodload'
+]);
+const shellCommandPrefixes = new Set(['builtin', 'command', 'doas', 'env', 'exec', 'nice', 'nohup', 'sudo']);
+const shellCommandPrefixOptionsWithValues: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
+  doas: new Set(['-C', '-u']),
+  env: new Set(['-C', '--argv0', '--chdir', '--split-string', '--unset', '-S', '-a', '-u']),
+  exec: new Set(['-a']),
+  nice: new Set(['--adjustment', '-n']),
+  sudo: new Set(['--chdir', '--close-from', '--group', '--host', '--other-user', '--prompt', '--role', '--type', '--user', '-C', '-D', '-g', '-h', '-p', '-R', '-r', '-t', '-u'])
+});
 const powershellKeywords = new Set([
   'begin', 'break', 'catch', 'class', 'continue', 'data', 'do', 'dynamicparam', 'else', 'elseif', 'end', 'enum', 'exit',
   'filter', 'finally', 'for', 'foreach', 'from', 'function', 'if', 'in', 'param', 'process', 'return', 'switch', 'throw',
@@ -180,14 +195,37 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
 function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): number {
   let index = 0;
   let commandExpected = true;
+  let commandPrefixPending = false;
+  let commandPrefixOptionValueExpected = false;
+  let shellAssignmentValuePending = false;
+  let shellCommandPrefix: string | undefined;
+  let insideShellTest = false;
+
+  function resetCommandPrefix(): void {
+    commandPrefixPending = false;
+    commandPrefixOptionValueExpected = false;
+    shellAssignmentValuePending = false;
+    shellCommandPrefix = undefined;
+  }
+
+  function consumeShellCommandWord(): void {
+    commandExpected = false;
+    resetCommandPrefix();
+  }
+
   while (index < limit) {
     const character = text[index]!;
     if (character === '\n' || character === '\r') {
       index += character === '\r' && text[index + 1] === '\n' ? 2 : 1;
-      commandExpected = true;
+      commandExpected = !insideShellTest;
+      resetCommandPrefix();
       continue;
     }
-    if (isWhitespace(character)) { index += 1; continue; }
+    if (isWhitespace(character)) {
+      shellAssignmentValuePending = false;
+      index += 1;
+      continue;
+    }
 
     if (character === '#' && (index === 0 || isWhitespace(text[index - 1]!))) {
       const start = index;
@@ -206,7 +244,8 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
         index += 1;
       }
       if (!addToken(tokens, start, index, 'shell-string')) return start;
-      if (commandExpected) commandExpected = false;
+      if (commandPrefixOptionValueExpected) commandPrefixOptionValueExpected = false;
+      else if (!shellAssignmentValuePending && (commandExpected || commandPrefixPending)) consumeShellCommandWord();
       continue;
     }
 
@@ -215,6 +254,8 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       if (end > index + 1) {
         if (!addToken(tokens, index, end, 'shell-variable')) return index;
         index = end;
+        if (commandPrefixOptionValueExpected) commandPrefixOptionValueExpected = false;
+        else if (!shellAssignmentValuePending && (commandExpected || commandPrefixPending)) consumeShellCommandWord();
         continue;
       }
     }
@@ -224,7 +265,10 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       index = scanOperator(text, index, limit);
       if (!addToken(tokens, start, index, 'shell-operator')) return start;
       const operator = text.slice(start, index);
-      if (operator === ';' || operator === '|' || operator === '||' || operator === '&' || operator === '&&' || operator === '(') commandExpected = true;
+      if (!insideShellTest && (operator === ';' || operator === '|' || operator === '||' || operator === '&' || operator === '&&' || operator === '(')) {
+        commandExpected = true;
+        resetCommandPrefix();
+      }
       continue;
     }
 
@@ -232,20 +276,42 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     while (index < limit && !isWhitespace(text[index]!) && !isShellOperator(text[index]!) && !isQuote(text[index]!) && text[index] !== '$') index += 1;
     if (index === start) { index += 1; continue; }
     const word = text.slice(start, index);
-    if (shellKeywords.has(word)) {
+    if (commandPrefixOptionValueExpected) {
+      commandPrefixOptionValueExpected = false;
+      continue;
+    }
+    if (word === ']]' && !insideShellTest) continue;
+    if (shellAssignmentValuePending) continue;
+    if (shellKeywords.has(word) && !commandPrefixPending &&
+        ((commandExpected && word !== ']]') || (insideShellTest && (word === ']]' || word === '!')))) {
       if (!addToken(tokens, start, index, 'shell-keyword')) return start;
-      commandExpected = commandContinuingKeywords.has(word);
-    } else if (commandExpected) {
-      if (!isShellAssignment(word) && !addToken(tokens, start, index, 'shell-command')) return start;
-      if (!isShellAssignment(word)) commandExpected = false;
+      if (word === '[[') {
+        insideShellTest = true;
+        commandExpected = false;
+      } else if (word === ']]') {
+        insideShellTest = false;
+        commandExpected = false;
+      } else {
+        commandExpected = insideShellTest ? false : commandContinuingKeywords.has(word);
+      }
+      resetCommandPrefix();
+    } else if ((commandExpected || commandPrefixPending) && isShellAssignment(word)) {
+      const assignment = word.indexOf('=');
+      if (!addToken(tokens, start, start + assignment, 'shell-variable')) return start;
+      shellAssignmentValuePending = true;
+    } else if (commandPrefixPending && word.startsWith('-') && word.length > 1) {
+      if (!addToken(tokens, start, index, 'shell-option')) return start;
+      commandPrefixOptionValueExpected = shellCommandPrefixOptionsWithValues[shellCommandPrefix ?? '']?.has(word) ?? false;
+    } else if (commandExpected || commandPrefixPending) {
+      const tokenKind = shellBuiltins.has(word) ? 'shell-builtin' : 'shell-command';
+      if (!addToken(tokens, start, index, tokenKind)) return start;
+      commandExpected = false;
+      commandPrefixPending = shellCommandPrefixes.has(word);
+      shellCommandPrefix = commandPrefixPending ? word : undefined;
     } else if (word.startsWith('-') && word.length > 1) {
       if (!addToken(tokens, start, index, 'shell-option')) return start;
     } else if (word.includes('/') || word.startsWith('~')) {
       if (!addToken(tokens, start, index, 'shell-path')) return start;
-    } else if (isShellAssignment(word)) {
-      const assignment = word.indexOf('=');
-      if (!addToken(tokens, start, start + assignment, 'shell-variable')) return start;
-      commandExpected = true;
     }
   }
   return limit;

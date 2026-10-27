@@ -35,23 +35,95 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
   assert.equal(resolveTextSyntaxProfile('shell', 'script.ps1'), 'shell');
 });
 
-test('shell syntax preview colors commands, keywords, options, variables, strings, comments and operators', () => {
+test('shell syntax preview colors commands, builtins, keywords, options, variables, strings, comments and operators', () => {
   const source = 'if test "$HOME"; then\n  git status --short\n  echo $HOME\nfi # finished\n';
   const preview = highlightTextSyntax(source, 'shell');
   const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
   assert.deepEqual(tokens, [
     { text: 'if', kind: 'shell-keyword' },
-    { text: 'test', kind: 'shell-command' },
+    { text: 'test', kind: 'shell-builtin' },
     { text: '"$HOME"', kind: 'shell-string' },
     { text: ';', kind: 'shell-operator' },
     { text: 'then', kind: 'shell-keyword' },
     { text: 'git', kind: 'shell-command' },
     { text: '--short', kind: 'shell-option' },
-    { text: 'echo', kind: 'shell-command' },
+    { text: 'echo', kind: 'shell-builtin' },
     { text: '$HOME', kind: 'shell-variable' },
     { text: 'fi', kind: 'shell-keyword' },
     { text: '# finished', kind: 'shell-comment' }
   ]);
+});
+
+test('shell syntax preview classifies common builtins and follows bounded command wrappers', () => {
+  const source = 'if true; then sudo -u admin env PATH="$HOME/bin" git status; fi';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'if', kind: 'shell-keyword' },
+    { text: 'true', kind: 'shell-builtin' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'then', kind: 'shell-keyword' },
+    { text: 'sudo', kind: 'shell-command' },
+    { text: '-u', kind: 'shell-option' },
+    { text: 'env', kind: 'shell-command' },
+    { text: 'PATH', kind: 'shell-variable' },
+    { text: '"$HOME/bin"', kind: 'shell-string' },
+    { text: 'git', kind: 'shell-command' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'fi', kind: 'shell-keyword' }
+  ]);
+});
+
+test('shell syntax preview preserves wrapper command position across expanded assignments', () => {
+  const source = 'env PATH=$HOME/bin git status';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'env', kind: 'shell-command' },
+    { text: 'PATH', kind: 'shell-variable' },
+    { text: '$HOME', kind: 'shell-variable' },
+    { text: 'git', kind: 'shell-command' }
+  ]);
+});
+
+test('shell syntax preview treats double-bracket expressions as conditions, not commands', () => {
+  const source = 'time git status; if [[ ! -f /tmp/target && -n $HOME ]]; then echo ready; fi';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'time', kind: 'shell-keyword' },
+    { text: 'git', kind: 'shell-command' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'if', kind: 'shell-keyword' },
+    { text: '[[', kind: 'shell-keyword' },
+    { text: '!', kind: 'shell-keyword' },
+    { text: '-f', kind: 'shell-option' },
+    { text: '/tmp/target', kind: 'shell-path' },
+    { text: '&&', kind: 'shell-operator' },
+    { text: '-n', kind: 'shell-option' },
+    { text: '$HOME', kind: 'shell-variable' },
+    { text: ']]', kind: 'shell-keyword' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'then', kind: 'shell-keyword' },
+    { text: 'echo', kind: 'shell-builtin' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'fi', kind: 'shell-keyword' }
+  ]);
+});
+
+test('shell syntax preview only colors the double-bracket closing marker in condition context', () => {
+  const source = 'echo ]]';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [{ text: 'echo', kind: 'shell-builtin' }]);
+});
+
+test('shell syntax preview does not color an isolated double-bracket closer', () => {
+  assert.deepEqual(highlightTextSyntax(']]', 'shell').tokens, []);
 });
 
 test('PowerShell syntax preview colors command forms, keywords, parameters, variables, strings, numbers, types and operators', () => {

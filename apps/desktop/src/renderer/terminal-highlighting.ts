@@ -16,7 +16,7 @@ const MAX_TERMINAL_HIGHLIGHT_ROWS = 128;
 const MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS = 64;
 
 const shellSyntaxPaletteKeys: Readonly<Partial<Record<TextSyntaxTokenKind, keyof typeof terminalThemes.dark>>> = Object.freeze({
-  'shell-command': 'cyan', 'shell-keyword': 'magenta', 'shell-option': 'yellow', 'shell-string': 'brightGreen',
+  'shell-command': 'cyan', 'shell-builtin': 'brightGreen', 'shell-keyword': 'magenta', 'shell-option': 'yellow', 'shell-string': 'brightGreen',
   'shell-variable': 'brightBlue', 'shell-comment': 'brightBlack', 'shell-operator': 'brightRed', 'shell-path': 'blue'
 });
 

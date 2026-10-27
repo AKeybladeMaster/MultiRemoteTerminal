@@ -397,27 +397,42 @@ async function sendLine(page: Page, title: string, line: string, marker: string 
   return { panel, rows };
 }
 
+type ShellPromptDecorationState = { rendered: string; glyphs: { text: string; color: string }[] };
+
+async function readShellPromptDecorationState(rows: Locator): Promise<ShellPromptDecorationState> {
+  return rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
+    const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
+    return { rendered: glyphs.map(glyph => glyph.text).join(''), glyphs };
+  });
+}
+
+function hasShellPromptTokenColor(state: ShellPromptDecorationState, token: string, color: string): boolean {
+  const start = state.rendered.lastIndexOf(token);
+  return start >= 0 && state.glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
+}
+
 async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
-  let lastDecorationState: { rendered: string; glyphs: { text: string; color: string }[]; hasKeyword: boolean;
-    hasCommand: boolean; hasClosingKeyword: boolean } | undefined;
+  let lastDecorationState: ShellPromptDecorationState | undefined;
   try {
     await expect.poll(async () => {
-      lastDecorationState = await rows.locator('span.xterm-decoration-top').evaluateAll(spans => {
-        const glyphs = spans.map(span => ({ text: span.textContent ?? '', color: getComputedStyle(span).color }));
-        const rendered = glyphs.map(glyph => glyph.text).join('');
-        const hasColor = (token: string, color: string) => {
-          const start = rendered.lastIndexOf(token);
-          return start >= 0 && glyphs.slice(start, start + token.length).every(glyph => glyph.color === color);
-        };
-        return { rendered, glyphs, hasKeyword: hasColor('if', 'rgb(223, 143, 255)'), hasCommand: hasColor('true', 'rgb(84, 215, 212)'),
-          hasClosingKeyword: hasColor('fi', 'rgb(223, 143, 255)') };
-      });
-      return lastDecorationState.hasKeyword && lastDecorationState.hasCommand && lastDecorationState.hasClosingKeyword;
+      lastDecorationState = await readShellPromptDecorationState(rows);
+      return hasShellPromptTokenColor(lastDecorationState, 'if', 'rgb(223, 143, 255)') &&
+        hasShellPromptTokenColor(lastDecorationState, 'true', 'rgb(132, 242, 167)') &&
+        hasShellPromptTokenColor(lastDecorationState, 'fi', 'rgb(223, 143, 255)');
     }, { timeout: 10_000 }).toBe(true);
   } catch (error) {
     const renderedRows = await rows.innerText();
     throw new Error(`Shell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
   }
+}
+
+async function expectShellCommandPrefixColors(rows: Locator): Promise<void> {
+  await expect.poll(async () => {
+    const state = await readShellPromptDecorationState(rows);
+    return hasShellPromptTokenColor(state, 'sudo', 'rgb(84, 215, 212)') &&
+      hasShellPromptTokenColor(state, '-u', 'rgb(248, 211, 107)') &&
+      hasShellPromptTokenColor(state, 'git', 'rgb(84, 215, 212)');
+  }, { timeout: 10_000 }).toBe(true);
 }
 
 async function expectShellStringColorsAcrossRows(rows: Locator, startMarker: string, endMarker: string): Promise<void> {
@@ -675,6 +690,8 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
     await syntax.selectOption('shell');
     await contents.fill('if true; then\n  echo shell\nfi\n');
     await expect(preview.locator('[data-token-kind="shell-keyword"]').first()).toHaveText('if');
+    await expect(preview.locator('[data-token-kind="shell-builtin"]').first()).toHaveText('true');
+    await expect(preview.locator('[data-token-kind="shell-builtin"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
 
     await syntax.selectOption('json');
     await contents.fill('{"name":"MultiRemoteTerminal","enabled":true}');
@@ -1381,7 +1398,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
     const remoteSyntaxEditor = page.getByRole('dialog', { name: 'remote.zsh' });
     await expect(remoteSyntaxEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-keyword"]').first()).toHaveText('if');
-    await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-command"]').first()).toHaveText('true');
+    await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-builtin"]').first()).toHaveText('true');
     await remoteSyntaxEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteSyntaxEditor).toHaveCount(0);
     const remotePowerShellEdit = sftpPanel.getByRole('button', { name: 'Edit remote.ps1', exact: true });
@@ -5719,7 +5736,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
+    await settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' }).check();
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -5732,10 +5749,11 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     const syntaxPanel = await selectTerminal(page, 'Bash session 1');
     await syntaxPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
     await expect(syntaxPanel.locator('.xterm-helper-textarea')).toBeFocused();
-    await page.keyboard.type('if true; then echo MRT-SHELL-COLOR; fi');
+    await page.keyboard.type('if true; then echo MRT-SHELL-COLOR; sudo -u mrtadmin env PATH=/usr/bin git --version; fi');
     const syntaxRows = syntaxPanel.locator('.xterm-rows');
     await expect(syntaxRows).toContainText('MRT-SHELL-COLOR');
     await expectShellPromptTokenColors(syntaxRows);
+    await expectShellCommandPrefixColors(syntaxRows);
     await page.screenshot({ path: 'test-results/bash-shell-syntax-prompt.png' });
     await clearShellPromptTokenColors(page, syntaxRows);
 
@@ -5888,7 +5906,7 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 800));
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
+    await settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' }).check();
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -6597,7 +6615,7 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('checkbox', { name: 'Color shell commands at prompts' }).check();
+    await settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' }).check();
     await settings.getByRole('checkbox', { name: 'Highlight matching terminal text' }).check();
     await settings.getByRole('button', { name: 'Add rule', exact: true }).click();
     await settings.getByLabel('Rule 1 pattern').fill('MRT-HIGHLIGHT-\\w+');
@@ -6641,7 +6659,7 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await expect(settings.getByRole('checkbox', { name: 'Color shell commands at prompts' })).toBeChecked();
+    await expect(settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' })).toBeChecked();
     await expect(settings.getByRole('checkbox', { name: 'Highlight matching terminal text' })).toBeChecked();
     await expect(settings.getByLabel('Rule 1 pattern')).toHaveValue('MRT-HIGHLIGHT-\\w+');
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
