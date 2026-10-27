@@ -7,7 +7,7 @@ import {
   normalizeTerminalHighlightRules
 } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { TerminalHighlightRule, TerminalHighlightColor } from '../../../../packages/domain/src/terminal-highlights.ts';
-import { highlightShellInputSyntax } from '../../../../packages/domain/src/text-syntax.ts';
+import { highlightShellInputSyntax, highlightTextSyntax } from '../../../../packages/domain/src/text-syntax.ts';
 import type { ShellSyntaxContinuationState, TextSyntaxTokenKind } from '../../../../packages/domain/src/text-syntax.ts';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
@@ -15,9 +15,12 @@ import type { TerminalTheme } from './terminal-theme.ts';
 const MAX_TERMINAL_HIGHLIGHT_ROWS = 128;
 const MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS = 64;
 
-const shellSyntaxPaletteKeys: Readonly<Partial<Record<TextSyntaxTokenKind, keyof typeof terminalThemes.dark>>> = Object.freeze({
+const promptSyntaxPaletteKeys: Readonly<Partial<Record<TextSyntaxTokenKind, keyof typeof terminalThemes.dark>>> = Object.freeze({
   'shell-command': 'cyan', 'shell-builtin': 'brightGreen', 'shell-keyword': 'magenta', 'shell-option': 'yellow', 'shell-string': 'brightGreen',
-  'shell-variable': 'brightBlue', 'shell-comment': 'brightBlack', 'shell-operator': 'brightRed', 'shell-path': 'blue'
+  'shell-variable': 'brightBlue', 'shell-comment': 'brightBlack', 'shell-operator': 'brightRed', 'shell-path': 'blue',
+  'powershell-command': 'cyan', 'powershell-keyword': 'magenta', 'powershell-parameter': 'yellow', 'powershell-string': 'brightGreen',
+  'powershell-variable': 'brightBlue', 'powershell-comment': 'brightBlack', 'powershell-operator': 'brightRed',
+  'powershell-number': 'brightBlue', 'powershell-type': 'blue'
 });
 
 interface Disposable {
@@ -44,10 +47,13 @@ export interface BoundedTerminalHighlightLine {
 export interface TerminalShellInputAnchor {
   readonly marker: IMarker;
   readonly startColumn: number;
+  readonly profile: TerminalPromptSyntaxProfile;
   readonly wrappedMarkers: IMarker[];
   readonly decorations: Disposable[];
   readonly continuationState?: ShellSyntaxContinuationState | undefined;
 }
+
+export type TerminalPromptSyntaxProfile = 'shell' | 'powershell';
 
 export interface TerminalShellInputAnchorRef {
   current: TerminalShellInputAnchor | undefined;
@@ -61,11 +67,17 @@ export interface TerminalHighlightOptions {
   readonly theme: TerminalTheme;
 }
 
-export function isShellPromptAtCursor(promptText: string): boolean {
+export function getTerminalPromptSyntaxProfile(promptText: string): TerminalPromptSyntaxProfile | undefined {
   const trimmed = promptText.trimEnd();
+  if (trimmed === '>>') return undefined;
+  if (/^PS(?:\s+.+)?\s*>$/iu.test(trimmed)) return 'powershell';
   const lastCharacter = trimmed.at(-1);
   return lastCharacter === '$' || lastCharacter === '#' || lastCharacter === '%' || lastCharacter === '>' ||
-    lastCharacter === '❯' || lastCharacter === '➜';
+    lastCharacter === '❯' || lastCharacter === '➜' ? 'shell' : undefined;
+}
+
+export function isShellPromptAtCursor(promptText: string): boolean {
+  return getTerminalPromptSyntaxProfile(promptText) !== undefined;
 }
 
 export function isShellContinuationPromptAtCursor(promptText: string): boolean {
@@ -262,12 +274,14 @@ export function attachTerminalHighlights(
       if (!inputAnchor || inputAnchor.marker.isDisposed) return;
       const input = extractTerminalShellInput(terminal, inputAnchor, cursorLine);
       if (!input || input.text.length === 0) return;
-      const tokens = highlightShellInputSyntax(input.text, inputAnchor.continuationState).tokens
+      const tokens = (inputAnchor.profile === 'powershell'
+        ? highlightTextSyntax(input.text, 'powershell').tokens
+        : highlightShellInputSyntax(input.text, inputAnchor.continuationState).tokens)
         .slice(0, MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS);
       const inputMarkers = new Map<number, IMarker>([[inputAnchor.marker.line, inputAnchor.marker]]);
       let remainingDecorations = MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS;
       for (const token of tokens) {
-        const paletteKey = shellSyntaxPaletteKeys[token.kind];
+        const paletteKey = promptSyntaxPaletteKeys[token.kind];
         if (!paletteKey) continue;
         for (const row of input.rows) {
           if (remainingDecorations <= 0) break;

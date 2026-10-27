@@ -443,6 +443,21 @@ async function expectShellContinuationColors(rows: Locator): Promise<void> {
   }, { timeout: 10_000 }).toBe(true);
 }
 
+async function expectPowerShellPromptTokenColors(rows: Locator): Promise<void> {
+  let lastDecorationState: ShellPromptDecorationState | undefined;
+  try {
+    await expect.poll(async () => {
+      lastDecorationState = await readShellPromptDecorationState(rows);
+      return hasShellPromptTokenColor(lastDecorationState, 'Get-ChildItem', 'rgb(84, 215, 212)') &&
+        hasShellPromptTokenColor(lastDecorationState, '-Path', 'rgb(248, 211, 107)') &&
+        hasShellPromptTokenColor(lastDecorationState, '$HOME', 'rgb(150, 194, 255)');
+    }, { timeout: 10_000 }).toBe(true);
+  } catch (error) {
+    const renderedRows = await rows.innerText();
+    throw new Error(`PowerShell token colors missing; terminal rows=${JSON.stringify(renderedRows)}; decorations=${JSON.stringify(lastDecorationState)}`, { cause: error });
+  }
+}
+
 async function expectShellStringColorsAcrossRows(rows: Locator, startMarker: string, endMarker: string): Promise<void> {
   await expect.poll(async () => {
     const rowsWithDecorations = await rows.locator(':scope > div').evaluateAll(rowElements => rowElements.map(row => {
@@ -5734,6 +5749,38 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
   }
 });
 
+test('PowerShell prompt coloring reuses bounded profile tokens', async () => {
+  test.skip(process.platform !== 'win32', 'Windows Electron acceptance is required for PowerShell terminal prompt coloring');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-powershell-shell-color-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('checkbox', { name: 'Color Shell and PowerShell input at prompts' }).check();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const panel = await selectTerminal(page, 'PowerShell session 2');
+    const rows = panel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: 'PowerShell session 2 running' })).toBeVisible({ timeout: 15_000 });
+    await expect(rows).toContainText(/PS .+>/, { timeout: 15_000 });
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type('Get-ChildItem -Path $HOME');
+    await expect(rows).toContainText('Get-ChildItem -Path $HOME');
+    await expectPowerShellPromptTokenColors(rows);
+    await page.keyboard.press('Control+C');
+    await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
 test('Git Bash runs in a local terminal and saved Bash sessions reopen', async () => {
   test.skip(process.platform !== 'win32', 'ConPTY acceptance evidence is required on Windows');
   test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash acceptance test');
@@ -5744,7 +5791,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' }).check();
+    await settings.getByRole('checkbox', { name: 'Color Shell and PowerShell input at prompts' }).check();
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -5943,7 +5990,7 @@ test('shell prompt coloring works in SSH and Telnet sessions with a zsh-style pr
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 800));
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' }).check();
+    await settings.getByRole('checkbox', { name: 'Color Shell and PowerShell input at prompts' }).check();
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -6652,7 +6699,7 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' }).check();
+    await settings.getByRole('checkbox', { name: 'Color Shell and PowerShell input at prompts' }).check();
     await settings.getByRole('checkbox', { name: 'Highlight matching terminal text' }).check();
     await settings.getByRole('button', { name: 'Add rule', exact: true }).click();
     await settings.getByLabel('Rule 1 pattern').fill('MRT-HIGHLIGHT-\\w+');
@@ -6696,7 +6743,7 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await expect(settings.getByRole('checkbox', { name: 'Color shell commands and builtins at prompts' })).toBeChecked();
+    await expect(settings.getByRole('checkbox', { name: 'Color Shell and PowerShell input at prompts' })).toBeChecked();
     await expect(settings.getByRole('checkbox', { name: 'Highlight matching terminal text' })).toBeChecked();
     await expect(settings.getByLabel('Rule 1 pattern')).toHaveValue('MRT-HIGHLIGHT-\\w+');
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
