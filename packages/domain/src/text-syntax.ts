@@ -40,6 +40,19 @@ export interface TextSyntaxPreview {
   readonly isTruncated: boolean;
 }
 
+export interface ShellSyntaxContinuationState {
+  readonly commandExpected: boolean;
+  readonly commandPrefixPending: boolean;
+  readonly commandPrefixOptionValueExpected: boolean;
+  readonly shellAssignmentValuePending: boolean;
+  readonly shellCommandPrefix: string | undefined;
+  readonly insideShellTest: boolean;
+}
+
+export interface ShellSyntaxInputPreview extends TextSyntaxPreview {
+  readonly continuationState?: ShellSyntaxContinuationState | undefined;
+}
+
 const shellKeywords = new Set(['!', '[[', ']]', 'case', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
 const commandContinuingKeywords = new Set(['!', 'case', 'do', 'elif', 'else', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
 const shellBuiltins = new Set([
@@ -176,12 +189,12 @@ export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: s
 export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxProfile): TextSyntaxPreview {
   const empty: readonly TextSyntaxToken[] = Object.freeze([]);
   if (profile === 'plain' || text.length === 0) return Object.freeze({ tokens: empty, highlightedThrough: text.length, isTruncated: false });
+  if (profile === 'shell') return highlightShellInputSyntax(text);
 
   let limit = Math.min(text.length, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   if (limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1))) limit -= 1;
   const tokens: TextSyntaxToken[] = [];
-  const scannedThrough = profile === 'shell' ? scanShell(text, limit, tokens)
-    : profile === 'markdown' ? scanMarkdown(text, limit, tokens)
+  const scannedThrough = profile === 'markdown' ? scanMarkdown(text, limit, tokens)
       : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
       : profile === 'python' ? scanPython(text, limit, tokens)
         : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
@@ -192,14 +205,47 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
-function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+export function highlightShellInputSyntax(text: string, initialState?: ShellSyntaxContinuationState): ShellSyntaxInputPreview {
+  const empty: readonly TextSyntaxToken[] = Object.freeze([]);
+  if (text.length === 0) return Object.freeze({ tokens: empty, highlightedThrough: 0, isTruncated: false });
+  let limit = Math.min(text.length, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  if (limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1))) limit -= 1;
+  const tokens: TextSyntaxToken[] = [];
+  const scan = scanShell(text, limit, tokens, initialState);
+  return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scan.scannedThrough,
+    isTruncated: scan.scannedThrough < text.length, continuationState: scan.continuationState });
+}
+
+interface ShellScanResult {
+  readonly scannedThrough: number;
+  readonly continuationState?: ShellSyntaxContinuationState | undefined;
+}
+
+interface ShellLineContinuationEnd {
+  readonly end: number;
+  readonly explicitEndOfInput: boolean;
+}
+
+function shellLineContinuationEnd(text: string, index: number, limit: number): ShellLineContinuationEnd | undefined {
+  if (index > 0 && text[index - 1] === '\\') return undefined;
+  let end = index;
+  while (end < limit && text[end] === '\\') end += 1;
+  if ((end - index) % 2 === 0) return undefined;
+  if (end === limit) return limit === text.length ? { end, explicitEndOfInput: true } : undefined;
+  if (text[end] === '\n') return { end: end + 1, explicitEndOfInput: false };
+  if (text[end] === '\r') return { end: end + (text[end + 1] === '\n' ? 2 : 1), explicitEndOfInput: false };
+  return undefined;
+}
+
+function scanShell(text: string, limit: number, tokens: TextSyntaxToken[], initialState?: ShellSyntaxContinuationState): ShellScanResult {
   let index = 0;
-  let commandExpected = true;
-  let commandPrefixPending = false;
-  let commandPrefixOptionValueExpected = false;
-  let shellAssignmentValuePending = false;
-  let shellCommandPrefix: string | undefined;
-  let insideShellTest = false;
+  let commandExpected = initialState?.commandExpected ?? true;
+  let commandPrefixPending = initialState?.commandPrefixPending ?? false;
+  let commandPrefixOptionValueExpected = initialState?.commandPrefixOptionValueExpected ?? false;
+  let shellAssignmentValuePending = initialState?.shellAssignmentValuePending ?? false;
+  let shellCommandPrefix = initialState?.shellCommandPrefix;
+  let insideShellTest = initialState?.insideShellTest ?? false;
+  let explicitLineContinuation = false;
 
   function resetCommandPrefix(): void {
     commandPrefixPending = false;
@@ -215,13 +261,23 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
 
   while (index < limit) {
     const character = text[index]!;
+    if (character === '\\') {
+      const continuation = shellLineContinuationEnd(text, index, limit);
+      if (continuation) {
+        explicitLineContinuation = continuation.explicitEndOfInput && continuation.end === limit;
+        index = continuation.end;
+        continue;
+      }
+    }
     if (character === '\n' || character === '\r') {
+      explicitLineContinuation = false;
       index += character === '\r' && text[index + 1] === '\n' ? 2 : 1;
       commandExpected = !insideShellTest;
       resetCommandPrefix();
       continue;
     }
     if (isWhitespace(character)) {
+      explicitLineContinuation = false;
       shellAssignmentValuePending = false;
       index += 1;
       continue;
@@ -230,7 +286,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     if (character === '#' && (index === 0 || isWhitespace(text[index - 1]!))) {
       const start = index;
       index = scanLineEnd(text, index, limit);
-      if (!addToken(tokens, start, index, 'shell-comment')) return start;
+      if (!addToken(tokens, start, index, 'shell-comment')) return { scannedThrough: start };
       continue;
     }
 
@@ -243,7 +299,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
         if (text[index] === quote) { index += 1; break; }
         index += 1;
       }
-      if (!addToken(tokens, start, index, 'shell-string')) return start;
+      if (!addToken(tokens, start, index, 'shell-string')) return { scannedThrough: start };
       if (commandPrefixOptionValueExpected) commandPrefixOptionValueExpected = false;
       else if (!shellAssignmentValuePending && (commandExpected || commandPrefixPending)) consumeShellCommandWord();
       continue;
@@ -252,7 +308,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     if (character === '$') {
       const end = scanShellVariable(text, index, limit);
       if (end > index + 1) {
-        if (!addToken(tokens, index, end, 'shell-variable')) return index;
+        if (!addToken(tokens, index, end, 'shell-variable')) return { scannedThrough: index };
         index = end;
         if (commandPrefixOptionValueExpected) commandPrefixOptionValueExpected = false;
         else if (!shellAssignmentValuePending && (commandExpected || commandPrefixPending)) consumeShellCommandWord();
@@ -263,7 +319,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     if (isShellOperator(character)) {
       const start = index;
       index = scanOperator(text, index, limit);
-      if (!addToken(tokens, start, index, 'shell-operator')) return start;
+      if (!addToken(tokens, start, index, 'shell-operator')) return { scannedThrough: start };
       const operator = text.slice(start, index);
       if (!insideShellTest && (operator === ';' || operator === '|' || operator === '||' || operator === '&' || operator === '&&' || operator === '(')) {
         commandExpected = true;
@@ -273,7 +329,8 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     }
 
     const start = index;
-    while (index < limit && !isWhitespace(text[index]!) && !isShellOperator(text[index]!) && !isQuote(text[index]!) && text[index] !== '$') index += 1;
+    while (index < limit && !isWhitespace(text[index]!) && !isShellOperator(text[index]!) && !isQuote(text[index]!) && text[index] !== '$' &&
+        !(text[index] === '\\' && shellLineContinuationEnd(text, index, limit) !== undefined)) index += 1;
     if (index === start) { index += 1; continue; }
     const word = text.slice(start, index);
     if (commandPrefixOptionValueExpected) {
@@ -284,7 +341,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
     if (shellAssignmentValuePending) continue;
     if (shellKeywords.has(word) && !commandPrefixPending &&
         ((commandExpected && word !== ']]') || (insideShellTest && (word === ']]' || word === '!')))) {
-      if (!addToken(tokens, start, index, 'shell-keyword')) return start;
+      if (!addToken(tokens, start, index, 'shell-keyword')) return { scannedThrough: start };
       if (word === '[[') {
         insideShellTest = true;
         commandExpected = false;
@@ -297,24 +354,26 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       resetCommandPrefix();
     } else if ((commandExpected || commandPrefixPending) && isShellAssignment(word)) {
       const assignment = word.indexOf('=');
-      if (!addToken(tokens, start, start + assignment, 'shell-variable')) return start;
+      if (!addToken(tokens, start, start + assignment, 'shell-variable')) return { scannedThrough: start };
       shellAssignmentValuePending = true;
     } else if (commandPrefixPending && word.startsWith('-') && word.length > 1) {
-      if (!addToken(tokens, start, index, 'shell-option')) return start;
+      if (!addToken(tokens, start, index, 'shell-option')) return { scannedThrough: start };
       commandPrefixOptionValueExpected = shellCommandPrefixOptionsWithValues[shellCommandPrefix ?? '']?.has(word) ?? false;
     } else if (commandExpected || commandPrefixPending) {
       const tokenKind = shellBuiltins.has(word) ? 'shell-builtin' : 'shell-command';
-      if (!addToken(tokens, start, index, tokenKind)) return start;
+      if (!addToken(tokens, start, index, tokenKind)) return { scannedThrough: start };
       commandExpected = false;
       commandPrefixPending = shellCommandPrefixes.has(word);
       shellCommandPrefix = commandPrefixPending ? word : undefined;
     } else if (word.startsWith('-') && word.length > 1) {
-      if (!addToken(tokens, start, index, 'shell-option')) return start;
+      if (!addToken(tokens, start, index, 'shell-option')) return { scannedThrough: start };
     } else if (word.includes('/') || word.startsWith('~')) {
-      if (!addToken(tokens, start, index, 'shell-path')) return start;
+      if (!addToken(tokens, start, index, 'shell-path')) return { scannedThrough: start };
     }
   }
-  return limit;
+  const continuationState = explicitLineContinuation ? Object.freeze({ commandExpected, commandPrefixPending,
+    commandPrefixOptionValueExpected, shellAssignmentValuePending, shellCommandPrefix, insideShellTest }) : undefined;
+  return { scannedThrough: limit, continuationState };
 }
 
 function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]): number {
