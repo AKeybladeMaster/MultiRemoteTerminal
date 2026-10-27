@@ -2,7 +2,7 @@ export const MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS = 64_000;
 export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'shell', 'powershell', 'python', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -10,6 +10,8 @@ export type TextSyntaxTokenKind =
   | 'shell-command' | 'shell-keyword' | 'shell-option' | 'shell-string' | 'shell-variable' | 'shell-comment' | 'shell-operator' | 'shell-path'
   | 'powershell-command' | 'powershell-keyword' | 'powershell-parameter' | 'powershell-string' | 'powershell-variable'
   | 'powershell-comment' | 'powershell-operator' | 'powershell-number' | 'powershell-type'
+  | 'python-builtin' | 'python-keyword' | 'python-string' | 'python-comment' | 'python-number' | 'python-operator'
+  | 'python-function' | 'python-type'
   | 'json-key' | 'json-string' | 'json-number' | 'json-literal' | 'json-punctuation';
 
 export interface TextSyntaxToken {
@@ -42,11 +44,34 @@ const powershellSymbolOperators = [
   '+=', '-=', '*=', '/=', '%=', '++', '--', '&&', '||', '??', '?.', '::', '..', '|', '&', '=', '+', '-', '*', '/', '%',
   '!', '<', '>', '{', '}', '(', ')', '[', ']', ':', ';', ',', '.'
 ] as const;
+const pythonKeywords = new Set([
+  'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except',
+  'False', 'finally', 'for', 'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'None', 'nonlocal', 'not',
+  'or', 'pass', 'raise', 'return', 'True', 'try', 'while', 'with', 'yield'
+]);
+const pythonDeclarationKinds = new Map<string, 'python-function' | 'python-type'>([
+  ['def', 'python-function'], ['class', 'python-type']
+]);
+const pythonBuiltins = new Set([
+  'abs', 'aiter', 'all', 'anext', 'any', 'ascii', 'bin', 'bool', 'breakpoint', 'bytearray', 'bytes', 'callable', 'chr',
+  'classmethod', 'compile', 'complex', 'delattr', 'dict', 'dir', 'divmod', 'enumerate', 'eval', 'exec', 'filter', 'float',
+  'format', 'frozendict', 'frozenset', 'getattr', 'globals', 'hasattr', 'hash', 'help', 'hex', 'id', 'input', 'int',
+  'isinstance', 'issubclass', 'iter', 'len', 'list', 'locals', 'map', 'max', 'memoryview', 'min', 'next', 'object', 'oct',
+  'open', 'ord', 'pow', 'print', 'property', 'range', 'repr', 'reversed', 'round', 'set', 'setattr', 'sentinel', 'slice',
+  'sorted', 'staticmethod', 'str', 'sum', 'super', 'tuple', 'type', 'vars', 'zip', '__import__'
+]);
+const pythonStringPrefixes = new Set(['b', 'br', 'f', 'fr', 'rb', 'rf', 'rt', 'r', 't', 'tr', 'u']);
+const pythonOperators = [
+  '**=', '//=', '<<=', '>>=', '...', '==', '!=', '<=', '>=', '->', ':=', '+=', '-=', '*=', '/=', '%=', '@=', '&=', '|=', '^=',
+  '**', '//', '<<', '>>', '+', '-', '*', '/', '%', '@', '&', '|', '^', '~', '<', '>', '=', '(', ')', '[', ']', '{', '}', ',',
+  ':', '.', ';'
+] as const;
 
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
+  if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:sh|bash|zsh|ksh)$/.test(name)) return 'shell';
   if (/\.json$/.test(name)) return 'json';
   return 'plain';
@@ -61,6 +86,7 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
   const tokens: TextSyntaxToken[] = [];
   const scannedThrough = profile === 'shell' ? scanShell(text, limit, tokens)
     : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
+      : profile === 'python' ? scanPython(text, limit, tokens)
       : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
@@ -387,6 +413,166 @@ function scanLineEnd(text: string, start: number, limit: number): number {
   let index = start;
   while (index < limit && text[index] !== '\n' && text[index] !== '\r') index += 1;
   return index;
+}
+
+function scanPython(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  let declarationKind: 'python-function' | 'python-type' | undefined;
+  while (index < limit) {
+    const character = text[index]!;
+    if (isWhitespace(character)) {
+      if (character === '\n' || character === '\r') declarationKind = undefined;
+      index += 1;
+      continue;
+    }
+
+    if (character === '#') {
+      const end = scanLineEnd(text, index, limit);
+      if (!addToken(tokens, index, end, 'python-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    const stringEnd = scanPythonString(text, index, limit);
+    if (stringEnd !== undefined) {
+      if (!addToken(tokens, index, stringEnd, 'python-string')) return index;
+      index = stringEnd;
+      declarationKind = undefined;
+      continue;
+    }
+
+    if (isDigit(character) || (character === '.' && index + 1 < limit && isDigit(text[index + 1]!))) {
+      const end = scanPythonNumber(text, index, limit);
+      if (!addToken(tokens, index, end, 'python-number')) return index;
+      index = end;
+      declarationKind = undefined;
+      continue;
+    }
+
+    if (isPythonNameStart(character)) {
+      const end = scanPythonName(text, index, limit);
+      const word = text.slice(index, end);
+      const declarationToken = declarationKind;
+      if (pythonKeywords.has(word)) {
+        if (!addToken(tokens, index, end, 'python-keyword')) return index;
+        declarationKind = pythonDeclarationKinds.get(word);
+      } else if (declarationToken !== undefined) {
+        if (!addToken(tokens, index, end, declarationToken)) return index;
+        declarationKind = undefined;
+      } else if (pythonBuiltins.has(word)) {
+        if (!addToken(tokens, index, end, 'python-builtin')) return index;
+      } else {
+        declarationKind = undefined;
+      }
+      index = end;
+      continue;
+    }
+
+    const operatorEnd = scanPythonOperator(text, index, limit);
+    if (operatorEnd > index) {
+      if (!addToken(tokens, index, operatorEnd, 'python-operator')) return index;
+      index = operatorEnd;
+      declarationKind = undefined;
+      continue;
+    }
+
+    index += 1;
+    declarationKind = undefined;
+  }
+  return limit;
+}
+
+function scanPythonString(text: string, start: number, limit: number): number | undefined {
+  let quoteStart = start;
+  const initial = text[start]!;
+  if (initial !== '\'' && initial !== '"') {
+    let prefixEnd = start;
+    while (prefixEnd < limit && prefixEnd - start < 2 && isPythonNameStart(text[prefixEnd]!)) prefixEnd += 1;
+    if (!pythonStringPrefixes.has(text.slice(start, prefixEnd).toLowerCase()) || prefixEnd >= limit ||
+        (text[prefixEnd] !== '\'' && text[prefixEnd] !== '"')) return undefined;
+    quoteStart = prefixEnd;
+  }
+
+  const quote = text[quoteStart]!;
+  const triple = quoteStart + 2 < limit && text[quoteStart + 1] === quote && text[quoteStart + 2] === quote;
+  let index = quoteStart + (triple ? 3 : 1);
+  while (index < limit) {
+    if (text[index] === '\\') {
+      index += index + 1 < limit ? 2 : 1;
+      continue;
+    }
+    if (triple) {
+      if (index + 2 < limit && text[index] === quote && text[index + 1] === quote && text[index + 2] === quote) {
+        index += 3;
+        break;
+      }
+    } else {
+      if (text[index] === quote) {
+        index += 1;
+        break;
+      }
+      if (text[index] === '\n' || text[index] === '\r') break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function scanPythonNumber(text: string, start: number, limit: number): number {
+  let index = start;
+  if (text[index] === '.' && index + 1 < limit && isDigit(text[index + 1]!)) {
+    index += 1;
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+  } else if (index + 1 < limit && text[index] === '0') {
+    const basePrefix = text[index + 1]!.toLowerCase();
+    if (basePrefix === 'b' || basePrefix === 'o' || basePrefix === 'x') {
+      index += 2;
+      while (index < limit && (text[index] === '_' ||
+          (basePrefix === 'x' && isHexDigit(text[index]!)) ||
+          (basePrefix === 'o' && text[index]! >= '0' && text[index]! <= '7') ||
+          (basePrefix === 'b' && (text[index] === '0' || text[index] === '1')))) index += 1;
+      return index;
+    }
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+  } else {
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+  }
+
+  if (index < limit && text[index] === '.' && (index + 1 >= limit || text[index + 1] !== '.')) {
+    index += 1;
+    while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+  }
+  if (index + 1 < limit && (text[index] === 'e' || text[index] === 'E')) {
+    let exponentStart = index + 1;
+    if (text[exponentStart] === '+' || text[exponentStart] === '-') exponentStart += 1;
+    if (exponentStart < limit && isDigit(text[exponentStart]!)) {
+      index = exponentStart + 1;
+      while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
+    }
+  }
+  if (index < limit && (text[index] === 'j' || text[index] === 'J')) index += 1;
+  return index;
+}
+
+function scanPythonName(text: string, start: number, limit: number): number {
+  let index = start + 1;
+  while (index < limit && (isPythonNameStart(text[index]!) || isDigit(text[index]!))) index += 1;
+  return index;
+}
+
+function scanPythonOperator(text: string, start: number, limit: number): number {
+  for (const operator of pythonOperators) {
+    if (start + operator.length <= limit && text.startsWith(operator, start)) return start + operator.length;
+  }
+  return start;
+}
+
+function isPythonNameStart(character: string): boolean {
+  return character === '_' || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+}
+
+function isHexDigit(character: string): boolean {
+  return isDigit(character) || (character >= 'A' && character <= 'F') || (character >= 'a' && character <= 'f');
 }
 
 function findTextWithinLimit(text: string, target: string, start: number, limit: number): number {

@@ -269,15 +269,19 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 }
 .remote-text-editor-content::selection { background: color-mix(in srgb, var(--accent) 45%, transparent); color: transparent; }
 .remote-text-editor-content:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
-.text-syntax-token--shell-command, .text-syntax-token--powershell-command, .text-syntax-token--json-key { color: var(--syntax-command); font-weight: 650; }
-.text-syntax-token--shell-keyword, .text-syntax-token--powershell-keyword, .text-syntax-token--json-literal { color: var(--syntax-keyword); font-weight: 650; }
+.text-syntax-token--shell-command, .text-syntax-token--powershell-command, .text-syntax-token--python-builtin,
+.text-syntax-token--python-function, .text-syntax-token--json-key { color: var(--syntax-command); font-weight: 650; }
+.text-syntax-token--shell-keyword, .text-syntax-token--powershell-keyword, .text-syntax-token--python-keyword,
+.text-syntax-token--json-literal { color: var(--syntax-keyword); font-weight: 650; }
 .text-syntax-token--shell-option, .text-syntax-token--powershell-parameter, .text-syntax-token--powershell-number,
-.text-syntax-token--json-number { color: var(--syntax-option); }
-.text-syntax-token--shell-string, .text-syntax-token--powershell-string, .text-syntax-token--json-string { color: var(--syntax-string); }
+.text-syntax-token--python-number, .text-syntax-token--json-number { color: var(--syntax-option); }
+.text-syntax-token--shell-string, .text-syntax-token--powershell-string, .text-syntax-token--python-string,
+.text-syntax-token--json-string { color: var(--syntax-string); }
 .text-syntax-token--shell-variable, .text-syntax-token--powershell-variable { color: var(--syntax-variable); }
-.text-syntax-token--shell-comment, .text-syntax-token--powershell-comment { color: var(--syntax-comment); font-style: italic; }
-.text-syntax-token--shell-operator, .text-syntax-token--powershell-operator, .text-syntax-token--json-punctuation { color: var(--syntax-operator); }
-.text-syntax-token--shell-path, .text-syntax-token--powershell-type { color: var(--syntax-path); }
+.text-syntax-token--shell-comment, .text-syntax-token--powershell-comment, .text-syntax-token--python-comment { color: var(--syntax-comment); font-style: italic; }
+.text-syntax-token--shell-operator, .text-syntax-token--powershell-operator, .text-syntax-token--python-operator,
+.text-syntax-token--json-punctuation { color: var(--syntax-operator); }
+.text-syntax-token--shell-path, .text-syntax-token--powershell-type, .text-syntax-token--python-type { color: var(--syntax-path); }
 @media (forced-colors: active) {
   .text-editor-code-preview { display: none; }
   .remote-text-editor-content { color: CanvasText; -webkit-text-fill-color: CanvasText; caret-color: CanvasText; }
