@@ -568,9 +568,9 @@ test('local text editor auto-detects SQL and supports Python, JavaScript/TypeScr
     'SELECT COUNT(*)::BIGINT AS total',
     'FROM users',
     'WHERE active = TRUE AND id >= $1;',
-    "SELECT E'Dianne''s data';",
+    "SELECT E'Dianne''s $1 -- literal';",
     '/* outer /* nested */ comment */',
-    'SELECT $body$literal -- comment$body$;'
+    'SELECT $body$literal -- comment; $1$body$;'
   ].join('\n') + '\n';
   await writeFile(path, source);
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
@@ -591,12 +591,35 @@ test('local text editor auto-detects SQL and supports Python, JavaScript/TypeScr
     await expect(preview.locator('[data-token-kind="sql-function"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
     await expect(preview.locator('[data-token-kind="sql-type"]').first()).toHaveText('BIGINT');
     await expect(preview.locator('[data-token-kind="sql-type"]').first()).toHaveCSS('color', 'rgb(105, 170, 252)');
-    await expect(preview.locator('[data-token-kind="sql-string"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
-    await expect(preview.locator('[data-token-kind="sql-comment"]').first()).toHaveCSS('color', 'rgb(152, 166, 180)');
+    const sqlStrings = preview.locator('[data-token-kind="sql-string"]');
+    await expect(sqlStrings).toHaveCount(2);
+    await expect(sqlStrings.first()).toHaveText("E'Dianne''s $1 -- literal'");
+    await expect(sqlStrings.first()).toHaveCSS('color', 'rgb(132, 242, 167)');
+    await expect(sqlStrings.nth(1)).toHaveText('$body$literal -- comment; $1$body$');
+    const sqlComments = preview.locator('[data-token-kind="sql-comment"]');
+    await expect(sqlComments).toHaveCount(2);
+    await expect(sqlComments.first()).toHaveText('-- report query');
+    await expect(sqlComments.nth(1)).toHaveText('/* outer /* nested */ comment */');
+    await expect(sqlComments.first()).toHaveCSS('color', 'rgb(152, 166, 180)');
+    await expect(preview.locator('[data-token-kind="sql-parameter"]')).toHaveCount(1);
     await syntax.selectOption('plain');
     await expect(preview.locator('[data-token-kind]')).toHaveCount(0);
     await syntax.selectOption('sql');
     await expect(preview.locator('[data-token-kind="sql-keyword"]').first()).toHaveText('SELECT');
+
+    const overlongSql = `SELECT ${' '.repeat(63_993)}FROM`;
+    await contents.fill(overlongSql);
+    await expect(preview.locator('[data-token-kind="sql-keyword"]')).toHaveCount(1);
+    await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await contents.inputValue()).toBe(overlongSql);
+    expect(await preview.textContent()).toBe(overlongSql);
+
+    const sqlWithManyComments = '-- cap\n'.repeat(4_100);
+    await contents.fill(sqlWithManyComments);
+    await expect(preview.locator('[data-token-kind="sql-comment"]')).toHaveCount(4_096);
+    await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await contents.inputValue()).toBe(sqlWithManyComments);
+    expect(await preview.textContent()).toBe(sqlWithManyComments);
 
     await syntax.selectOption('python');
     await contents.fill('def greet(name: str):\n    print(name)');

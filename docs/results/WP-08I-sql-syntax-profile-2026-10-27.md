@@ -20,7 +20,7 @@ Validated on Windows 11 x64 with Node.js 24.14.1:
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
 - `node --test tests/unit/text-syntax.test.ts` — 17/17 passed.
-- Focused Windows Electron E2E — 2/2 passed. The local editor verified SQL extension detection, token colors and manual profile switching; the SFTP flow verified `.sql` auto-detection and the SQL token categories while retaining the no-unrequested-shell assertion.
+- Focused Windows Electron E2E — 2/2 passed. The local editor verifies SQL extension detection, token colors, opaque E/dollar-quoted strings, nested block comments, manual profile switching, both preview bounds and full-text editability after truncation. The SFTP flow verifies `.sql` auto-detection and SQL token categories while retaining the no-unrequested-shell assertion.
 - `git diff --check` — passed.
 
 An early feature-level run caught an overbroad function-name heuristic that colored table identifiers before `(`. Recognition now uses a fixed common-function set. The final suite also confirms `$n` text inside quoted strings is not emitted as a parameter token.
