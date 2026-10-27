@@ -74,6 +74,32 @@ test('shell syntax preview classifies common builtins and follows bounded comman
   ]);
 });
 
+test('shell syntax preview treats double-bracket expressions as conditions, not commands', () => {
+  const source = 'time git status; if [[ ! -f /tmp/target && -n $HOME ]]; then echo ready; fi';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'time', kind: 'shell-keyword' },
+    { text: 'git', kind: 'shell-command' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'if', kind: 'shell-keyword' },
+    { text: '[[', kind: 'shell-keyword' },
+    { text: '!', kind: 'shell-keyword' },
+    { text: '-f', kind: 'shell-option' },
+    { text: '/tmp/target', kind: 'shell-path' },
+    { text: '&&', kind: 'shell-operator' },
+    { text: '-n', kind: 'shell-option' },
+    { text: '$HOME', kind: 'shell-variable' },
+    { text: ']]', kind: 'shell-keyword' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'then', kind: 'shell-keyword' },
+    { text: 'echo', kind: 'shell-builtin' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'fi', kind: 'shell-keyword' }
+  ]);
+});
+
 test('PowerShell syntax preview colors command forms, keywords, parameters, variables, strings, numbers, types and operators', () => {
   const source = [
     'function Get-Items {',

@@ -41,7 +41,7 @@ export interface TextSyntaxPreview {
 }
 
 const shellKeywords = new Set(['!', '[[', ']]', 'case', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
-const commandContinuingKeywords = new Set(['!', '[[', 'case', 'do', 'elif', 'else', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
+const commandContinuingKeywords = new Set(['!', 'case', 'do', 'elif', 'else', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
 const shellBuiltins = new Set([
   '.', '[', 'alias', 'autoload', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'continue',
   'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help',
@@ -198,22 +198,25 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
   let commandPrefixPending = false;
   let commandPrefixOptionValueExpected = false;
   let shellCommandPrefix: string | undefined;
+  let insideShellTest = false;
 
-  function consumeShellCommandWord(): void {
-    commandExpected = false;
+  function resetCommandPrefix(): void {
     commandPrefixPending = false;
     commandPrefixOptionValueExpected = false;
     shellCommandPrefix = undefined;
+  }
+
+  function consumeShellCommandWord(): void {
+    commandExpected = false;
+    resetCommandPrefix();
   }
 
   while (index < limit) {
     const character = text[index]!;
     if (character === '\n' || character === '\r') {
       index += character === '\r' && text[index + 1] === '\n' ? 2 : 1;
-      commandExpected = true;
-      commandPrefixPending = false;
-      commandPrefixOptionValueExpected = false;
-      shellCommandPrefix = undefined;
+      commandExpected = !insideShellTest;
+      resetCommandPrefix();
       continue;
     }
     if (isWhitespace(character)) { index += 1; continue; }
@@ -256,11 +259,9 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       index = scanOperator(text, index, limit);
       if (!addToken(tokens, start, index, 'shell-operator')) return start;
       const operator = text.slice(start, index);
-      if (operator === ';' || operator === '|' || operator === '||' || operator === '&' || operator === '&&' || operator === '(') {
+      if (!insideShellTest && (operator === ';' || operator === '|' || operator === '||' || operator === '&' || operator === '&&' || operator === '(')) {
         commandExpected = true;
-        commandPrefixPending = false;
-        commandPrefixOptionValueExpected = false;
-        shellCommandPrefix = undefined;
+        resetCommandPrefix();
       }
       continue;
     }
@@ -273,11 +274,18 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       commandPrefixOptionValueExpected = false;
       continue;
     }
-    if (shellKeywords.has(word) && !commandPrefixPending && (commandExpected || word === ']]')) {
+    if (shellKeywords.has(word) && !commandPrefixPending && (commandExpected || word === ']]' || (insideShellTest && word === '!'))) {
       if (!addToken(tokens, start, index, 'shell-keyword')) return start;
-      commandExpected = commandContinuingKeywords.has(word);
-      commandPrefixPending = false;
-      shellCommandPrefix = undefined;
+      if (word === '[[') {
+        insideShellTest = true;
+        commandExpected = false;
+      } else if (word === ']]') {
+        insideShellTest = false;
+        commandExpected = false;
+      } else {
+        commandExpected = insideShellTest ? false : commandContinuingKeywords.has(word);
+      }
+      resetCommandPrefix();
     } else if ((commandExpected || commandPrefixPending) && isShellAssignment(word)) {
       const assignment = word.indexOf('=');
       if (!addToken(tokens, start, start + assignment, 'shell-variable')) return start;
