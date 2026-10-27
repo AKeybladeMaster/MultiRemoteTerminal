@@ -500,7 +500,7 @@ test('YAML syntax preview recognizes flow collections, tags, anchors, aliases, d
     '%TAG !example! tag:example.com,2026:',
     '--- !<tag:clarkevans.com,2002:invoice>',
     'flow: {quoted: "value", adjacent:true, words: this is true, nested: [one, "item", -2, {enabled: false}]}',
-    'sequencePairs: [foo: bar, baz: qux, "quoted pair": value]',
+    'sequencePairs: [foo: bar, baz: qux, "quoted pair": value, "adjacent pair":value]',
     'anchor: &base {name: origin}',
     'copy: *base # reuse',
     'aliasKey: {*base: value}',
@@ -551,6 +551,7 @@ test('YAML syntax preview recognizes flow collections, tags, anchors, aliases, d
   assert.ok(values('yaml-key').includes('foo'));
   assert.ok(values('yaml-key').includes('baz'));
   assert.ok(values('yaml-key').includes('"quoted pair"'));
+  assert.ok(values('yaml-key').includes('"adjacent pair"'));
   assert.ok(values('yaml-key').includes('nested name'));
   assert.ok(values('yaml-string').includes('bar'));
   assert.ok(values('yaml-string').includes('qux'));

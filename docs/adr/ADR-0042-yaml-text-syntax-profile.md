@@ -11,7 +11,7 @@ The [YAML 1.2.2 specification](https://yaml.org/spec/1.2.2/) defines block and f
 ## Decision
 
 - Add a `yaml` profile to the shared tokenizer. Auto detection recognizes `.yaml` and `.yml`; users may also select YAML manually.
-- Color plain and quoted mapping keys; classify complete same-line plain scalars before assigning core null, boolean or numeric colors; color quoted/plain strings; and recognize comments only when separated from preceding content, flow punctuation, document markers/directives, tags, anchors, aliases and block scalar headers/body text.
+- Color plain and quoted mapping keys, including quoted JSON-like keys with adjacent values in flow-sequence pairs; classify complete same-line plain scalars before assigning core null, boolean or numeric colors; color quoted/plain strings; and recognize comments only when separated from preceding content, flow punctuation, document markers/directives, tags, anchors, aliases and block scalar headers/body text.
 - Treat quoted and block scalars as opaque tokens so comment markers and syntax-like text inside them do not receive nested colors. Block scalar body indentation is detected with a bounded lexical approximation that accounts for nested compact mappings inside block sequences.
 - Cap implicit-key colon lookahead at 1,024 UTF-16 code units on one line, following the YAML implicit-key lookahead limit. Keep the shared 64,000 UTF-16 code-unit and 4,096-token preview limits.
 - Add no package. The renderer preview changes no file bytes and does not validate, parse, execute or persist source content.

@@ -1397,7 +1397,8 @@ function findYamlKeyColon(
     }
     if (character === '#' && (index === start || isWhitespace(text[index - 1]!))) return -1;
     if ((flowMapKeyExpected || flowSequencePairKeyExpected) && ',]}'.includes(character)) return -1;
-    if (character === ':' && (isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected)) return index;
+    if (character === ':' && (isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected ||
+        (flowSequencePairKeyExpected && quotedKey))) return index;
     index += 1;
   }
   return -1;

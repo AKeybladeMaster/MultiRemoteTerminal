@@ -730,7 +730,7 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
 test('local YAML text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-yaml-e2e-'));
   const path = join(profile, 'settings.yaml');
-  const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n';
+  const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\nflow: ["quoted":value]\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n';
   await writeFile(path, source);
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
     `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -748,6 +748,7 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
     await expect(preview.locator('[data-token-kind="yaml-number"]').first()).toHaveText('443');
     await expect(preview.locator('[data-token-kind="yaml-literal"]').first()).toHaveText('true');
     await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^"quoted"$/ })).toHaveCount(1);
     await expect(preview.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
     await expect(preview.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
 
@@ -1213,6 +1214,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
 server:
   host: localhost
   port: 8080
+pairs: ["quoted":value]
 script:
   - command: |1-
      # block body stays opaque
@@ -1386,6 +1388,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').first()).toHaveText('server');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').nth(1)).toHaveText('host');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-number"]').first()).toHaveText('8080');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^"quoted"$/ })).toHaveCount(1);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
     await expect(remoteYamlEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();

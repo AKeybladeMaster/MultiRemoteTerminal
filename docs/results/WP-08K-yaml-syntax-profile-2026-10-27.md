@@ -11,7 +11,7 @@
 
 ## Review follow-up
 
-Independent review caught flow-map values being considered as keys, core scalars being classified word-by-word, sequence indicators inside scalars receiving operator colors, alias-key colons being absorbed, and compact sequence mappings using the wrong block-scalar indentation base. These cases are now covered by domain regressions; local and SFTP Windows E2Es verify compact block-scalar text stays opaque while following sibling keys remain colored. Additional regressions cover flow-sequence pairs, nested compact-sequence mappings and low-token malformed-input scan bounds. Both editors verify the 4,096-token preview cap while retaining the full YAML source; anchor and alias names share one bounded property-name scanner.
+Independent review caught flow-map values being considered as keys, core scalars being classified word-by-word, sequence indicators inside scalars receiving operator colors, alias-key colons being absorbed, and compact sequence mappings using the wrong block-scalar indentation base. These cases are now covered by domain regressions; local and SFTP Windows E2Es verify compact block-scalar text stays opaque while following sibling keys remain colored. Additional regressions cover flow-sequence pairs (including quoted keys with adjacent values), nested compact-sequence mappings and low-token malformed-input scan bounds. Both editors verify the 4,096-token preview cap while retaining the full YAML source; anchor and alias names share one bounded property-name scanner.
 
 ## Verification
 
