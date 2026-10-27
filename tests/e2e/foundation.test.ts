@@ -560,7 +560,7 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
   }
 });
 
-test('local text editor auto-detects Python syntax and supports PowerShell, Shell and JSON profiles', async () => {
+test('local text editor auto-detects Python and supports JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.py');
   const source = 'def greet(name: str) -> str:\n    value = 2\n    print(f"Hello, {name}!")\n# keep the file unchanged\n';
@@ -588,6 +588,14 @@ test('local text editor auto-detects Python syntax and supports PowerShell, Shel
     await expect(preview.locator('[data-token-kind]')).toHaveCount(0);
     await syntax.selectOption('python');
     await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
+
+    await syntax.selectOption('javascript');
+    await contents.fill('function greet(name: string) { return console.log("hello"); }');
+    await expect(preview.locator('[data-token-kind="javascript-keyword"]').first()).toHaveText('function');
+    await expect(preview.locator('[data-token-kind="javascript-function"]').first()).toHaveText('greet');
+    await expect(preview.locator('[data-token-kind="javascript-type"]').first()).toHaveCSS('color', 'rgb(105, 170, 252)');
+    await expect(preview.locator('[data-token-kind="javascript-builtin"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
+    await expect(preview.locator('[data-token-kind="javascript-string"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
 
     await syntax.selectOption('powershell');
     await contents.fill('Write-Output "$env:USERPROFILE"');
@@ -1065,6 +1073,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
     await writeFile(join(remoteRoot, 'remote.ps1'), 'Get-ChildItem -Path $HOME\n');
     await writeFile(join(remoteRoot, 'remote.py'), 'def remote_preview():\n    print("from SFTP")\n');
+    await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1193,6 +1202,15 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(remotePythonEditor.locator('[data-token-kind="python-function"]').first()).toHaveText('remote_preview');
     await remotePythonEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remotePythonEditor).toHaveCount(0);
+    const remoteTypeScriptEdit = sftpPanel.getByRole('button', { name: 'Edit remote.ts', exact: true });
+    await remoteTypeScriptEdit.click();
+    const remoteTypeScriptEditor = page.getByRole('dialog', { name: 'remote.ts' });
+    await expect(remoteTypeScriptEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteTypeScriptEditor.locator('[data-token-kind="javascript-keyword"]').first()).toHaveText('export');
+    await expect(remoteTypeScriptEditor.locator('[data-token-kind="javascript-type"]').first()).toHaveText('number');
+    await expect(remoteTypeScriptEditor.locator('[data-token-kind="javascript-number"]').first()).toHaveText('42');
+    await remoteTypeScriptEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteTypeScriptEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();

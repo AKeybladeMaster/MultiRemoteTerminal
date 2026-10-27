@@ -8,13 +8,16 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Shell, PowerShell, Python and JSON from the file name', () => {
+test('automatic syntax profiles select Shell, PowerShell, Python, JavaScript/TypeScript and JSON from the file name', () => {
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
   for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
   }
   for (const fileName of ['tool.py', 'launcher.PYW', 'hints.pyi']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'python');
+  }
+  for (const fileName of ['app.js', 'view.JSX', 'worker.mjs', 'legacy.cjs', 'main.ts', 'page.TSX', 'module.mts', 'common.cts', 'types.d.ts']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'javascript');
   }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.json'), 'json');
   assert.equal(resolveTextSyntaxProfile('auto', 'notes.txt'), 'plain');
@@ -220,6 +223,118 @@ test('Python syntax preview never extends a token beyond its code-unit bound', (
   }
 });
 
+test('JavaScript and TypeScript syntax preview colors declarations, types, builtins, literals and operators', () => {
+  const source = [
+    'export async function greet(name: string): Promise<string> {',
+    '  const count = 1_000 + .5e2 + 42n + 0x2A;',
+    '  const values = [true, false, null, undefined];',
+    '  const ready = count === 1;',
+    '  const current = worker?.name;',
+    '  const message = `Hello ${name} // stays in the template`;',
+    '  return console.log(message ??= "ready");',
+    '} // finished',
+    '/* block comment */'
+  ].join('\n');
+  const tokens = highlightTextSyntax(source, 'javascript').tokens
+    .map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: 'export', kind: 'javascript-keyword' },
+    { text: 'async', kind: 'javascript-keyword' },
+    { text: 'function', kind: 'javascript-keyword' },
+    { text: 'greet', kind: 'javascript-function' },
+    { text: '(', kind: 'javascript-operator' },
+    { text: ':', kind: 'javascript-operator' },
+    { text: 'string', kind: 'javascript-type' },
+    { text: ')', kind: 'javascript-operator' },
+    { text: ':', kind: 'javascript-operator' },
+    { text: 'Promise', kind: 'javascript-builtin' },
+    { text: '<', kind: 'javascript-operator' },
+    { text: 'string', kind: 'javascript-type' },
+    { text: '>', kind: 'javascript-operator' },
+    { text: '{', kind: 'javascript-operator' },
+    { text: 'const', kind: 'javascript-keyword' },
+    { text: '=', kind: 'javascript-operator' },
+    { text: '1_000', kind: 'javascript-number' },
+    { text: '+', kind: 'javascript-operator' },
+    { text: '.5e2', kind: 'javascript-number' },
+    { text: '+', kind: 'javascript-operator' },
+    { text: '42n', kind: 'javascript-number' },
+    { text: '+', kind: 'javascript-operator' },
+    { text: '0x2A', kind: 'javascript-number' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: 'const', kind: 'javascript-keyword' },
+    { text: '=', kind: 'javascript-operator' },
+    { text: '[', kind: 'javascript-operator' },
+    { text: 'true', kind: 'javascript-keyword' },
+    { text: ',', kind: 'javascript-operator' },
+    { text: 'false', kind: 'javascript-keyword' },
+    { text: ',', kind: 'javascript-operator' },
+    { text: 'null', kind: 'javascript-keyword' },
+    { text: ',', kind: 'javascript-operator' },
+    { text: 'undefined', kind: 'javascript-builtin' },
+    { text: ']', kind: 'javascript-operator' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: 'const', kind: 'javascript-keyword' },
+    { text: '=', kind: 'javascript-operator' },
+    { text: '===', kind: 'javascript-operator' },
+    { text: '1', kind: 'javascript-number' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: 'const', kind: 'javascript-keyword' },
+    { text: '=', kind: 'javascript-operator' },
+    { text: '?.', kind: 'javascript-operator' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: 'const', kind: 'javascript-keyword' },
+    { text: '=', kind: 'javascript-operator' },
+    { text: '`Hello ${name} // stays in the template`', kind: 'javascript-string' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: 'return', kind: 'javascript-keyword' },
+    { text: 'console', kind: 'javascript-builtin' },
+    { text: '.', kind: 'javascript-operator' },
+    { text: '(', kind: 'javascript-operator' },
+    { text: '??=', kind: 'javascript-operator' },
+    { text: '"ready"', kind: 'javascript-string' },
+    { text: ')', kind: 'javascript-operator' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: '}', kind: 'javascript-operator' },
+    { text: '// finished', kind: 'javascript-comment' },
+    { text: '/* block comment */', kind: 'javascript-comment' }
+  ]);
+  const typeSource = 'interface Client { name: string } type Identifier = number; class Worker {}';
+  assert.deepEqual(highlightTextSyntax(typeSource, 'javascript').tokens.map(token => ({
+    text: typeSource.slice(token.start, token.end),
+    kind: token.kind
+  })), [
+    { text: 'interface', kind: 'javascript-keyword' },
+    { text: 'Client', kind: 'javascript-type' },
+    { text: '{', kind: 'javascript-operator' },
+    { text: ':', kind: 'javascript-operator' },
+    { text: 'string', kind: 'javascript-type' },
+    { text: '}', kind: 'javascript-operator' },
+    { text: 'type', kind: 'javascript-keyword' },
+    { text: 'Identifier', kind: 'javascript-type' },
+    { text: '=', kind: 'javascript-operator' },
+    { text: 'number', kind: 'javascript-type' },
+    { text: ';', kind: 'javascript-operator' },
+    { text: 'class', kind: 'javascript-keyword' },
+    { text: 'Worker', kind: 'javascript-type' },
+    { text: '{', kind: 'javascript-operator' },
+    { text: '}', kind: 'javascript-operator' }
+  ]);
+});
+
+test('JavaScript syntax preview keeps tokens within the preview bound', () => {
+  for (const source of [
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}/*comment*/`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}\`template\``,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}??=`
+  ]) {
+    const preview = highlightTextSyntax(source, 'javascript');
+    assert.ok(preview.highlightedThrough <= MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+    assert.ok(preview.tokens.every(token => token.end <= preview.highlightedThrough),
+      `token ended past the preview bound at ${preview.highlightedThrough}`);
+  }
+});
+
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {
   const source = '{"name":"MRT","count":3,"enabled":true}';
   const preview = highlightTextSyntax(source, 'json');
@@ -260,6 +375,9 @@ test('syntax preview stops at fixed character and token bounds without splitting
   const manyPythonTokens = highlightTextSyntax('# comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'python');
   assert.equal(manyPythonTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyPythonTokens.isTruncated, true);
+  const manyJavaScriptTokens = highlightTextSyntax('// comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'javascript');
+  assert.equal(manyJavaScriptTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyJavaScriptTokens.isTruncated, true);
 });
 
 test('a malformed braced variable does not swallow a later expansion', () => {
