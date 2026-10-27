@@ -450,6 +450,22 @@ async function expectPowerShellPromptTokenColors(rows: Locator): Promise<void> {
   ]);
 }
 
+async function expectPowerShellContinuationTokenColors(rows: Locator): Promise<void> {
+  await expectPromptTokenColors(rows, 'PowerShell continuation', [
+    { label: 'parameter', token: '-Path', color: 'rgb(248, 211, 107)' },
+    { label: 'variable', token: '$HOME', color: 'rgb(150, 194, 255)' }
+  ]);
+}
+
+async function expectPowerShellContinuationPrompt(rows: Locator): Promise<void> {
+  try {
+    await expect.poll(async () => (await rows.innerText()).split(/\r?\n/u).some(row => row.trimEnd() === '>>'),
+      { timeout: 10_000 }).toBe(true);
+  } catch (error) {
+    throw new Error('PowerShell continuation prompt did not appear.', { cause: error });
+  }
+}
+
 async function expectShellPromptTokenColors(rows: Locator): Promise<void> {
   await expectPromptTokenColors(rows, 'Shell', [
     { label: 'opening-keyword', token: 'if', color: 'rgb(223, 143, 255)' },
@@ -5773,6 +5789,20 @@ test('PowerShell prompt coloring reuses bounded profile tokens', async () => {
     await page.keyboard.type('Get-ChildItem -Path $HOME');
     await expect(rows).toContainText('Get-ChildItem -Path $HOME');
     await expectPowerShellPromptTokenColors(rows);
+    const primaryPromptCount = (await rows.innerText()).match(/PS [^\r\n]*?>/gu)?.length ?? 0;
+    await page.keyboard.press('Control+C');
+    await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+    await expect.poll(async () => (await rows.innerText()).match(/PS [^\r\n]*?>/gu)?.length ?? 0, { timeout: 10_000 })
+      .toBeGreaterThan(primaryPromptCount);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    const continuedCommand = 'Get-ChildItem ' + String.fromCharCode(96);
+    await page.keyboard.type(continuedCommand);
+    await expect.poll(async () => (await rows.innerText()).includes(continuedCommand), { timeout: 10_000 }).toBe(true);
+    await page.keyboard.press('Enter');
+    await expectPowerShellContinuationPrompt(rows);
+    await page.keyboard.type('-Path $HOME');
+    await expectPowerShellContinuationTokenColors(rows);
     await page.keyboard.press('Control+C');
     await expect.poll(() => rows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
   } finally {

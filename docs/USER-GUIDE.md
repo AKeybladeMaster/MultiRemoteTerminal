@@ -155,11 +155,12 @@ input at prompts** in **Workbench settings**; it is off by default. Shell input
 is recognized by common prompt endings; PowerShell input is recognized by the
 common `PS <path>>` prompt form. Prompt matching uses visible text, so custom
 prompts with that same form also match. The Shell tokenizer carries bounded lexical
-colors after an unquoted trailing backslash when the next prompt ends in `>`.
-This is a visual aid, not a parser: custom PowerShell prompts, PowerShell
-continuations, quoted Shell continuations and shell-specific grammar are not
-covered unless a custom prompt happens to match a supported visible form. A
-visible `>` suffix can be ambiguous with a custom Shell prompt.
+colors after an unquoted trailing backslash when the next prompt ends in `>`;
+PowerShell carries bounded command-position colors after an unquoted odd trailing
+backtick when the next prompt is exactly `>>`. This is a visual aid, not a parser:
+quoted continuations, PowerShell's other natural continuation forms, custom prompt
+formats and shell-specific grammar are not interpreted. Visible prompt text can
+match a custom prompt.
 
 Use the theme button or command palette to switch between light and dark themes.
 

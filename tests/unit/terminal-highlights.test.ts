@@ -7,7 +7,7 @@ import {
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
 import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, getTerminalPromptSyntaxProfile,
-  isShellContinuationPromptAtCursor, isShellInputAnchorActive } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+  isPowerShellContinuationPromptAtCursor, isShellContinuationPromptAtCursor, isShellInputAnchorActive } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { Terminal } from '@xterm/xterm';
 
@@ -37,6 +37,13 @@ test('shell continuation prompt detection accepts secondary prompts ending in gr
   for (const prompt of ['> ', 'quote> ', 'dquote> ']) assert.equal(isShellContinuationPromptAtCursor(prompt), true, prompt);
   for (const prompt of ['user@host$ ', 'user@host% ', 'ordinary output']) {
     assert.equal(isShellContinuationPromptAtCursor(prompt), false, prompt);
+  }
+});
+
+test('PowerShell continuation prompt detection accepts only the exact secondary prompt', () => {
+  for (const prompt of ['>>', '>> ']) assert.equal(isPowerShellContinuationPromptAtCursor(prompt), true, prompt);
+  for (const prompt of ['> ', 'PS C:\\work>> ', 'custom>> ', ' >> ']) {
+    assert.equal(isPowerShellContinuationPromptAtCursor(prompt), false, prompt);
   }
 });
 

@@ -53,6 +53,15 @@ export interface ShellSyntaxInputPreview extends TextSyntaxPreview {
   readonly continuationState?: ShellSyntaxContinuationState | undefined;
 }
 
+export interface PowerShellSyntaxContinuationState {
+  readonly commandExpected: boolean;
+  readonly previousTokenIsBareWord: boolean;
+}
+
+export interface PowerShellSyntaxInputPreview extends TextSyntaxPreview {
+  readonly continuationState?: PowerShellSyntaxContinuationState | undefined;
+}
+
 const shellKeywords = new Set(['!', '[[', ']]', 'case', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
 const commandContinuingKeywords = new Set(['!', 'case', 'do', 'elif', 'else', 'for', 'function', 'if', 'in', 'select', 'then', 'time', 'until', 'while']);
 const shellBuiltins = new Set([
@@ -190,12 +199,12 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
   const empty: readonly TextSyntaxToken[] = Object.freeze([]);
   if (profile === 'plain' || text.length === 0) return Object.freeze({ tokens: empty, highlightedThrough: text.length, isTruncated: false });
   if (profile === 'shell') return highlightShellInputSyntax(text);
+  if (profile === 'powershell') return highlightPowerShellInputSyntax(text);
 
   let limit = Math.min(text.length, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   if (limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1))) limit -= 1;
   const tokens: TextSyntaxToken[] = [];
   const scannedThrough = profile === 'markdown' ? scanMarkdown(text, limit, tokens)
-      : profile === 'powershell' ? scanPowerShell(text, limit, tokens)
       : profile === 'python' ? scanPython(text, limit, tokens)
         : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
           : profile === 'sql' ? scanSql(text, limit, tokens)
@@ -216,9 +225,25 @@ export function highlightShellInputSyntax(text: string, initialState?: ShellSynt
     isTruncated: scan.scannedThrough < text.length, continuationState: scan.continuationState });
 }
 
+export function highlightPowerShellInputSyntax(text: string, initialState?: PowerShellSyntaxContinuationState): PowerShellSyntaxInputPreview {
+  const empty: readonly TextSyntaxToken[] = Object.freeze([]);
+  if (text.length === 0) return Object.freeze({ tokens: empty, highlightedThrough: 0, isTruncated: false });
+  let limit = Math.min(text.length, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  if (limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1))) limit -= 1;
+  const tokens: TextSyntaxToken[] = [];
+  const scan = scanPowerShell(text, limit, tokens, initialState);
+  return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scan.scannedThrough,
+    isTruncated: scan.scannedThrough < text.length, continuationState: scan.continuationState });
+}
+
 interface ShellScanResult {
   readonly scannedThrough: number;
   readonly continuationState?: ShellSyntaxContinuationState | undefined;
+}
+
+interface PowerShellScanResult {
+  readonly scannedThrough: number;
+  readonly continuationState?: PowerShellSyntaxContinuationState | undefined;
 }
 
 interface ShellLineContinuationEnd {
@@ -376,10 +401,10 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[], initi
   return { scannedThrough: limit, continuationState };
 }
 
-function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[], initialState?: PowerShellSyntaxContinuationState): PowerShellScanResult {
   let index = 0;
-  let commandExpected = true;
-  let previousTokenIsBareWord = false;
+  let commandExpected = initialState?.commandExpected ?? true;
+  let previousTokenIsBareWord = initialState?.previousTokenIsBareWord ?? false;
   while (index < limit) {
     const character = text[index]!;
     if (isWhitespace(character)) {
@@ -403,7 +428,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
         const close = findTextWithinLimit(text, '#>', index + 2, limit);
         if (close >= 0) end = close + 2;
       }
-      if (!addToken(tokens, start, end, 'powershell-comment')) return start;
+      if (!addToken(tokens, start, end, 'powershell-comment')) return { scannedThrough: start };
       if (character === '<' && /[\r\n]/u.test(text.slice(start, end))) commandExpected = true;
       previousTokenIsBareWord = false;
       index = end;
@@ -412,7 +437,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
 
     const hereStringEnd = scanPowerShellHereString(text, index, limit);
     if (hereStringEnd !== undefined) {
-      if (!addToken(tokens, index, hereStringEnd, 'powershell-string')) return index;
+      if (!addToken(tokens, index, hereStringEnd, 'powershell-string')) return { scannedThrough: index };
       index = hereStringEnd;
       commandExpected = false;
       previousTokenIsBareWord = false;
@@ -421,7 +446,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
 
     if (character === '\'' || character === '"') {
       const end = scanPowerShellQuotedString(text, index, limit);
-      if (!addToken(tokens, index, end, 'powershell-string')) return index;
+      if (!addToken(tokens, index, end, 'powershell-string')) return { scannedThrough: index };
       index = end;
       commandExpected = false;
       previousTokenIsBareWord = false;
@@ -430,7 +455,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
 
     if (character === '$') {
       const end = scanPowerShellVariable(text, index, limit);
-      if (end > index + 1 && !addToken(tokens, index, end, 'powershell-variable')) return index;
+      if (end > index + 1 && !addToken(tokens, index, end, 'powershell-variable')) return { scannedThrough: index };
       index = Math.max(end, index + 1);
       commandExpected = false;
       previousTokenIsBareWord = false;
@@ -439,7 +464,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
 
     if (isDigit(character)) {
       const end = scanPowerShellNumber(text, index, limit);
-      if (!addToken(tokens, index, end, 'powershell-number')) return index;
+      if (!addToken(tokens, index, end, 'powershell-number')) return { scannedThrough: index };
       index = end;
       commandExpected = false;
       previousTokenIsBareWord = false;
@@ -449,7 +474,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
     if (character === '[') {
       const end = scanPowerShellType(text, index, limit);
       if (end !== undefined) {
-        if (!addToken(tokens, index, end, 'powershell-type')) return index;
+        if (!addToken(tokens, index, end, 'powershell-type')) return { scannedThrough: index };
         index = end;
         commandExpected = false;
         previousTokenIsBareWord = false;
@@ -461,7 +486,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       const end = scanPowerShellWord(text, index + 1, limit);
       const operator = `-${text.slice(index + 1, end).toLowerCase()}`;
       const kind = powershellWordOperators.has(operator) ? 'powershell-operator' : 'powershell-parameter';
-      if (!addToken(tokens, index, end, kind)) return index;
+      if (!addToken(tokens, index, end, kind)) return { scannedThrough: index };
       index = end;
       commandExpected = false;
       previousTokenIsBareWord = kind === 'powershell-parameter';
@@ -471,7 +496,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
     const operatorEnd = scanPowerShellSymbolOperator(text, index, limit);
     if (operatorEnd > index) {
       const operator = text.slice(index, operatorEnd);
-      if (!addToken(tokens, index, operatorEnd, 'powershell-operator')) return index;
+      if (!addToken(tokens, index, operatorEnd, 'powershell-operator')) return { scannedThrough: index };
       index = operatorEnd;
       commandExpected = isPowerShellCommandBoundary(operator);
       previousTokenIsBareWord = false;
@@ -483,10 +508,10 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       const word = text.slice(index, end);
       const normalized = word.toLowerCase();
       if (powershellKeywords.has(normalized)) {
-        if (!addToken(tokens, index, end, 'powershell-keyword')) return index;
+        if (!addToken(tokens, index, end, 'powershell-keyword')) return { scannedThrough: index };
         commandExpected = powershellCommandDeclarationKeywords.has(normalized);
       } else if (commandExpected) {
-        if (!addToken(tokens, index, end, 'powershell-command')) return index;
+        if (!addToken(tokens, index, end, 'powershell-command')) return { scannedThrough: index };
         commandExpected = false;
       }
       previousTokenIsBareWord = true;
@@ -496,7 +521,20 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
 
     index += 1;
   }
-  return limit;
+  const continuationStart = powershellLineContinuationStart(text, limit);
+  const lastToken = tokens.at(-1);
+  const isOpaqueContinuation = continuationStart !== undefined && lastToken !== undefined && lastToken.end === limit &&
+    lastToken.start < limit && (lastToken.kind === 'powershell-string' || lastToken.kind === 'powershell-comment');
+  const continuationState = continuationStart !== undefined && !isOpaqueContinuation && limit === text.length
+    ? Object.freeze({ commandExpected, previousTokenIsBareWord }) : undefined;
+  return { scannedThrough: limit, continuationState };
+}
+
+function powershellLineContinuationStart(text: string, limit: number): number | undefined {
+  if (limit === 0 || text[limit - 1] !== '`') return undefined;
+  let start = limit - 1;
+  while (start > 0 && text[start - 1] === '`') start -= 1;
+  return (limit - start) % 2 === 1 ? start : undefined;
 }
 
 function scanPowerShellHereString(text: string, start: number, limit: number): number | undefined {

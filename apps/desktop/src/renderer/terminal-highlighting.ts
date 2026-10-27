@@ -7,8 +7,8 @@ import {
   normalizeTerminalHighlightRules
 } from '../../../../packages/domain/src/terminal-highlights.ts';
 import type { TerminalHighlightRule, TerminalHighlightColor } from '../../../../packages/domain/src/terminal-highlights.ts';
-import { highlightShellInputSyntax, highlightTextSyntax } from '../../../../packages/domain/src/text-syntax.ts';
-import type { ShellSyntaxContinuationState, TextSyntaxTokenKind } from '../../../../packages/domain/src/text-syntax.ts';
+import { highlightPowerShellInputSyntax, highlightShellInputSyntax } from '../../../../packages/domain/src/text-syntax.ts';
+import type { PowerShellSyntaxContinuationState, ShellSyntaxContinuationState, TextSyntaxTokenKind } from '../../../../packages/domain/src/text-syntax.ts';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
 
@@ -44,16 +44,19 @@ export interface BoundedTerminalHighlightLine {
   readonly cellSpans: readonly TerminalHighlightCellSpan[];
 }
 
-export interface TerminalShellInputAnchor {
+interface TerminalShellInputAnchorBase {
   readonly marker: IMarker;
   readonly startColumn: number;
-  readonly profile: TerminalPromptSyntaxProfile;
   readonly wrappedMarkers: IMarker[];
   readonly decorations: Disposable[];
-  readonly continuationState?: ShellSyntaxContinuationState | undefined;
 }
 
 export type TerminalPromptSyntaxProfile = 'shell' | 'powershell';
+
+export type TerminalShellInputAnchor = TerminalShellInputAnchorBase & (
+  | { readonly profile: 'shell'; readonly continuationState?: ShellSyntaxContinuationState | undefined }
+  | { readonly profile: 'powershell'; readonly continuationState?: PowerShellSyntaxContinuationState | undefined }
+);
 
 export interface TerminalShellInputAnchorRef {
   current: TerminalShellInputAnchor | undefined;
@@ -79,6 +82,10 @@ export function getTerminalPromptSyntaxProfile(promptText: string): TerminalProm
 
 export function isShellContinuationPromptAtCursor(promptText: string): boolean {
   return promptText.trimEnd().endsWith('>');
+}
+
+export function isPowerShellContinuationPromptAtCursor(promptText: string): boolean {
+  return promptText.trimEnd() === '>>';
 }
 
 export function clearTerminalShellInputAnchor(anchorRef: TerminalShellInputAnchorRef): void {
@@ -186,10 +193,10 @@ function extractTerminalShellInput(terminal: Terminal, anchor: TerminalShellInpu
   return { text, rows };
 }
 
-export function readTerminalShellContinuationState(
+function readTerminalInputThroughCursor(
   terminal: Terminal,
   anchor: TerminalShellInputAnchor
-): ShellSyntaxContinuationState | undefined {
+): string | undefined {
   if (anchor.marker.isDisposed || terminal.buffer.active.type !== 'normal') return undefined;
   const cursorLine = terminal.buffer.active.baseY + terminal.buffer.active.cursorY;
   const input = extractTerminalShellInput(terminal, anchor, cursorLine);
@@ -198,7 +205,26 @@ export function readTerminalShellContinuationState(
   const cursorCell = cursorRow?.cellSpans.find(span => span.column === terminal.buffer.active.cursorX);
   const inputEnd = cursorRow && cursorCell
     ? cursorRow.commandStart + Math.max(0, cursorCell.start - cursorRow.inputTextStart) : input.text.length;
-  return highlightShellInputSyntax(input.text.slice(0, inputEnd), anchor.continuationState).continuationState;
+  return input.text.slice(0, inputEnd);
+}
+
+export function readTerminalShellContinuationState(
+  terminal: Terminal,
+  anchor: TerminalShellInputAnchor
+): ShellSyntaxContinuationState | undefined {
+  if (anchor.profile !== 'shell') return undefined;
+  const input = readTerminalInputThroughCursor(terminal, anchor);
+  return input === undefined ? undefined : highlightShellInputSyntax(input, anchor.continuationState).continuationState;
+}
+
+export function readTerminalPowerShellContinuationState(
+  terminal: Terminal,
+  anchor: TerminalShellInputAnchor
+): PowerShellSyntaxContinuationState | undefined {
+  if (anchor.profile !== 'powershell') return undefined;
+  const input = readTerminalInputThroughCursor(terminal, anchor);
+  if (input === undefined) return undefined;
+  return highlightPowerShellInputSyntax(input, anchor.continuationState).continuationState;
 }
 
 export function attachTerminalHighlights(
@@ -272,7 +298,7 @@ export function attachTerminalHighlights(
       const input = extractTerminalShellInput(terminal, inputAnchor, cursorLine);
       if (!input || input.text.length === 0) return;
       const tokens = (inputAnchor.profile === 'powershell'
-        ? highlightTextSyntax(input.text, 'powershell').tokens
+        ? highlightPowerShellInputSyntax(input.text, inputAnchor.continuationState).tokens
         : highlightShellInputSyntax(input.text, inputAnchor.continuationState).tokens)
         .slice(0, MAX_TERMINAL_SHELL_SYNTAX_DECORATIONS);
       const inputMarkers = new Map<number, IMarker>([[inputAnchor.marker.line, inputAnchor.marker]]);
