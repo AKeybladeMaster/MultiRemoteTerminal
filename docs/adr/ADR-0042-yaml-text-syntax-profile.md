@@ -11,15 +11,15 @@ The [YAML 1.2.2 specification](https://yaml.org/spec/1.2.2/) defines block and f
 ## Decision
 
 - Add a `yaml` profile to the shared tokenizer. Auto detection recognizes `.yaml` and `.yml`; users may also select YAML manually.
-- Color plain and quoted mapping keys; quoted/plain strings; YAML 1.2 core null, boolean and numeric forms; comments only when separated from preceding content; flow collection punctuation; document markers and `%YAML`/`%TAG` directives; tags; anchors; aliases; and block scalar headers and body text.
-- Treat quoted and block scalars as opaque tokens so comment markers and syntax-like text inside them do not receive nested colors. Block scalar body indentation is detected with a bounded lexical approximation.
+- Color plain and quoted mapping keys; classify complete same-line plain scalars before assigning core null, boolean or numeric colors; color quoted/plain strings; and recognize comments only when separated from preceding content, flow punctuation, document markers/directives, tags, anchors, aliases and block scalar headers/body text.
+- Treat quoted and block scalars as opaque tokens so comment markers and syntax-like text inside them do not receive nested colors. Block scalar body indentation is detected with a bounded lexical approximation that accounts for compact mappings inside block sequences.
 - Cap implicit-key colon lookahead at 1,024 UTF-16 code units on one line, following the YAML implicit-key lookahead limit. Keep the shared 64,000 UTF-16 code-unit and 4,096-token preview limits.
 - Add no package. The renderer preview changes no file bytes and does not validate, parse, execute or persist source content.
 - Treat core-schema scalar colors as visual hints, not resolved types or validation. YAML 1.1-specific words such as `yes` and `on` remain strings; timestamps and application-specific tags are not resolved.
 
 ## Consequences
 
-Common YAML settings remain readable in both editors without changing source text. The scanner intentionally does not model indentation-sensitive grammar, folded plain scalar continuation, duplicate mapping keys, tag resolution or schema selection. Malformed input can receive colors that resemble valid tokens. Implicit-key lookahead counts UTF-16 code units, and block-scalar indentation is approximate; the profile is not a YAML parser or validator.
+Common YAML settings remain readable in both editors without changing source text. The scanner intentionally does not model the full indentation-sensitive grammar, folded plain scalar continuation across lines, duplicate mapping keys, tag resolution or schema selection. Malformed input can receive colors that resemble valid tokens. Implicit-key lookahead counts UTF-16 code units, and block-scalar indentation is approximate; the profile is not a YAML parser or validator.
 
 ## Verification
 

@@ -1200,6 +1200,7 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     if (character === ' ' || character === '\t') { index += 1; continue; }
     const currentFlow = flowStack.at(-1);
     const flowMapKeyExpected = currentFlow?.kind === 'mapping' && currentFlow.expectsKey;
+    const canStartImplicitKey = flowMapKeyExpected || (flowStack.length === 0 && nodePositionExpected);
 
     const documentMarkerEnd = scanYamlDocumentMarker(text, index, limit);
     if (documentMarkerEnd > index) {
@@ -1231,8 +1232,8 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
 
     if (character === '"' || character === '\'') {
       const end = scanYamlQuotedScalar(text, index, limit);
-      const keyColon = findYamlKeyColon(text, index, limit, flowMapKeyExpected, true);
-      const isKey = keyColon >= end;
+      const keyColon = canStartImplicitKey ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, true) : -1;
+      const isKey = canStartImplicitKey && keyColon >= end;
       if (!addToken(tokens, index, end, isKey ? 'yaml-key' : 'yaml-string')) return index;
       index = end;
       nodePositionExpected = false;
@@ -1248,7 +1249,7 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     }
 
     if (nodePositionExpected && character === '*' && index + 1 < limit && !isYamlPropertyDelimiter(text[index + 1]!)) {
-      const end = scanYamlProperty(text, index, limit);
+      const end = scanYamlAlias(text, index, limit);
       if (!addToken(tokens, index, end, 'yaml-alias')) return index;
       index = end;
       nodePositionExpected = false;
@@ -1284,7 +1285,8 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
       continue;
     }
 
-    if ((character === '-' || character === '?') && flowStack.length === 0 && isYamlBlockIndicator(text, index, limit)) {
+    if ((character === '-' || character === '?') && flowStack.length === 0 && nodePositionExpected &&
+        isYamlBlockIndicator(text, index, limit)) {
       if (!addToken(tokens, index, index + 1, 'yaml-operator')) return index;
       index += 1;
       nodePositionExpected = true;
@@ -1322,7 +1324,7 @@ function scanYaml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
       continue;
     }
 
-    const keyColon = nodePositionExpected || flowMapKeyExpected
+    const keyColon = canStartImplicitKey
       ? findYamlKeyColon(text, index, limit, flowMapKeyExpected, false)
       : -1;
     if (keyColon > index) {
@@ -1392,13 +1394,16 @@ function findYamlKeyColon(text: string, start: number, limit: number, flowMapKey
 
 function scanYamlPlainScalar(text: string, start: number, limit: number, inFlowCollection: boolean, flowMapKeyExpected: boolean): number {
   let index = start;
+  let contentEnd = start;
   while (index < limit) {
     const character = text[index]!;
-    if (isWhitespace(character) || (inFlowCollection && '[]{},'.includes(character))) break;
+    if (character === '\n' || character === '\r' || (inFlowCollection && '[]{},'.includes(character))) break;
+    if (character === '#' && index > start && isWhitespace(text[index - 1]!)) break;
     if (character === ':' && (isYamlSeparatedColon(text, index, limit) || flowMapKeyExpected)) break;
+    if (!isWhitespace(character)) contentEnd = index + 1;
     index += 1;
   }
-  return index;
+  return contentEnd;
 }
 
 function scanYamlAnchor(text: string, start: number, limit: number): number {
@@ -1408,9 +1413,10 @@ function scanYamlAnchor(text: string, start: number, limit: number): number {
   return index;
 }
 
-function scanYamlProperty(text: string, start: number, limit: number): number {
+function scanYamlAlias(text: string, start: number, limit: number): number {
   let index = start + 1;
-  while (index < limit && !isYamlPropertyDelimiter(text[index]!)) index += 1;
+  while (index < limit && !isYamlPropertyDelimiter(text[index]!) &&
+      !(text[index] === ':' && isYamlSeparatedColon(text, index, limit))) index += 1;
   return index;
 }
 
@@ -1440,9 +1446,7 @@ function isYamlBlockIndicator(text: string, index: number, limit: number): boole
 }
 
 function isYamlLinePrefix(text: string, index: number): boolean {
-  let lineStart = index;
-  while (lineStart > 0 && text[lineStart - 1] !== '\n' && text[lineStart - 1] !== '\r') lineStart -= 1;
-  return lineStart === index;
+  return yamlLineStart(text, index) === index;
 }
 
 function scanYamlDocumentMarker(text: string, index: number, limit: number): number {
@@ -1503,7 +1507,7 @@ function scanYamlBlockScalar(
     return { nextIndex: commentStart, stoppedAt: commentStart };
   }
 
-  const parentIndent = yamlLineIndent(text, start);
+  const parentIndent = yamlBlockScalarParentIndent(text, start);
   let requiredIndent = explicitIndent === undefined ? undefined : parentIndent + explicitIndent;
   let cursor = yamlNextLine(text, lineEnd, limit);
   while (cursor < limit) {
@@ -1530,11 +1534,27 @@ function scanYamlBlockScalar(
 }
 
 function yamlLineIndent(text: string, index: number): number {
-  let lineStart = index;
-  while (lineStart > 0 && text[lineStart - 1] !== '\n' && text[lineStart - 1] !== '\r') lineStart -= 1;
+  const lineStart = yamlLineStart(text, index);
   let indentation = 0;
   while (lineStart + indentation < index && text[lineStart + indentation] === ' ') indentation += 1;
   return indentation;
+}
+
+function yamlBlockScalarParentIndent(text: string, index: number): number {
+  const lineStart = yamlLineStart(text, index);
+  const lineIndent = yamlLineIndent(text, index);
+  const sequenceIndicator = lineStart + lineIndent;
+  if (text[sequenceIndicator] !== '-' || !isWhitespace(text[sequenceIndicator + 1] ?? '')) return lineIndent;
+
+  const compactMappingKey = sequenceIndicator + 2;
+  const keyColon = findYamlKeyColon(text, compactMappingKey, index, false, false);
+  return keyColon > compactMappingKey ? lineIndent + 2 : lineIndent;
+}
+
+function yamlLineStart(text: string, index: number): number {
+  let lineStart = index;
+  while (lineStart > 0 && text[lineStart - 1] !== '\n' && text[lineStart - 1] !== '\r') lineStart -= 1;
+  return lineStart;
 }
 
 function yamlNextLine(text: string, lineEnd: number, limit: number): number {

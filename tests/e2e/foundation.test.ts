@@ -730,7 +730,7 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
 test('local YAML text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-yaml-e2e-'));
   const path = join(profile, 'settings.yaml');
-  const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\n';
+  const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n';
   await writeFile(path, source);
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
     `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -747,6 +747,9 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
     await expect(preview.locator('[data-token-kind="yaml-string"]').first()).toHaveText('"terminal"');
     await expect(preview.locator('[data-token-kind="yaml-number"]').first()).toHaveText('443');
     await expect(preview.locator('[data-token-kind="yaml-literal"]').first()).toHaveText('true');
+    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
+    await expect(preview.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
 
     const manyYamlComments = '# preview cap\n'.repeat(4_100);
     await contents.fill(manyYamlComments);
@@ -1206,7 +1209,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
-    await writeFile(join(remoteRoot, 'remote.yaml'), '# app config\nserver:\n  host: localhost\n  port: 8080\n');
+    await writeFile(join(remoteRoot, 'remote.yaml'), '# app config\nserver:\n  host: localhost\n  port: 8080\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1369,9 +1372,12 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
     await expect(remoteYamlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]').first()).toHaveText('# app config');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').first()).toHaveText('server');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').nth(1)).toHaveText('host');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-number"]').first()).toHaveText('8080');
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
     await remoteYamlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteYamlEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
