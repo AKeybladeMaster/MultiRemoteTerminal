@@ -280,9 +280,10 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
       commandPrefixOptionValueExpected = false;
       continue;
     }
+    if (word === ']]' && !insideShellTest) continue;
     if (shellAssignmentValuePending) continue;
     if (shellKeywords.has(word) && !commandPrefixPending &&
-        (commandExpected || (insideShellTest && (word === ']]' || word === '!')))) {
+        ((commandExpected && word !== ']]') || (insideShellTest && (word === ']]' || word === '!')))) {
       if (!addToken(tokens, start, index, 'shell-keyword')) return start;
       if (word === '[[') {
         insideShellTest = true;

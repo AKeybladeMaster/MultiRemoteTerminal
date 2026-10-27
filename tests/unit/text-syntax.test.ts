@@ -122,6 +122,10 @@ test('shell syntax preview only colors the double-bracket closing marker in cond
   assert.deepEqual(tokens, [{ text: 'echo', kind: 'shell-builtin' }]);
 });
 
+test('shell syntax preview does not color an isolated double-bracket closer', () => {
+  assert.deepEqual(highlightTextSyntax(']]', 'shell').tokens, []);
+});
+
 test('PowerShell syntax preview colors command forms, keywords, parameters, variables, strings, numbers, types and operators', () => {
   const source = [
     'function Get-Items {',
