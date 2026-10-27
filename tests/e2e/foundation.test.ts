@@ -705,6 +705,15 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
     await expect(editor.locator('[data-token-kind="toml-key"]').first()).toHaveText('service');
     await expect(editor.locator('[data-token-kind="toml-string"]').first()).toHaveText('"terminal"');
     await expect(editor.locator('[data-token-kind="toml-number"]').first()).toHaveText('443');
+
+    const manyTomlComments = '# preview cap\n'.repeat(4_100);
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await contents.fill(manyTomlComments);
+    await expect(preview.locator('[data-token-kind="toml-comment"]')).toHaveCount(4_096);
+    await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect(await contents.inputValue()).toBe(manyTomlComments);
+    expect(await preview.textContent()).toBe(manyTomlComments);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

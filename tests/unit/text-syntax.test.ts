@@ -409,6 +409,7 @@ test('TOML syntax preview colors keys, four string forms, values, comments and t
     'infinite = +inf',
     'localDate = 1979-05-27',
     'localDateTime = 1979-05-27 07:32:00',
+    'offsetDateTime = 1979-05-27 07:32:00Z',
     '[database.connection]',
     'port = 5432',
     '[[products]]',
@@ -425,7 +426,7 @@ test('TOML syntax preview colors keys, four string forms, values, comments and t
   ]);
   assert.deepEqual(values('toml-number'), ['1_000', '0xDEAD_BEEF', '-1.25e+2', '+1.5', '1.2', '5432']);
   assert.deepEqual(values('toml-literal'), ['true', 'false', '+inf']);
-  assert.deepEqual(values('toml-datetime'), ['1979-05-27', '1979-05-27 07:32:00']);
+  assert.deepEqual(values('toml-datetime'), ['1979-05-27', '1979-05-27 07:32:00', '1979-05-27 07:32:00Z']);
   assert.ok(values('toml-key').includes('"quoted.key"'));
   assert.ok(values('toml-key').includes('database'));
   assert.ok(values('toml-key').includes('connection'));

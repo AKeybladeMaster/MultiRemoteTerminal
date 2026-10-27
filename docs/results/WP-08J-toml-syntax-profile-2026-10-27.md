@@ -9,14 +9,14 @@
 - Added a dependency-free TOML lexical profile in the pure domain tokenizer. `.toml` names auto-select TOML; local and SFTP editors also expose manual selection.
 - Colored bare and quoted keys, basic/literal and multiline strings, common integer/float forms, booleans and signed `inf`/`nan`, local date/time values, comments outside strings, dotted keys and table/array punctuation.
 - Preserved the 64,000 UTF-16 code-unit and 4,096-token bounds. Preview content remains text and is neither validated, executed, modified nor persisted.
-- Added tests for the four TOML string forms, escaped text, embedded comment markers, dotted/quoted/table keys, number and date/time forms, literal values, automatic extension selection, theme colors and both preview bounds. Local and SFTP editor E2E verify profile selection and colored content.
+- Added tests for the four TOML string forms, escaped text, embedded comment markers, dotted/quoted/table keys, number and date/time forms (including space-separated offset timestamps), literal values, automatic extension selection, theme colors and both preview bounds. Windows local and SFTP editor E2E verify profile selection and colored content; the local E2E also checks the 4,096-token cap while retaining the complete editable and preview text.
 - Added [ADR-0041](../adr/ADR-0041-toml-text-syntax-profile.md) and updated the architecture, security, feature matrix, specification, implementation plan and user guide.
 
 ## Validation
 
 On Windows x64:
 
-- `corepack pnpm build` — passed. Vite reported the existing bundle-size advisory; the renderer bundle is 986.19 kB before gzip.
+- `corepack pnpm build` — passed. Vite reported the existing bundle-size advisory; the renderer bundle is 986.20 kB before gzip.
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
 - `node --test tests/unit/text-syntax.test.ts` — 19/19 passed.
