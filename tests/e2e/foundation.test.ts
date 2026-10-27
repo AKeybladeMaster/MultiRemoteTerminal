@@ -560,10 +560,10 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
   }
 });
 
-test('local text editor auto-detects PowerShell syntax and supports Shell and JSON profiles', async () => {
+test('local text editor auto-detects Python syntax and supports PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
-  const path = join(profile, 'example.ps1');
-  const source = 'function Get-Items {\n  $root = Get-ChildItem -Path ${HOME}\n  if ($root.Count -gt 0) { Write-Output "$root" }\n}\n';
+  const path = join(profile, 'example.py');
+  const source = 'def greet(name: str) -> str:\n    value = 2\n    print(f"Hello, {name}!")\n# keep the file unchanged\n';
   await writeFile(path, source);
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
     `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -577,16 +577,21 @@ test('local text editor auto-detects PowerShell syntax and supports Shell and JS
     const preview = editor.getByTestId('text-editor-code-preview');
     await expect(syntax).toHaveValue('auto');
     await expect(contents).toHaveValue(source);
-    await expect(preview.locator('[data-token-kind="powershell-keyword"]').first()).toHaveText('function');
-    await expect(preview.locator('[data-token-kind="powershell-keyword"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
-    await expect(preview.locator('[data-token-kind="powershell-command"]').first()).toHaveText('Get-Items');
-    await expect(preview.locator('[data-token-kind="powershell-command"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
-    await expect(preview.locator('[data-token-kind="powershell-parameter"]').first()).toHaveCSS('color', 'rgb(248, 211, 107)');
-    await expect(preview.locator('[data-token-kind="powershell-variable"]').first()).toHaveCSS('color', 'rgb(150, 194, 255)');
+    await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
+    await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
+    await expect(preview.locator('[data-token-kind="python-function"]').first()).toHaveText('greet');
+    await expect(preview.locator('[data-token-kind="python-builtin"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
+    await expect(preview.locator('[data-token-kind="python-number"]').first()).toHaveCSS('color', 'rgb(248, 211, 107)');
+    await expect(preview.locator('[data-token-kind="python-string"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
+    await expect(preview.locator('[data-token-kind="python-comment"]').first()).toHaveCSS('color', 'rgb(152, 166, 180)');
     await syntax.selectOption('plain');
     await expect(preview.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('python');
+    await expect(preview.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
+
     await syntax.selectOption('powershell');
-    await expect(preview.locator('[data-token-kind="powershell-keyword"]').first()).toHaveText('function');
+    await contents.fill('Write-Output "$env:USERPROFILE"');
+    await expect(preview.locator('[data-token-kind="powershell-command"]').first()).toHaveText('Write-Output');
 
     await syntax.selectOption('shell');
     await contents.fill('if true; then\n  echo shell\nfi\n');
@@ -1059,6 +1064,7 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'editor.txt'), 'original remote text\r\nsecond line\n');
     await writeFile(join(remoteRoot, 'remote.zsh'), 'if true; then\n  echo remote\nfi\n');
     await writeFile(join(remoteRoot, 'remote.ps1'), 'Get-ChildItem -Path $HOME\n');
+    await writeFile(join(remoteRoot, 'remote.py'), 'def remote_preview():\n    print("from SFTP")\n');
     await new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
@@ -1179,6 +1185,14 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await expect(remotePowerShellEditor.locator('[data-token-kind="powershell-parameter"]').first()).toHaveText('-Path');
     await remotePowerShellEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remotePowerShellEditor).toHaveCount(0);
+    const remotePythonEdit = sftpPanel.getByRole('button', { name: 'Edit remote.py', exact: true });
+    await remotePythonEdit.click();
+    const remotePythonEditor = page.getByRole('dialog', { name: 'remote.py' });
+    await expect(remotePythonEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remotePythonEditor.locator('[data-token-kind="python-keyword"]').first()).toHaveText('def');
+    await expect(remotePythonEditor.locator('[data-token-kind="python-function"]').first()).toHaveText('remote_preview');
+    await remotePythonEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remotePythonEditor).toHaveCount(0);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellRequestsBeforeSftp);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();

@@ -8,10 +8,13 @@ import {
   resolveTextSyntaxProfile
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select shell, PowerShell and JSON from the file name', () => {
+test('automatic syntax profiles select Shell, PowerShell, Python and JSON from the file name', () => {
   assert.equal(resolveTextSyntaxProfile('auto', 'login.ZSH'), 'shell');
   for (const fileName of ['install.ps1', 'module.psm1', 'manifest.psd1', 'session.pssc']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'powershell');
+  }
+  for (const fileName of ['tool.py', 'launcher.PYW', 'hints.pyi']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'python');
   }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.json'), 'json');
   assert.equal(resolveTextSyntaxProfile('auto', 'notes.txt'), 'plain');
@@ -131,6 +134,81 @@ test('PowerShell syntax preview never extends a token beyond its code-unit bound
   }
 });
 
+test('Python syntax preview colors declarations, keywords, builtins, strings, numbers, comments and operators', () => {
+  const source = 'def greet(name: str) -> str:\n    value = 1_000 + .5\n    radix = 0x2A + 0b10 + 0o7 + 1.0e2j\n    enabled = True\n    Print = print(f"Hello, {name}!")\n# finished\n';
+  const tokens = highlightTextSyntax(source, 'python').tokens
+    .map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: 'def', kind: 'python-keyword' },
+    { text: 'greet', kind: 'python-function' },
+    { text: '(', kind: 'python-operator' },
+    { text: ':', kind: 'python-operator' },
+    { text: 'str', kind: 'python-builtin' },
+    { text: ')', kind: 'python-operator' },
+    { text: '->', kind: 'python-operator' },
+    { text: 'str', kind: 'python-builtin' },
+    { text: ':', kind: 'python-operator' },
+    { text: '=', kind: 'python-operator' },
+    { text: '1_000', kind: 'python-number' },
+    { text: '+', kind: 'python-operator' },
+    { text: '.5', kind: 'python-number' },
+    { text: '=', kind: 'python-operator' },
+    { text: '0x2A', kind: 'python-number' },
+    { text: '+', kind: 'python-operator' },
+    { text: '0b10', kind: 'python-number' },
+    { text: '+', kind: 'python-operator' },
+    { text: '0o7', kind: 'python-number' },
+    { text: '+', kind: 'python-operator' },
+    { text: '1.0e2j', kind: 'python-number' },
+    { text: '=', kind: 'python-operator' },
+    { text: 'True', kind: 'python-keyword' },
+    { text: '=', kind: 'python-operator' },
+    { text: 'print', kind: 'python-builtin' },
+    { text: '(', kind: 'python-operator' },
+    { text: 'f"Hello, {name}!"', kind: 'python-string' },
+    { text: ')', kind: 'python-operator' },
+    { text: '# finished', kind: 'python-comment' }
+  ]);
+  const classSource = 'class Greeter:\n    pass\n';
+  assert.deepEqual(highlightTextSyntax(classSource, 'python').tokens.map(token => ({
+    text: classSource.slice(token.start, token.end),
+    kind: token.kind
+  })), [
+    { text: 'class', kind: 'python-keyword' },
+    { text: 'Greeter', kind: 'python-type' },
+    { text: ':', kind: 'python-operator' },
+    { text: 'pass', kind: 'python-keyword' }
+  ]);
+});
+
+test('Python syntax preview treats prefixed and triple-quoted strings as opaque', () => {
+  const source = 'query = r"select # literal"\ndoc = """# also literal\nprint(\"not a token\")"""\n# real comment\n';
+  const tokens = highlightTextSyntax(source, 'python').tokens
+    .map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '=', kind: 'python-operator' },
+    { text: 'r"select # literal"', kind: 'python-string' },
+    { text: '=', kind: 'python-operator' },
+    { text: '"""# also literal\nprint(\"not a token\")"""', kind: 'python-string' },
+    { text: '# real comment', kind: 'python-comment' }
+  ]);
+});
+
+test('Python syntax preview never extends a token beyond its code-unit bound', () => {
+  const boundaryCases = [
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}'tail`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}'''text`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}1.5`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}:=`
+  ];
+  for (const source of boundaryCases) {
+    const preview = highlightTextSyntax(source, 'python');
+    assert.ok(preview.highlightedThrough <= MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+    assert.ok(preview.tokens.every(token => token.end <= preview.highlightedThrough),
+      `token ended past the preview bound at ${preview.highlightedThrough}`);
+  }
+});
+
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {
   const source = '{"name":"MRT","count":3,"enabled":true}';
   const preview = highlightTextSyntax(source, 'json');
@@ -168,6 +246,9 @@ test('syntax preview stops at fixed character and token bounds without splitting
   const manyPowerShellTokens = highlightTextSyntax('$x '.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'powershell');
   assert.equal(manyPowerShellTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyPowerShellTokens.isTruncated, true);
+  const manyPythonTokens = highlightTextSyntax('# comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'python');
+  assert.equal(manyPythonTokens.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyPythonTokens.isTruncated, true);
 });
 
 test('a malformed braced variable does not swallow a later expansion', () => {
