@@ -14,10 +14,10 @@
 
 ## Verification
 
-- `node --test tests/unit/text-syntax.test.ts` — passed, 8/8.
-- `corepack pnpm build` — passed on Windows x64. Vite reports the existing advisory that the 972.50 kB minified renderer chunk exceeds 500 kB.
+- `node --test tests/unit/text-syntax.test.ts` — passed, 10/10. Includes embedded-comment-marker cases and tokens that end at the 64,000-unit boundary.
+- `corepack pnpm build` — passed on Windows x64. Vite reports the existing advisory that the 972.76 kB minified renderer chunk exceeds 500 kB.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
-- `corepack pnpm typecheck` — passed after a forced TypeScript project-reference rebuild. The first run observed missing declaration outputs with `TS6305`; verbose build output showed the domain project incorrectly considered up to date while those outputs were absent. `corepack pnpm exec tsc -b --force --verbose` regenerated project outputs, after which the normal typecheck passed.
+- `corepack pnpm typecheck` — passed in the final sequential run. An earlier build/typecheck overlap reported missing declaration outputs with `TS6305`; verbose build output showed stale project-reference state. `corepack pnpm exec tsc -b --force --verbose` regenerated those outputs, after which the normal typecheck passed.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "local text editor auto-detects PowerShell|SFTP sessions verify trust"` — passed, 2/2. Covers local auto/manual profiles, theme colors, Shell/JSON profiles, remote SFTP PowerShell auto-detection and existing SFTP editor behavior.
 - `git diff --check` — passed.
 

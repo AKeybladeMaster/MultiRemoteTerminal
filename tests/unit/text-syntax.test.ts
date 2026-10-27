@@ -106,6 +106,31 @@ test('PowerShell syntax preview keeps comments and here-strings opaque and recog
   ]);
 });
 
+test('PowerShell syntax preview does not color comment markers embedded in barewords', () => {
+  const source = 'Foo#Bar\nFoo<#Bar#>\n# actual comment\n';
+  const comments = highlightTextSyntax(source, 'powershell').tokens
+    .filter(token => token.kind === 'powershell-comment')
+    .map(token => source.slice(token.start, token.end));
+  assert.deepEqual(comments, ['# actual comment']);
+});
+
+test('PowerShell syntax preview never extends a token beyond its code-unit bound', () => {
+  const boundaryCases = [
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}-Path`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}\${}`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 3)}'a''`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 1)}1.2`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 2)}[X]`,
+    `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS - 4)}[X[]]`
+  ];
+  for (const source of boundaryCases) {
+    const preview = highlightTextSyntax(source, 'powershell');
+    assert.ok(preview.highlightedThrough <= MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+    assert.ok(preview.tokens.every(token => token.end <= preview.highlightedThrough),
+      `token ended past the preview bound at ${preview.highlightedThrough}`);
+  }
+});
+
 test('JSON syntax preview distinguishes keys, strings, numbers, literals and punctuation', () => {
   const source = '{"name":"MRT","count":3,"enabled":true}';
   const preview = highlightTextSyntax(source, 'json');

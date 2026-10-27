@@ -79,7 +79,7 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
 
     if (character === '#' && (index === 0 || isWhitespace(text[index - 1]!))) {
       const start = index;
-      while (index < limit && text[index] !== '\n' && text[index] !== '\r') index += 1;
+      index = scanLineEnd(text, index, limit);
       if (!addToken(tokens, start, index, 'shell-comment')) return start;
       continue;
     }
@@ -142,15 +142,22 @@ function scanShell(text: string, limit: number, tokens: TextSyntaxToken[]): numb
 function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]): number {
   let index = 0;
   let commandExpected = true;
+  let previousTokenIsBareWord = false;
   while (index < limit) {
     const character = text[index]!;
     if (isWhitespace(character)) {
       if (character === '\n' || character === '\r') commandExpected = true;
+      previousTokenIsBareWord = false;
       index += 1;
       continue;
     }
 
-    if (character === '#' || (character === '<' && text[index + 1] === '#')) {
+    if (character === '<' && index + 1 < limit && text[index + 1] === '#' && previousTokenIsBareWord) {
+      index += 2;
+      continue;
+    }
+
+    if ((character === '#' || (character === '<' && index + 1 < limit && text[index + 1] === '#')) && !previousTokenIsBareWord) {
       const start = index;
       let end = limit;
       if (character === '#') {
@@ -160,6 +167,8 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
         if (close >= 0) end = close + 2;
       }
       if (!addToken(tokens, start, end, 'powershell-comment')) return start;
+      if (character === '<' && /[\r\n]/u.test(text.slice(start, end))) commandExpected = true;
+      previousTokenIsBareWord = false;
       index = end;
       continue;
     }
@@ -169,6 +178,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       if (!addToken(tokens, index, hereStringEnd, 'powershell-string')) return index;
       index = hereStringEnd;
       commandExpected = false;
+      previousTokenIsBareWord = false;
       continue;
     }
 
@@ -177,6 +187,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       if (!addToken(tokens, index, end, 'powershell-string')) return index;
       index = end;
       commandExpected = false;
+      previousTokenIsBareWord = false;
       continue;
     }
 
@@ -185,6 +196,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       if (end > index + 1 && !addToken(tokens, index, end, 'powershell-variable')) return index;
       index = Math.max(end, index + 1);
       commandExpected = false;
+      previousTokenIsBareWord = false;
       continue;
     }
 
@@ -193,6 +205,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       if (!addToken(tokens, index, end, 'powershell-number')) return index;
       index = end;
       commandExpected = false;
+      previousTokenIsBareWord = false;
       continue;
     }
 
@@ -202,17 +215,19 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
         if (!addToken(tokens, index, end, 'powershell-type')) return index;
         index = end;
         commandExpected = false;
+        previousTokenIsBareWord = false;
         continue;
       }
     }
 
-    if (character === '-' && isPowerShellNameStart(text[index + 1] ?? '')) {
+    if (character === '-' && index + 1 < limit && isPowerShellNameStart(text[index + 1]!)) {
       const end = scanPowerShellWord(text, index + 1, limit);
       const operator = `-${text.slice(index + 1, end).toLowerCase()}`;
       const kind = powershellWordOperators.has(operator) ? 'powershell-operator' : 'powershell-parameter';
       if (!addToken(tokens, index, end, kind)) return index;
       index = end;
       commandExpected = false;
+      previousTokenIsBareWord = kind === 'powershell-parameter';
       continue;
     }
 
@@ -222,6 +237,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
       if (!addToken(tokens, index, operatorEnd, 'powershell-operator')) return index;
       index = operatorEnd;
       commandExpected = isPowerShellCommandBoundary(operator);
+      previousTokenIsBareWord = false;
       continue;
     }
 
@@ -236,6 +252,7 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
         if (!addToken(tokens, index, end, 'powershell-command')) return index;
         commandExpected = false;
       }
+      previousTokenIsBareWord = true;
       index = end;
       continue;
     }
@@ -246,10 +263,11 @@ function scanPowerShell(text: string, limit: number, tokens: TextSyntaxToken[]):
 }
 
 function scanPowerShellHereString(text: string, start: number, limit: number): number | undefined {
-  if (text[start] !== '@' || (text[start + 1] !== '\'' && text[start + 1] !== '"')) return undefined;
+  if (text[start] !== '@' || start + 1 >= limit || (text[start + 1] !== '\'' && text[start + 1] !== '"')) return undefined;
   const quote = text[start + 1]!;
   let lineStart = start + 2;
-  if (text[lineStart] === '\r' && text[lineStart + 1] === '\n') lineStart += 2;
+  if (lineStart >= limit) return undefined;
+  if (text[lineStart] === '\r' && lineStart + 1 < limit && text[lineStart + 1] === '\n') lineStart += 2;
   else if (text[lineStart] === '\n' || text[lineStart] === '\r') lineStart += 1;
   else return undefined;
 
@@ -258,7 +276,7 @@ function scanPowerShellHereString(text: string, start: number, limit: number): n
     const lineEnd = scanLineEnd(text, lineStart, limit);
     if (lineEnd - lineStart === closingMark.length && text.startsWith(closingMark, lineStart)) return lineEnd;
     if (lineEnd >= limit) return limit;
-    lineStart = lineEnd + (text[lineEnd] === '\r' && text[lineEnd + 1] === '\n' ? 2 : 1);
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
   }
   return limit;
 }
@@ -272,7 +290,7 @@ function scanPowerShellQuotedString(text: string, start: number, limit: number):
       continue;
     }
     if (text[index] === quote) {
-      if (quote === '\'' && text[index + 1] === '\'') {
+      if (quote === '\'' && index + 1 < limit && text[index + 1] === '\'') {
         index += 2;
         continue;
       }
@@ -286,16 +304,16 @@ function scanPowerShellQuotedString(text: string, start: number, limit: number):
 
 function scanPowerShellVariable(text: string, start: number, limit: number): number {
   let index = start + 1;
-  if (text[index] === '{') {
+  if (index < limit && text[index] === '{') {
     const scanLimit = Math.min(limit, index + MAX_POWERSHELL_NAME_SCAN_CODE_UNITS);
     while (index < scanLimit && text[index] !== '}' && text[index] !== '\n' && text[index] !== '\r') index += 1;
-    return text[index] === '}' ? index + 1 : start + 1;
+    return index < scanLimit && index < limit && text[index] === '}' ? index + 1 : start + 1;
   }
-  if ('?^!'.includes(text[index] ?? '\0')) return index + 1;
-  if (!isPowerShellNameStart(text[index] ?? '')) return start + 1;
+  if (index < limit && '?^!'.includes(text[index]!)) return index + 1;
+  if (index >= limit || !isPowerShellNameStart(text[index]!)) return start + 1;
 
   index = scanPowerShellVariableName(text, index, limit);
-  while (text[index] === ':' && isPowerShellNameStart(text[index + 1] ?? '')) {
+  while (index + 1 < limit && text[index] === ':' && isPowerShellNameStart(text[index + 1]!)) {
     index = scanPowerShellVariableName(text, index + 1, limit);
   }
   return index;
@@ -309,18 +327,18 @@ function scanPowerShellVariableName(text: string, start: number, limit: number):
 
 function scanPowerShellNumber(text: string, start: number, limit: number): number {
   let index = start;
-  if (text[index] === '0' && (text[index + 1] === 'x' || text[index + 1] === 'X')) {
+  if (index + 1 < limit && text[index] === '0' && (text[index + 1] === 'x' || text[index + 1] === 'X')) {
     index += 2;
     while (index < limit && (isDigit(text[index]!) || /[A-Fa-f_]/u.test(text[index]!))) index += 1;
     return index;
   }
   while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
-  if (text[index] === '.' && text[index + 1] !== '.' && isDigit(text[index + 1] ?? '')) {
+  if (index + 1 < limit && text[index] === '.' && text[index + 1] !== '.' && isDigit(text[index + 1]!)) {
     index += 1;
     while (index < limit && (isDigit(text[index]!) || text[index] === '_')) index += 1;
   }
-  if ((text[index] === 'e' || text[index] === 'E') &&
-      (isDigit(text[index + 1] ?? '') || ((text[index + 1] === '+' || text[index + 1] === '-') && isDigit(text[index + 2] ?? '')))) {
+  if (index + 1 < limit && (text[index] === 'e' || text[index] === 'E') &&
+      (isDigit(text[index + 1]!) || ((text[index + 1] === '+' || text[index + 1] === '-') && index + 2 < limit && isDigit(text[index + 2]!)))) {
     index += 1;
     if (text[index] === '+' || text[index] === '-') index += 1;
     while (index < limit && isDigit(text[index]!)) index += 1;
@@ -331,11 +349,11 @@ function scanPowerShellNumber(text: string, start: number, limit: number): numbe
 
 function scanPowerShellType(text: string, start: number, limit: number): number | undefined {
   let index = start + 1;
-  if (!isPowerShellNameStart(text[index] ?? '')) return undefined;
+  if (index >= limit || !isPowerShellNameStart(text[index]!)) return undefined;
   while (index < limit && index - start <= MAX_POWERSHELL_NAME_SCAN_CODE_UNITS &&
       (isPowerShellNamePart(text[index]!) || text[index] === '.' || text[index] === '+')) index += 1;
-  if (text[index] === '[' && text[index + 1] === ']' && text[index + 2] === ']') return index + 3;
-  return text[index] === ']' ? index + 1 : undefined;
+  if (index + 2 < limit && text[index] === '[' && text[index + 1] === ']' && text[index + 2] === ']') return index + 3;
+  return index < limit && text[index] === ']' ? index + 1 : undefined;
 }
 
 function scanPowerShellWord(text: string, start: number, limit: number): number {
