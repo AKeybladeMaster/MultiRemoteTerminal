@@ -18,6 +18,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
   --terminal-background: #101c28;
   --syntax-keyword: #df8fff;
   --syntax-command: #54d7d4;
+  --syntax-builtin: #84f2a7;
   --syntax-option: #f8d36b;
   --syntax-string: #84f2a7;
   --syntax-variable: #96c2ff;
@@ -46,6 +47,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
   --terminal-background: #fbfcfe;
   --syntax-keyword: #583574;
   --syntax-command: #14585c;
+  --syntax-builtin: #185c36;
   --syntax-option: #6d4900;
   --syntax-string: #185c36;
   --syntax-variable: #174c85;
@@ -273,6 +275,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-syntax-token--python-function, .text-syntax-token--javascript-builtin, .text-syntax-token--javascript-function,
 .text-syntax-token--sql-function, .text-syntax-token--sql-identifier, .text-syntax-token--toml-key,
 .text-syntax-token--yaml-key, .text-syntax-token--json-key { color: var(--syntax-command); font-weight: 650; }
+.text-syntax-token--shell-builtin { color: var(--syntax-builtin); font-weight: 650; }
 .text-syntax-token--shell-keyword, .text-syntax-token--powershell-keyword, .text-syntax-token--python-keyword,
 .text-syntax-token--javascript-keyword, .text-syntax-token--sql-keyword, .text-syntax-token--sql-literal, .text-syntax-token--toml-literal,
 .text-syntax-token--yaml-literal, .text-syntax-token--json-literal { color: var(--syntax-keyword); font-weight: 650; }

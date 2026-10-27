@@ -35,22 +35,42 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
   assert.equal(resolveTextSyntaxProfile('shell', 'script.ps1'), 'shell');
 });
 
-test('shell syntax preview colors commands, keywords, options, variables, strings, comments and operators', () => {
+test('shell syntax preview colors commands, builtins, keywords, options, variables, strings, comments and operators', () => {
   const source = 'if test "$HOME"; then\n  git status --short\n  echo $HOME\nfi # finished\n';
   const preview = highlightTextSyntax(source, 'shell');
   const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
   assert.deepEqual(tokens, [
     { text: 'if', kind: 'shell-keyword' },
-    { text: 'test', kind: 'shell-command' },
+    { text: 'test', kind: 'shell-builtin' },
     { text: '"$HOME"', kind: 'shell-string' },
     { text: ';', kind: 'shell-operator' },
     { text: 'then', kind: 'shell-keyword' },
     { text: 'git', kind: 'shell-command' },
     { text: '--short', kind: 'shell-option' },
-    { text: 'echo', kind: 'shell-command' },
+    { text: 'echo', kind: 'shell-builtin' },
     { text: '$HOME', kind: 'shell-variable' },
     { text: 'fi', kind: 'shell-keyword' },
     { text: '# finished', kind: 'shell-comment' }
+  ]);
+});
+
+test('shell syntax preview classifies common builtins and follows bounded command wrappers', () => {
+  const source = 'if true; then sudo -u admin env PATH=/usr/bin git status; fi';
+  const tokens = highlightTextSyntax(source, 'shell').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  assert.deepEqual(tokens, [
+    { text: 'if', kind: 'shell-keyword' },
+    { text: 'true', kind: 'shell-builtin' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'then', kind: 'shell-keyword' },
+    { text: 'sudo', kind: 'shell-command' },
+    { text: '-u', kind: 'shell-option' },
+    { text: 'env', kind: 'shell-command' },
+    { text: 'PATH', kind: 'shell-variable' },
+    { text: 'git', kind: 'shell-command' },
+    { text: ';', kind: 'shell-operator' },
+    { text: 'fi', kind: 'shell-keyword' }
   ]);
 });
 
