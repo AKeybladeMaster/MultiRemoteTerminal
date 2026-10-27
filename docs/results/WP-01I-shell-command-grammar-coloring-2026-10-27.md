@@ -15,10 +15,10 @@ The fixed tokenizer does not inspect the active shell or PATH, resolve aliases/f
 
 ## Validation
 
-- `corepack pnpm build` — passed on Windows x64. The renderer bundle is 999.08 kB minified / 274.16 kB gzip; Vite emitted its existing advisory for chunks over 500 kB.
+- `corepack pnpm build` — passed on Windows x64. The renderer bundle is 999.10 kB minified / 274.16 kB gzip; Vite emitted its existing advisory for chunks over 500 kB.
 - `corepack pnpm exec tsc -b --force` followed by `corepack pnpm typecheck` — passed. An initial typecheck overlapped with the clean build and encountered missing incremental declaration outputs; the forced project-reference rebuild restored them, after which the normal typecheck passed.
 - `corepack pnpm lint` — passed, including static import-boundary checks.
-- `node --test tests/unit/text-syntax.test.ts` — 32/32 passed, including `[[ ... ]]` test-expression state, wrapper assignment values and `time` command-position coverage.
+- `node --test tests/unit/text-syntax.test.ts` — 33/33 passed, including `[[ ... ]]` test-expression state, wrapper assignment values and `time` command-position coverage.
 - `corepack pnpm exec playwright test tests/e2e/foundation.test.ts --grep "SFTP sessions verify trust and transfers|local text editor auto-detects SQL and supports TOML|Git Bash runs in a local terminal|shell prompt coloring works in SSH and Telnet" --reporter=line` — 4/4 Windows Electron E2Es passed in 1.4 minutes.
 - `git diff --check` — passed.
 
