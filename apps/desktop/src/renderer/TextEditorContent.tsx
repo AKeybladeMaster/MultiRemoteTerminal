@@ -60,6 +60,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
     </div>
     {preview.isTruncated && resolvedProfile !== 'plain' && <p className="remote-text-editor-hint" role="note">
       Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens, whichever comes first; the full file remains editable.
+      {resolvedProfile === 'markdown' && ' Markdown coloring also has a work limit for unusually complex input.'}
     </p>}
   </>;
 }

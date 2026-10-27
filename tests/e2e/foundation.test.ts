@@ -800,6 +800,12 @@ test('local Markdown text editor auto-detects the profile and keeps the full fil
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyMarkdownSpans);
     expect(await preview.textContent()).toBe(manyMarkdownSpans);
+
+    const malformedMarkdown = '['.repeat(64_000);
+    await contents.fill(malformedMarkdown);
+    await expect(editor.getByText(/Markdown coloring also has a work limit for unusually complex input/)).toBeVisible();
+    expect(await contents.inputValue()).toBe(malformedMarkdown);
+    expect(await preview.textContent()).toBe(malformedMarkdown);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

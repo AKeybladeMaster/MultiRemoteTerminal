@@ -12,7 +12,7 @@ The [CommonMark 0.31.2 specification](https://spec.commonmark.org/0.31.2/) defin
 
 - Add a `markdown` profile to the shared pure-domain tokenizer. Auto detection recognizes `.md` and `.markdown`; users may also select Markdown manually.
 - Color ATX heading markers, simple list and block-quote markers, thematic breaks, fenced-code delimiters and info strings, fenced code body text, same-line code spans, simple single/double emphasis, direct inline links and same-line HTML comments.
-- Keep the existing 64,000 UTF-16 code-unit and 4,096-token preview limits. Bound inline link, code-span, emphasis and comment lookahead to 512 code units on one line.
+- Keep the existing 64,000 UTF-16 code-unit and 4,096-token preview limits. Bound inline link, code-span, emphasis and comment lookahead to 512 code units on one line and aggregate lookahead work to 256,000 probe steps per preview; exhaustion stops coloring and uses the existing truncation notice.
 - Add no package. The preview remains text-only; it does not render HTML, change file bytes, persist, validate or execute source content.
 - Treat this profile as a lexical readability aid, not a conforming CommonMark parser. It does not model nested block containers, setext headings, indented code blocks, reference links, multiline inline constructs or Markdown extensions such as tables and task lists.
 

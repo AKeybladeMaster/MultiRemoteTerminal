@@ -3,6 +3,7 @@ export const MAX_TEXT_SYNTAX_PREVIEW_TOKENS = 4_096;
 const MAX_POWERSHELL_NAME_SCAN_CODE_UNITS = 256;
 const MAX_SQL_DOLLAR_TAG_CODE_UNITS = 63;
 const MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS = 512;
+const MAX_MARKDOWN_INLINE_LOOKAHEAD_STEPS = 256_000;
 const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS = 1_024;
 
@@ -1519,7 +1520,7 @@ function scanYamlBlockScalar(
 
   const parentIndent = yamlBlockScalarParentIndent(text, start);
   let requiredIndent = explicitIndent === undefined ? undefined : parentIndent + explicitIndent;
-  let cursor = yamlNextLine(text, lineEnd, limit);
+  let cursor = nextLineAfter(text, lineEnd, limit);
   while (cursor < limit) {
     const contentEnd = scanLineEnd(text, cursor, limit);
     let indentation = 0;
@@ -1529,7 +1530,7 @@ function scanYamlBlockScalar(
       if (contentEnd > cursor && !addToken(tokens, cursor, contentEnd, 'yaml-string')) {
         return { nextIndex: cursor, stoppedAt: cursor };
       }
-      cursor = yamlNextLine(text, contentEnd, limit);
+      cursor = nextLineAfter(text, contentEnd, limit);
       continue;
     }
     if (requiredIndent === undefined) {
@@ -1538,7 +1539,7 @@ function scanYamlBlockScalar(
     }
     if (indentation < requiredIndent) return { nextIndex: cursor };
     if (!addToken(tokens, cursor, contentEnd, 'yaml-string')) return { nextIndex: cursor, stoppedAt: cursor };
-    cursor = yamlNextLine(text, contentEnd, limit);
+    cursor = nextLineAfter(text, contentEnd, limit);
   }
   return { nextIndex: limit };
 }
@@ -1570,13 +1571,17 @@ function yamlLineStart(text: string, index: number): number {
   return lineStart;
 }
 
-function yamlNextLine(text: string, lineEnd: number, limit: number): number {
+function nextLineAfter(text: string, lineEnd: number, limit: number): number {
   if (lineEnd >= limit) return limit;
   if (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n') return lineEnd + 2;
   return lineEnd + 1;
 }
 
 type MarkdownFenceMarker = '`' | '~';
+
+interface MarkdownLookaheadBudget {
+  remainingSteps: number;
+}
 
 interface MarkdownFenceOpening {
   readonly marker: MarkdownFenceMarker;
@@ -1590,11 +1595,12 @@ interface MarkdownFenceOpening {
 function scanMarkdown(text: string, limit: number, tokens: TextSyntaxToken[]): number {
   let index = 0;
   let fence: { readonly marker: MarkdownFenceMarker; readonly length: number } | undefined;
+  const lookaheadBudget: MarkdownLookaheadBudget = { remainingSteps: MAX_MARKDOWN_INLINE_LOOKAHEAD_STEPS };
 
   while (index < limit) {
     const lineStart = index;
     const lineEnd = scanLineEnd(text, lineStart, limit);
-    const nextLine = markdownNextLine(text, lineEnd, limit);
+    const nextLine = nextLineAfter(text, lineEnd, limit);
 
     if (fence) {
       const closing = scanMarkdownFenceClosing(text, lineStart, lineEnd, fence);
@@ -1644,7 +1650,7 @@ function scanMarkdown(text: string, limit: number, tokens: TextSyntaxToken[]): n
       }
     }
 
-    const stoppedAt = scanMarkdownInline(text, inlineStart, lineEnd, tokens);
+    const stoppedAt = scanMarkdownInline(text, inlineStart, lineEnd, tokens, lookaheadBudget);
     if (stoppedAt !== undefined) return stoppedAt;
     index = nextLine;
   }
@@ -1656,16 +1662,18 @@ function scanMarkdownInline(
   text: string,
   start: number,
   end: number,
-  tokens: TextSyntaxToken[]
+  tokens: TextSyntaxToken[],
+  lookaheadBudget: MarkdownLookaheadBudget
 ): number | undefined {
   let index = start;
   while (index < end) {
+    if (lookaheadBudget.remainingSteps <= 0) return index;
     const character = text[index]!;
     if (character === '\\' && index + 1 < end) { index += 2; continue; }
 
     if (character === '<' && text.startsWith('<!--', index)) {
       const commentLimit = Math.min(end, index + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
-      const close = findTextWithinLimit(text, '-->', index + 4, commentLimit);
+      const close = findMarkdownCommentEnd(text, index + 4, commentLimit, lookaheadBudget);
       if (close >= 0) {
         const tokenEnd = close + 3;
         if (!addToken(tokens, index, tokenEnd, 'markdown-comment')) return index;
@@ -1677,7 +1685,7 @@ function scanMarkdownInline(
     if (character === '`') {
       const runEnd = scanMarkdownRun(text, index, end, '`');
       const runLength = runEnd - index;
-      const closeEnd = findMarkdownCodeSpanEnd(text, runEnd, end, runLength);
+      const closeEnd = findMarkdownCodeSpanEnd(text, runEnd, end, runLength, lookaheadBudget);
       if (closeEnd !== undefined) {
         if (!addToken(tokens, index, closeEnd, 'markdown-code')) return index;
         index = closeEnd;
@@ -1689,7 +1697,7 @@ function scanMarkdownInline(
 
     const linkStart = character === '!' && text[index + 1] === '[' ? index : character === '[' ? index : -1;
     if (linkStart >= 0) {
-      const linkEnd = findMarkdownInlineLinkEnd(text, linkStart, end);
+      const linkEnd = findMarkdownInlineLinkEnd(text, linkStart, end, lookaheadBudget);
       if (linkEnd !== undefined) {
         if (!addToken(tokens, linkStart, linkEnd, 'markdown-link')) return linkStart;
         index = linkEnd;
@@ -1701,9 +1709,10 @@ function scanMarkdownInline(
       const runEnd = scanMarkdownRun(text, index, end, character);
       const delimiterLength = runEnd - index;
       if (delimiterLength <= 2 && isMarkdownEmphasisStart(text, index, end, character, delimiterLength)) {
-        const closeEnd = findMarkdownEmphasisEnd(text, index, runEnd, end, character, delimiterLength);
+        const closeEnd = findMarkdownEmphasisEnd(text, index, runEnd, end, character, delimiterLength, lookaheadBudget);
         if (closeEnd !== undefined) {
-          if (!addToken(tokens, index, closeEnd, 'markdown-emphasis')) return index;
+          const stoppedAt = addMarkdownEmphasisTokens(text, index, closeEnd, tokens, lookaheadBudget);
+          if (stoppedAt !== undefined) return stoppedAt;
           index = closeEnd;
           continue;
         }
@@ -1837,26 +1846,60 @@ function markdownIndent(text: string, start: number, end: number): number {
   return indentation;
 }
 
-function findMarkdownCodeSpanEnd(text: string, start: number, end: number, runLength: number): number | undefined {
+function findMarkdownCommentEnd(
+  text: string,
+  start: number,
+  end: number,
+  lookaheadBudget: MarkdownLookaheadBudget
+): number {
+  for (let index = start; index + 3 <= end; index += 1) {
+    if (!spendMarkdownLookahead(lookaheadBudget, 3)) return -1;
+    if (text[index] === '-' && text[index + 1] === '-' && text[index + 2] === '>') return index;
+  }
+  return -1;
+}
+
+function findMarkdownCodeSpanEnd(
+  text: string,
+  start: number,
+  end: number,
+  runLength: number,
+  lookaheadBudget: MarkdownLookaheadBudget
+): number | undefined {
   const limit = Math.min(end, start + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
   let index = start;
   while (index < limit) {
-    if (text[index] !== '`') { index += 1; continue; }
-    const runEnd = scanMarkdownRun(text, index, limit, '`');
+    if (text[index] !== '`') {
+      if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+      index += 1;
+      continue;
+    }
+    const runEnd = scanMarkdownRunWithinBudget(text, index, limit, '`', lookaheadBudget);
+    if (runEnd === undefined) return undefined;
     if (runEnd - index === runLength) return runEnd;
     index = runEnd;
   }
   return undefined;
 }
 
-function findMarkdownInlineLinkEnd(text: string, start: number, end: number): number | undefined {
+function findMarkdownInlineLinkEnd(
+  text: string,
+  start: number,
+  end: number,
+  lookaheadBudget: MarkdownLookaheadBudget
+): number | undefined {
   const limit = Math.min(end, start + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
   const bracketStart = start + (text[start] === '!' ? 1 : 0);
   if (text[bracketStart] !== '[') return undefined;
   let bracketDepth = 0;
   let closeBracket = -1;
   for (let index = bracketStart + 1; index < limit; index += 1) {
-    if (text[index] === '\\' && index + 1 < limit) { index += 1; continue; }
+    if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+    if (text[index] === '\\' && index + 1 < limit) {
+      if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+      index += 1;
+      continue;
+    }
     if (text[index] === '[') bracketDepth += 1;
     else if (text[index] === ']') {
       if (bracketDepth === 0) { closeBracket = index; break; }
@@ -1867,7 +1910,12 @@ function findMarkdownInlineLinkEnd(text: string, start: number, end: number): nu
 
   let parenthesisDepth = 1;
   for (let index = closeBracket + 2; index < limit; index += 1) {
-    if (text[index] === '\\' && index + 1 < limit) { index += 1; continue; }
+    if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+    if (text[index] === '\\' && index + 1 < limit) {
+      if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+      index += 1;
+      continue;
+    }
     if (text[index] === '(') parenthesisDepth += 1;
     else if (text[index] === ')') {
       parenthesisDepth -= 1;
@@ -1890,19 +1938,78 @@ function findMarkdownEmphasisEnd(
   contentStart: number,
   end: number,
   delimiter: '*' | '_',
-  length: number
+  length: number,
+  lookaheadBudget: MarkdownLookaheadBudget
 ): number | undefined {
   const limit = Math.min(end, start + MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS);
   let index = contentStart;
   while (index < limit) {
-    if (text[index] === '\\' && index + 1 < limit) { index += 2; continue; }
-    if (text[index] !== delimiter) { index += 1; continue; }
-    const runEnd = scanMarkdownRun(text, index, limit, delimiter);
+    if (text[index] === '\\' && index + 1 < limit) {
+      if (!spendMarkdownLookahead(lookaheadBudget, 2)) return undefined;
+      index += 2;
+      continue;
+    }
+    if (text[index] === '`') {
+      const codeStart = index;
+      const codeRunEnd = scanMarkdownRunWithinBudget(text, codeStart, limit, '`', lookaheadBudget);
+      if (codeRunEnd === undefined) return undefined;
+      const codeEnd = findMarkdownCodeSpanEnd(text, codeRunEnd, limit, codeRunEnd - codeStart, lookaheadBudget);
+      index = codeEnd ?? codeRunEnd;
+      continue;
+    }
+    if (text[index] !== delimiter) {
+      if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+      index += 1;
+      continue;
+    }
+    const runEnd = scanMarkdownRunWithinBudget(text, index, limit, delimiter, lookaheadBudget);
+    if (runEnd === undefined) return undefined;
     if (runEnd - index === length && index > contentStart && !isWhitespace(text[index - 1]!)) {
       if (delimiter !== '_' || !isMarkdownWordCharacter(text[runEnd])) return runEnd;
     }
     index = runEnd;
   }
+  return undefined;
+}
+
+function addMarkdownEmphasisTokens(
+  text: string,
+  start: number,
+  end: number,
+  tokens: TextSyntaxToken[],
+  lookaheadBudget: MarkdownLookaheadBudget
+): number | undefined {
+  let segmentStart = start;
+  let index = start;
+  while (index < end) {
+    if (lookaheadBudget.remainingSteps <= 0) return index;
+    if (text[index] !== '`') {
+      lookaheadBudget.remainingSteps -= 1;
+      index += 1;
+      continue;
+    }
+
+    const codeStart = index;
+    const codeRunEnd = scanMarkdownRunWithinBudget(text, codeStart, end, '`', lookaheadBudget);
+    if (codeRunEnd === undefined) {
+      if (!addToken(tokens, segmentStart, codeStart, 'markdown-emphasis')) return segmentStart;
+      return codeStart;
+    }
+    const codeEnd = findMarkdownCodeSpanEnd(text, codeRunEnd, end, codeRunEnd - codeStart, lookaheadBudget);
+    if (codeEnd === undefined) {
+      if (!addToken(tokens, segmentStart, codeStart, 'markdown-emphasis')) return segmentStart;
+      if (lookaheadBudget.remainingSteps <= 0) return codeStart;
+      index = codeRunEnd;
+      continue;
+    }
+
+    if (!addToken(tokens, segmentStart, codeStart, 'markdown-emphasis')) return segmentStart;
+    if (!addToken(tokens, codeStart, codeEnd, 'markdown-code')) return codeStart;
+    segmentStart = codeEnd;
+    index = codeEnd;
+  }
+
+  if (!addToken(tokens, segmentStart, end, 'markdown-emphasis')) return segmentStart;
   return undefined;
 }
 
@@ -1912,10 +2019,28 @@ function scanMarkdownRun(text: string, start: number, end: number, character: st
   return index;
 }
 
-function markdownNextLine(text: string, lineEnd: number, limit: number): number {
-  if (lineEnd >= limit) return limit;
-  if (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n') return lineEnd + 2;
-  return lineEnd + 1;
+function scanMarkdownRunWithinBudget(
+  text: string,
+  start: number,
+  end: number,
+  character: string,
+  lookaheadBudget: MarkdownLookaheadBudget
+): number | undefined {
+  let index = start;
+  while (index < end && text[index] === character) {
+    if (!spendMarkdownLookahead(lookaheadBudget)) return undefined;
+    index += 1;
+  }
+  return index;
+}
+
+function spendMarkdownLookahead(lookaheadBudget: MarkdownLookaheadBudget, steps = 1): boolean {
+  if (steps > lookaheadBudget.remainingSteps) {
+    lookaheadBudget.remainingSteps = 0;
+    return false;
+  }
+  lookaheadBudget.remainingSteps -= steps;
+  return true;
 }
 
 function isMarkdownWordCharacter(character: string | undefined): boolean {

@@ -653,13 +653,39 @@ test('Markdown syntax preview closes fences only with a matching delimiter and v
   assert.deepEqual(values('markdown-heading'), ['#']);
 });
 
-test('Markdown syntax preview bounds inline lookahead and token output', () => {
+test('Markdown emphasis ignores delimiters inside inline code and keeps the code span colored', () => {
+  const source = '*before `*inside*` after*';
+  const tokens = highlightTextSyntax(source, 'markdown').tokens.map(token => ({
+    text: source.slice(token.start, token.end),
+    kind: token.kind
+  }));
+
+  assert.deepEqual(tokens, [
+    { text: '*before ', kind: 'markdown-emphasis' },
+    { text: '`*inside*`', kind: 'markdown-code' },
+    { text: ' after*', kind: 'markdown-emphasis' }
+  ]);
+});
+
+test('Markdown syntax preview bounds inline lookahead work and token output', () => {
   const longLink = `[${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}](https://example.test)`;
   const characterBound = highlightTextSyntax(longLink, 'markdown');
   assert.equal(characterBound.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   assert.equal(characterBound.isTruncated, true);
   assert.equal(characterBound.tokens.some(token => token.kind === 'markdown-link'), false);
   assert.ok(characterBound.tokens.every(token => token.end <= characterBound.highlightedThrough));
+
+  const overLookaheadLink = `[${'x'.repeat(512)}](https://example.test)`;
+  const boundedLink = highlightTextSyntax(overLookaheadLink, 'markdown');
+  assert.equal(boundedLink.highlightedThrough, overLookaheadLink.length);
+  assert.equal(boundedLink.isTruncated, false);
+  assert.equal(boundedLink.tokens.some(token => token.kind === 'markdown-link'), false);
+
+  const malformedLinks = '['.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  const boundedLookaheadWork = highlightTextSyntax(malformedLinks, 'markdown');
+  assert.equal(boundedLookaheadWork.tokens.length, 0);
+  assert.ok(boundedLookaheadWork.highlightedThrough < malformedLinks.length);
+  assert.equal(boundedLookaheadWork.isTruncated, true);
 
   const manySpans = '**bold**\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10);
   const tokenBound = highlightTextSyntax(manySpans, 'markdown');
