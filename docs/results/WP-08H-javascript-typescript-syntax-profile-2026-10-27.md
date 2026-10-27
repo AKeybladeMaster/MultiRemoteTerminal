@@ -29,4 +29,4 @@ This is a lexical color aid, not a JavaScript or TypeScript parser or validator.
 
 ## Review
 
-Independent Standards, Spec and general review is pending; final outcomes will be recorded before promotion to `main`.
+Independent Standards, Spec and general review found no remaining issues; details are in [WP-08H review](WP-08H-review.md). F-014/P-27 remain PARTIAL for the broader work documented above.
