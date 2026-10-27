@@ -123,7 +123,6 @@ const sqlOperators = [
 ] as const;
 const tomlLiterals = new Set(['false', 'inf', 'nan', 'true']);
 const tomlDateTimePattern = /^(?:\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?)?|\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/u;
-const tomlSpaceDateTimePattern = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?$/u;
 const tomlSpaceDateTimePrefixPattern = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?/u;
 const tomlDecimalIntegerPattern = /^[+-]?(?:0|[1-9](?:_?\d)*)$/u;
 const tomlDecimalFloatPattern = /^[+-]?(?:(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*)?(?:[eE][+-]?\d(?:_?\d)*)?)$/u;
@@ -1058,7 +1057,7 @@ function scanToml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
         const scalar = text.slice(index, scalarEnd);
         const signedLiteral = /^[+-](?:inf|nan)$/u.test(scalar);
         const kind = tomlLiterals.has(scalar) || signedLiteral ? 'toml-literal'
-          : tomlDateTimePattern.test(scalar) || tomlSpaceDateTimePattern.test(scalar) ? 'toml-datetime'
+          : tomlDateTimePattern.test(scalar) ? 'toml-datetime'
             : tomlDecimalIntegerPattern.test(scalar) || tomlDecimalFloatPattern.test(scalar) || tomlBasedIntegerPattern.test(scalar)
               ? 'toml-number' : undefined;
         if (kind && !addToken(tokens, index, scalarEnd, kind)) return index;
