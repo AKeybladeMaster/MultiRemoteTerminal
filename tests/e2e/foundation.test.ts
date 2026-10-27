@@ -5829,6 +5829,30 @@ test('PowerShell prompt coloring reuses bounded profile tokens', async () => {
     await expectPowerShellPipelineContinuationTokenColors(pipelineRows);
     await page.keyboard.press('Control+C');
     await expect.poll(() => pipelineRows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const arrayPanel = await selectTerminal(page, 'PowerShell session 4');
+    const arrayRows = arrayPanel.locator('.xterm-rows');
+    await expect(page.getByRole('button', { name: 'PowerShell session 4 running' })).toBeVisible({ timeout: 15_000 });
+    await expect(arrayRows).toContainText(/PS .+>/, { timeout: 15_000 });
+    await arrayPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(arrayPanel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.type('$values = @(');
+    await expect(arrayRows).toContainText('$values = @(');
+    await page.keyboard.press('Enter');
+    await expectPowerShellContinuationPrompt(arrayRows);
+    await page.keyboard.type('Get-Process | Select-Object -First 1');
+    await expect(arrayRows).toContainText('Select-Object -First 1');
+    await expectPowerShellPipelineContinuationTokenColors(arrayRows);
+    await page.keyboard.press('Enter');
+    await expectPowerShellContinuationPrompt(arrayRows);
+    await page.keyboard.type(')');
+    await expect(arrayRows).toContainText(')');
+    const arrayPrimaryPromptCount = (await arrayRows.innerText()).match(/PS [^\r\n]*?>/gu)?.length ?? 0;
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => (await arrayRows.innerText()).match(/PS [^\r\n]*?>/gu)?.length ?? 0, { timeout: 10_000 })
+      .toBeGreaterThan(arrayPrimaryPromptCount);
+    await expect.poll(() => arrayRows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

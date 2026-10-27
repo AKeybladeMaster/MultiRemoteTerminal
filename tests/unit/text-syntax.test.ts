@@ -7,7 +7,8 @@ import {
   highlightPowerShellInputSyntax,
   MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS,
   MAX_TEXT_SYNTAX_PREVIEW_TOKENS,
-  resolveTextSyntaxProfile
+  resolveTextSyntaxProfile,
+  type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
 test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML and JSON from the file name', () => {
@@ -335,6 +336,76 @@ test('PowerShell input carries bounded lexical state across common natural trail
     'a trailing comment is not treated as a final operator');
   assert.equal(highlightPowerShellInputSyntax('"Get-Process |"').continuationState, undefined,
     'an operator inside a string does not continue input');
+});
+
+test('PowerShell input carries a bounded expected-delimiter stack across natural continuation rows', () => {
+  const openedArray = highlightPowerShellInputSyntax('$values = @(');
+  assert.deepEqual(openedArray.continuationState, {
+    commandExpected: true,
+    previousTokenIsBareWord: false,
+    expectedClosingDelimiters: [')']
+  });
+
+  const firstCommand = 'Get-Process |';
+  const firstContinuation = highlightPowerShellInputSyntax(firstCommand, openedArray.continuationState);
+  assert.deepEqual(firstContinuation.tokens.map(token => ({ text: firstCommand.slice(token.start, token.end), kind: token.kind })), [
+    { text: 'Get-Process', kind: 'powershell-command' },
+    { text: '|', kind: 'powershell-operator' }
+  ]);
+  assert.deepEqual(firstContinuation.continuationState?.expectedClosingDelimiters, [')']);
+
+  const secondCommand = 'Select-Object -First 1';
+  const secondContinuation = highlightPowerShellInputSyntax(secondCommand, firstContinuation.continuationState);
+  assert.deepEqual(secondContinuation.tokens.map(token => ({ text: secondCommand.slice(token.start, token.end), kind: token.kind })), [
+    { text: 'Select-Object', kind: 'powershell-command' },
+    { text: '-First', kind: 'powershell-parameter' },
+    { text: '1', kind: 'powershell-number' }
+  ]);
+  assert.deepEqual(secondContinuation.continuationState?.expectedClosingDelimiters, [')'],
+    'an open delimiter preserves continuation after an otherwise complete input row');
+  assert.equal(highlightPowerShellInputSyntax(')', secondContinuation.continuationState).continuationState, undefined,
+    'the matching close completes the natural continuation');
+
+  const nested = highlightPowerShellInputSyntax('@{@(');
+  assert.deepEqual(nested.continuationState?.expectedClosingDelimiters, ['}', ')']);
+  const openBracket = highlightPowerShellInputSyntax('[');
+  assert.deepEqual(openBracket.continuationState?.expectedClosingDelimiters, [']']);
+  assert.equal(highlightPowerShellInputSyntax(']', openBracket.continuationState).continuationState, undefined);
+  const innerClosed = highlightPowerShellInputSyntax(')', nested.continuationState);
+  assert.deepEqual(innerClosed.continuationState?.expectedClosingDelimiters, ['}']);
+  assert.equal(highlightPowerShellInputSyntax('}', innerClosed.continuationState).continuationState, undefined);
+  assert.equal(highlightPowerShellInputSyntax(')', highlightPowerShellInputSyntax('@{').continuationState).continuationState,
+    undefined, 'a mismatched close fails closed');
+  assert.equal(highlightPowerShellInputSyntax(')').continuationState, undefined,
+    'an unmatched closing delimiter cannot start continuation state');
+
+  assert.deepEqual(highlightPowerShellInputSyntax('"value )"', openedArray.continuationState).continuationState?.expectedClosingDelimiters,
+    [')'], 'delimiters inside a closed string are opaque');
+  assert.deepEqual(highlightPowerShellInputSyntax('# comment )', openedArray.continuationState).continuationState?.expectedClosingDelimiters,
+    [')'], 'delimiters inside a line comment are opaque');
+  assert.equal(highlightPowerShellInputSyntax('"unfinished', openedArray.continuationState).continuationState, undefined,
+    'an incomplete quote suspends continuation state');
+  assert.equal(highlightPowerShellInputSyntax("@'\nunfinished", openedArray.continuationState).continuationState, undefined,
+    'an incomplete here-string suspends continuation state');
+  assert.equal(highlightPowerShellInputSyntax('<# unfinished', openedArray.continuationState).continuationState, undefined,
+    'an incomplete block comment suspends continuation state');
+  assert.equal(highlightPowerShellInputSyntax('Get-Process <# unfinished', openedArray.continuationState).continuationState, undefined,
+    'an incomplete block comment after a bare word suspends continuation state');
+
+  const backtick = String.fromCharCode(96);
+  assert.equal(highlightPowerShellInputSyntax(`${backtick}(`).continuationState, undefined,
+    'an escaped opener is not tracked');
+  assert.deepEqual(highlightPowerShellInputSyntax(`${backtick})`, openedArray.continuationState).continuationState?.expectedClosingDelimiters,
+    [')'], 'an escaped closer does not consume the carried stack');
+
+  assert.equal(highlightPowerShellInputSyntax('('.repeat(32)).continuationState?.expectedClosingDelimiters?.length, 32,
+    'the maximum supported nesting depth is carried');
+  assert.equal(highlightPowerShellInputSyntax('('.repeat(33)).continuationState, undefined,
+    'nesting deeper than the fixed bound fails closed');
+  const invalidState = { commandExpected: true, previousTokenIsBareWord: false,
+    expectedClosingDelimiters: ['x'] } as unknown as PowerShellSyntaxContinuationState;
+  assert.equal(highlightPowerShellInputSyntax('Get-Process', invalidState).continuationState, undefined,
+    'an invalid incoming stack fails closed');
 });
 
 test('PowerShell syntax preview never extends a token beyond its code-unit bound', () => {

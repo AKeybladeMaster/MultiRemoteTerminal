@@ -285,6 +285,10 @@ WP-01L implementation and Windows verification are recorded in [acceptance resul
 
 WP-01M implementation and Windows verification are recorded in [acceptance results](results/WP-01M-powershell-natural-continuations-2026-10-27.md).
 
+**WP-01N — Bounded PowerShell open-delimiter continuation coloring (partial):** Extend the existing pure tokenizer state with only a stack of expected closing `)`, `]` and `}` characters, bounded to 32 nested delimiters. Track unescaped delimiter operators outside strings and comments; carry state through exact `>>` prompts only for complete scans and an unambiguous caret-at-end position. Mismatched/unmatched delimiters, overflow, incomplete quotes, here-strings and block comments fail closed. Do not retain delimiter positions or input text. Unit regressions cover nested and balanced forms, operator/command colors across multiple rows, escaping, opaque content, invalid state, and overflow. Windows E2E enters a multirow array subexpression, verifies command/parameter colors during continuation, closes it and verifies cleanup. P-30 remains PARTIAL; leading-pipe paste, quoted continuation and full PowerShell grammar remain open. See [ADR-0049](adr/ADR-0049-powershell-open-delimiter-continuation-coloring.md).
+
+WP-01N implementation and Windows verification are recorded in [acceptance results](results/WP-01N-powershell-open-delimiters-2026-10-28.md); independent review found no remaining issues ([review record](results/WP-01N-review.md)).
+
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
 **Requires:** MVP/provider registry.  
