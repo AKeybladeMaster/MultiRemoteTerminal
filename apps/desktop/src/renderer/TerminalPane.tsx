@@ -3,8 +3,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { terminalThemes } from './terminal-theme.ts';
 import type { TerminalTheme } from './terminal-theme.ts';
-import { attachTerminalHighlights, clearTerminalShellInputAnchor, isShellContinuationPromptAtCursor, isShellInputAnchorActive,
-  isShellPromptAtCursor, readTerminalShellContinuationState } from './terminal-highlighting.ts';
+import { attachTerminalHighlights, clearTerminalShellInputAnchor, getTerminalPromptSyntaxProfile, isShellContinuationPromptAtCursor,
+  isShellInputAnchorActive, readTerminalShellContinuationState } from './terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from './terminal-highlighting.ts';
 import type { ShellSyntaxContinuationState } from '../../../../packages/domain/src/text-syntax.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -110,16 +110,17 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     clearTerminalShellInputAnchor(shellInputAnchor);
     const line = buffer.getLine(cursorLine);
     const promptText = line?.translateToString(true, 0, buffer.cursorX) ?? '';
-    if (!isShellPromptAtCursor(promptText)) {
+    const profile = getTerminalPromptSyntaxProfile(promptText);
+    if (!profile) {
       shellContinuationState.current = undefined;
       return;
     }
-    const continuationState = shellContinuationState.current && isShellContinuationPromptAtCursor(promptText)
+    const continuationState = profile === 'shell' && shellContinuationState.current && isShellContinuationPromptAtCursor(promptText)
       ? shellContinuationState.current : undefined;
     shellContinuationState.current = undefined;
     const marker = instance.registerMarker(0);
     if (!marker.isDisposed) shellInputAnchor.current = { marker, startColumn: buffer.cursorX, wrappedMarkers: [], decorations: [],
-      continuationState };
+      profile, continuationState };
   }
 
   useLayoutEffect(() => {
@@ -140,7 +141,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       if (data === '\r' || data === '\n') {
         const anchor = shellInputAnchor.current;
         shellContinuationState.current = shellSyntaxEnabledRef.current && transport !== 'serial'
-          ? anchor ? readTerminalShellContinuationState(instance, anchor) : undefined
+          ? anchor?.profile === 'shell' ? readTerminalShellContinuationState(instance, anchor) : undefined
           : undefined;
         clearTerminalShellInputAnchor(shellInputAnchor);
       } else if (/[\r\n\x03\x04\x0c]/u.test(data)) {

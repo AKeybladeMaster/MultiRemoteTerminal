@@ -6,18 +6,31 @@ import {
   MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS,
   normalizeTerminalHighlightRules
 } from '../../packages/domain/src/terminal-highlights.ts';
-import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, isShellContinuationPromptAtCursor,
-  isShellInputAnchorActive, isShellPromptAtCursor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
+import { clearTerminalShellInputAnchor, extractBoundedTerminalHighlightLine, getTerminalPromptSyntaxProfile,
+  isShellContinuationPromptAtCursor, isShellInputAnchorActive } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { TerminalShellInputAnchor } from '../../apps/desktop/src/renderer/terminal-highlighting.ts';
 import type { Terminal } from '@xterm/xterm';
 
 test('shell prompt detection accepts common shell and zsh-style endings and rejects password prompts', () => {
-  for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'PS C:\\work> ', 'project ❯ ', 'build ➜ ']) {
-    assert.equal(isShellPromptAtCursor(prompt), true, prompt);
+  for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'project ❯ ', 'build ➜ ']) {
+    assert.equal(getTerminalPromptSyntaxProfile(prompt), 'shell', prompt);
   }
   for (const prompt of ['Password: ', 'Verification code: ', 'ordinary output']) {
-    assert.equal(isShellPromptAtCursor(prompt), false, prompt);
+    assert.equal(getTerminalPromptSyntaxProfile(prompt), undefined, prompt);
   }
+});
+
+test('terminal prompt detection selects PowerShell only for its common PS path prompt form', () => {
+  for (const prompt of ['PS C:\\work> ', 'ps C:\\Users\\tester> ']) {
+    assert.equal(getTerminalPromptSyntaxProfile(prompt), 'powershell', prompt);
+  }
+  for (const prompt of ['user@host:~/work$ ', 'root@host#', 'user@host% ', 'project ❯ ']) {
+    assert.equal(getTerminalPromptSyntaxProfile(prompt), 'shell', prompt);
+  }
+  for (const prompt of ['PS> ', 'PS > ', 'Password: ', 'Verification code: ', 'ordinary output']) {
+    assert.equal(getTerminalPromptSyntaxProfile(prompt), undefined, prompt);
+  }
+  assert.equal(getTerminalPromptSyntaxProfile('>> '), undefined, 'PowerShell continuation prompts are not treated as Shell prompts');
 });
 
 test('shell continuation prompt detection accepts secondary prompts ending in greater-than only', () => {
@@ -43,7 +56,7 @@ test('shell input anchor cleanup releases its marker and clears state', () => {
   const marker = createMarker();
   const wrappedMarker = createMarker();
   let decorationDisposeCount = 0;
-  const anchorRef = { current: { marker: marker as unknown as TerminalShellInputAnchor['marker'], startColumn: 4,
+  const anchorRef = { current: { marker: marker as unknown as TerminalShellInputAnchor['marker'], startColumn: 4, profile: 'shell' as const,
     wrappedMarkers: [wrappedMarker as unknown as TerminalShellInputAnchor['marker']],
     decorations: [{ dispose: () => { decorationDisposeCount += 1; } }] } };
 
