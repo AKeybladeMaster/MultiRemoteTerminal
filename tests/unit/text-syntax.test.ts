@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, dotenv and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, dotenv, Java properties and JSON from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -41,6 +41,10 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'dotenv');
   }
   assert.equal(resolveTextSyntaxProfile('dotenv', 'settings.txt'), 'dotenv');
+  for (const fileName of ['messages.properties', 'CONFIG.PROPERTIES', 'C:\\app\\i18n\\messages_en.properties']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'properties');
+  }
+  assert.equal(resolveTextSyntaxProfile('properties', 'settings.txt'), 'properties');
   for (const fileName of ['settings.yaml', 'inventory.YML']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'yaml');
   }
@@ -1158,6 +1162,76 @@ test('dotenv syntax preview stops at shared character and token bounds without c
   const manyAssignments = highlightTextSyntax('A=x\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'dotenv');
   assert.equal(manyAssignments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyAssignments.isTruncated, true);
+});
+
+test('Java properties syntax preview colors keys, separators, opaque values and leading comments', () => {
+  const source = [
+    '# primary',
+    '  ! vendor',
+    'alpha=one',
+    'escaped\\=equals:two',
+    'escaped\\:colon = a#literal',
+    'even\\\\: value',
+    'escaped\\ key: value with spaces',
+    'whitespace\fseparator',
+    'lone',
+    'empty=',
+    '=ignored',
+    'joined=first\\',
+    '  #continuation\\',
+    '  value',
+    'after=plain',
+    '# comment\\',
+    'double=value\\\\'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'properties');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '# primary', kind: 'properties-comment' },
+    { text: '! vendor', kind: 'properties-comment' },
+    { text: 'alpha', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'one', kind: 'properties-value' },
+    { text: 'escaped\\=equals', kind: 'properties-key' },
+    { text: ':', kind: 'properties-operator' },
+    { text: 'two', kind: 'properties-value' },
+    { text: 'escaped\\:colon', kind: 'properties-key' },
+    { text: ' = ', kind: 'properties-operator' },
+    { text: 'a#literal', kind: 'properties-value' },
+    { text: 'even\\\\', kind: 'properties-key' },
+    { text: ': ', kind: 'properties-operator' },
+    { text: 'value', kind: 'properties-value' },
+    { text: 'escaped\\ key', kind: 'properties-key' },
+    { text: ': ', kind: 'properties-operator' },
+    { text: 'value with spaces', kind: 'properties-value' },
+    { text: 'whitespace', kind: 'properties-key' },
+    { text: '\f', kind: 'properties-operator' },
+    { text: 'separator', kind: 'properties-value' },
+    { text: 'lone', kind: 'properties-key' },
+    { text: 'empty', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'after', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'plain', kind: 'properties-value' },
+    { text: '# comment\\', kind: 'properties-comment' },
+    { text: 'double', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'value\\\\', kind: 'properties-value' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+  assert.ok(preview.tokens.every((token, index) => token.start >= 0 && token.end <= source.length &&
+    (index === 0 || preview.tokens[index - 1]!.end <= token.start)));
+});
+
+test('Java properties syntax preview respects shared character and token bounds', () => {
+  const oversized = highlightTextSyntax('key=' + 'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100), 'properties');
+  assert.equal(oversized.highlightedThrough, 0);
+  assert.equal(oversized.isTruncated, true);
+  assert.deepEqual(oversized.tokens, []);
+
+  const manyProperties = highlightTextSyntax('k=v\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'properties');
+  assert.equal(manyProperties.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyProperties.isTruncated, true);
 });
 
 test('XML syntax preview colors tags, attributes, quoted values, comments, declarations, CDATA and text entities', () => {

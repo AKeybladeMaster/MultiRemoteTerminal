@@ -275,7 +275,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-syntax-token--shell-command, .text-syntax-token--powershell-command, .text-syntax-token--python-builtin,
 .text-syntax-token--python-function, .text-syntax-token--javascript-builtin, .text-syntax-token--javascript-function,
 .text-syntax-token--sql-function, .text-syntax-token--sql-identifier, .text-syntax-token--toml-key,
-.text-syntax-token--yaml-key, .text-syntax-token--ini-key, .text-syntax-token--dotenv-key, .text-syntax-token--xml-attribute,
+.text-syntax-token--yaml-key, .text-syntax-token--ini-key, .text-syntax-token--dotenv-key, .text-syntax-token--properties-key, .text-syntax-token--xml-attribute,
 .text-syntax-token--json-key { color: var(--syntax-command); font-weight: 650; }
 .text-syntax-token--shell-builtin { color: var(--syntax-builtin); font-weight: 650; }
 .text-syntax-token--shell-keyword, .text-syntax-token--powershell-keyword, .text-syntax-token--python-keyword,
@@ -286,16 +286,16 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-syntax-token--yaml-number, .text-syntax-token--ini-number, .text-syntax-token--json-number { color: var(--syntax-option); }
 .text-syntax-token--shell-string, .text-syntax-token--powershell-string, .text-syntax-token--python-string,
 .text-syntax-token--javascript-string, .text-syntax-token--sql-string, .text-syntax-token--toml-string, .text-syntax-token--yaml-string,
-.text-syntax-token--ini-string, .text-syntax-token--dotenv-string, .text-syntax-token--dotenv-value, .text-syntax-token--json-string { color: var(--syntax-string); }
+.text-syntax-token--ini-string, .text-syntax-token--dotenv-string, .text-syntax-token--dotenv-value, .text-syntax-token--properties-value, .text-syntax-token--json-string { color: var(--syntax-string); }
 .text-syntax-token--xml-string, .text-syntax-token--xml-cdata { color: var(--syntax-string); }
 .text-syntax-token--shell-variable, .text-syntax-token--powershell-variable, .text-syntax-token--sql-parameter { color: var(--syntax-variable); }
 .text-syntax-token--yaml-anchor, .text-syntax-token--yaml-alias, .text-syntax-token--xml-entity { color: var(--syntax-variable); }
 .text-syntax-token--shell-comment, .text-syntax-token--powershell-comment, .text-syntax-token--python-comment,
 .text-syntax-token--javascript-comment, .text-syntax-token--sql-comment, .text-syntax-token--toml-comment, .text-syntax-token--yaml-comment,
-.text-syntax-token--ini-comment, .text-syntax-token--dotenv-comment, .text-syntax-token--xml-comment { color: var(--syntax-comment); font-style: italic; }
+.text-syntax-token--ini-comment, .text-syntax-token--dotenv-comment, .text-syntax-token--properties-comment, .text-syntax-token--xml-comment { color: var(--syntax-comment); font-style: italic; }
 .text-syntax-token--shell-operator, .text-syntax-token--powershell-operator, .text-syntax-token--python-operator,
 .text-syntax-token--javascript-operator, .text-syntax-token--sql-operator, .text-syntax-token--toml-operator, .text-syntax-token--yaml-operator,
-.text-syntax-token--ini-operator, .text-syntax-token--dotenv-operator, .text-syntax-token--xml-operator, .text-syntax-token--xml-declaration,
+.text-syntax-token--ini-operator, .text-syntax-token--dotenv-operator, .text-syntax-token--properties-operator, .text-syntax-token--xml-operator, .text-syntax-token--xml-declaration,
 .text-syntax-token--yaml-document, .text-syntax-token--yaml-directive, .text-syntax-token--json-punctuation { color: var(--syntax-operator); }
 .text-syntax-token--ini-section { color: var(--syntax-path); font-weight: 650; }
 .text-syntax-token--xml-tag { color: var(--syntax-path); font-weight: 650; }

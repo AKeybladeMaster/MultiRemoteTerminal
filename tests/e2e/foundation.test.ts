@@ -782,6 +782,44 @@ test('local text editor auto-detects dotenv and keeps the source unchanged', asy
   }
 });
 
+test('local text editor auto-detects Java properties and keeps the source unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-properties-editor-e2e-');
+  const path = join(profile, 'messages_en.properties');
+  const source = '# messages\n! locale metadata\nwelcome = Hello world\nurl: https://example.test/#anchor\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), '--user-data-dir=' + profile, '--mrt-e2e-local-text-editor',
+      '--mrt-e2e-local-text-file=' + path], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveCount(2);
+    await expect(editor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    await expect(editor.locator('[data-token-kind="properties-value"]').nth(1)).toHaveText('https://example.test/#anchor');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('properties');
+    await expect(editor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
@@ -1735,6 +1773,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
     const remoteEnvSource = '# remote configuration\nexport API_URL="https://example.test/remote"\nPORT=22\n';
     await writeFile(join(remoteRoot, '.env.production'), remoteEnvSource);
+    const remotePropertiesSource = '# remote messages\nwelcome = Hello from SFTP\nurl: https://example.test/#remote\n';
+    await writeFile(join(remoteRoot, 'remote.properties'), remotePropertiesSource);
     const remoteMarkdownSource = '# Remote guide\n\n> **bold quote**\n- item with `inline` and [guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n' + '**cap**\n'.repeat(4_100);
     await writeFile(join(remoteRoot, 'remote.md'), remoteMarkdownSource);
     const remoteYamlSource = `# app config
@@ -1962,6 +2002,23 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remoteEnvEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteEnvEditor).toHaveCount(0);
     expect(await readFile(join(remoteRoot, '.env.production'), 'utf8')).toBe(remoteEnvSource);
+    const remotePropertiesEdit = sftpPanel.getByRole('button', { name: 'Edit remote.properties', exact: true });
+    await remotePropertiesEdit.click();
+    const remotePropertiesEditor = page.getByRole('dialog', { name: 'remote.properties' });
+    const remotePropertiesSyntax = remotePropertiesEditor.getByLabel('Syntax profile');
+    await expect(remotePropertiesSyntax).toHaveValue('auto');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-comment"]')).toHaveText('# remote messages');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-value"]').nth(1))
+      .toHaveText('https://example.test/#remote');
+    expect(await remotePropertiesEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remotePropertiesSource);
+    await remotePropertiesSyntax.selectOption('plain');
+    await expect(remotePropertiesEditor.locator('[data-token-kind]')).toHaveCount(0);
+    await remotePropertiesSyntax.selectOption('properties');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    await remotePropertiesEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remotePropertiesEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.properties'), 'utf8')).toBe(remotePropertiesSource);
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });

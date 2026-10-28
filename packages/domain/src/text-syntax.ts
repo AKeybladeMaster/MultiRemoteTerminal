@@ -11,7 +11,7 @@ const MAX_XML_ENTITY_CODE_UNITS = 64;
 const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
 const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'dotenv', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'dotenv', 'properties', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -28,6 +28,7 @@ export type TextSyntaxTokenKind =
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
   | 'ini-section' | 'ini-key' | 'ini-string' | 'ini-number' | 'ini-literal' | 'ini-comment' | 'ini-operator'
   | 'dotenv-key' | 'dotenv-value' | 'dotenv-string' | 'dotenv-comment' | 'dotenv-operator' | 'dotenv-export'
+  | 'properties-key' | 'properties-value' | 'properties-comment' | 'properties-operator'
   | 'xml-tag' | 'xml-attribute' | 'xml-string' | 'xml-comment' | 'xml-cdata' | 'xml-declaration' | 'xml-entity' | 'xml-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
@@ -200,6 +201,7 @@ export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: s
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
   if (/(?:^|[\\/])(?:\.env(?:\.[^\\/]+)?|[^\\/]+\.env)$/.test(name)) return 'dotenv';
+  if (/\.properties$/.test(name)) return 'properties';
   if (/\.(?:md|markdown)$/.test(name)) return 'markdown';
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
@@ -232,6 +234,7 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
                 : profile === 'ini' ? scanIni(text, limit, tokens)
                   : profile === 'xml' ? scanXml(text, limit, tokens)
                     : profile === 'dotenv' ? scanDotenv(text, limit, tokens)
+                      : profile === 'properties' ? scanProperties(text, limit, tokens)
                       : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
@@ -1523,6 +1526,68 @@ function scanDotenvValue(text: string, start: number, end: number, tokens: TextS
   if (plainEnd > valueStart && !addToken(tokens, valueStart, plainEnd, 'dotenv-value')) return valueStart;
   if (commentStart >= 0 && !addToken(tokens, commentStart, end, 'dotenv-comment')) return commentStart;
   return undefined;
+}
+
+function scanProperties(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let lineStart = 0;
+  let continues = false;
+  while (lineStart < limit) {
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    if (lineEnd === limit && limit < text.length) return lineStart;
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && isPropertiesWhitespace(text.charCodeAt(contentStart))) contentStart += 1;
+    const commentLine: boolean = !continues && contentStart < lineEnd && (text[contentStart] === '#' || text[contentStart] === '!');
+    const nextContinues: boolean = !commentLine && lineEnd < limit && hasOddTrailingPropertiesBackslashes(text, lineStart, lineEnd);
+
+    if (!continues && !nextContinues && commentLine) {
+      if (!addToken(tokens, contentStart, lineEnd, 'properties-comment')) return contentStart;
+    } else if (!continues && !nextContinues && contentStart < lineEnd) {
+      const keyEnd = scanPropertiesKey(text, contentStart, lineEnd);
+      if (keyEnd > contentStart) {
+        if (!addToken(tokens, contentStart, keyEnd, 'properties-key')) return contentStart;
+        let valueStart = keyEnd;
+        while (valueStart < lineEnd && isPropertiesWhitespace(text.charCodeAt(valueStart))) valueStart += 1;
+        const hasWhitespaceSeparator = valueStart > keyEnd;
+        if (text[valueStart] === '=' || text[valueStart] === ':') {
+          valueStart += 1;
+          while (valueStart < lineEnd && isPropertiesWhitespace(text.charCodeAt(valueStart))) valueStart += 1;
+          if (!addToken(tokens, keyEnd, valueStart, 'properties-operator')) return keyEnd;
+          if (valueStart < lineEnd && !addToken(tokens, valueStart, lineEnd, 'properties-value')) return valueStart;
+        } else if (hasWhitespaceSeparator) {
+          if (!addToken(tokens, keyEnd, valueStart, 'properties-operator')) return keyEnd;
+          if (valueStart < lineEnd && !addToken(tokens, valueStart, lineEnd, 'properties-value')) return valueStart;
+        }
+      }
+    }
+
+    continues = nextContinues;
+    if (lineEnd >= limit) break;
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
+  }
+  return limit;
+}
+
+function scanPropertiesKey(text: string, start: number, end: number): number {
+  let index = start;
+  let escaped = false;
+  while (index < end) {
+    const unit = text.charCodeAt(index);
+    if (escaped) escaped = false;
+    else if (unit === 92) escaped = true;
+    else if (unit === 61 || unit === 58 || isPropertiesWhitespace(unit)) break;
+    index += 1;
+  }
+  return index;
+}
+
+function isPropertiesWhitespace(unit: number): boolean {
+  return unit === 32 || unit === 9 || unit === 12;
+}
+
+function hasOddTrailingPropertiesBackslashes(text: string, start: number, end: number): boolean {
+  let count = 0;
+  for (let index = end - 1; index >= start && text.charCodeAt(index) === 92; index -= 1) count += 1;
+  return count % 2 === 1;
 }
 
 function scanXml(text: string, limit: number, tokens: TextSyntaxToken[]): number {

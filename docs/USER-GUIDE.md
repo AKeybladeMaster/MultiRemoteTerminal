@@ -91,14 +91,14 @@ inactivity**. It uses the same revision check, so a conflict keeps your draft
 and stops automatic retries until you edit again. This option resets when you
 close the editor or open another file. The syntax profile automatically recognizes Markdown (`.md`, `.markdown`),
 Shell (`.sh`, `.bash`, `.zsh`, `.ksh`), PowerShell (`.ps1`, `.psm1`, `.psd1`, `.pssc`),
-Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`), INI configuration (`.ini`, `.cfg`), XML (`.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`), environment files (`.env`, `.env.*`, `*.env`) and JSON files; you
+Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`), INI configuration (`.ini`, `.cfg`), XML (`.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`), environment files (`.env`, `.env.*`, `*.env`), Java Properties (.properties) and JSON files; you
 can choose another profile from **Syntax profile**. Colors are visual hints only:
 the Markdown profile colors common headings, lists, block quotes, code, emphasis
 and direct links; the TOML profile colors common keys, strings, values, comments and
 table headers; the YAML profile colors common keys, scalar values, comments,
 collections and block scalar text; the INI profile colors section headers, keys,
 quoted values, common numbers/booleans and full-line comments. INI inline comments
-and dialect validation are not supported. The XML profile colors tags, attributes, quoted values, comments, CDATA, declarations and text entity references; it does not resolve entities or validate XML. Environment-file colors are limited to common ASCII `KEY=value` assignments, optional `export`, quoted values and comments; values are not expanded or executed, and multiline values are unsupported. The editor does not render, validate or execute
+and dialect validation are not supported. The Java Properties profile colors leading #/! comments, keys, separators and raw values. Inline comment markers remain value text, continued logical entries are left uncolored, and escapes are not decoded. The XML profile colors tags, attributes, quoted values, comments, CDATA, declarations and text entity references; it does not resolve entities or validate XML. Environment-file colors are limited to common ASCII `KEY=value` assignments, optional `export`, quoted values and comments; values are not expanded or executed, and multiline values are unsupported. The editor does not render, validate or execute
 the file. Preview coloring is bounded, while
 the full file remains editable. Files with a consistent
 line-ending convention keep it when saved. Mixed line endings use the first
