@@ -11,7 +11,7 @@ const MAX_XML_ENTITY_CODE_UNITS = 64;
 const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
 const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'dotenv', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -27,6 +27,7 @@ export type TextSyntaxTokenKind =
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
   | 'ini-section' | 'ini-key' | 'ini-string' | 'ini-number' | 'ini-literal' | 'ini-comment' | 'ini-operator'
+  | 'dotenv-key' | 'dotenv-value' | 'dotenv-string' | 'dotenv-comment' | 'dotenv-operator' | 'dotenv-export'
   | 'xml-tag' | 'xml-attribute' | 'xml-string' | 'xml-comment' | 'xml-cdata' | 'xml-declaration' | 'xml-entity' | 'xml-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
@@ -198,6 +199,7 @@ const yamlNanPattern = /^\.nan$/iu;
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
+  if (/(?:^|[\\/])(?:\.env(?:\.[^\\/]+)?|[^\\/]+\.env)$/.test(name)) return 'dotenv';
   if (/\.(?:md|markdown)$/.test(name)) return 'markdown';
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
@@ -229,7 +231,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
               : profile === 'yaml' ? scanYaml(text, limit, tokens)
                 : profile === 'ini' ? scanIni(text, limit, tokens)
                   : profile === 'xml' ? scanXml(text, limit, tokens)
-                    : scanJson(text, limit, tokens);
+                    : profile === 'dotenv' ? scanDotenv(text, limit, tokens)
+                      : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1431,6 +1434,95 @@ function scanIniQuotedValue(text: string, start: number, end: number): number {
     index += 1;
   }
   return start;
+}
+
+function scanDotenv(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let lineStart = 0;
+  while (lineStart < limit) {
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    if (lineEnd === limit && limit < text.length) return lineStart;
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && (text[contentStart] === ' ' || text[contentStart] === '\t')) contentStart += 1;
+
+    if (contentStart < lineEnd && text[contentStart] === '#') {
+      if (!addToken(tokens, contentStart, lineEnd, 'dotenv-comment')) return contentStart;
+    } else if (contentStart < lineEnd) {
+      let keyStart = contentStart;
+      const exportEnd = contentStart + 'export'.length;
+      const hasExport = text.startsWith('export', contentStart) && exportEnd < lineEnd &&
+        (text[exportEnd] === ' ' || text[exportEnd] === '\t');
+      if (hasExport) {
+        keyStart = exportEnd;
+        while (keyStart < lineEnd && (text[keyStart] === ' ' || text[keyStart] === '\t')) keyStart += 1;
+      }
+
+      const keyEnd = scanDotenvKey(text, keyStart, lineEnd);
+      let separator = keyEnd;
+      while (separator < lineEnd && (text[separator] === ' ' || text[separator] === '\t')) separator += 1;
+      if (keyEnd > keyStart && text[separator] === '=') {
+        if (hasExport && !addToken(tokens, contentStart, exportEnd, 'dotenv-export')) return contentStart;
+        if (!addToken(tokens, keyStart, keyEnd, 'dotenv-key')) return keyStart;
+        if (!addToken(tokens, separator, separator + 1, 'dotenv-operator')) return separator;
+        const stop = scanDotenvValue(text, separator + 1, lineEnd, tokens);
+        if (stop !== undefined) return stop;
+      }
+    }
+
+    if (lineEnd >= limit) break;
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
+  }
+  return limit;
+}
+
+function scanDotenvKey(text: string, start: number, end: number): number {
+  if (start >= end || !isDotenvKeyStart(text.charCodeAt(start))) return start;
+  let index = start + 1;
+  while (index < end && isDotenvKeyPart(text.charCodeAt(index))) index += 1;
+  return index;
+}
+
+function isDotenvKeyStart(unit: number): boolean {
+  return unit === 95 || (unit >= 65 && unit <= 90) || (unit >= 97 && unit <= 122);
+}
+
+function isDotenvKeyPart(unit: number): boolean {
+  return isDotenvKeyStart(unit) || (unit >= 48 && unit <= 57);
+}
+
+function scanDotenvValue(text: string, start: number, end: number, tokens: TextSyntaxToken[]): number | undefined {
+  let valueStart = start;
+  while (valueStart < end && (text[valueStart] === ' ' || text[valueStart] === '\t')) valueStart += 1;
+  let valueEnd = end;
+  while (valueEnd > valueStart && (text[valueEnd - 1] === ' ' || text[valueEnd - 1] === '\t')) valueEnd -= 1;
+  if (valueStart >= valueEnd) return undefined;
+
+  if (text[valueStart] === '"' || text[valueStart] === "'") {
+    const stringEnd = scanIniQuotedValue(text, valueStart, valueEnd);
+    if (stringEnd === valueStart) return undefined;
+    let trailing = stringEnd;
+    while (trailing < valueEnd && (text[trailing] === ' ' || text[trailing] === '\t')) trailing += 1;
+    if (trailing === valueEnd) {
+      return addToken(tokens, valueStart, stringEnd, 'dotenv-string') ? undefined : valueStart;
+    }
+    if (trailing > stringEnd && text[trailing] === '#') {
+      if (!addToken(tokens, valueStart, stringEnd, 'dotenv-string')) return valueStart;
+      if (!addToken(tokens, trailing, end, 'dotenv-comment')) return trailing;
+    }
+    return undefined;
+  }
+
+  let commentStart = -1;
+  for (let index = valueStart; index < valueEnd; index += 1) {
+    if (text[index] === '#' && (text[index - 1] === ' ' || text[index - 1] === '\t')) {
+      commentStart = index;
+      break;
+    }
+  }
+  let plainEnd = commentStart < 0 ? valueEnd : commentStart;
+  while (plainEnd > valueStart && (text[plainEnd - 1] === ' ' || text[plainEnd - 1] === '\t')) plainEnd -= 1;
+  if (plainEnd > valueStart && !addToken(tokens, valueStart, plainEnd, 'dotenv-value')) return valueStart;
+  if (commentStart >= 0 && !addToken(tokens, commentStart, end, 'dotenv-comment')) return commentStart;
+  return undefined;
 }
 
 function scanXml(text: string, limit: number, tokens: TextSyntaxToken[]): number {

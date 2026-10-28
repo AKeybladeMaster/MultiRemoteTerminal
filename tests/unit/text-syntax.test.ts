@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, dotenv and JSON from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -37,6 +37,10 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'xml');
   }
   assert.equal(resolveTextSyntaxProfile('xml', 'page.html'), 'xml');
+  for (const fileName of ['.env', '.env.local', '.env.production.example', 'service.env', 'C:\\app\\.env.test']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'dotenv');
+  }
+  assert.equal(resolveTextSyntaxProfile('dotenv', 'settings.txt'), 'dotenv');
   for (const fileName of ['settings.yaml', 'inventory.YML']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'yaml');
   }
@@ -1104,6 +1108,56 @@ test('INI syntax preview stops at shared character and token bounds', () => {
   const manyComments = highlightTextSyntax('; comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'ini');
   assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyComments.isTruncated, true);
+});
+
+test('dotenv syntax preview colors assignments, export, quoted values and separated comments without parsing values', () => {
+  const source = [
+    '# deployment settings',
+    'export API_URL = "https://example.test/a#fragment" # endpoint',
+    'DATABASE_URL=postgres://localhost/app',
+    'TOKEN=a#b',
+    'HASH=#literal',
+    'EMPTY=',
+    'INVALID-NAME=value',
+    'BROKEN="unterminated'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'dotenv');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '# deployment settings', kind: 'dotenv-comment' },
+    { text: 'export', kind: 'dotenv-export' },
+    { text: 'API_URL', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: '"https://example.test/a#fragment"', kind: 'dotenv-string' },
+    { text: '# endpoint', kind: 'dotenv-comment' },
+    { text: 'DATABASE_URL', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: 'postgres://localhost/app', kind: 'dotenv-value' },
+    { text: 'TOKEN', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: 'a#b', kind: 'dotenv-value' },
+    { text: 'HASH', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: '#literal', kind: 'dotenv-value' },
+    { text: 'EMPTY', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: 'BROKEN', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+  assert.ok(preview.tokens.every((token, index) => token.start >= 0 && token.end <= source.length &&
+    (index === 0 || preview.tokens[index - 1]!.end <= token.start)));
+});
+
+test('dotenv syntax preview stops at shared character and token bounds without coloring a partial line', () => {
+  const oversized = highlightTextSyntax(`LONG=${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}`, 'dotenv');
+  assert.equal(oversized.highlightedThrough, 0);
+  assert.equal(oversized.isTruncated, true);
+  assert.deepEqual(oversized.tokens, []);
+
+  const manyAssignments = highlightTextSyntax('A=x\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'dotenv');
+  assert.equal(manyAssignments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyAssignments.isTruncated, true);
 });
 
 test('XML syntax preview colors tags, attributes, quoted values, comments, declarations, CDATA and text entities', () => {

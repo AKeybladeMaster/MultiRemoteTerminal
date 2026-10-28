@@ -741,6 +741,47 @@ test('local text editor auto-detects XML and keeps the source unchanged', async 
   }
 });
 
+test('local text editor auto-detects dotenv and keeps the source unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-dotenv-editor-e2e-');
+  const path = join(profile, '.env.local');
+  const source = '# deployment\nexport API_URL="https://example.test/a#fragment" # endpoint\nPORT=8443\nFEATURE_FLAG=true\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="dotenv-comment"]').first()).toHaveText('# deployment');
+    await expect(editor.locator('[data-token-kind="dotenv-export"]')).toHaveText('export');
+    await expect(editor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    await expect(editor.locator('[data-token-kind="dotenv-string"]')).toHaveText('"https://example.test/a#fragment"');
+    await expect(editor.locator('[data-token-kind="dotenv-value"]').first()).toHaveText('8443');
+    await expect(editor.locator('[data-token-kind="dotenv-comment"]').nth(1)).toHaveText('# endpoint');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('dotenv');
+    await expect(editor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
@@ -1692,6 +1733,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ini'), remoteIniSource);
     const remoteXmlSource = '<?xml version="1.0"?>\n<!-- app config -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
     await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
+    const remoteEnvSource = '# remote configuration\nexport API_URL="https://example.test/remote"\nPORT=22\n';
+    await writeFile(join(remoteRoot, '.env.production'), remoteEnvSource);
     const remoteMarkdownSource = '# Remote guide\n\n> **bold quote**\n- item with `inline` and [guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n' + '**cap**\n'.repeat(4_100);
     await writeFile(join(remoteRoot, 'remote.md'), remoteMarkdownSource);
     const remoteYamlSource = `# app config
@@ -1901,6 +1944,24 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remoteXmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteXmlEditor).toHaveCount(0);
     expect(await readFile(join(remoteRoot, 'remote.xml'), 'utf8')).toBe(remoteXmlSource);
+    const remoteEnvEdit = sftpPanel.getByRole('button', { name: 'Edit .env.production', exact: true });
+    await remoteEnvEdit.click();
+    const remoteEnvEditor = page.getByRole('dialog', { name: '.env.production' });
+    const remoteEnvSyntax = remoteEnvEditor.getByLabel('Syntax profile');
+    await expect(remoteEnvSyntax).toHaveValue('auto');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-comment"]')).toHaveText('# remote configuration');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-export"]')).toHaveText('export');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-string"]')).toHaveText('"https://example.test/remote"');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-value"]')).toHaveText('22');
+    expect(await remoteEnvEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteEnvSource);
+    await remoteEnvSyntax.selectOption('plain');
+    await expect(remoteEnvEditor.locator('[data-token-kind]')).toHaveCount(0);
+    await remoteEnvSyntax.selectOption('dotenv');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    await remoteEnvEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteEnvEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, '.env.production'), 'utf8')).toBe(remoteEnvSource);
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });

@@ -47,6 +47,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         <option value="yaml">YAML</option>
         <option value="ini">INI configuration</option>
         <option value="xml">XML</option>
+        <option value="dotenv">Environment file</option>
         <option value="json">JSON</option>
       </select>
       <label className="text-editor-autosave">
@@ -55,7 +56,9 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         Save automatically after 1 second of inactivity
       </label>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts, .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
+        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg,
+        .env/.env.* and *.env, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts,
+        .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
       </p>
     </div>
     <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>
