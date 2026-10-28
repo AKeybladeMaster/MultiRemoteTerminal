@@ -28,7 +28,7 @@ interface ReceivedTftpPacket {
   readonly remote: RemoteInfo;
 }
 
-function receivePacket(socket: Socket, timeoutMs: number, ignoredPorts: ReadonlySet<number> = new Set()): Promise<ReceivedTftpPacket> {
+function receivePacket(socket: Socket, timeoutMs: number): Promise<ReceivedTftpPacket> {
   return new Promise((resolve, reject) => {
     const cleanup = (): void => {
       clearTimeout(timer);
@@ -36,39 +36,11 @@ function receivePacket(socket: Socket, timeoutMs: number, ignoredPorts: Readonly
       socket.removeListener('error', onError);
     };
     const onMessage = (packet: Buffer, remote: RemoteInfo): void => {
-      if (ignoredPorts.has(remote.port)) return;
       cleanup();
       resolve({ packet, remote });
     };
     const onError = (error: Error): void => { cleanup(); reject(error); };
     const timer = setTimeout(() => { cleanup(); reject(new Error('Timed out waiting for TFTP response')); }, timeoutMs);
-    socket.on('message', onMessage);
-    socket.on('error', onError);
-  });
-}
-
-function receivePackets(
-  socket: Socket,
-  count: number,
-  timeoutMs: number,
-  ignoredPorts: ReadonlySet<number>
-): Promise<ReadonlyArray<ReceivedTftpPacket>> {
-  return new Promise((resolve, reject) => {
-    const packets: ReceivedTftpPacket[] = [];
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      socket.removeListener('message', onMessage);
-      socket.removeListener('error', onError);
-    };
-    const onMessage = (packet: Buffer, remote: RemoteInfo): void => {
-      if (ignoredPorts.has(remote.port)) return;
-      packets.push({ packet, remote });
-      if (packets.length < count) return;
-      cleanup();
-      resolve(packets);
-    };
-    const onError = (error: Error): void => { cleanup(); reject(error); };
-    const timer = setTimeout(() => { cleanup(); reject(new Error(`Timed out waiting for ${count} TFTP responses`)); }, timeoutMs);
     socket.on('message', onMessage);
     socket.on('error', onError);
   });
@@ -183,23 +155,25 @@ test('TFTP server bounds pending file opens and rejects the next request as busy
     });
     return { handle: { close: async () => {} } as unknown as FileHandle, size: 0 };
   });
-  let client: Socket | undefined;
+  const clients: Socket[] = [];
 
   try {
     const port = await server.start(rootDirectory, 0);
-    client = createSocket('udp4');
-
-    const activeTransferPorts = new Set<number>();
     for (let requestNumber = 1; requestNumber <= 7; requestNumber++) {
-      const dataReplyPromise = receivePacket(client, 2_000, activeTransferPorts);
+      const client = createSocket('udp4');
+      clients.push(client);
+      const dataReplyPromise = receivePacket(client, 2_000);
       await sendPacket(client, readRequest(`active-${requestNumber}.bin`), port);
       const dataReply = await dataReplyPromise;
       assert.equal(dataReply.packet.readUInt16BE(0), 3);
-      activeTransferPorts.add(dataReply.remote.port);
     }
     await new Promise<void>(resolve => setImmediate(resolve));
+    const pendingClients: Socket[] = [];
 
     for (let requestNumber = 1; requestNumber <= 8; requestNumber++) {
+      const pendingClient = createSocket('udp4');
+      pendingClients.push(pendingClient);
+      clients.push(pendingClient);
       const openedPromise = new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           openedCountWaiters.delete(requestNumber);
@@ -210,19 +184,21 @@ test('TFTP server bounds pending file opens and rejects the next request as busy
           resolve();
         });
       });
-      await sendPacket(client, readRequest(`pending-${requestNumber}.bin`), port);
+      await sendPacket(pendingClient, readRequest(`pending-${requestNumber}.bin`), port);
       await openedPromise;
     }
 
-    const busyReplyPromise = receivePacket(client, 2_000);
-    await sendPacket(client, readRequest('pending-9.bin'), port);
+    const rejectedClient = createSocket('udp4');
+    clients.push(rejectedClient);
+    const busyReplyPromise = receivePacket(rejectedClient, 2_000);
+    await sendPacket(rejectedClient, readRequest('pending-9.bin'), port);
     const busyReply = await busyReplyPromise;
     assert.equal(busyReply.packet.readUInt16BE(0), 5);
     assert.equal(busyReply.packet.readUInt16BE(2), 0);
     assert.equal(busyReply.packet.toString('ascii', 4, busyReply.packet.length - 1), 'Server is busy');
     assert.equal(openCount, 8, 'the busy ninth RRQ must not enter the file opener');
 
-    const promotedResponsesPromise = receivePackets(client, 8, 5_000, activeTransferPorts);
+    const promotedResponsesPromise = Promise.all(pendingClients.map(pendingClient => receivePacket(pendingClient, 5_000)));
     releaseAllOpens = true;
     for (const release of releasePendingOpens.splice(0)) release();
     const promotedResponses = await promotedResponsesPromise;
@@ -239,7 +215,7 @@ test('TFTP server bounds pending file opens and rejects the next request as busy
       await server.stop();
     } finally {
       try {
-        if (client) await closeUdpSocket(client);
+        await Promise.all(clients.map(closeUdpSocket));
       } finally {
         await rm(rootDirectory, { recursive: true, force: true });
       }
