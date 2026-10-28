@@ -48,6 +48,7 @@ import { isMacroShortcutBinding, isMacroShortcutCode } from '../../domain/src/ma
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import { isCurrentWorkbenchPreferences, isWorkbenchStartupPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
+import { MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES } from '../../domain/src/workbench-settings-template.ts';
 import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
 import { isCustomLogoDataUrl } from '../../domain/src/custom-logo.ts';
 import type { CustomLogoSelection } from '../../domain/src/custom-logo.ts';
@@ -203,6 +204,8 @@ export type SelectCustomLogoRequest = Request<'branding.logo.select', Record<str
 export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<string, never>>;
 export type GetWorkbenchSettingsPreferencesRequest = Request<'preferences.settings.get', Record<string, never>>;
 export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
+export type ExportWorkbenchSettingsTemplateRequest = Request<'preferences.template.export', { readonly preferences: WorkbenchPreferences }>;
+export type ImportWorkbenchSettingsTemplateRequest = Request<'preferences.template.import', Record<string, never>>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PreviewPowerShellProfileScriptRequest | ApplyPowerShellProfileScriptRequest |
   PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
   OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
@@ -220,7 +223,8 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   EnableCredentialVaultMasterPasswordRequest | DisableCredentialVaultMasterPasswordRequest | ResetCredentialVaultRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
-  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest;
+  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest |
+  ExportWorkbenchSettingsTemplateRequest | ImportWorkbenchSettingsTemplateRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -287,6 +291,8 @@ export type WorkbenchStartupPreferencesReply = CommandReply<WorkbenchStartupPref
 export interface PowerShellProfileScriptPreview { readonly previewId: string; readonly script: string; }
 export type PowerShellProfileScriptPreviewReply = CommandReply<PowerShellProfileScriptPreview>;
 export type SelectCustomLogoReply = CommandReply<CustomLogoSelection>;
+export type ExportWorkbenchSettingsTemplateReply = CommandReply<{ readonly bytesSaved: number }>;
+export type ImportWorkbenchSettingsTemplateReply = CommandReply<WorkbenchPreferences>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 export type CredentialVaultStatus = 'uninitialized' | 'available' | 'locked' | 'unavailable';
 export type CredentialVaultMode = 'windows-account' | 'master-password';
@@ -396,6 +402,8 @@ export interface DesktopBridge {
   getWorkbenchPreferences(): Promise<WorkbenchStartupPreferencesReply>;
   getWorkbenchSettingsPreferences(): Promise<WorkbenchPreferencesReply>;
   saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply>;
+  exportWorkbenchSettingsTemplate(preferences: WorkbenchPreferences): Promise<ExportWorkbenchSettingsTemplateReply>;
+  importWorkbenchSettingsTemplate(): Promise<ImportWorkbenchSettingsTemplateReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
@@ -766,6 +774,12 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'preferences.save' && exactKeys(payload, ['preferences']) && normalizeWorkbenchPreferences(payload.preferences)) {
     return { ok: true, result: value as unknown as SaveWorkbenchPreferencesRequest };
   }
+  if (value.command === 'preferences.template.export' && exactKeys(payload, ['preferences']) && isCurrentWorkbenchPreferences(payload.preferences)) {
+    return { ok: true, result: value as unknown as ExportWorkbenchSettingsTemplateRequest };
+  }
+  if (value.command === 'preferences.template.import' && exactKeys(payload, [])) {
+    return { ok: true, result: value as unknown as ImportWorkbenchSettingsTemplateRequest };
+  }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'powershell.profile.preview', 'powershell.profile.apply',
     'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
     'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
@@ -780,7 +794,8 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
     'vault.master.enable', 'vault.master.disable', 'vault.reset',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
-    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save'].includes(value.command)) {
+    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save',
+    'preferences.template.export', 'preferences.template.import'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -935,6 +950,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
       isCustomLogoDataUrl(value.result.dataUrl);
     if (request.command === 'preferences.get') return isWorkbenchStartupPreferences(value.result);
     if (request.command === 'preferences.settings.get' || request.command === 'preferences.save') return isCurrentWorkbenchPreferences(value.result);
+    if (request.command === 'preferences.template.export') return record(value.result) && exactKeys(value.result, ['bytesSaved']) &&
+      Number.isSafeInteger(value.result.bytesSaved) && (value.result.bytesSaved as number) > 0 &&
+      (value.result.bytesSaved as number) <= MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES;
+    if (request.command === 'preferences.template.import') return isCurrentWorkbenchPreferences(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);

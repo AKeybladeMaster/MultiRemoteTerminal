@@ -578,6 +578,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply> {
       return send({ command: 'preferences.save', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { preferences } }, 8_000);
     },
+    exportWorkbenchSettingsTemplate(preferences: WorkbenchPreferences): Promise<CommandReply<{ readonly bytesSaved: number }>> {
+      return send<{ readonly bytesSaved: number }>({ command: 'preferences.template.export', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { preferences } });
+    },
+    importWorkbenchSettingsTemplate(): Promise<WorkbenchPreferencesReply> {
+      return send<WorkbenchPreferences>({ command: 'preferences.template.import', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} });
+    },
     createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply> {
       return send({ command: 'session.create', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: draft }, 8_000);
     },

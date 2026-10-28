@@ -136,6 +136,14 @@ The greeting supports up to 512 Unicode code points, is stored in the local app
 profile, and appears below the tab bar after startup until you dismiss it. The
 greeting is plain text and never runs in a terminal. Leave it blank to hide it.
 
+To move these settings to another installation, choose **Export settings
+template** or **Load settings template** in Workbench settings. Export uses the
+current draft and a native Save dialog. The versioned JSON template includes
+workbench settings, the custom logo, and saved PowerShell script text, but not
+saved connections or credentials; review the script before sharing the file.
+Loading validates the entire file and updates only the current draft. Choose
+**Save changes** to apply it. Import never runs a saved script.
+
 The **Optional connection types** settings control whether new Telnet, FTP/FTPS,
 serial, RDP, VNC, or local TFTP work can start. Saved profiles stay in the local
 catalog while disabled, but cannot be reopened until you enable that type.

@@ -120,6 +120,8 @@ A port must document the success return, cancellation semantics, timeout, auth f
 
 The saved-folder bundle file-dialog port is an interactive OS operation: Windows open/save pickers settle only after explicit user selection or dismissal, and Electron exposes no abort signal or deadline for these methods. The renderer therefore waits without an IPC timeout while the modal picker is open. The native Cancel button dismisses it; a caller cancellation that arrives meanwhile is checked as soon as the picker settles, and no selected path is used for storage. Storage work starts only after that check and retains its own bounded worker timeout/cancellation. When a storage timeout or cancellation terminates the worker, its request settles only after worker exit and tracked temporary-file cleanup complete.
 
+Workbench settings templates use the same native-picker and storage-worker boundary. The renderer submits only a validated current preference value for export; the main process supplies the path selected by the native picker. The storage worker validates and writes a versioned JSON file through a tracked sibling temporary path. Import validates the bounded file in the worker and returns preferences to the Settings dialog without saving them; the existing `preferences.save` command persists them only after the user chooses **Save changes**.
+
 ## 6. IPC contract (version 1)
 
 All commands carry `{requestId, contractVersion, payload}`. All results carry `{requestId, ok, result|error}`. Event subscriptions include an owner/session ID and an explicit unsubscribe operation. Validate payload shape and sizes on the main side; reject unknown commands. IPC transport errors use stable codes and localized display text at the UI edge.

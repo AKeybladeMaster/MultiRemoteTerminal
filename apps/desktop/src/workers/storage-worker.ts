@@ -8,6 +8,7 @@ import { SqliteTunnelRepository } from '../adapters/sqlite-tunnel-repository.ts'
 import { SqliteMacroCatalogRepository } from '../adapters/sqlite-macro-catalog-repository.ts';
 import { SqliteMacroShortcutRepository } from '../adapters/sqlite-macro-shortcut-repository.ts';
 import { SqliteWorkbenchPreferencesRepository } from '../adapters/sqlite-workbench-preferences-repository.ts';
+import { readWorkbenchSettingsTemplate, writeWorkbenchSettingsTemplate } from '../adapters/workbench-settings-template-files.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -150,6 +151,12 @@ parent.on('message', async event => {
     } else if (request.command === 'preferences.save') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'preferences', value: workbenchPreferencesRepository.save(request.preferences) } });
+    } else if (request.command === 'preferences.template.export') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'preferencesTemplateExport', value: await writeWorkbenchSettingsTemplate(request.path, request.temporaryPath, request.preferences) } });
+    } else if (request.command === 'preferences.template.import') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'preferences', value: await readWorkbenchSettingsTemplate(request.path) } });
     } else if (request.command === 'tunnel.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'tunnels', value: await tunnelRepository.listSshTunnels() } });

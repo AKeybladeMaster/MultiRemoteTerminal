@@ -294,6 +294,30 @@ function boot(): void {
       return result.canceled ? undefined : result.filePaths[0];
     }
   };
+  const settingsTemplateDialog = {
+    async selectExportPath(): Promise<string | undefined> {
+      const options: Electron.SaveDialogOptions = {
+        title: 'Export workbench settings template',
+        defaultPath: 'MultiRemoteTerminal.settings-profile.json',
+        buttonLabel: 'Export settings',
+        filters: [{ name: 'Workbench settings template', extensions: ['json'] }]
+      };
+      const current = window;
+      const result = current && !current.isDestroyed() ? await dialog.showSaveDialog(current, options) : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    },
+    async selectImportPath(): Promise<string | undefined> {
+      const options: Electron.OpenDialogOptions = {
+        title: 'Import workbench settings template',
+        buttonLabel: 'Load settings',
+        properties: ['openFile'],
+        filters: [{ name: 'Workbench settings template', extensions: ['json'] }]
+      };
+      const current = window;
+      const result = current && !current.isDestroyed() ? await dialog.showOpenDialog(current, options) : await dialog.showOpenDialog(options);
+      return result.canceled ? undefined : result.filePaths[0];
+    }
+  };
   const e2eRdpViewer = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-rdp-viewer');
   const rdpViewer = createRdpViewerController(e2eRdpViewer ? { async launch() {} } : new WindowsRdpViewer(systemDirectory));
   const e2eVncViewer = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-vnc-viewer');
@@ -369,7 +393,7 @@ function boot(): void {
   const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
   const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels, sessionCredentials);
   const macros = createMacroCatalog(storageStore);
-  const workbenchPreferences = createWorkbenchPreferencesManager(storageStore);
+  const workbenchPreferences = createWorkbenchPreferencesManager(storageStore, storageStore, settingsTemplateDialog);
   const preferences: WorkbenchPreferencesManager = {
     async read(cancellation) {
       return workbenchPreferences.read(cancellation);
@@ -381,7 +405,9 @@ function boot(): void {
       }
       return workbenchPreferences.readStartup(cancellation);
     },
-    save(value, cancellation) { return workbenchPreferences.save(value, cancellation); }
+    save(value, cancellation) { return workbenchPreferences.save(value, cancellation); },
+    exportTemplate(value, cancellation) { return workbenchPreferences.exportTemplate(value, cancellation); },
+    importTemplate(cancellation) { return workbenchPreferences.importTemplate(cancellation); }
   };
   const powerShellProfileScripts = createPowerShellProfileScriptController(preferences, terminals, randomUUID, () => performance.now());
   const telnetTerminals = createTelnetTerminalController(new TelnetTerminalWorkerHost(

@@ -11,8 +11,9 @@ import { isMacroDefinition, isMacroId, normalizeMacroDraft } from '../../../../p
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { isMacroShortcutBinding, isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
-import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { isCurrentWorkbenchPreferences, isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES } from '../../../../packages/domain/src/workbench-settings-template.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
@@ -54,6 +55,8 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.remove'; readonly macroId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.get' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.save'; readonly preferences: WorkbenchPreferences }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.template.export'; readonly path: string; readonly temporaryPath: string; readonly preferences: WorkbenchPreferences }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.template.import'; readonly path: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
@@ -84,6 +87,7 @@ export type StorageWorkerResult =
   | { readonly kind: 'macroShortcuts'; readonly value: readonly MacroShortcutBinding[] }
   | { readonly kind: 'macroShortcut'; readonly value: MacroShortcutBinding }
   | { readonly kind: 'preferences'; readonly value: WorkbenchPreferences }
+  | { readonly kind: 'preferencesTemplateExport'; readonly value: { readonly bytesSaved: number } }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -201,6 +205,13 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'preferences.get' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if (value.command === 'preferences.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'preferences']) &&
       normalizeWorkbenchPreferences(value.preferences)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'preferences.template.export' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path', 'temporaryPath', 'preferences']) &&
+      isFilePath(value.path) && isExportTemporaryPath(value.path, value.temporaryPath) && isCurrentWorkbenchPreferences(value.preferences)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'preferences.template.import' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path']) && isFilePath(value.path)) {
+    return value as unknown as StorageWorkerRequest;
+  }
   if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
       isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
@@ -252,6 +263,9 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'macroShortcuts' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isMacroShortcutBinding)) return true;
   if (value.kind === 'macroShortcut' && exactKeys(value, ['kind', 'value']) && isMacroShortcutBinding(value.value)) return true;
   if (value.kind === 'preferences' && exactKeys(value, ['kind', 'value']) && isWorkbenchPreferences(value.value)) return true;
+  if (value.kind === 'preferencesTemplateExport' && exactKeys(value, ['kind', 'value']) && record(value.value) &&
+      exactKeys(value.value, ['bytesSaved']) && Number.isSafeInteger(value.value.bytesSaved) &&
+      (value.value.bytesSaved as number) > 0 && (value.value.bytesSaved as number) <= MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
 }
 

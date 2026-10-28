@@ -6,7 +6,7 @@ import { HostTrustStoreError } from '../../../../packages/application/src/host-t
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
 import type { SessionCatalogStore } from '../../../../packages/application/src/session-catalog.ts';
 import type { MacroCatalogStore } from '../../../../packages/application/src/macros.ts';
-import type { WorkbenchPreferencesStore } from '../../../../packages/application/src/workbench-preferences.ts';
+import type { WorkbenchPreferencesStore, WorkbenchSettingsTemplateStore } from '../../../../packages/application/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 import type { SshTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
@@ -16,7 +16,7 @@ import { normalizeMacroDraft, isMacroId } from '../../../../packages/domain/src/
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
-import { isWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { isCurrentWorkbenchPreferences, isWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
@@ -85,7 +85,8 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
     : never
   : never;
 
-export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, WorkbenchPreferencesStore, SshTunnelCatalog, SavedSessionReader {
+export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, WorkbenchPreferencesStore,
+  WorkbenchSettingsTemplateStore, SshTunnelCatalog, SavedSessionReader {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -262,6 +263,23 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     await this.ensureMigrated(cancellation);
     const result = await this.worker.request({ command: 'preferences.save', preferences }, cancellation);
     if (result.kind !== 'preferences' || !isWorkbenchPreferences(result.value)) throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async exportWorkbenchSettingsTemplate(path: string, preferences: WorkbenchPreferences, cancellation?: CancellationSignal): Promise<{ readonly bytesSaved: number }> {
+    if (!isFilePath(path) || !isCurrentWorkbenchPreferences(preferences)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+    const result = await this.worker.request({ command: 'preferences.template.export', path, temporaryPath, preferences }, cancellation);
+    if (result.kind !== 'preferencesTemplateExport') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async importWorkbenchSettingsTemplate(path: string, cancellation?: CancellationSignal): Promise<WorkbenchPreferences> {
+    if (!isFilePath(path)) throw new StorageOperationError('invalid');
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'preferences.template.import', path }, cancellation);
+    if (result.kind !== 'preferences' || !isCurrentWorkbenchPreferences(result.value)) throw new StorageOperationError('corrupt');
     return result.value;
   }
 
@@ -453,7 +471,8 @@ class StorageWorkerClient {
           void this.terminate(worker).then(() => reject(error), () => reject(error));
         };
         const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 :
-          request.command === 'session.folder.import' || request.command === 'session.folder.export' ? 60_000 : REQUEST_TIMEOUT_MS;
+          request.command === 'session.folder.import' || request.command === 'session.folder.export' ||
+          request.command === 'preferences.template.import' || request.command === 'preferences.template.export' ? 60_000 : REQUEST_TIMEOUT_MS;
         const timer = setTimeout(() => {
           const pending = this.pending.get(requestId);
           if (!pending) return;
@@ -464,7 +483,8 @@ class StorageWorkerClient {
         const pending: PendingRequest = {
           resolve, reject, timer,
           ...(cancellation ? { cancellation } : {}),
-          ...(command.command === 'session.folder.export' ? { temporaryPath: command.temporaryPath } : {})
+          ...(command.command === 'session.folder.export' || command.command === 'preferences.template.export'
+            ? { temporaryPath: command.temporaryPath } : {})
         };
         this.pending.set(requestId, pending);
         if (cancellation) {

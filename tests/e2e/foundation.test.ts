@@ -6630,6 +6630,71 @@ test('local shell tool visibility persists and controls command palette entries 
   }
 });
 
+test('settings profile templates round-trip between Windows app profiles and require an explicit save', async () => {
+  test.skip(process.platform !== 'win32', 'Settings profile template acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const root = await mkdtemp(join(tmpdir(), 'mrt-settings-profile-e2e-'));
+  const sourceProfile = join(root, 'source');
+  const targetProfile = join(root, 'target');
+  const templatePath = join(root, 'workbench-settings.json');
+  await mkdir(sourceProfile);
+  await mkdir(targetProfile);
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${sourceProfile}`], env: electronEnvironment() });
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByLabel('Startup greeting').fill('MRT template greeting — ready');
+    await settings.getByLabel('Saved PowerShell script').fill("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePath }) });
+    }, templatePath);
+    await settings.getByRole('button', { name: 'Export settings template…', exact: true }).click();
+    await expect(settings.locator('.settings-save-status')).toContainText('Settings template exported.');
+    const templateText = await readFile(templatePath, 'utf8');
+    const template = JSON.parse(templateText) as { format?: unknown; version?: unknown; preferences?: Record<string, unknown> };
+    expect(template).toMatchObject({ format: 'multiremote-terminal/workbench-settings', version: 1 });
+    expect(template.preferences).toMatchObject({ startupGreeting: 'MRT template greeting — ready',
+      powerShellProfileScript: "Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'" });
+    expect(templateText).not.toMatch(/credential|password|privateKey/i);
+    await app.close();
+    app = undefined;
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, templatePath);
+    await settings.getByRole('button', { name: 'Load settings template…', exact: true }).click();
+    await expect(settings.getByLabel('Startup greeting')).toHaveValue('MRT template greeting — ready');
+    await expect(settings.getByLabel('Saved PowerShell script')).toHaveValue("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
+    await expect(settings.locator('.settings-save-status')).toContainText('Template loaded into this draft.');
+    await expect(page.locator('.xterm-rows').first()).not.toContainText('MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN');
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.locator('.settings-save-status')).toContainText('Settings saved.');
+    await app.close();
+    app = undefined;
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByLabel('Startup greeting')).toHaveValue('MRT template greeting — ready');
+    await expect(settings.getByLabel('Saved PowerShell script')).toHaveValue("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
+  } finally {
+    await app?.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('local shell availability blocks new and saved-profile launches while preserving active sessions and profiles', async () => {
   test.setTimeout(60_000);
   test.skip(process.platform !== 'win32', 'Local shell availability acceptance requires Windows');

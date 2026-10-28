@@ -22,7 +22,8 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'chooseTftpRoot',
     'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-    'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+    'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'exportWorkbenchSettingsTemplate', 'importWorkbenchSettingsTemplate',
+    'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
     'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
@@ -341,6 +342,22 @@ test('preload exposes saved-folder import and export through fixed commands', as
   assert.deepEqual(seen, [
     { command: 'session.folder.export', requestId: id(), contractVersion: 1, payload: { id: folderId } },
     { command: 'session.folder.import', requestId: id(), contractVersion: 1, payload: {} }
+  ]);
+});
+
+test('preload exposes settings template import and export through fixed path-free commands', async () => {
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return request.command === 'preferences.template.export'
+      ? { requestId: id(), ok: true, result: { bytesSaved: 128 } }
+      : { requestId: id(), ok: true, result: DEFAULT_WORKBENCH_PREFERENCES };
+  }, id);
+  assert.equal((await bridge.exportWorkbenchSettingsTemplate(DEFAULT_WORKBENCH_PREFERENCES)).ok, true);
+  assert.equal((await bridge.importWorkbenchSettingsTemplate()).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'preferences.template.export', requestId: id(), contractVersion: 1, payload: { preferences: DEFAULT_WORKBENCH_PREFERENCES } },
+    { command: 'preferences.template.import', requestId: id(), contractVersion: 1, payload: {} }
   ]);
 });
 

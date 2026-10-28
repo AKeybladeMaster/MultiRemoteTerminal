@@ -107,7 +107,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   }, preferences: {
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
     readStartup: async () => ({ ok: true, result: toWorkbenchStartupPreferences(DEFAULT_WORKBENCH_PREFERENCES) }),
-    save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
+    save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES }),
+    exportTemplate: async () => ({ ok: true, result: { bytesSaved: 128 } }),
+    importTemplate: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES })
   }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
 });
 
@@ -191,6 +193,8 @@ test('preferences broker accepts changed logos only from the bounded main-proces
   const manager = {
     async read() { return { ok: true as const, result: stored }; },
     async readStartup() { return { ok: true as const, result: toWorkbenchStartupPreferences(stored) }; },
+    async exportTemplate() { return { ok: true as const, result: { bytesSaved: 128 } }; },
+    async importTemplate() { return { ok: true as const, result: stored }; },
     async save(value: unknown) {
       saveCount++;
       stored = value as typeof DEFAULT_WORKBENCH_PREFERENCES;

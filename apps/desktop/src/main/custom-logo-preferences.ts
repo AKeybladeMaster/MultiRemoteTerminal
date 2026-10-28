@@ -18,6 +18,8 @@ export function createCustomLogoPreferenceAccess(preferences: WorkbenchPreferenc
   const guardedPreferences: WorkbenchPreferencesManager = Object.freeze({
     read(cancellation?: CancellationSignal) { return preferences.read(cancellation); },
     readStartup(cancellation?: CancellationSignal) { return preferences.readStartup(cancellation); },
+    exportTemplate(value: unknown, cancellation?: CancellationSignal) { return preferences.exportTemplate(value, cancellation); },
+    importTemplate(cancellation?: CancellationSignal) { return preferences.importTemplate(cancellation); },
     async save(value: unknown, cancellation?: CancellationSignal) {
       const normalized = normalizeWorkbenchPreferences(value);
       if (!normalized) return preferences.save(value, cancellation);

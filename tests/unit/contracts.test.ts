@@ -398,6 +398,19 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1, payload: {} }).ok, true);
   assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1,
     payload: { path: 'C:\\private.json' } }).ok, false, 'the renderer cannot provide a filesystem path');
+
+  const settingsTemplate = { command: 'preferences.template.export', requestId: request.requestId, contractVersion: 1,
+    payload: { preferences: DEFAULT_WORKBENCH_PREFERENCES } };
+  const parsedSettingsTemplate = parseRequest(settingsTemplate);
+  assert.equal(parsedSettingsTemplate.ok, true);
+  if (parsedSettingsTemplate.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { bytesSaved: 128 } }, parsedSettingsTemplate.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { bytesSaved: -1 } }, parsedSettingsTemplate.result), false);
+  }
+  const settingsTemplateImport = { command: 'preferences.template.import', requestId: request.requestId, contractVersion: 1, payload: {} };
+  assert.equal(parseRequest(settingsTemplateImport).ok, true);
+  assert.equal(parseRequest({ ...settingsTemplateImport, payload: { path: 'C:\\private.json' } }).ok, false,
+    'the renderer cannot provide a settings-template path');
 });
 
 test('RDP IPC validates the external viewer target and its launch-requested result', () => {
