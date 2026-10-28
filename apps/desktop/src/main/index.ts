@@ -13,6 +13,7 @@ import { createHostTrustManager } from '../../../../packages/application/src/hos
 import type { HostTrustRuntime } from '../../../../packages/application/src/host-trust.ts';
 import { createSessionCatalog } from '../../../../packages/application/src/session-catalog.ts';
 import { createSessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
+import { createSshCredentialBundleManager } from '../../../../packages/application/src/ssh-credential-bundle.ts';
 import { createMacroCatalog } from '../../../../packages/application/src/macros.ts';
 import { createWorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
 import type { WorkbenchPreferencesManager } from '../../../../packages/application/src/workbench-preferences.ts';
@@ -33,6 +34,7 @@ import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
 import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 import { MasterPasswordKeyDeriverAdapter } from '../adapters/master-password-key-deriver.ts';
+import { SshCredentialBundleCryptoAdapter } from '../adapters/ssh-credential-bundle-crypto.ts';
 import { SqliteStorageStore } from '../adapters/sqlite-storage-store.ts';
 import { createWindowsCredentialPrompt } from '../adapters/windows-credential-prompt.ts';
 import type { CredentialPrompt } from '../../../../packages/application/src/credential-prompt.ts';
@@ -335,6 +337,30 @@ function boot(): void {
       return result.canceled ? undefined : result.filePaths[0];
     }
   };
+  const credentialBundleDialog = {
+    async selectExportPath(): Promise<string | undefined> {
+      const options: Electron.SaveDialogOptions = {
+        title: 'Export encrypted SSH credentials',
+        defaultPath: 'MultiRemoteTerminal.ssh-credentials.mrtcred',
+        buttonLabel: 'Export encrypted credentials',
+        filters: [{ name: 'Encrypted SSH credentials', extensions: ['mrtcred'] }]
+      };
+      const current = window;
+      const result = current && !current.isDestroyed() ? await dialog.showSaveDialog(current, options) : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    },
+    async selectImportPath(): Promise<string | undefined> {
+      const options: Electron.OpenDialogOptions = {
+        title: 'Import encrypted SSH credentials',
+        buttonLabel: 'Import credentials',
+        properties: ['openFile'],
+        filters: [{ name: 'Encrypted SSH credentials', extensions: ['mrtcred'] }]
+      };
+      const current = window;
+      const result = current && !current.isDestroyed() ? await dialog.showOpenDialog(current, options) : await dialog.showOpenDialog(options);
+      return result.canceled ? undefined : result.filePaths[0];
+    }
+  };
   const e2eRdpViewer = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-rdp-viewer');
   const rdpViewer = createRdpViewerController(e2eRdpViewer ? { async launch() {} } : new WindowsRdpViewer(systemDirectory));
   const e2eVncViewer = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-vnc-viewer');
@@ -373,7 +399,9 @@ function boot(): void {
   });
   const credentialPrompt: CredentialPrompt = e2eSshCredentials || e2eSshKeyAuth || e2eSshAgentAuth || e2eFtpCredentials || e2eMasterPassword
     ? { async prompt(purpose) {
-      if (purpose === 'master-password' && e2eMasterPassword) return { kind: 'provided', username: 'MRT test vault', secret: 'mrt-e2e-master-password-v1' };
+      if ((purpose === 'master-password' || purpose === 'credential-bundle-passphrase') && e2eMasterPassword) {
+        return { kind: 'provided', username: 'MRT test vault', secret: 'mrt-e2e-master-password-v1' };
+      }
       if (purpose === 'ssh-key-passphrase' && e2eSshKeyAuth) {
         e2eSshKeyPromptCount += 1;
         return { kind: 'provided', username: 'mrt-e2e-key-user', secret: 'mrt-e2e-key-passphrase' };
@@ -408,6 +436,8 @@ function boot(): void {
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
   const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
   const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
+  const credentialBundles = createSshCredentialBundleManager(storageStore, credentialBundleDialog, credentialPrompt, credentialVault,
+    new SshCredentialBundleCryptoAdapter(masterPasswordKeyDeriver), randomUUID);
   const sessionCatalog = createSessionCatalog(storageStore, bundleDialog, tunnels, sessionCredentials);
   const macros = createMacroCatalog(storageStore);
   const workbenchPreferences = createWorkbenchPreferencesManager(storageStore, storageStore, settingsTemplateDialog);
@@ -850,7 +880,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, powerShellProfileScripts, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, macros,
+        terminals, powerShellProfileScripts, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, credentialBundles, macros,
         preferences: customLogoPreferences.preferences, tunnels,
         tftpServer: {
           getStatus: () => tftpServer.getStatus(),

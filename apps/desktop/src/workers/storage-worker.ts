@@ -9,6 +9,7 @@ import { SqliteMacroCatalogRepository } from '../adapters/sqlite-macro-catalog-r
 import { SqliteMacroShortcutRepository } from '../adapters/sqlite-macro-shortcut-repository.ts';
 import { SqliteWorkbenchPreferencesRepository } from '../adapters/sqlite-workbench-preferences-repository.ts';
 import { readWorkbenchSettingsTemplate, writeWorkbenchSettingsTemplate } from '../adapters/workbench-settings-template-files.ts';
+import { readEncryptedSshCredentialBundle, writeEncryptedSshCredentialBundle } from '../adapters/ssh-credential-bundle-files.ts';
 import { parseStorageWorkerRequest, storageWorkerErrorCode, STORAGE_WORKER_PROTOCOL_VERSION } from './storage-protocol.ts';
 
 const parent = process.parentPort;
@@ -81,9 +82,15 @@ parent.on('message', async event => {
     } else if (request.command === 'session.credential.get') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'credentialReference', value: await sessionCatalogRepository.getSessionCredentialReference(request.id) ?? null } });
+    } else if (request.command === 'session.credential.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'sshCredentialReferences', value: await sessionCatalogRepository.listSshCredentials() } });
     } else if (request.command === 'session.credential.set') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'changed', value: await sessionCatalogRepository.setSessionCredentialReference(request.id, request.reference, request.expectedReference) } });
+    } else if (request.command === 'session.credential.attach-imported') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: await sessionCatalogRepository.attachImportedSshCredentials(request.credentials) } });
     } else if (request.command === 'session.credential.clear-all') {
       await sessionCatalogRepository.clearAllSessionCredentialReferences();
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
@@ -157,6 +164,12 @@ parent.on('message', async event => {
     } else if (request.command === 'preferences.template.import') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'preferences', value: await readWorkbenchSettingsTemplate(request.path) } });
+    } else if (request.command === 'credential.bundle.read') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'encryptedCredentialBundle', value: await readEncryptedSshCredentialBundle(request.path) } });
+    } else if (request.command === 'credential.bundle.write') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'encryptedCredentialBundleWrite', value: await writeEncryptedSshCredentialBundle(request.path, request.temporaryPath, request.contents) } });
     } else if (request.command === 'tunnel.list') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'tunnels', value: await tunnelRepository.listSshTunnels() } });

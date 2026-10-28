@@ -191,6 +191,8 @@ export type UnlockCredentialVaultRequest = Request<'vault.unlock', Record<string
 export type EnableCredentialVaultMasterPasswordRequest = Request<'vault.master.enable', Record<string, never>>;
 export type DisableCredentialVaultMasterPasswordRequest = Request<'vault.master.disable', Record<string, never>>;
 export type ResetCredentialVaultRequest = Request<'vault.reset', Record<string, never>>;
+export type ExportSshCredentialBundleRequest = Request<'credential.bundle.export', Record<string, never>>;
+export type ImportSshCredentialBundleRequest = Request<'credential.bundle.import', Record<string, never>>;
 export type ListSshTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
 export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
   readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number } |
@@ -226,6 +228,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   HasSessionCredentialRequest | SaveSessionCredentialRequest | ForgetSessionCredentialRequest | GetCredentialVaultStateRequest | LockCredentialVaultRequest | UnlockCredentialVaultRequest |
   EnableCredentialVaultMasterPasswordRequest | DisableCredentialVaultMasterPasswordRequest | ResetCredentialVaultRequest |
+  ExportSshCredentialBundleRequest | ImportSshCredentialBundleRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
   SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest |
@@ -299,6 +302,7 @@ export type PowerShellProfileScriptPreviewReply = CommandReply<PowerShellProfile
 export type SelectCustomLogoReply = CommandReply<CustomLogoSelection>;
 export type ExportWorkbenchSettingsTemplateReply = CommandReply<{ readonly bytesSaved: number }>;
 export type ImportWorkbenchSettingsTemplateReply = CommandReply<WorkbenchPreferences>;
+export type SshCredentialBundleReply = CommandReply<{ readonly credentialCount: number }>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 export type CredentialVaultStatus = 'uninitialized' | 'available' | 'locked' | 'unavailable';
 export type CredentialVaultMode = 'windows-account' | 'master-password';
@@ -393,6 +397,8 @@ export interface DesktopBridge {
   enableMasterPasswordVault(): Promise<CredentialVaultStateReply>;
   disableMasterPasswordVault(): Promise<CredentialVaultStateReply>;
   resetCredentialVault(): Promise<CredentialVaultStateReply>;
+  exportSshCredentialBundle(): Promise<SshCredentialBundleReply>;
+  importSshCredentialBundle(): Promise<SshCredentialBundleReply>;
   listSshTunnels(): Promise<ListSshTunnelsReply>;
   saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply>;
   deleteTunnel(id: string): Promise<TerminalActionReply>;
@@ -770,6 +776,9 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     if (value.command === 'vault.master.disable') return { ok: true, result: value as unknown as DisableCredentialVaultMasterPasswordRequest };
     return { ok: true, result: value as unknown as ResetCredentialVaultRequest };
   }
+  if ((value.command === 'credential.bundle.export' || value.command === 'credential.bundle.import') && exactKeys(payload, [])) {
+    return { ok: true, result: value as unknown as ExportSshCredentialBundleRequest | ImportSshCredentialBundleRequest };
+  }
   if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSshTunnelsRequest };
   if (value.command === 'tunnel.save' && normalizeSshTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveSshTunnelRequest };
   const tunnelStartHasGateways = value.command === 'tunnel.start' && Object.hasOwn(payload, 'gatewayProfileIds');
@@ -820,7 +829,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
-    'vault.master.enable', 'vault.master.disable', 'vault.reset',
+    'vault.master.enable', 'vault.master.disable', 'vault.reset', 'credential.bundle.export', 'credential.bundle.import',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
     'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save',
     'preferences.template.export', 'preferences.template.import'].includes(value.command)) {
@@ -963,6 +972,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'session.folder.export') return isFolderExportResult(value.result);
     if (request.command === 'session.folder.import') return isFolderImportResult(value.result);
     if (request.command === 'session.credential.has') return typeof value.result === 'boolean';
+    if (request.command === 'credential.bundle.export' || request.command === 'credential.bundle.import') return record(value.result) &&
+      exactKeys(value.result, ['credentialCount']) && isCount(value.result.credentialCount);
     if (request.command === 'vault.state' || request.command === 'vault.unlock' || request.command === 'vault.master.enable' ||
         request.command === 'vault.master.disable' || request.command === 'vault.reset') return isCredentialVaultSnapshot(value.result);
     if (request.command === 'tunnel.list') return Array.isArray(value.result) && value.result.every(isSshTunnelSnapshot);

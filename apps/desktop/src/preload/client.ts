@@ -3,6 +3,7 @@ import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFol
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, StartSshSessionLogReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
   ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply, SshAuthenticationMethod } from '../../../../packages/contracts/src/commands.ts';
+import type { SshCredentialBundleReply } from '../../../../packages/contracts/src/commands.ts';
 import type { PowerShellProfileScriptPreviewReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
@@ -110,7 +111,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return Promise.race([received, new Promise<CommandReply<T>>(resolve => {
         timer = setTimeout(() => {
           if (request.command.startsWith('session.') || request.command.startsWith('macro.') || request.command.startsWith('preferences.') ||
-              request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.') || request.command === 'tftp.start') {
+              request.command.startsWith('ssh.files.') || request.command.startsWith('ftp.') || request.command.startsWith('credential.bundle.') || request.command === 'tftp.start') {
             const reportTimeout = () => resolve({ requestId, ...failure('TIMEOUT') });
             try { void Promise.resolve(cancelCatalogRequest(requestId)).then(reportTimeout, reportTimeout); }
             catch { reportTimeout(); }
@@ -658,6 +659,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     resetCredentialVault(): Promise<CredentialVaultStateReply> {
       return send({ command: 'vault.reset', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 30_000);
+    },
+    exportSshCredentialBundle(): Promise<SshCredentialBundleReply> {
+      return send({ command: 'credential.bundle.export', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 300_000);
+    },
+    importSshCredentialBundle(): Promise<SshCredentialBundleReply> {
+      return send({ command: 'credential.bundle.import', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 300_000);
     },
     listSshTunnels(): Promise<ListSshTunnelsReply> {
       return send({ command: 'tunnel.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 8_000);

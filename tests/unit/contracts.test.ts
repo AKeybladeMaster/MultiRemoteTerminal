@@ -255,6 +255,15 @@ test('remote text editing accepts bounded file payloads and exact path-bound rep
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, bytesSaved: result.bytesSaved + 1 } }, parsedSave.result), false);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, path: '/other/file' } }, parsedSave.result), false);
   }
+  for (const command of ['credential.bundle.export', 'credential.bundle.import'] as const) {
+    const bundle = { command, requestId: request.requestId, contractVersion: 1, payload: {} };
+    const parsed = parseRequest(bundle);
+    assert.equal(parsed.ok, true);
+    assert.equal(parseRequest({ ...bundle, payload: { path: 'C:\\secret.mrtcred' } }).ok, false);
+    assert.equal(parsed.ok && isCommandReply({ requestId: request.requestId, ok: true, result: { credentialCount: 2 } }, parsed.result), true);
+    assert.equal(parsed.ok && isCommandReply({ requestId: request.requestId, ok: true,
+      result: { credentialCount: 2, password: 'must-not-reach-renderer' } }, parsed.result), false);
+  }
 });
 
 test('Telnet terminal IPC bounds endpoint and stream commands and validates the open reply', () => {

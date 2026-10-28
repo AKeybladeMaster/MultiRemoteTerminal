@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'master-password')]
+    [ValidateSet('ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'master-password', 'credential-bundle-passphrase')]
     [string] $Purpose,
     [ValidateLength(0, 256)]
     [string] $Context = ''
@@ -14,6 +14,7 @@ $purposeMessages = @{
     'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'
     'ftp-account' = 'Enter the FTP account credential.'
     'master-password' = 'Enter the vault master password.'
+    'credential-bundle-passphrase' = 'Enter the passphrase for the encrypted SSH credential bundle.'
 }
 $message = $purposeMessages[$Purpose]
 $contextText = ($Context -replace '[\x00-\x1f\x7f]', ' ').Trim()

@@ -6763,6 +6763,152 @@ test('local shell tool visibility persists and controls command palette entries 
   }
 });
 
+test('encrypted SSH credential bundles restore saved passwords across Windows app profiles', async () => {
+  test.skip(process.platform !== 'win32', 'Credential bundle acceptance runs on Windows');
+  test.setTimeout(120_000);
+  const root = await mkdtemp(join(tmpdir(), 'mrt-ssh-credential-bundle-e2e-'));
+  const sourceProfile = join(root, 'source');
+  const targetProfile = join(root, 'target');
+  const folderBundlePath = join(root, 'ssh-session.mrt-session-folder.json');
+  const credentialBundlePath = join(root, 'ssh-credentials.mrtcred');
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  let acceptedPasswords = 0;
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') {
+        acceptedPasswords += 1;
+        context.accept();
+      } else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-CREDENTIAL-BUNDLE-RESTORED\r\n'));
+    }));
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await mkdir(sourceProfile);
+    await mkdir(targetProfile);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The credential bundle SSH fixture did not bind a TCP address');
+    const launch = (profile: string) => electron.launch({
+      args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials', '--mrt-e2e-master-password'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' }
+    });
+
+    app = await launch(sourceProfile);
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connectDialog.getByLabel('Port').fill(String(address.port));
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    let trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog, `SSH fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    let sshTab = page.getByRole('tab').filter({ hasText: `127.0.0.1:${address.port} - SSH` }).last();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    let panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The SSH fixture session has no terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Bundle SSH');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open Bundle SSH', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Actions for saved session Bundle SSH' }).click();
+    await page.getByRole('button', { name: 'Save password…', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
+
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    const folderDialog = page.getByRole('dialog', { name: 'Create folder' });
+    await folderDialog.getByLabel('Folder name').fill('Credential transfer');
+    await folderDialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for saved session Bundle SSH' }).click();
+    await page.getByRole('button', { name: 'Move saved session Bundle SSH', exact: true }).click();
+    const moveDialog = page.getByRole('dialog', { name: 'Move Bundle SSH' });
+    await moveDialog.getByLabel('Move to').selectOption({ label: 'Credential transfer' });
+    await moveDialog.getByRole('button', { name: 'Move', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Collapse folder Credential transfer', exact: true })).toBeVisible();
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: async () => ({ canceled: false, filePath }) });
+    }, folderBundlePath);
+    await page.getByRole('button', { name: 'Actions for folder Credential transfer' }).click();
+    await page.getByRole('button', { name: 'Export folder Credential transfer', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
+
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: async () => ({ canceled: false, filePath }) });
+    }, credentialBundlePath);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await settings.getByRole('button', { name: 'Export encrypted SSH passwords…', exact: true }).click();
+    await expect(settings.getByText('Encrypted bundle exported with 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    const encryptedBundle = await readFile(credentialBundlePath, 'utf8');
+    expect(encryptedBundle).not.toContain('sftp-e2e-secret');
+    expect(encryptedBundle).not.toContain('mrt-e2e-user');
+    expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
+    await app.close();
+    app = undefined;
+
+    app = await launch(targetProfile);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, folderBundlePath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1 saved session');
+    await expect(page.getByRole('button', { name: 'Collapse folder Credential transfer', exact: true })).toBeVisible();
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, credentialBundlePath);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await settings.getByRole('button', { name: 'Import encrypted SSH passwords…', exact: true }).click();
+    await expect(settings.getByText('Imported 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
+
+    await page.getByRole('button', { name: 'Open Bundle SSH', exact: true }).click();
+    trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    sshTab = page.getByRole('tab', { name: 'Bundle SSH', exact: true });
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The imported SSH profile has no terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
+    await expect.poll(() => acceptedPasswords, { timeout: 10_000 }).toBe(2);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(0);
+  } finally {
+    for (const client of clients) client.end();
+    await app?.close();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('settings profile templates round-trip between Windows app profiles and require an explicit save', async () => {
   test.skip(process.platform !== 'win32', 'Settings profile template acceptance runs on Windows');
   test.setTimeout(90_000);

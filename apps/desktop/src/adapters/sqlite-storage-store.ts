@@ -9,6 +9,8 @@ import type { MacroCatalogStore } from '../../../../packages/application/src/mac
 import type { WorkbenchPreferencesStore, WorkbenchSettingsTemplateStore } from '../../../../packages/application/src/workbench-preferences.ts';
 import { StorageOperationError } from '../../../../packages/application/src/storage-errors.ts';
 import type { SshTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SshCredentialBundleStore, SshCredentialBundleProfile, ImportedSshCredentialReference } from '../../../../packages/application/src/ssh-credential-bundle.ts';
+import { MAX_SSH_CREDENTIAL_BUNDLE_BYTES } from '../../../../packages/application/src/ssh-credential-bundle.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
@@ -86,7 +88,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
   : never;
 
 export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, WorkbenchPreferencesStore,
-  WorkbenchSettingsTemplateStore, SshTunnelCatalog, SavedSessionReader {
+  WorkbenchSettingsTemplateStore, SshTunnelCatalog, SavedSessionReader, SshCredentialBundleStore {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -155,6 +157,36 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     const result = await this.worker.request({ command: 'session.credential.set', id, reference, expectedReference }, cancellation);
     if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
     return result.value;
+  }
+
+  async listSshCredentials(cancellation?: CancellationSignal): Promise<readonly SshCredentialBundleProfile[]> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.credential.list' }, cancellation);
+    if (result.kind !== 'sshCredentialReferences') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async attachImportedSshCredentials(credentials: readonly ImportedSshCredentialReference[], cancellation?: CancellationSignal): Promise<boolean> {
+    await this.ensureMigrated(cancellation);
+    const result = await this.worker.request({ command: 'session.credential.attach-imported', credentials }, cancellation);
+    if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async readEncryptedSshCredentialBundle(path: string, cancellation?: CancellationSignal): Promise<Uint8Array> {
+    if (!isFilePath(path)) throw new StorageOperationError('invalid');
+    const result = await this.worker.request({ command: 'credential.bundle.read', path }, cancellation);
+    if (result.kind !== 'encryptedCredentialBundle') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async writeEncryptedSshCredentialBundle(path: string, contents: Uint8Array, cancellation?: CancellationSignal): Promise<void> {
+    if (!isFilePath(path) || !(contents instanceof Uint8Array) || contents.byteLength === 0 || contents.byteLength > MAX_SSH_CREDENTIAL_BUNDLE_BYTES) {
+      throw new StorageOperationError('invalid');
+    }
+    const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+    const result = await this.worker.request({ command: 'credential.bundle.write', path, temporaryPath, contents }, cancellation);
+    if (result.kind !== 'encryptedCredentialBundleWrite') throw new StorageOperationError('corrupt');
   }
 
   async clearAllSessionCredentialReferences(cancellation?: CancellationSignal): Promise<void> {
@@ -472,7 +504,8 @@ class StorageWorkerClient {
         };
         const timeoutMs = request.command === 'hostTrust.importLegacy' ? 15_000 :
           request.command === 'session.folder.import' || request.command === 'session.folder.export' ||
-          request.command === 'preferences.template.import' || request.command === 'preferences.template.export' ? 60_000 : REQUEST_TIMEOUT_MS;
+          request.command === 'preferences.template.import' || request.command === 'preferences.template.export' ||
+          request.command === 'credential.bundle.read' || request.command === 'credential.bundle.write' ? 60_000 : REQUEST_TIMEOUT_MS;
         const timer = setTimeout(() => {
           const pending = this.pending.get(requestId);
           if (!pending) return;
@@ -483,7 +516,7 @@ class StorageWorkerClient {
         const pending: PendingRequest = {
           resolve, reject, timer,
           ...(cancellation ? { cancellation } : {}),
-          ...(command.command === 'session.folder.export' || command.command === 'preferences.template.export'
+          ...(command.command === 'session.folder.export' || command.command === 'preferences.template.export' || command.command === 'credential.bundle.write'
             ? { temporaryPath: command.temporaryPath } : {})
         };
         this.pending.set(requestId, pending);

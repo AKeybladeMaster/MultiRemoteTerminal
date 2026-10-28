@@ -159,7 +159,7 @@ test('real Windows helper accepts contextual SSH and context-free FTP prompt req
     const harness = [
       'function global:Get-Credential {',
       '  param([string]$Message)',
-      "  $expectedMessages = @{ 'ssh-password' = 'Enter the SSH account credential.'; 'ssh-key-passphrase' = 'Unlock the selected SSH private key.'; 'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'; 'ftp-account' = 'Enter the FTP account credential.'; 'master-password' = 'Enter the vault master password.' }",
+      "  $expectedMessages = @{ 'ssh-password' = 'Enter the SSH account credential.'; 'ssh-key-passphrase' = 'Unlock the selected SSH private key.'; 'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'; 'ftp-account' = 'Enter the FTP account credential.'; 'master-password' = 'Enter the vault master password.'; 'credential-bundle-passphrase' = 'Enter the passphrase for the encrypted SSH credential bundle.' }",
       '  $expectedMessage = $expectedMessages[$env:MRT_TEST_HELPER_PURPOSE]',
       '  if (-not [string]::IsNullOrEmpty($env:MRT_TEST_HELPER_CONTEXT)) { $expectedMessage = "$expectedMessage`r`n`r`n$env:MRT_TEST_HELPER_CONTEXT" }',
       "  if ($Message -ne $expectedMessage) { throw 'Credential prompt message mismatch' }",
@@ -190,6 +190,14 @@ test('real Windows helper accepts contextual SSH and context-free FTP prompt req
   });
 
   assert.deepEqual(await prompt.prompt('ssh-password', undefined, 'SSH destination: 127.0.0.1:2222'), {
+    kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
+  });
+  assert.deepEqual(JSON.parse(helperOutput), {
+    kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
+  });
+
+  helperOutput = '';
+  assert.deepEqual(await prompt.prompt('credential-bundle-passphrase', undefined, 'Enter a strong, unique passphrase to protect this credential bundle.'), {
     kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
   });
   assert.deepEqual(JSON.parse(helperOutput), {

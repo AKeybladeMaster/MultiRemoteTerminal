@@ -7,7 +7,7 @@ import type { CredentialPrompt, CredentialPromptCancellation, CredentialPromptPu
 const MAX_HELPER_OUTPUT_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const PROMPT_PURPOSES: ReadonlySet<string> = new Set([
-  'ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'master-password'
+  'ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'master-password', 'credential-bundle-passphrase'
 ]);
 const CANCELLED: CredentialPromptResult = Object.freeze({ kind: 'cancelled' });
 const UNAVAILABLE: CredentialPromptResult = Object.freeze({ kind: 'unavailable' });

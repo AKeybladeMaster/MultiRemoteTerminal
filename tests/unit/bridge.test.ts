@@ -27,6 +27,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
+    'exportSshCredentialBundle', 'importSshCredentialBundle',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
     'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
@@ -60,6 +61,20 @@ test('preload exposes a path-free custom logo picker command', async () => {
     return { requestId: id(), ok: true, result: { dataUrl } };
   }, id);
   assert.deepEqual(await bridge.selectCustomLogo(), { requestId: id(), ok: true, result: { dataUrl } });
+});
+
+test('preload exposes path-free encrypted credential bundle commands', async () => {
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return { requestId: request.requestId, ok: true, result: { credentialCount: 2 } };
+  }, id);
+  assert.deepEqual(await bridge.exportSshCredentialBundle(), { requestId: id(), ok: true, result: { credentialCount: 2 } });
+  assert.deepEqual(await bridge.importSshCredentialBundle(), { requestId: id(), ok: true, result: { credentialCount: 2 } });
+  assert.deepEqual(seen, [
+    { command: 'credential.bundle.export', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'credential.bundle.import', requestId: id(), contractVersion: 1, payload: {} }
+  ]);
 });
 
 test('preload routes tunnel manager requests and validates runtime status events', async () => {

@@ -18,6 +18,8 @@ import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts'
 import { isSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
+import type { ImportedSshCredentialReference, SshCredentialBundleProfile } from '../../../../packages/application/src/ssh-credential-bundle.ts';
+import { MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES } from '../../../../packages/application/src/ssh-credential-bundle.ts';
 
 interface SavedSessionRow {
   readonly id: unknown;
@@ -31,6 +33,12 @@ interface SavedSessionRow {
   readonly created_at: unknown;
   readonly updated_at: unknown;
 }
+
+interface SavedSshCredentialRow extends SavedSessionRow {
+  readonly credential_ref: unknown;
+}
+
+class CredentialAttachConflict extends Error {}
 
 interface SessionFolderRow {
   readonly id: unknown;
@@ -60,7 +68,9 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
   private readonly listSubtreeSessions: StatementSync;
   private readonly findSession: StatementSync;
   private readonly findSessionCredentialReference: StatementSync;
+  private readonly listSshCredentialReferences: StatementSync;
   private readonly updateSessionCredentialReference: StatementSync;
+  private readonly attachImportedSshCredential: StatementSync;
   private readonly clearAllSessionCredentialReferencesStatement: StatementSync;
   private readonly findSameSession: StatementSync;
   private readonly touchSession: StatementSync;
@@ -122,7 +132,16 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
     `);
     this.findSession = database.prepare('SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at FROM session_definitions WHERE id = ?');
     this.findSessionCredentialReference = database.prepare("SELECT credential_ref FROM session_definitions WHERE id = ? AND kind = 'ssh' AND options_json = '{}'");
+    this.listSshCredentialReferences = database.prepare(`
+      SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at, credential_ref
+      FROM session_definitions WHERE kind = 'ssh' AND options_json = '{}' AND credential_ref IS NOT NULL
+      ORDER BY id ASC LIMIT ${MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES + 1}
+    `);
     this.updateSessionCredentialReference = database.prepare("UPDATE session_definitions SET credential_ref = ?, updated_at = ? WHERE id = ? AND kind = 'ssh' AND options_json = '{}' AND credential_ref IS ?");
+    this.attachImportedSshCredential = database.prepare(`
+      UPDATE session_definitions SET credential_ref = ?, updated_at = ?
+      WHERE id = ? AND kind = 'ssh' AND options_json = '{}' AND host = ? AND port = ? AND credential_ref IS NULL
+    `);
     this.clearAllSessionCredentialReferencesStatement = database.prepare("UPDATE session_definitions SET credential_ref = NULL WHERE credential_ref IS NOT NULL");
     this.findSameSession = database.prepare(`
       SELECT id, folder_id, kind, name, host, port, options_json, favorite, created_at, updated_at
@@ -171,6 +190,47 @@ export class SqliteSessionCatalogRepository implements SessionCatalogStore {
       if (!reference) throw new StorageOperationError('corrupt');
       return reference;
     } catch (error) { throw mapStorageError(error); }
+  }
+
+  async listSshCredentials(): Promise<readonly SshCredentialBundleProfile[]> {
+    try {
+      const rows = this.listSshCredentialReferences.all() as unknown as SavedSshCredentialRow[];
+      if (rows.length > MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES) throw new StorageOperationError('invalid');
+      return rows.map(row => {
+        const profile = decodeSessionRow(row);
+        const reference = parseCredentialReference(row.credential_ref);
+        if (profile.kind !== 'ssh' || !reference) throw new StorageOperationError('corrupt');
+        return { profile, reference };
+      });
+    } catch (error) { throw mapStorageError(error); }
+  }
+
+  async attachImportedSshCredentials(credentials: readonly ImportedSshCredentialReference[]): Promise<boolean> {
+    try {
+      if (credentials.length === 0 || credentials.length > MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES) throw new StorageOperationError('invalid');
+      const sessionIds = new Set<string>();
+      const references = new Set<string>();
+      for (const credential of credentials) {
+        const endpoint = canonicalizeSshHostEndpoint({ host: credential.host, port: credential.port });
+        if (!isSessionDefinitionId(credential.sessionId) || !parseCredentialReference(credential.reference) || !endpoint ||
+            endpoint.host !== credential.host || endpoint.port !== credential.port || sessionIds.has(credential.sessionId) || references.has(credential.reference)) {
+          throw new StorageOperationError('invalid');
+        }
+        sessionIds.add(credential.sessionId);
+        references.add(credential.reference);
+      }
+      return this.inTransaction(() => {
+        const updatedAt = new Date().toISOString();
+        for (const credential of credentials) {
+          const result = this.attachImportedSshCredential.run(credential.reference, updatedAt, credential.sessionId, credential.host, credential.port);
+          if (Number(result.changes) !== 1) throw new CredentialAttachConflict();
+        }
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof CredentialAttachConflict) return false;
+      throw mapStorageError(error);
+    }
   }
 
   async setSessionCredentialReference(id: string, reference: CredentialReference | null, expectedReference: CredentialReference | null): Promise<boolean> {

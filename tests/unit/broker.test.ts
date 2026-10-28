@@ -91,6 +91,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async saveSshCredential() { return { ok: true, result: {} } as const; },
     async forgetSshCredential() { return { ok: true, result: {} } as const; },
     async resolveSshCredential() { return { ok: true, result: undefined } as const; }
+  }, credentialBundles: {
+    async export() { return { ok: true, result: { credentialCount: 1 } } as const; },
+    async import() { return { ok: true, result: { credentialCount: 1 } } as const; }
   }, macros: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptyMacro }),
@@ -113,6 +116,21 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     exportTemplate: async () => ({ ok: true, result: { bytesSaved: 128 } }),
     importTemplate: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES })
   }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
+});
+
+test('encrypted credential bundle broker commands accept no renderer path or secret', async () => {
+  const requests = [
+    { command: 'credential.bundle.export', requestId: request.requestId, contractVersion: 1, payload: {} },
+    { command: 'credential.bundle.import', requestId: request.requestId, contractVersion: 1, payload: {} }
+  ];
+  for (const input of requests) {
+    assert.deepEqual(await dispatchCommand(owner, input, actions(), () => {}), {
+      requestId: request.requestId, ok: true, result: { credentialCount: 1 }
+    });
+  }
+  const rejected = await dispatchCommand(owner, { ...requests[0], payload: { path: 'C:\\outside.mrtcred' } }, actions(), () => {});
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.error.code, 'INVALID_REQUEST');
 });
 
 test('PowerShell profile application requires the trusted main-process gesture before using a saved preview', async () => {
