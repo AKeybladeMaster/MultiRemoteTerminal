@@ -353,6 +353,44 @@ test('SSH authentication failure is categorized and closes the transport', async
   assert.equal(client.ended, true);
 });
 
+test('SSH transport errors expose only allowlisted network failure categories', async () => {
+  const cases = [
+    ['ENOTFOUND', 'DNS_LOOKUP_FAILED'],
+    ['EAI_AGAIN', 'DNS_TEMPORARY_FAILURE'],
+    ['ECONNREFUSED', 'CONNECTION_REFUSED'],
+    ['ECONNRESET', 'CONNECTION_RESET'],
+    ['ETIMEDOUT', 'CONNECTION_TIMEOUT'],
+    ['ENETUNREACH', 'NETWORK_UNREACHABLE'],
+    ['EHOSTUNREACH', 'HOST_UNREACHABLE'],
+    ['EADDRNOTAVAIL', 'LOCAL_ADDRESS_UNAVAILABLE']
+  ] as const;
+
+  for (const [systemCode, expectedCategory] of cases) {
+    const client = new FakeClient();
+    const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+    const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, size, async () => true);
+    client.emit('error', Object.assign(new Error('private raw socket error for internal-host'), { code: systemCode }));
+    await assert.rejects(opened, error => {
+      assert.equal((error as { code?: string }).code, systemCode === 'ETIMEDOUT' ? 'TIMEOUT' : 'UNAVAILABLE');
+      assert.equal((error as { networkFailure?: string }).networkFailure, expectedCategory);
+      assert.equal((error as Error).message, 'SSH terminal operation failed');
+      assert.equal(JSON.stringify(error).includes(systemCode), false);
+      assert.equal(JSON.stringify(error).includes('private raw socket error for internal-host'), false);
+      return true;
+    });
+  }
+
+  const client = new FakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, size, async () => true);
+  client.emit('error', Object.assign(new Error('internal failure'), { code: 'ERR_SSH_PROTOCOL' }));
+  await assert.rejects(opened, error => {
+    assert.equal((error as { code?: string }).code, 'UNAVAILABLE');
+    assert.equal((error as { networkFailure?: string }).networkFailure, undefined);
+    return true;
+  });
+});
+
 test('standalone SFTP authenticates without requesting a shell and lists files over the same transport', async () => {
   const sftp = new FakeSftp([]);
   const client = new FakeClient(sftp);

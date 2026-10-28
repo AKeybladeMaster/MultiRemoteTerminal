@@ -46,11 +46,13 @@ test('SSH session log rejects duplicate live session IDs and finalizes an attemp
     assert.equal(started.ok, true);
     const duplicate = await writer.start(sessionId, join(directory, 'duplicate.log'), [{ host: 'other.internal', port: 22 }]);
     assert.equal(duplicate.ok, false);
+    writer.append({ type: 'transport', sessionId, outcome: 'failed', code: 'UNAVAILABLE', networkFailure: 'DNS_LOOKUP_FAILED' });
     writer.append({ type: 'connection-failed', sessionId, phase: 'credential-prompt', code: 'TIMEOUT' });
     await writer.finish(sessionId, 'connection-failed');
     const contents = await readFile(join(directory, 'failed.log'), 'utf8');
     assert.match(contents, /"phase":"credential-prompt"/u);
     assert.match(contents, /"type":"connection-failed"/u);
+    assert.match(contents, /"networkFailure":"DNS_LOOKUP_FAILED"/u);
   } finally {
     await writer.closeAll();
     await rm(directory, { recursive: true, force: true });

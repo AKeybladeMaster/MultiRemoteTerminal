@@ -1,5 +1,12 @@
 export type SshCredentialPromptCategory = 'password' | 'key-passphrase' | 'agent-username';
 export type SshSessionLogFailurePhase = 'preflight' | 'credential-prompt' | 'host-trust' | 'authentication' | 'transport';
+export const SSH_TRANSPORT_NETWORK_FAILURES = ['DNS_LOOKUP_FAILED', 'DNS_TEMPORARY_FAILURE', 'CONNECTION_REFUSED', 'CONNECTION_RESET',
+  'CONNECTION_TIMEOUT', 'NETWORK_UNREACHABLE', 'HOST_UNREACHABLE', 'LOCAL_ADDRESS_UNAVAILABLE'] as const;
+export type SshTransportNetworkFailure = typeof SSH_TRANSPORT_NETWORK_FAILURES[number];
+
+export function isSshTransportNetworkFailure(value: unknown): value is SshTransportNetworkFailure {
+  return typeof value === 'string' && SSH_TRANSPORT_NETWORK_FAILURES.includes(value as SshTransportNetworkFailure);
+}
 
 export type SshSessionActivity =
   | { readonly type: 'credential-prompt-started'; readonly sessionId: string; readonly category: SshCredentialPromptCategory }
@@ -7,7 +14,8 @@ export type SshSessionActivity =
       readonly outcome: 'provided' | 'cancelled' | 'unavailable' | 'timeout' }
   | { readonly type: 'host-trust'; readonly sessionId: string; readonly host: string; readonly port: number;
       readonly outcome: 'trusted' | 'approved' | 'rejected' | 'changed' | 'expired' | 'unavailable' }
-  | { readonly type: 'transport'; readonly sessionId: string; readonly outcome: 'started' | 'ready' | 'failed'; readonly code?: string }
+  | { readonly type: 'transport'; readonly sessionId: string; readonly outcome: 'started' | 'ready' | 'failed'; readonly code?: string;
+      readonly networkFailure?: SshTransportNetworkFailure }
   | { readonly type: 'terminal-input'; readonly sessionId: string; readonly data: string }
   | { readonly type: 'terminal-output'; readonly sessionId: string; readonly sequence: number; readonly data: string }
   | { readonly type: 'terminal-resize'; readonly sessionId: string; readonly columns: number; readonly rows: number }

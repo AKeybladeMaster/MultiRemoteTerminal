@@ -351,9 +351,10 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
       clearTimeout(pending.cleanupTimer);
       this.pending.delete(message.requestId);
       pending.cleanup();
-      if (!message.ok) pending.reject(new SshTerminalProviderError(pending.timedOut && message.errorCode === 'CANCELLED'
-        ? 'TIMEOUT' : providerErrorCode(message.errorCode)));
-      else pending.resolve(message.result);
+      if (!message.ok) {
+        const code = pending.timedOut && message.errorCode === 'CANCELLED' ? 'TIMEOUT' : providerErrorCode(message.errorCode);
+        pending.reject(new SshTerminalProviderError(code, code === message.errorCode ? message.networkFailure : undefined));
+      } else pending.resolve(message.result);
       return;
     }
     if (message.type === 'host-key') { this.verifyHostKey(worker, message.sessionId, message.checkId, message.endpoint, message.evidence); return; }

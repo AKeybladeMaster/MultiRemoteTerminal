@@ -15,7 +15,7 @@ import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferRes
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
 import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../domain/src/remote-text-file.ts';
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../domain/src/remote-text-file.ts';
-import type { SshCredentialPromptCategory, SshSessionActivity, SshSessionLogFailurePhase } from './ssh-session-activity.ts';
+import type { SshCredentialPromptCategory, SshSessionActivity, SshSessionLogFailurePhase, SshTransportNetworkFailure } from './ssh-session-activity.ts';
 
 export interface SshTerminalCredentials {
   username: string;
@@ -57,11 +57,13 @@ export type SshTerminalProviderErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | '
 
 export class SshTerminalProviderError extends Error {
   readonly code: SshTerminalProviderErrorCode;
+  readonly networkFailure?: SshTransportNetworkFailure;
 
-  constructor(code: SshTerminalProviderErrorCode) {
+  constructor(code: SshTerminalProviderErrorCode, networkFailure?: SshTransportNetworkFailure) {
     super('SSH terminal operation failed');
     this.name = 'SshTerminalProviderError';
     this.code = code;
+    if (networkFailure) this.networkFailure = networkFailure;
   }
 }
 
@@ -452,9 +454,11 @@ export function createSshTerminalController(
       if (sessions.get(sessionId) === session) await provider.close(sessionId).catch(() => undefined);
       for (const token of trustTokensBySession.get(sessionId) ?? []) hostTrust.reject(token);
       const providerCode = error instanceof SshTerminalProviderError ? error.code : undefined;
+      const networkFailure = error instanceof SshTerminalProviderError ? error.networkFailure : undefined;
       if (providerCode === 'AUTHENTICATION_FAILED') session.failurePhase = 'authentication';
       if (session.failurePhase === 'transport' || session.failurePhase === 'authentication') {
-        publishActivity({ type: 'transport', sessionId, outcome: 'failed', ...(providerCode ? { code: providerCode } : {}) });
+        publishActivity({ type: 'transport', sessionId, outcome: 'failed', ...(providerCode ? { code: providerCode } : {}),
+          ...(networkFailure ? { networkFailure } : {}) });
       }
       return failOpen(session, session.cancellation.token.aborted ? 'CANCELLED' : session.failureCode ?? providerCode ?? 'UNAVAILABLE');
     } finally {

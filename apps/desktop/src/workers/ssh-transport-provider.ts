@@ -6,6 +6,7 @@ import type { Server, Socket } from 'node:net';
 import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
+import type { SshTransportNetworkFailure } from '../../../../packages/application/src/ssh-session-activity.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
@@ -141,6 +142,7 @@ interface RuntimeSession {
   readonly outputBytesBySequence: Map<number, number>;
   outputPaused: boolean;
   failureCode?: 'AUTHENTICATION_FAILED' | 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED' | 'TIMEOUT' | 'UNAVAILABLE';
+  networkFailure?: SshTransportNetworkFailure;
   clearAuthenticationSecrets: () => void;
   openTimer: ReturnType<typeof setTimeout> | undefined;
   resolveOpen: (() => void) | undefined;
@@ -439,7 +441,7 @@ export function createSshTransportProvider(
     }
     if (session.opening) {
       session.opening = false;
-      session.rejectOpen?.(new SshTerminalProviderError(session.failureCode ?? 'UNAVAILABLE'));
+      session.rejectOpen?.(new SshTerminalProviderError(session.failureCode ?? 'UNAVAILABLE', session.networkFailure));
       session.resolveOpen = undefined;
       session.rejectOpen = undefined;
     }
@@ -458,20 +460,35 @@ export function createSshTransportProvider(
     publish({ kind: 'exit', sessionId: session.sessionId, exitCode: session.exitCode });
   }
 
-  function classifyClientError(error: Error & { readonly level?: string; readonly code?: string }): NonNullable<RuntimeSession['failureCode']> {
-    if (error.level === 'client-authentication') return 'AUTHENTICATION_FAILED';
-    if (error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') return 'TIMEOUT';
-    return 'UNAVAILABLE';
+  function classifyClientError(error: Error & { readonly level?: string; readonly code?: string }): {
+    readonly code: NonNullable<RuntimeSession['failureCode']>;
+    readonly networkFailure?: SshTransportNetworkFailure;
+  } {
+    if (error.level === 'client-authentication') return { code: 'AUTHENTICATION_FAILED' };
+    switch (error.code) {
+      case 'ETIMEDOUT': case 'ESOCKETTIMEDOUT': return { code: 'TIMEOUT', networkFailure: 'CONNECTION_TIMEOUT' };
+      case 'ENOTFOUND': case 'EAI_NONAME': case 'EAI_FAIL': case 'EAI_NODATA':
+        return { code: 'UNAVAILABLE', networkFailure: 'DNS_LOOKUP_FAILED' };
+      case 'EAI_AGAIN': return { code: 'UNAVAILABLE', networkFailure: 'DNS_TEMPORARY_FAILURE' };
+      case 'ECONNREFUSED': return { code: 'UNAVAILABLE', networkFailure: 'CONNECTION_REFUSED' };
+      case 'ECONNRESET': return { code: 'UNAVAILABLE', networkFailure: 'CONNECTION_RESET' };
+      case 'ENETUNREACH': return { code: 'UNAVAILABLE', networkFailure: 'NETWORK_UNREACHABLE' };
+      case 'EHOSTUNREACH': return { code: 'UNAVAILABLE', networkFailure: 'HOST_UNREACHABLE' };
+      case 'EADDRNOTAVAIL': return { code: 'UNAVAILABLE', networkFailure: 'LOCAL_ADDRESS_UNAVAILABLE' };
+      default: return { code: 'UNAVAILABLE' };
+    }
   }
 
-  function fail(session: RuntimeSession, code: NonNullable<RuntimeSession['failureCode']>): void {
+  function fail(session: RuntimeSession, code: NonNullable<RuntimeSession['failureCode']>,
+    networkFailure?: SshTransportNetworkFailure): void {
     if (session.closing) return;
     const failureCode = session.failureCode ?? code;
     session.failureCode = failureCode;
+    if (failureCode === code && networkFailure) session.networkFailure ??= networkFailure;
     if (session.opening) {
       session.opening = false;
       clearTimeout(session.openTimer);
-      session.rejectOpen?.(new SshTerminalProviderError(failureCode));
+      session.rejectOpen?.(new SshTerminalProviderError(failureCode, session.networkFailure));
       session.resolveOpen = undefined;
       session.rejectOpen = undefined;
     } else emitFailure(session, failureCode);
@@ -562,7 +579,10 @@ export function createSshTransportProvider(
     };
 
     function addClient(client: Client, isDestination: boolean): void {
-      client.on('error', error => fail(session, classifyClientError(error)));
+      client.on('error', error => {
+        const failure = classifyClientError(error);
+        fail(session, failure.code, failure.networkFailure);
+      });
       client.on('timeout', () => fail(session, 'TIMEOUT'));
       client.on('close', () => {
         if (session.closing) return;
@@ -633,8 +653,11 @@ export function createSshTransportProvider(
           session.clearAuthenticationSecrets();
           finish(session.closing ? new SshTerminalProviderError('CANCELLED') : undefined);
         };
-        const onError = (error: Error): void => finish(new SshTerminalProviderError(classifyClientError(error)));
-        const onClose = (): void => finish(new SshTerminalProviderError(session.failureCode ?? 'UNAVAILABLE'));
+        const onError = (error: Error): void => {
+          const failure = classifyClientError(error);
+          finish(new SshTerminalProviderError(failure.code, failure.networkFailure));
+        };
+        const onClose = (): void => finish(new SshTerminalProviderError(session.failureCode ?? 'UNAVAILABLE', session.networkFailure));
         client.once('ready', onReady);
         client.once('error', onError);
         client.once('close', onClose);

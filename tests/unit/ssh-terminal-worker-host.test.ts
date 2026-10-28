@@ -24,6 +24,18 @@ class FakeUtilityProcess extends EventEmitter {
   }
 }
 
+class CategorizedOpenFailureUtilityProcess extends FakeUtilityProcess {
+  override postMessage(input: unknown): void {
+    const request = input as Record<string, unknown>;
+    this.requests.push(request);
+    const failedOpen = request.command === 'open';
+    queueMicrotask(() => this.emit('message', {
+      version: 1, type: 'reply', requestId: request.requestId, ok: !failedOpen,
+      ...(failedOpen ? { errorCode: 'UNAVAILABLE', networkFailure: 'HOST_UNREACHABLE' } : { result: {} })
+    }));
+  }
+}
+
 class CancellationUtilityProcess extends FakeUtilityProcess {
   private listRequest: Record<string, unknown> | undefined;
 
@@ -145,6 +157,22 @@ test('worker host consumes the raw message payload emitted by Electron utilityPr
   assert.equal(worker.requests[0]?.command, 'open');
   await host.shutdown();
   assert.equal(worker.requests.at(-1)?.command, 'shutdown');
+  assert.equal(worker.killed, true);
+});
+
+test('worker host preserves only the validated network failure category on an SSH open error', async () => {
+  const worker = new CategorizedOpenFailureUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+
+  await assert.rejects(host.open(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' },
+    { columns: 80, rows: 24 }, async () => true), error => {
+      assert.equal((error as { code?: string }).code, 'UNAVAILABLE');
+      assert.equal((error as { networkFailure?: string }).networkFailure, 'HOST_UNREACHABLE');
+      assert.equal((error as Error).message, 'SSH terminal operation failed');
+      return true;
+    });
+  await host.shutdown();
   assert.equal(worker.killed, true);
 });
 

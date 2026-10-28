@@ -85,6 +85,7 @@ class FakeProvider implements SshTerminalProvider {
   readonly closed: string[] = [];
   readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   readonly listedDirectories: Array<{ readonly sessionId: string; readonly path: string; readonly cancellation?: CancellationSignal }> = [];
+  openError: Error | undefined;
   waitForDirectoryCancellation = false;
   directoryError: Error | undefined;
   directoryListStarted: (() => void) | undefined;
@@ -105,6 +106,7 @@ class FakeProvider implements SshTerminalProvider {
     this.gatewayCredentialRefs.push(...gatewayHops.map(hop => hop.credentials));
     for (const hop of gatewayHops) if (!await verifyHost(hop.endpoint, evidence)) throw new Error('Gateway host verification failed');
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
+    if (this.openError) throw this.openError;
   }
   async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
@@ -587,6 +589,33 @@ test('SSH activity exposes lifecycle and terminal I/O without credential values'
   assert.equal(activity.some(event => event.data === 'id\n'), true);
   assert.equal(activity.some(event => event.data === 'remote output\n'), true);
   const serialized = JSON.stringify(activity);
+  assert.equal(serialized.includes('private-user'), false);
+  assert.equal(serialized.includes('private-password'), false);
+  await controller.dispose();
+});
+
+test('SSH transport activity records only an allowlisted network failure category', async () => {
+  const provider = new FakeProvider();
+  const privateRawMessage = 'getaddrinfo ENOTFOUND internal-host.private.example';
+  provider.openError = Object.assign(new SshTerminalProviderError('UNAVAILABLE'), {
+    message: privateRawMessage,
+    networkFailure: 'DNS_LOOKUP_FAILED'
+  });
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider,
+    promptWith({ kind: 'provided', username: 'private-user', secret: 'private-password' }), trust);
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  controller.subscribeActivity(event => activity.push(event));
+
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(activity.find(event => event.type === 'transport' && event.outcome === 'failed'), {
+    type: 'transport', sessionId, outcome: 'failed', code: 'UNAVAILABLE', networkFailure: 'DNS_LOOKUP_FAILED'
+  });
+  const serialized = JSON.stringify(activity);
+  assert.equal(serialized.includes(privateRawMessage), false);
   assert.equal(serialized.includes('private-user'), false);
   assert.equal(serialized.includes('private-password'), false);
   await controller.dispose();
