@@ -680,6 +680,49 @@ test('local text editor auto-detects INI and colors its bounded lexical subset',
   }
 });
 
+test('local text editor auto-detects XML and keeps the source unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-xml-editor-e2e-');
+  const path = join(profile, 'service.xml');
+  const source = '<?xml version="1.0"?>\n<!-- service -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="xml-declaration"]')).toHaveText('<?xml version="1.0"?>');
+    await expect(editor.locator('[data-token-kind="xml-comment"]')).toHaveText('<!-- service -->');
+    await expect(editor.locator('[data-token-kind="xml-tag"]').first()).toHaveText('server');
+    await expect(editor.locator('[data-token-kind="xml-tag"]').first()).toHaveCSS('color', 'rgb(105, 170, 252)');
+    await expect(editor.locator('[data-token-kind="xml-attribute"]')).toHaveText('host');
+    await expect(editor.locator('[data-token-kind="xml-string"]')).toHaveText('"localhost"');
+    await expect(editor.locator('[data-token-kind="xml-entity"]')).toHaveText('&amp;');
+    await expect(editor.locator('[data-token-kind="xml-cdata"]')).toHaveText('<![CDATA[<literal>]]>');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('xml');
+    await expect(editor.locator('[data-token-kind="xml-tag"]').first()).toHaveText('server');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
@@ -1629,6 +1672,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
     const remoteIniSource = '; app config\n[server]\nhost = "localhost"\nport = 8080\nenabled = yes\n';
     await writeFile(join(remoteRoot, 'remote.ini'), remoteIniSource);
+    const remoteXmlSource = '<?xml version="1.0"?>\n<!-- app config -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
+    await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
     const remoteMarkdownSource = '# Remote guide\n\n> **bold quote**\n- item with `inline` and [guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n' + '**cap**\n'.repeat(4_100);
     await writeFile(join(remoteRoot, 'remote.md'), remoteMarkdownSource);
     const remoteYamlSource = `# app config
@@ -1814,6 +1859,22 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remoteIniEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteIniEditor).toHaveCount(0);
     expect(await readFile(join(remoteRoot, 'remote.ini'), 'utf8')).toBe(remoteIniSource);
+    const remoteXmlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.xml', exact: true });
+    await remoteXmlEdit.click();
+    const remoteXmlEditor = page.getByRole('dialog', { name: 'remote.xml' });
+    await expect(remoteXmlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-declaration"]')).toHaveText('<?xml version="1.0"?>');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-comment"]')).toHaveText('<!-- app config -->');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-tag"]').first()).toHaveText('server');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-attribute"]')).toHaveText('host');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-string"]')).toHaveText('"localhost"');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-entity"]')).toHaveText('&amp;');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-cdata"]')).toHaveText('<![CDATA[<literal>]]>');
+    expect(await remoteXmlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteXmlSource);
+    expect(await remoteXmlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteXmlSource);
+    await remoteXmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteXmlEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.xml'), 'utf8')).toBe(remoteXmlSource);
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });

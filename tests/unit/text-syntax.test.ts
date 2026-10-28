@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML and JSON from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -33,6 +33,10 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'ini');
   }
   assert.equal(resolveTextSyntaxProfile('ini', 'script.sh'), 'ini');
+  for (const fileName of ['service.xml', 'schema.XSD', 'view.xslt', 'icon.svg']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'xml');
+  }
+  assert.equal(resolveTextSyntaxProfile('xml', 'page.html'), 'xml');
   for (const fileName of ['settings.yaml', 'inventory.YML']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'yaml');
   }
@@ -1100,4 +1104,47 @@ test('INI syntax preview stops at shared character and token bounds', () => {
   const manyComments = highlightTextSyntax('; comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'ini');
   assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyComments.isTruncated, true);
+});
+
+test('XML syntax preview colors tags, attributes, quoted values, comments, declarations, CDATA and text entities', () => {
+  const source = '<?xml version="1.0"?>\n<!-- service -->\n<server host="127.0.0.1">service &amp; app<![CDATA[<literal>]]></server>\n';
+  const preview = highlightTextSyntax(source, 'xml');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '<?xml version="1.0"?>', kind: 'xml-declaration' },
+    { text: '<!-- service -->', kind: 'xml-comment' },
+    { text: '<', kind: 'xml-operator' },
+    { text: 'server', kind: 'xml-tag' },
+    { text: 'host', kind: 'xml-attribute' },
+    { text: '=', kind: 'xml-operator' },
+    { text: '"127.0.0.1"', kind: 'xml-string' },
+    { text: '>', kind: 'xml-operator' },
+    { text: '&amp;', kind: 'xml-entity' },
+    { text: '<![CDATA[<literal>]]>', kind: 'xml-cdata' },
+    { text: '</', kind: 'xml-operator' },
+    { text: 'server', kind: 'xml-tag' },
+    { text: '>', kind: 'xml-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+
+  const doctypeSource = '<!DOCTYPE root [<!-- ] > --> <!ELEMENT root (#PCDATA)>]><root value="a > b"/>';
+  const doctype = highlightTextSyntax(doctypeSource, 'xml');
+  assert.equal(doctypeSource.slice(doctype.tokens[0]!.start, doctype.tokens[0]!.end), '<!DOCTYPE root [<!-- ] > --> <!ELEMENT root (#PCDATA)>]>');
+  assert.equal(doctype.tokens[0]!.kind, 'xml-declaration');
+  assert.equal(doctypeSource.slice(doctype.tokens[doctype.tokens.length - 2]!.start, doctype.tokens[doctype.tokens.length - 2]!.end), '"a > b"');
+});
+
+test('XML syntax preview leaves malformed constructs uncolored and respects shared preview bounds', () => {
+  for (const source of ['<open', '<open <nested/>', '<item value="unterminated', '<!-- no end <nested>']) {
+    assert.equal(highlightTextSyntax(source, 'xml').tokens.length, 0);
+  }
+
+  const oversized = highlightTextSyntax(`<item>${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}`, 'xml');
+  assert.equal(oversized.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(oversized.isTruncated, true);
+  assert.ok(oversized.tokens.every(token => token.end <= oversized.highlightedThrough));
+
+  const manyTags = highlightTextSyntax('<x/>'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'xml');
+  assert.equal(manyTags.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyTags.isTruncated, true);
 });

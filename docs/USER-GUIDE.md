@@ -88,14 +88,14 @@ draft. Closing with unsaved changes also asks for confirmation. Binary files,
 invalid UTF-8 and larger files are not opened by the text editor. Saves are
 explicit. The syntax profile automatically recognizes Markdown (`.md`, `.markdown`),
 Shell (`.sh`, `.bash`, `.zsh`, `.ksh`), PowerShell (`.ps1`, `.psm1`, `.psd1`, `.pssc`),
-Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`), INI configuration (`.ini`, `.cfg`) and JSON files; you
+Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`), INI configuration (`.ini`, `.cfg`), XML (`.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`) and JSON files; you
 can choose another profile from **Syntax profile**. Colors are visual hints only:
 the Markdown profile colors common headings, lists, block quotes, code, emphasis
 and direct links; the TOML profile colors common keys, strings, values, comments and
 table headers; the YAML profile colors common keys, scalar values, comments,
 collections and block scalar text; the INI profile colors section headers, keys,
 quoted values, common numbers/booleans and full-line comments. INI inline comments
-and dialect validation are not supported. The editor does not render, validate or execute
+and dialect validation are not supported. The XML profile colors tags, attributes, quoted values, comments, CDATA, declarations and text entity references; it does not resolve entities or validate XML. The editor does not render, validate or execute
 the file. Preview coloring is bounded, while
 the full file remains editable. Autosave is not available. Files with a consistent
 line-ending convention keep it when saved. Mixed line endings use the first

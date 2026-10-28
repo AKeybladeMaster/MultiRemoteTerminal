@@ -7,10 +7,11 @@ const MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_MARKDOWN_INLINE_LOOKAHEAD_STEPS = 256_000;
 const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS = 1_024;
+const MAX_XML_ENTITY_CODE_UNITS = 64;
 const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
 const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -26,6 +27,7 @@ export type TextSyntaxTokenKind =
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
   | 'ini-section' | 'ini-key' | 'ini-string' | 'ini-number' | 'ini-literal' | 'ini-comment' | 'ini-operator'
+  | 'xml-tag' | 'xml-attribute' | 'xml-string' | 'xml-comment' | 'xml-cdata' | 'xml-declaration' | 'xml-entity' | 'xml-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
   | 'markdown-heading' | 'markdown-list' | 'markdown-quote' | 'markdown-rule' | 'markdown-code'
@@ -201,6 +203,7 @@ export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: s
   if (/\.toml$/.test(name)) return 'toml';
   if (/\.(?:yaml|yml)$/.test(name)) return 'yaml';
   if (/\.(?:ini|cfg)$/.test(name)) return 'ini';
+  if (/\.(?:xml|xsd|xsl|xslt|svg)$/.test(name)) return 'xml';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -225,7 +228,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
             : profile === 'toml' ? scanToml(text, limit, tokens)
               : profile === 'yaml' ? scanYaml(text, limit, tokens)
                 : profile === 'ini' ? scanIni(text, limit, tokens)
-                  : scanJson(text, limit, tokens);
+                  : profile === 'xml' ? scanXml(text, limit, tokens)
+                    : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1427,6 +1431,192 @@ function scanIniQuotedValue(text: string, start: number, end: number): number {
     index += 1;
   }
   return start;
+}
+
+function scanXml(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  while (index < limit) {
+    if (text[index] === '<') {
+      if (text.startsWith('<!--', index)) {
+        const close = findXmlSequenceEnd(text, '-->', index + 4, limit);
+        if (close === undefined) return limit;
+        if (!addToken(tokens, index, close + 3, 'xml-comment')) return index;
+        index = close + 3;
+        continue;
+      }
+      if (text.startsWith('<![CDATA[', index)) {
+        const close = findXmlSequenceEnd(text, ']]>', index + 9, limit);
+        if (close === undefined) return limit;
+        if (!addToken(tokens, index, close + 3, 'xml-cdata')) return index;
+        index = close + 3;
+        continue;
+      }
+      if (text.startsWith('<?', index)) {
+        const close = findXmlSequenceEnd(text, '?>', index + 2, limit);
+        if (close === undefined) return limit;
+        if (!addToken(tokens, index, close + 2, 'xml-declaration')) return index;
+        index = close + 2;
+        continue;
+      }
+      if (text.startsWith('<!', index)) {
+        const end = findXmlDeclarationEnd(text, index, limit);
+        if (end === undefined) return limit;
+        if (!addToken(tokens, index, end, 'xml-declaration')) return index;
+        index = end;
+        continue;
+      }
+
+      const nameStart = index + (text[index + 1] === '/' ? 2 : 1);
+      if (nameStart < limit && isXmlNameStart(text[nameStart]!)) {
+        const tagEnd = findXmlTagEnd(text, index, limit);
+        if (tagEnd === undefined) return limit;
+        const stoppedAt = scanXmlTag(text, index, tagEnd, tokens);
+        if (stoppedAt !== undefined) return stoppedAt;
+        index = tagEnd + 1;
+        continue;
+      }
+    }
+
+    if (text[index] === '&') {
+      const end = findXmlEntityReferenceEnd(text, index, limit);
+      if (end !== undefined) {
+        if (!addToken(tokens, index, end, 'xml-entity')) return index;
+        index = end;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function findXmlTagEnd(text: string, start: number, limit: number): number | undefined {
+  let quote: string | undefined;
+  for (let index = start + 1; index < limit; index += 1) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+    } else if (character === '"' || character === '\'') {
+      quote = character;
+    } else if (character === '<') {
+      return undefined;
+    } else if (character === '>') {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function scanXmlTag(text: string, start: number, tagEnd: number, tokens: TextSyntaxToken[]): number | undefined {
+  let index = start + (text[start + 1] === '/' ? 2 : 1);
+  if (!addToken(tokens, start, index, 'xml-operator')) return start;
+  const tagNameEnd = scanXmlName(text, index, tagEnd);
+  if (tagNameEnd === index) return undefined;
+  if (!addToken(tokens, index, tagNameEnd, 'xml-tag')) return index;
+  index = tagNameEnd;
+
+  while (index < tagEnd) {
+    if (isWhitespace(text[index]!)) { index += 1; continue; }
+    if (text[index] === '/' && index + 1 === tagEnd) {
+      if (!addToken(tokens, index, tagEnd + 1, 'xml-operator')) return index;
+      return undefined;
+    }
+    if (text[index] === '=') {
+      if (!addToken(tokens, index, index + 1, 'xml-operator')) return index;
+      index += 1;
+      continue;
+    }
+
+    const attributeEnd = scanXmlName(text, index, tagEnd);
+    if (attributeEnd === index) { index += 1; continue; }
+    if (!addToken(tokens, index, attributeEnd, 'xml-attribute')) return index;
+    index = attributeEnd;
+    while (index < tagEnd && isWhitespace(text[index]!)) index += 1;
+    if (text[index] !== '=') continue;
+    if (!addToken(tokens, index, index + 1, 'xml-operator')) return index;
+    index += 1;
+    while (index < tagEnd && isWhitespace(text[index]!)) index += 1;
+    if (text[index] !== '"' && text[index] !== '\'') continue;
+    const quote = text[index]!;
+    let valueEnd = index + 1;
+    while (valueEnd < tagEnd && text[valueEnd] !== quote) valueEnd += 1;
+    if (valueEnd < tagEnd && !addToken(tokens, index, valueEnd + 1, 'xml-string')) return index;
+    index = valueEnd + 1;
+  }
+
+  if (!addToken(tokens, tagEnd, tagEnd + 1, 'xml-operator')) return tagEnd;
+  return undefined;
+}
+
+function findXmlDeclarationEnd(text: string, start: number, limit: number): number | undefined {
+  let quote: string | undefined;
+  let internalSubsetDepth = 0;
+  for (let index = start + 2; index < limit; index += 1) {
+    const character = text[index]!;
+    if (quote === undefined && text.startsWith('<!--', index)) {
+      const close = findXmlSequenceEnd(text, '-->', index + 4, limit);
+      if (close === undefined) return undefined;
+      index = close + 2;
+    } else if (quote === undefined && text.startsWith('<?', index)) {
+      const close = findXmlSequenceEnd(text, '?>', index + 2, limit);
+      if (close === undefined) return undefined;
+      index = close + 1;
+    } else if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+    } else if (character === '"' || character === '\'') {
+      quote = character;
+    } else if (character === '[') {
+      internalSubsetDepth += 1;
+    } else if (character === ']' && internalSubsetDepth > 0) {
+      internalSubsetDepth -= 1;
+    } else if (character === '>' && internalSubsetDepth === 0) {
+      return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function findXmlSequenceEnd(text: string, sequence: string, start: number, limit: number): number | undefined {
+  for (let index = start; index + sequence.length <= limit; index += 1) {
+    if (text.startsWith(sequence, index)) return index;
+  }
+  return undefined;
+}
+
+function findXmlEntityReferenceEnd(text: string, start: number, limit: number): number | undefined {
+  let index = start + 1;
+  if (text[index] === '#') {
+    index += 1;
+    const hexadecimal = text[index] === 'x' || text[index] === 'X';
+    if (hexadecimal) index += 1;
+    const digitStart = index;
+    while (index < limit && (hexadecimal ? isHexDigit(text[index]!) : isDigit(text[index]!))) index += 1;
+    if (index === digitStart) return undefined;
+  } else {
+    if (index >= limit || !isXmlNameStart(text[index]!)) return undefined;
+    index = scanXmlName(text, index, Math.min(limit, start + MAX_XML_ENTITY_CODE_UNITS));
+  }
+  return index < limit && text[index] === ';' && index + 1 - start <= MAX_XML_ENTITY_CODE_UNITS ? index + 1 : undefined;
+}
+
+function findXmlNameEnd(text: string, start: number, limit: number): number {
+  let index = start;
+  while (index < limit && isXmlNamePart(text[index]!)) index += 1;
+  return index;
+}
+
+function scanXmlName(text: string, start: number, limit: number): number {
+  return start < limit && isXmlNameStart(text[start]!) ? findXmlNameEnd(text, start, limit) : start;
+}
+
+function isXmlNameStart(character: string): boolean {
+  // shortcut: XML names are ASCII-oriented, upgrade when Unicode-name files need precise coloring.
+  return character === '_' || character === ':' ||
+    (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+}
+
+function isXmlNamePart(character: string): boolean {
+  return isXmlNameStart(character) || character === '-' || character === '.' || isDigit(character);
 }
 
 function scanTomlString(text: string, start: number, limit: number): number {
