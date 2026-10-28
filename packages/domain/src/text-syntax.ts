@@ -7,8 +7,10 @@ const MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_MARKDOWN_INLINE_LOOKAHEAD_STEPS = 256_000;
 const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS = 1_024;
+const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
+const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -23,6 +25,7 @@ export type TextSyntaxTokenKind =
   | 'sql-function' | 'sql-keyword' | 'sql-literal' | 'sql-string' | 'sql-comment' | 'sql-number' | 'sql-operator'
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
+  | 'ini-section' | 'ini-key' | 'ini-string' | 'ini-number' | 'ini-literal' | 'ini-comment' | 'ini-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
   | 'markdown-heading' | 'markdown-list' | 'markdown-quote' | 'markdown-rule' | 'markdown-code'
@@ -197,6 +200,7 @@ export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: s
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
   if (/\.(?:yaml|yml)$/.test(name)) return 'yaml';
+  if (/\.(?:ini|cfg)$/.test(name)) return 'ini';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -220,7 +224,8 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
           : profile === 'sql' ? scanSql(text, limit, tokens)
             : profile === 'toml' ? scanToml(text, limit, tokens)
               : profile === 'yaml' ? scanYaml(text, limit, tokens)
-                : scanJson(text, limit, tokens);
+                : profile === 'ini' ? scanIni(text, limit, tokens)
+                  : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1359,6 +1364,69 @@ function scanToml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     lineHasContent = true;
   }
   return limit;
+}
+
+function scanIni(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let lineStart = 0;
+  while (lineStart < limit) {
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && (text[contentStart] === ' ' || text[contentStart] === '\t')) contentStart += 1;
+
+    if (contentStart < lineEnd && (text[contentStart] === ';' || text[contentStart] === '#')) {
+      if (!addToken(tokens, contentStart, lineEnd, 'ini-comment')) return contentStart;
+    } else if (contentStart < lineEnd && text[contentStart] === '[') {
+      let close = contentStart + 1;
+      while (close < lineEnd && text[close] !== ']') close += 1;
+      if (close < lineEnd && close > contentStart + 1) {
+        let trailing = close + 1;
+        while (trailing < lineEnd && (text[trailing] === ' ' || text[trailing] === '\t')) trailing += 1;
+        if (trailing === lineEnd && !addToken(tokens, contentStart, close + 1, 'ini-section')) return contentStart;
+      }
+    } else if (contentStart < lineEnd) {
+      let separator = contentStart;
+      while (separator < lineEnd && text[separator] !== '=' && text[separator] !== ':') separator += 1;
+      if (separator < lineEnd) {
+        let keyEnd = separator;
+        while (keyEnd > contentStart && (text[keyEnd - 1] === ' ' || text[keyEnd - 1] === '\t')) keyEnd -= 1;
+        if (keyEnd > contentStart) {
+          if (!addToken(tokens, contentStart, keyEnd, 'ini-key')) return contentStart;
+          if (!addToken(tokens, separator, separator + 1, 'ini-operator')) return separator;
+
+          let valueStart = separator + 1;
+          while (valueStart < lineEnd && (text[valueStart] === ' ' || text[valueStart] === '\t')) valueStart += 1;
+          let valueEnd = lineEnd;
+          while (valueEnd > valueStart && (text[valueEnd - 1] === ' ' || text[valueEnd - 1] === '\t')) valueEnd -= 1;
+          if (valueStart < valueEnd) {
+            if (text[valueStart] === '"' || text[valueStart] === '\'') {
+              const stringEnd = scanIniQuotedValue(text, valueStart, valueEnd);
+              if (stringEnd === valueEnd && !addToken(tokens, valueStart, stringEnd, 'ini-string')) return valueStart;
+            } else {
+              const value = text.slice(valueStart, valueEnd);
+              const literal = iniLiterals.has(value.toLowerCase());
+              if (literal && !addToken(tokens, valueStart, valueEnd, 'ini-literal')) return valueStart;
+              if (!literal && iniNumberPattern.test(value) && !addToken(tokens, valueStart, valueEnd, 'ini-number')) return valueStart;
+            }
+          }
+        }
+      }
+    }
+
+    if (lineEnd >= limit) break;
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
+  }
+  return limit;
+}
+
+function scanIniQuotedValue(text: string, start: number, end: number): number {
+  const quote = text[start]!;
+  let index = start + 1;
+  while (index < end) {
+    if (text[index] === '\\') { index += index + 1 < end ? 2 : 1; continue; }
+    if (text[index] === quote) return index + 1;
+    index += 1;
+  }
+  return start;
 }
 
 function scanTomlString(text: string, start: number, limit: number): number {

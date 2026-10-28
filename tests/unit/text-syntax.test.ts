@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI and JSON from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -29,6 +29,10 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'sql');
   }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.TOML'), 'toml');
+  for (const fileName of ['settings.ini', 'service.CFG']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'ini');
+  }
+  assert.equal(resolveTextSyntaxProfile('ini', 'script.sh'), 'ini');
   for (const fileName of ['settings.yaml', 'inventory.YML']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'yaml');
   }
@@ -1047,4 +1051,53 @@ test('shell syntax preview keeps malformed expansion scans within a linear allow
   const boundedPreview = medianRuntime(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   assert.ok(boundedPreview <= smaller * 8 + 10,
     `64,000 code units took ${boundedPreview.toFixed(1)}ms after 16,000 took ${smaller.toFixed(1)}ms`);
+});
+
+test('INI syntax preview colors sections, keys, separators, quoted values, literals, numbers and full-line comments', () => {
+  const source = [
+    '; main settings',
+    '[server]',
+    'host.name = "local\\"host"',
+    'port: 8080',
+    'enabled = YES',
+    'timeout = -1.5e2',
+    'malformed line',
+    '[unterminated',
+    'unclosed = "not closed',
+    'path = C:\\app ; inline text stays uncolored'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'ini');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '; main settings', kind: 'ini-comment' },
+    { text: '[server]', kind: 'ini-section' },
+    { text: 'host.name', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: '"local\\"host"', kind: 'ini-string' },
+    { text: 'port', kind: 'ini-key' },
+    { text: ':', kind: 'ini-operator' },
+    { text: '8080', kind: 'ini-number' },
+    { text: 'enabled', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: 'YES', kind: 'ini-literal' },
+    { text: 'timeout', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: '-1.5e2', kind: 'ini-number' },
+    { text: 'unclosed', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: 'path', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+});
+
+test('INI syntax preview stops at shared character and token bounds', () => {
+  const oversized = highlightTextSyntax(`value = "${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}"`, 'ini');
+  assert.equal(oversized.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(oversized.isTruncated, true);
+  assert.ok(oversized.tokens.every(token => token.end <= oversized.highlightedThrough));
+
+  const manyComments = highlightTextSyntax('; comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'ini');
+  assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyComments.isTruncated, true);
 });

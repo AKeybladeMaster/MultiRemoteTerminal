@@ -637,6 +637,49 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
   }
 });
 
+test('local text editor auto-detects INI and colors its bounded lexical subset', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ini-editor-e2e-');
+  const path = join(profile, 'settings.ini');
+  const source = '; service config\n[server]\nhost = "127.0.0.1"\nport = 22\nenabled = true\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(contents).toHaveValue(source);
+    await expect(editor.locator('[data-token-kind="ini-comment"]')).toHaveText('; service config');
+    await expect(editor.locator('[data-token-kind="ini-section"]')).toHaveText('[server]');
+    await expect(editor.locator('[data-token-kind="ini-key"]').first()).toHaveText('host');
+    await expect(editor.locator('[data-token-kind="ini-string"]')).toHaveText('"127.0.0.1"');
+    await expect(editor.locator('[data-token-kind="ini-number"]')).toHaveText('22');
+    await expect(editor.locator('[data-token-kind="ini-literal"]')).toHaveText('true');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('ini');
+    await expect(editor.locator('[data-token-kind="ini-section"]')).toHaveText('[server]');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
@@ -1475,7 +1518,7 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
 
 test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
   test.setTimeout(180_000);
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
+  const profile = await createWorkspaceTempDirectory('mrt-sftp-e2e-profile-');
   const remoteRoot = join(profile, 'remote-files');
   const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
   const hostileOutputPathLiteral = JSON.stringify(hostileOutputPath).replace(/'/gu, '&#39;');
@@ -1584,6 +1627,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
+    const remoteIniSource = '; app config\n[server]\nhost = "localhost"\nport = 8080\nenabled = yes\n';
+    await writeFile(join(remoteRoot, 'remote.ini'), remoteIniSource);
     const remoteMarkdownSource = '# Remote guide\n\n> **bold quote**\n- item with `inline` and [guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n' + '**cap**\n'.repeat(4_100);
     await writeFile(join(remoteRoot, 'remote.md'), remoteMarkdownSource);
     const remoteYamlSource = `# app config
@@ -1755,6 +1800,20 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(remoteTomlEditor.locator('[data-token-kind="toml-number"]').first()).toHaveText('8080');
     await remoteTomlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteTomlEditor).toHaveCount(0);
+    const remoteIniEdit = sftpPanel.getByRole('button', { name: 'Edit remote.ini', exact: true });
+    await remoteIniEdit.click();
+    const remoteIniEditor = page.getByRole('dialog', { name: 'remote.ini' });
+    await expect(remoteIniEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-comment"]')).toHaveText('; app config');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-section"]')).toHaveText('[server]');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-key"]').first()).toHaveText('host');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-string"]')).toHaveText('"localhost"');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-number"]')).toHaveText('8080');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-literal"]')).toHaveText('yes');
+    expect(await remoteIniEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteIniSource);
+    await remoteIniEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteIniEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.ini'), 'utf8')).toBe(remoteIniSource);
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
@@ -1972,10 +2031,13 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(contextualFiles.getByText(/Downloaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
   } finally {
-    for (const client of clients) client.end();
-    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
-    await app?.close();
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    try {
+      for (const client of clients) client.end();
+      if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 });
 

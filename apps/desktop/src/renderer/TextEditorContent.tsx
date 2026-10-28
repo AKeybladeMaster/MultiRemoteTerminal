@@ -43,10 +43,11 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
         <option value="sql">SQL (PostgreSQL style)</option>
         <option value="toml">TOML</option>
         <option value="yaml">YAML</option>
+        <option value="ini">INI configuration</option>
         <option value="json">JSON</option>
       </select>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts, .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
+        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts, .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
       </p>
     </div>
     <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>
