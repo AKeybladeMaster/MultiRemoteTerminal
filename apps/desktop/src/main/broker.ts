@@ -21,6 +21,7 @@ import type { SessionCredentialManager } from '../../../../packages/application/
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { SshPrivateKeySelection } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshSessionLogFailurePhase, SshSessionLogFinishReason } from '../../../../packages/application/src/ssh-session-activity.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
 import type { TftpRootSelection, TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
@@ -30,7 +31,7 @@ import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import type { DroppedUploadSelection } from './dropped-upload-registry.ts';
 import { normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { failure } from '../../../../packages/domain/src/errors.ts';
-import type { Outcome } from '../../../../packages/domain/src/errors.ts';
+import type { ErrorCode, Outcome } from '../../../../packages/domain/src/errors.ts';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
 import { MAX_SERIAL_INPUT_CHARS } from '../../../../packages/domain/src/serial.ts';
@@ -85,6 +86,12 @@ export interface CommandActions {
   readonly reportFtpTransferProgress: (progress: FtpTransferProgress) => void;
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
   readonly selectSshPrivateKey: () => Promise<Outcome<SshPrivateKeySelection>>;
+  readonly authorizeSshSessionLog: (sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]) => boolean;
+  readonly consumeSshSessionLogAttempt: (sessionId: string, endpoints: readonly SshHostEndpoint[], required: boolean) => ErrorCode | undefined;
+  readonly startSshSessionLog?: (sessionId: string, endpoints: readonly SshHostEndpoint[]) =>
+    Promise<Outcome<{ readonly sessionId: string; readonly fileName: string }>>;
+  readonly finishSshSessionLog?: (sessionId: string, reason: SshSessionLogFinishReason,
+    connectionFailure?: { readonly phase: SshSessionLogFailurePhase; readonly code: ErrorCode }) => Promise<void>;
   readonly consumeDroppedUpload: (context: RemoteFileDropContext, token: string) => DroppedUploadSelection | undefined;
   readonly discardDroppedUploadHandles: (context: RemoteFileDropContext, tokens: readonly string[]) => void;
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
@@ -235,35 +242,78 @@ export async function dispatchCommand(
       case 'ssh.open': {
         const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId } = parsed.result.payload;
         const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
-        const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host, port });
-        if (!route.ok) return { requestId, ...route };
         let authentication: SshAuthenticationSelection | undefined;
+        let savedCredentials: { username: string; password: string } | undefined;
+        const clearCredentials = () => {
+          if (savedCredentials) { savedCredentials.username = ''; savedCredentials.password = ''; }
+          if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
+        };
+        const cancelled = async () => {
+          clearCredentials();
+          await actions.finishSshSessionLog?.(sessionId, 'connection-failed', { phase: 'preflight', code: 'CANCELLED' });
+          return { requestId, ...failure('CANCELLED') };
+        };
+        if (actions.cancellation?.aborted) return cancelled();
+        const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host, port });
+        if (actions.cancellation?.aborted) return cancelled();
+        if (!route.ok) {
+          await actions.finishSshSessionLog?.(sessionId, 'connection-failed', { phase: 'preflight', code: route.error.code });
+          return { requestId, ...route };
+        }
+        const endpoints = [...route.result, { host, port }];
+        const logAttemptError = actions.consumeSshSessionLogAttempt(sessionId, endpoints, parsed.result.payload.recordSessionLog === true);
+        if (logAttemptError) {
+          if (logAttemptError !== 'BUSY') {
+            await actions.finishSshSessionLog?.(sessionId, 'connection-failed', { phase: 'preflight', code: logAttemptError });
+          }
+          return { requestId, ...failure(logAttemptError) };
+        }
         if (authenticationMethod === 'private-key') {
           const selected = await actions.selectSshPrivateKey();
-          if (!selected.ok) return { requestId, ...selected };
+          if (actions.cancellation?.aborted) {
+            if (selected.ok) selected.result.data.fill(0);
+            return cancelled();
+          }
+          if (!selected.ok) {
+            await actions.finishSshSessionLog?.(sessionId, 'connection-failed', { phase: 'preflight', code: selected.error.code });
+            return { requestId, ...selected };
+          }
           authentication = { method: 'private-key', privateKey: selected.result };
         } else if (authenticationMethod === 'agent') {
           authentication = { method: 'agent' };
         }
-        let savedCredentials;
         if (profileId && authenticationMethod === 'password') {
           const credential = await actions.sessionCredentials.resolveSshCredential(profileId, host, port, actions.cancellation);
+          if (actions.cancellation?.aborted) {
+            if (credential.ok && credential.result) {
+              credential.result.username = '';
+              credential.result.password = '';
+            }
+            return cancelled();
+          }
           if (!credential.ok) {
-            if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
+            await actions.finishSshSessionLog?.(sessionId, 'connection-failed', { phase: 'preflight', code: credential.error.code });
             return { requestId, ...credential };
           }
           savedCredentials = credential.result;
           authentication = savedCredentials ? { method: 'password', savedCredentials } : { method: 'password' };
         }
+        if (actions.cancellation?.aborted) return cancelled();
         try {
-          return { requestId, ...await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route.result, authentication) };
+          const opened = await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route.result, authentication);
+          if (!opened.ok) await actions.finishSshSessionLog?.(sessionId, 'connection-failed');
+          return { requestId, ...opened };
         } finally {
-          if (savedCredentials) {
-            savedCredentials.username = '';
-            savedCredentials.password = '';
-          }
-          if (authentication?.method === 'private-key') authentication.privateKey.data.fill(0);
+          clearCredentials();
         }
+      }
+      case 'ssh.session-log.start': {
+        const { sessionId, host, port, gatewayProfileIds = [] } = parsed.result.payload;
+        if (!actions.authorizeSshSessionLog(sessionId, host, port, gatewayProfileIds)) return { requestId, ...failure('FORBIDDEN') };
+        const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host, port });
+        if (!route.ok) return { requestId, ...route };
+        if (!actions.startSshSessionLog) return { requestId, ...failure('UNAVAILABLE') };
+        return { requestId, ...await actions.startSshSessionLog(sessionId, [...route.result, { host, port }]) };
       }
       case 'sftp.open': {
         const { sessionId, host, port, gatewayProfileIds = [] } = parsed.result.payload;

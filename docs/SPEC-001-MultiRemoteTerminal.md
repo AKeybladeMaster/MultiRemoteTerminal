@@ -47,6 +47,7 @@ Priority labels: **Must** = MVP release gate; **Should** = next public-quality r
 | F-024 | Could | Portable scripting/tool bundles and advanced appearance | Configurable package sources; licensing verified; no unsafe remote auto-install |
 | F-025 | Won't in MVP | Full in-window RDP/VNC/X11 embedding | External provider route first; optional later integration after technical validation |
 | F-026 | Won't in MVP | Clone MobaXterm's precise look, bundle, or MobApt internals | Independent UX and implementation only |
+| F-027 | Should | User-controlled SSH session diagnostic log | Before connecting, the user can choose a local `.log` file. It records connection lifecycle (including failed opens), terminal input and output with UTC timestamps, and closes/flushed on session end. Logging is off by default, bounded, local-only and explicitly warns that shell input/output can contain secrets. |
 
 **Clarification:** MVP includes the professional *settings and unlimited record counts* but is not full protocol parity. Marketing and documentation must not call it "all features" until F-019..F-024 plus corresponding parity matrix gates have passed.
 

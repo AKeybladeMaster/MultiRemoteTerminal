@@ -4,6 +4,7 @@ Use these terms consistently in specs, issue titles, test names and interfaces.
 
 - **Session definition:** saved configuration for a connection or local shell. Unlimited in count; never a live socket.
 - **Runtime session:** a live process/protocol connection with state and cleanup ownership.
+- **SSH session log:** a user-selected local plain-text record of one SSH connection attempt/session lifecycle and terminal input/output; sensitive, bounded and never an audit/compliance record.
 - **Tab / pane:** view presentation of a runtime session; closing a tab requests controlled runtime disposal.
 - **Provider:** installed or built-in implementation for a protocol/capability, exposed through a module interface.
 - **Capability:** supported action (shell, file-browser, forward, desktop, serial, daemon) advertised by a provider.

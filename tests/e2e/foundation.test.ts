@@ -956,6 +956,139 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
+test('SSH session log captures failed opens and active terminal input/output, then flushes on close', async () => {
+  test.skip(process.platform !== 'win32', 'SSH session log E2E acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-session-log-e2e-'));
+  const secret = 'sftp-e2e-secret';
+  const username = 'mrt-e2e-user';
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  const server = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === username && context.password === secret) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        const stream = acceptShell();
+        stream.write('MRT-SESSION-LOG-READY\r\n');
+        stream.on('data', data => stream.write(Buffer.isBuffer(data) ? data : String(data)));
+      });
+    }));
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    const unavailablePortServer = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      unavailablePortServer.once('error', rejectListen);
+      unavailablePortServer.listen(0, '127.0.0.1', resolveListen);
+    });
+    const unavailableAddress = unavailablePortServer.address();
+    if (!unavailableAddress || typeof unavailableAddress === 'string') throw new Error('Could not reserve an unused loopback port');
+    await new Promise<void>((resolveClose, rejectClose) => {
+      unavailablePortServer.close(error => error ? rejectClose(error) : resolveClose());
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH session log fixture did not bind a TCP address');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
+      '--mrt-e2e-ssh-session-log', `--mrt-e2e-ssh-session-log-root=${profile}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    const logNames = async () => (await readDirectory(profile)).filter(name => name.toLowerCase().endsWith('.log'));
+    const logRecords = async (name: string) => {
+      try {
+        return (await readFile(join(profile, name), 'utf8')).split('\n').filter(Boolean)
+          .map(line => JSON.parse(line) as Record<string, unknown>);
+      } catch { return []; }
+    };
+    const openLoggingDialog = async (port: number) => {
+      await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+      const logging = dialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' });
+      await expect(logging).not.toBeChecked();
+      await logging.check();
+      await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+      await dialog.getByLabel('Port').fill(String(port));
+      await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    };
+
+    await openLoggingDialog(unavailableAddress.port);
+    await expect.poll(async () => (await logNames()).length, { timeout: 15_000 }).toBe(1);
+    const failedLogName = (await logNames())[0];
+    if (!failedLogName) throw new Error('The failed SSH attempt did not create a log');
+    await expect.poll(async () => (await logRecords(failedLogName)).some(record =>
+      record.type === 'log-finished' && record.reason === 'connection-failed'), { timeout: 20_000 }).toBe(true);
+    const failedLog = await logRecords(failedLogName);
+    expect(failedLog.some(record => record.type === 'attempt-started')).toBe(true);
+    expect(failedLog.find(record => record.type === 'connection-failed')).toMatchObject({ phase: 'transport' });
+    expect(failedLog.at(-1)).toMatchObject({ type: 'log-finished', reason: 'connection-failed' });
+    const failedLogText = await readFile(join(profile, failedLogName), 'utf8');
+    expect(failedLogText).not.toContain(username);
+    expect(failedLogText).not.toContain(secret);
+    expect(failedLogText).not.toContain(profile);
+
+    await openLoggingDialog(address.port);
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`)
+      .toBeVisible({ timeout: 15_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing logged SSH terminal panel');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SESSION-LOG-READY', { timeout: 15_000 });
+    await expect.poll(async () => (await logNames()).length, { timeout: 15_000 }).toBe(2);
+    const activeLogName = (await logNames()).find(name => name !== failedLogName);
+    if (!activeLogName) throw new Error('The active SSH session did not create a distinct log');
+
+    const canary = 'MRT-SESSION-LOG-CANARY';
+    await panel.locator('.terminal-host').click();
+    await page.keyboard.type(canary);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText(canary, { timeout: 10_000 });
+    await expect.poll(async () => {
+      const records = await logRecords(activeLogName);
+      const input = records.filter(record => record.type === 'terminal-input').map(record => String(record.data ?? '')).join('');
+      const output = records.filter(record => record.type === 'terminal-output').map(record => String(record.data ?? '')).join('');
+      return input.includes(canary) && output.includes(canary);
+    }, { timeout: 15_000 }).toBe(true);
+    const activeLogText = await readFile(join(profile, activeLogName), 'utf8');
+    expect(activeLogText).toContain('127.0.0.1');
+    expect(activeLogText).not.toContain(username);
+    expect(activeLogText).not.toContain(secret);
+    expect(activeLogText).not.toContain(profile);
+
+    await app.close();
+    app = undefined;
+    const closedLog = await logRecords(activeLogName);
+    expect(closedLog.at(-1)?.type).toBe('log-finished');
+    expect(['session-closed', 'application-shutdown']).toContain(closedLog.at(-1)?.reason);
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SSH private-key mode authenticates a trusted terminal and standalone SFTP session', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-private-key-e2e-'));

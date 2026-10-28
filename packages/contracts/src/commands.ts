@@ -11,6 +11,7 @@ import type { RdpLaunchResult } from '../../application/src/rdp-viewer.ts';
 import type { VncLaunchResult } from '../../application/src/vnc-viewer.ts';
 import type { LocalTextFile, LocalTextFileSaveResult } from '../../domain/src/local-text-file.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
+import type { SshSessionLogStatus } from '../../application/src/ssh-session-activity.ts';
 import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
 import type { SerialTerminalSession } from '../../application/src/serial-terminals.ts';
 import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
@@ -65,11 +66,13 @@ export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
 export const VNC_LAUNCH_GESTURE_CHANNEL = 'mrt:vnc-launch-gesture:v1';
 export const TFTP_SERVER_ACTION_GESTURE_CHANNEL = 'mrt:tftp-server-action-gesture:v1';
+export const SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL = 'mrt:ssh-session-log-consent-gesture:v1';
 export const TFTP_SERVER_STATUS_EVENT_CHANNEL = 'mrt:tftp-server-status:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
+export const SSH_SESSION_LOG_STATUS_EVENT_CHANNEL = 'mrt:ssh-session-log-status:v1';
 export const TUNNEL_STATUS_EVENT_CHANNEL = 'mrt:tunnel-status-event:v1';
 export const MAX_REMOTE_FILE_DROP_COUNT = 16;
 export const APP_URL = 'mrt://app/index.html';
@@ -110,7 +113,9 @@ export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sess
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
 export type SshAuthenticationMethod = 'password' | 'private-key' | 'agent';
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
-  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod }>;
+  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod; readonly recordSessionLog?: boolean }>;
+export type StartSshSessionLogRequest = Request<'ssh.session-log.start', { readonly sessionId: string; readonly host: string; readonly port: number;
+  readonly gatewayProfileIds?: readonly string[] }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number;
   readonly authenticationMethod?: SshAuthenticationMethod; readonly gatewayProfileIds?: readonly string[] }>;
 export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
@@ -208,7 +213,7 @@ export type ExportWorkbenchSettingsTemplateRequest = Request<'preferences.templa
 export type ImportWorkbenchSettingsTemplateRequest = Request<'preferences.template.import', Record<string, never>>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PreviewPowerShellProfileScriptRequest | ApplyPowerShellProfileScriptRequest |
   PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
-  OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
+  OpenSshTerminalRequest | StartSshSessionLogRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | UploadDroppedSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
   DiscardRemoteFileDropHandlesRequest |
   OpenLocalTextFileRequest | ReloadLocalTextFileRequest | SaveLocalTextFileRequest | CloseLocalTextFileRequest |
@@ -234,6 +239,7 @@ export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' |
 export type OpenSerialTerminalResult = Pick<SerialTerminalSession, 'sessionId' | 'configuration' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
+export type StartSshSessionLogReply = CommandReply<{ readonly sessionId: string; readonly fileName: string }>;
 export type OpenSftpFilesReply = CommandReply<OpenSshTerminalResult>;
 export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSerialPortsReply = CommandReply<readonly SerialPortInfo[]>;
@@ -313,7 +319,8 @@ export interface DesktopBridge {
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply>;
+    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog?: boolean): Promise<OpenSshTerminalReply>;
+  startSshSessionLog(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<StartSshSessionLogReply>;
   openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod,
     gatewayProfileIds?: readonly string[]): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
@@ -405,6 +412,7 @@ export interface DesktopBridge {
   exportWorkbenchSettingsTemplate(preferences: WorkbenchPreferences): Promise<ExportWorkbenchSettingsTemplateReply>;
   importWorkbenchSettingsTemplate(): Promise<ImportWorkbenchSettingsTemplateReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
+  onSshSessionLogStatus(listener: (event: SshSessionLogStatus) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
   onTftpServerStatus(listener: (status: TftpServerStatus) => void): () => void;
@@ -433,6 +441,17 @@ export function parsePasteGestureRequest(value: unknown): string | undefined {
 
 export const parseTelnetConsentGestureRequest = parsePasteGestureRequest;
 export const parseFtpConsentGestureRequest = parsePasteGestureRequest;
+
+export function parseSshSessionLogConsentGestureRequest(value: unknown): { readonly sessionId: string; readonly host: string; readonly port: number;
+  readonly gatewayProfileIds: readonly string[] } | undefined {
+  if (!record(value)) return undefined;
+  const hasGateways = Object.hasOwn(value, 'gatewayProfileIds');
+  if (!exactKeys(value, ['sessionId', 'host', 'port', ...(hasGateways ? ['gatewayProfileIds'] : [])]) ||
+      typeof value.sessionId !== 'string' || !UUID.test(value.sessionId) || typeof value.host !== 'string' || !Number.isInteger(value.port) ||
+      hasGateways && !isSshGatewayProfileIds(value.gatewayProfileIds)) return undefined;
+  const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
+  return endpoint ? { sessionId: value.sessionId, ...endpoint, gatewayProfileIds: (value.gatewayProfileIds ?? []) as readonly string[] } : undefined;
+}
 
 export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
   if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
@@ -525,20 +544,29 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   const sshOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
   const sshOpenHasProfile = Object.hasOwn(payload, 'profileId');
   const sshOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
+  const sshOpenHasSessionLog = Object.hasOwn(payload, 'recordSessionLog');
   const sshOpenOptionalKeys = [
     ...(sshOpenHasGateways ? ['gatewayProfileIds'] : []),
     ...(sshOpenHasProfile ? ['profileId'] : []),
-    ...(sshOpenHasAuthenticationMethod ? ['authenticationMethod'] : [])
+    ...(sshOpenHasAuthenticationMethod ? ['authenticationMethod'] : []),
+    ...(sshOpenHasSessionLog ? ['recordSessionLog'] : [])
   ];
   const validSshOpenKeys = exactKeys(payload, [...sshOpenBaseKeys, ...sshOpenOptionalKeys]) &&
     (!sshOpenHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
     (!sshOpenHasProfile || isSessionDefinitionId(payload.profileId)) &&
     (!sshOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
-      payload.authenticationMethod === 'agent');
+      payload.authenticationMethod === 'agent') && (!sshOpenHasSessionLog || typeof payload.recordSessionLog === 'boolean');
   if (value.command === 'ssh.open' && validSshOpenKeys &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };
+  }
+  const sshLogHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
+  if (value.command === 'ssh.session-log.start' && exactKeys(payload, ['sessionId', 'host', 'port', ...(sshLogHasGateways ? ['gatewayProfileIds'] : [])]) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      (!sshLogHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
+      canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
+    return { ok: true, result: value as unknown as StartSshSessionLogRequest };
   }
   const sftpOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
   const sftpOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
@@ -782,7 +810,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'powershell.profile.preview', 'powershell.profile.apply',
     'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
-    'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
+    'ssh.open', 'ssh.session-log.start', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.upload-dropped', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel', 'files.drop.discard',
     'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
@@ -883,6 +911,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
       typeof value.result.previewId === 'string' && UUID.test(value.result.previewId) && typeof value.result.script === 'string' &&
       normalizePowerShellProfileScript(value.result.script) === value.result.script && value.result.script.length > 0;
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
+    if (request.command === 'ssh.session-log.start') return record(value.result) && exactKeys(value.result, ['sessionId', 'fileName']) &&
+      value.result.sessionId === request.payload.sessionId &&
+      typeof value.result.fileName === 'string' && value.result.fileName.length <= 255 && value.result.fileName.toLowerCase().endsWith('.log') &&
+      !/[\\/\0]/u.test(value.result.fileName);
     if (request.command === 'sftp.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
     if (request.command === 'serial.ports.list') return isCanonicalSerialPortList(value.result);
@@ -1007,6 +1039,14 @@ export function isSshTrustEvent(value: unknown): value is SshTrustEvent {
       /^SHA256:[A-Za-z0-9+/]{43}$/.test(challenge.fingerprint);
   }
   return false;
+}
+
+export function isSshSessionLogStatus(value: unknown): value is SshSessionLogStatus {
+  return record(value) && exactKeys(value, ['sessionId', 'status', 'reason', 'fileName']) && typeof value.sessionId === 'string' && UUID.test(value.sessionId) &&
+    typeof value.fileName === 'string' && value.fileName.length <= 255 && value.fileName.toLowerCase().endsWith('.log') && !/[\\/\0]/u.test(value.fileName) &&
+    (value.status === 'stopped'
+      ? ['file-size-limit', 'queue-limit', 'record-limit', 'write-error'].includes(value.reason as string)
+      : value.status === 'finished' && ['connection-failed', 'session-closed', 'session-exited', 'application-shutdown'].includes(value.reason as string));
 }
 
 export function isDescribeReply(value: unknown, requestId: string): value is DescribeReply {

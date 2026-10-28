@@ -24,8 +24,8 @@ import type { SshTunnelController } from '../../../../packages/application/src/s
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
-  SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
+  SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseSshSessionLogConsentGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -55,14 +55,18 @@ import { RendererGestureGate } from './renderer-gesture-gate.ts';
 import type { TftpServerAction } from './renderer-gesture-gate.ts';
 import { DroppedUploadRegistry } from './dropped-upload-registry.ts';
 import { bindRendererRequestCancellation } from './renderer-request-cancellation.ts';
+import { finishSshSessionLogsOwnedBy, observeSshSessionLogActivity } from './ssh-session-log-owner.ts';
+import type { PendingSshSessionLog, SshSessionLogOwner } from './ssh-session-log-owner.ts';
 import { isE2ETestHookEnabled } from './e2e-test-hooks.ts';
 import { resolvePortableUserDataDirectory } from './portable-user-data.ts';
 import { createNetworkWorkerEnvironment } from './network-worker-environment.ts';
 import { createCustomLogoPicker } from './custom-logo-picker.ts';
 import { createCustomLogoPreferenceAccess } from './custom-logo-preferences.ts';
 import { readSshPrivateKeyFile } from './ssh-private-key-reader.ts';
+import { createSshSessionLogWriter } from '../adapters/ssh-session-log-writer.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 
 
 app.setName('MultiRemoteTerminal');
@@ -94,6 +98,17 @@ const dist = resolve(here, '../../../../../');
 const loadNative = createRequire(import.meta.url);
 let window: BrowserWindow | undefined;
 let windowReady = false;
+const pendingSshSessionLogs = new Map<string, PendingSshSessionLog & { readonly endpoints: readonly SshHostEndpoint[] }>();
+const sshSessionLogOwnerBySessionId = new Map<string, SshSessionLogOwner>();
+const SSH_SESSION_LOG_ATTEMPT_TTL_MS = 30_000;
+const sshSessionLogWriter = createSshSessionLogWriter(status => {
+  const pending = pendingSshSessionLogs.get(status.sessionId);
+  if (pending) clearTimeout(pending.timer);
+  pendingSshSessionLogs.delete(status.sessionId);
+  sshSessionLogOwnerBySessionId.delete(status.sessionId);
+  const current = window;
+  if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, status);
+});
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
 const rendererGestures = new RendererGestureGate();
@@ -126,6 +141,7 @@ function createWindow(): void {
   current.webContents.once('destroyed', () => {
     rendererGestures.clear(webContentsId);
     droppedUploads.clearSender(webContentsId);
+    finishSshSessionLogsOwnedBy(webContentsId, pendingSshSessionLogs, sshSessionLogOwnerBySessionId, sshSessionLogWriter);
   });
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
@@ -145,6 +161,7 @@ function createWindow(): void {
   });
   current.webContents.on('render-process-gone', () => {
     droppedUploads.clearSender(webContentsId);
+    finishSshSessionLogsOwnedBy(webContentsId, pendingSshSessionLogs, sshSessionLogOwnerBySessionId, sshSessionLogWriter);
     stopActiveTerminals();
   });
   void current.loadURL(APP_URL);
@@ -504,6 +521,10 @@ function boot(): void {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
   });
+  sshTerminals.subscribeActivity(activity => {
+    observeSshSessionLogActivity(activity, sshSessionLogOwnerBySessionId);
+    sshSessionLogWriter.append(activity);
+  });
   telnetTerminals.subscribe(event => {
     const current = window;
     if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TERMINAL_EVENT_CHANNEL, event);
@@ -562,7 +583,8 @@ function boot(): void {
     const fileListRequest = parsed.ok && (parsed.result.command === 'ssh.files.list' || parsed.result.command === 'ftp.files.list') && owned && mainFrame && isAppDocument(frameUrl);
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
     const trackedRequestId = (catalogRequest || transferRequest || sshTransferRequest || localTextRequest) && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
-    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest || sshTransferRequest || localTextRequest;
+    const sshOpenRequest = parsed.ok && parsed.result.command === 'ssh.open' && owned && mainFrame && isAppDocument(frameUrl);
+    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest || sshTransferRequest || localTextRequest || sshOpenRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,
@@ -581,6 +603,22 @@ function boot(): void {
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
         authorizePowerShellProfileScript: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'powershell-profile-script'),
+        authorizeSshSessionLog: (sessionId, host, port, gatewayProfileIds) =>
+          rendererGestures.consumeSshSessionLog(event.sender.id, sessionId, host, port, gatewayProfileIds),
+        consumeSshSessionLogAttempt(sessionId, endpoints, required) {
+          const pending = pendingSshSessionLogs.get(sessionId);
+          if (!pending) {
+            const owner = sshSessionLogOwnerBySessionId.get(sessionId);
+            if (owner !== undefined && owner.senderId !== event.sender.id) return 'FORBIDDEN';
+            if (owner !== undefined) return 'BUSY';
+            return required ? 'TIMEOUT' : undefined;
+          }
+          if (pending.senderId !== event.sender.id) return 'FORBIDDEN';
+          if (!required) return 'BUSY';
+          pendingSshSessionLogs.delete(sessionId);
+          clearTimeout(pending.timer);
+          return JSON.stringify(pending.endpoints) === JSON.stringify(endpoints) ? undefined : 'FORBIDDEN';
+        },
         authorizeTelnetConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'telnet-plaintext-consent'),
         authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
         authorizeRdpLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'rdp', host, port),
@@ -717,6 +755,64 @@ function boot(): void {
           if (!selectedPath) return failure('INVALID_REQUEST');
           return readSshPrivateKeyFile(selectedPath);
         },
+        async startSshSessionLog(sessionId: string, endpoints: readonly { readonly host: string; readonly port: number }[]) {
+          if (quitRequested) return failure('CANCELLED');
+          const start = async (path: string) => {
+            const result = await sshSessionLogWriter.start(sessionId, path, endpoints);
+            if (!result.ok) return result;
+            if (event.sender.isDestroyed()) {
+              sshSessionLogWriter.append({ type: 'connection-failed', sessionId, phase: 'preflight', code: 'CANCELLED' });
+              await sshSessionLogWriter.finish(sessionId, 'connection-failed');
+              return failure('CANCELLED');
+            }
+            const timer = setTimeout(() => {
+              if (pendingSshSessionLogs.get(sessionId)?.timer !== timer) return;
+              pendingSshSessionLogs.delete(sessionId);
+              sshSessionLogOwnerBySessionId.delete(sessionId);
+              sshSessionLogWriter.append({ type: 'connection-failed', sessionId, phase: 'preflight', code: 'TIMEOUT' });
+              void sshSessionLogWriter.finish(sessionId, 'connection-failed');
+            }, SSH_SESSION_LOG_ATTEMPT_TTL_MS);
+            timer.unref?.();
+            sshSessionLogOwnerBySessionId.set(sessionId, { senderId: event.sender.id, phase: 'preflight', opened: false });
+            pendingSshSessionLogs.set(sessionId, { senderId: event.sender.id, endpoints, timer });
+            return { ok: true as const, result: { sessionId, ...result.result } };
+          };
+          const e2ePath = e2eTransferPath('--mrt-e2e-ssh-session-log-path=', '--mrt-e2e-ssh-session-log');
+          if (e2ePath) return start(e2ePath);
+          const e2eRoot = e2eTransferPath('--mrt-e2e-ssh-session-log-root=', '--mrt-e2e-ssh-session-log');
+          if (e2eRoot) return start(join(e2eRoot, `${sessionId}.log`));
+          const currentWindow = window;
+          const consent = currentWindow && !currentWindow.isDestroyed()
+            ? await dialog.showMessageBox(currentWindow, { type: 'warning', title: 'Sensitive SSH session log',
+              message: 'This local plain-text file records exact SSH terminal input and output, plus server and gateway names.',
+              detail: 'It may contain secrets typed into the remote shell or printed by it. SSH credential prompts and key material are excluded. Store and delete it according to company policy.',
+              buttons: ['Continue to file selection', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true })
+            : await dialog.showMessageBox({ type: 'warning', title: 'Sensitive SSH session log',
+              message: 'This local plain-text file records exact SSH terminal input and output, plus server and gateway names.',
+              detail: 'It may contain secrets typed into the remote shell or printed by it. SSH credential prompts and key material are excluded. Store and delete it according to company policy.',
+              buttons: ['Continue to file selection', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true });
+          if (consent.response !== 0) return failure('CANCELLED');
+          const options: Electron.SaveDialogOptions = {
+            title: 'Save sensitive SSH session log', buttonLabel: 'Save log', defaultPath: `ssh-session-${new Date().toISOString().replace(/[:.]/gu, '-')}.log`,
+            filters: [{ name: 'Log files', extensions: ['log'] }], properties: ['showOverwriteConfirmation']
+          };
+          const selected = currentWindow && !currentWindow.isDestroyed()
+            ? await dialog.showSaveDialog(currentWindow, options)
+            : await dialog.showSaveDialog(options);
+          if (selected.canceled || !selected.filePath) return failure('CANCELLED');
+          if (quitRequested) return failure('CANCELLED');
+          if (!selected.filePath.toLowerCase().endsWith('.log')) return failure('INVALID_REQUEST');
+          return start(selected.filePath);
+        },
+        finishSshSessionLog: (sessionId, reason, connectionFailure) => {
+          const owner = sshSessionLogOwnerBySessionId.get(sessionId);
+          if (owner !== undefined && owner.senderId !== event.sender.id) return Promise.resolve();
+          const pending = pendingSshSessionLogs.get(sessionId);
+          if (pending) clearTimeout(pending.timer);
+          pendingSshSessionLogs.delete(sessionId);
+          if (connectionFailure) sshSessionLogWriter.append({ type: 'connection-failed', sessionId, ...connectionFailure });
+          return sshSessionLogWriter.finish(sessionId, reason);
+        },
         consumeDroppedUpload(context, token) {
           return droppedUploads.consume(event.sender.id, context, token);
         },
@@ -802,6 +898,16 @@ function boot(): void {
     rendererGestures.issue(event.sender.id, sessionId, 'powershell-profile-script');
     return true;
   });
+  ipcMain.handle(SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const consent = parseSshSessionLogConsentGestureRequest(input);
+    if (!consent) return false;
+    rendererGestures.issueSshSessionLog(event.sender.id, consent.sessionId, consent.host, consent.port, consent.gatewayProfileIds);
+    return true;
+  });
   ipcMain.handle(TELNET_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
     const current = window;
     const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
@@ -864,7 +970,10 @@ function boot(): void {
     idleLock.stop();
     credentialVault.lock();
     powerShellProfileScripts.clear();
-    void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
+    for (const pending of pendingSshSessionLogs.values()) clearTimeout(pending.timer);
+    pendingSshSessionLogs.clear();
+    void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(),
+      localTextEditor.closeAll(), sshSessionLogWriter.closeAll()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
@@ -874,6 +983,7 @@ function boot(): void {
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
     ipcMain.removeHandler(POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL);
+    ipcMain.removeHandler(SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(FTP_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(RDP_LAUNCH_GESTURE_CHANNEL);

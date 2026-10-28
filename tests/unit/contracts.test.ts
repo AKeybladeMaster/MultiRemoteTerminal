@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
   parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
+import { parseSshSessionLogConsentGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
@@ -94,6 +95,8 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest(open).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'private-key' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'agent' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, recordSessionLog: true } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, recordSessionLog: 'yes' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
@@ -105,6 +108,10 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
+
+  assert.deepEqual(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, gatewayProfileIds }),
+    { sessionId, host: 'server.example.com', port: 22, gatewayProfileIds });
+  assert.equal(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, secret: true }), undefined);
 
   const challenge = { kind: 'challenge', sessionId, challenge: { token: 'A'.repeat(32), host: 'server.example.com', port: 22,
     algorithm: 'ssh-ed25519', fingerprint: `SHA256:${'A'.repeat(43)}` } };

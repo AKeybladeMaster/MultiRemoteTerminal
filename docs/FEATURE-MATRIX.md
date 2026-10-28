@@ -71,6 +71,7 @@ WP-06F adds Windows loopback E2E for macro playback over trusted SSH and explici
 | P-42 | Enhanced security settings | Trust defaults, vault, scope/bind, policy UI | MVP | Host-key strictness, forwarding restrictions, secret protection |
 | P-43 (VERIFIED) | Professional customization defaults | User-config settings template export | Next | Windows E2E imports settings into a fresh profile, confirms explicit save, persistence after restart, and no script execution; see [WP-03G results](results/WP-03G-workbench-settings-templates-2026-10-28.md) |
 | P-44 | Company deployment / perpetual license / updates | **Product/business policy rather than program behavior** | Excluded | No assertion of matching original vendor commercial terms |
+| P-45 (PARTIAL) | SSH session debug/log watcher | Per-session local `.log` recording selected before connect | Next | Focused Windows loopback E2E verifies an opt-in failed-open log, an active terminal's input/output, SSH credential exclusion, and flush on close; unit tests cover record ordering, queue/file caps and cleanup. Native Save picker selection/cancellation and packaged SSH-log acceptance remain open. See [WP-02C results](results/WP-02C-ssh-session-diagnostic-logs-2026-10-28.md), the [SSH session log design](SSH-SESSION-LOG-WATCHER.md) and [ADR-0050](adr/ADR-0050-ssh-session-diagnostic-logs.md). |
 
 ## Security-specific parity criteria
 

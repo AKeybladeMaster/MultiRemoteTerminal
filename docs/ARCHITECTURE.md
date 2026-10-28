@@ -113,6 +113,7 @@ These are conceptual operations; Codex determines exact types and implementation
 | `TunnelController` | `start`, `stop`, `getStatus`, `subscribe` | Atomic startup; no daemonized orphan listeners; default loopback |
 | `FileTransferController` | `list`, `queueCopy`, `cancel`, `watchProgress`, `openRemoteFile` | Temporary paths, collision policy, symlink policy, integrity before replace |
 | `MacroRunner` | `validate`, `run`, `cancel` | Never record passwords; explicit target allowlist and approval for broadcast |
+| `SshSessionLog` | `start`, `append`, `finish` | Per-session explicit consent; captures connection failures and terminal I/O; local native-selected path, bounded async writes, no credential-prompt secrets |
 | `DaemonController` | `start`, `stop`, `status`, `readLogs` | No artificial timer; explicit bind, authorization and cleanup |
 | `SettingsCatalog` | `get`, `update`, `exportRedacted`, `import` | Schema version, transactional changes, no secret export by default |
 
@@ -121,6 +122,8 @@ A port must document the success return, cancellation semantics, timeout, auth f
 The saved-folder bundle file-dialog port is an interactive OS operation: Windows open/save pickers settle only after explicit user selection or dismissal, and Electron exposes no abort signal or deadline for these methods. The renderer therefore waits without an IPC timeout while the modal picker is open. The native Cancel button dismisses it; a caller cancellation that arrives meanwhile is checked as soon as the picker settles, and no selected path is used for storage. Storage work starts only after that check and retains its own bounded worker timeout/cancellation. When a storage timeout or cancellation terminates the worker, its request settles only after worker exit and tracked temporary-file cleanup complete.
 
 Workbench settings templates use the same native-picker and storage-worker boundary. The renderer submits only a validated current preference value for export; the main process supplies the path selected by the native picker. The storage worker validates and writes a versioned JSON file through a tracked sibling temporary path. Import validates the bounded file in the worker and returns preferences to the Settings dialog without saving them; the existing `preferences.save` command persists them only after the user chooses **Save changes**.
+
+SSH session diagnostic logs use a separate per-session lifecycle. The user selects a `.log` destination through Electron's native Save dialog before the connection attempt; renderer requests carry only an opaque log handle, never a filesystem path. A supervised local writer receives bounded structured records for transport lifecycle, terminal input and output, then flushes and closes at terminal/app shutdown. It drops the recording and reports a local error if its queue or file cap is reached; it never stalls terminal transport. The file is plain text and can contain sensitive shell input/output and endpoint metadata, so recording requires explicit per-session consent and is never enabled by a saved preference. It does not capture SSH credential prompt values, key material, SFTP file contents, or tunnel payloads. See [ADR-0050](adr/ADR-0050-ssh-session-diagnostic-logs.md).
 
 ## 6. IPC contract (version 1)
 

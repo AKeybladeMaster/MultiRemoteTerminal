@@ -1,7 +1,7 @@
-import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
+import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshSessionLogStatus, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
-  OpenSshTerminalReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
+  OpenSshTerminalReply, StartSshSessionLogReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
   ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply, SshAuthenticationMethod } from '../../../../packages/contracts/src/commands.ts';
 import type { PowerShellProfileScriptPreviewReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
@@ -26,6 +26,7 @@ import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../..
 import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTrustEvent } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshSessionLogStatus } from '../../../../packages/application/src/ssh-session-activity.ts';
 import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -43,6 +44,7 @@ type ConsumeRdpLaunch = (host: string, port: number) => boolean | Promise<boolea
 type ConsumeVncLaunch = (host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeTftpServerAction = (action: 'choose-root' | 'start', selectionId?: string, port?: number) => boolean | Promise<boolean>;
 type ConsumePowerShellProfileScript = (sessionId: string) => boolean | Promise<boolean>;
+type ConsumeSshSessionLogConsent = (sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
@@ -82,7 +84,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   listenTunnelStatus: ListenTunnelStatus = () => () => {}, consumeRdpLaunch: ConsumeRdpLaunch = () => false,
   consumeVncLaunch: ConsumeVncLaunch = () => false, consumeTftpServerAction: ConsumeTftpServerAction = () => false,
   listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}, listenTftpServerStatus: ListenTftpServerStatus = () => () => {},
-  consumePowerShellProfileScript: ConsumePowerShellProfileScript = () => false): DesktopBridge {
+  consumePowerShellProfileScript: ConsumePowerShellProfileScript = () => false, listenSshSessionLog: Listen = () => () => {},
+  consumeSshSessionLogConsent: ConsumeSshSessionLogConsent = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -335,12 +338,21 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-      gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply> {
+      gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog = false): Promise<OpenSshTerminalReply> {
       return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }),
           ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }),
-          ...(authenticationMethod === undefined ? {} : { authenticationMethod }) } },
+          ...(authenticationMethod === undefined ? {} : { authenticationMethod }), ...(recordSessionLog ? { recordSessionLog: true } : {}) } },
       sshOpenTimeout(gatewayProfileIds?.length ?? 0));
+    },
+    startSshSessionLog(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<StartSshSessionLogReply> {
+      const id = requestId();
+      const sessionId = requestId();
+      const route = gatewayProfileIds ?? [];
+      return Promise.resolve().then(() => consumeSshSessionLogConsent(sessionId, host, port, route)).then(authorized => authorized
+        ? send({ command: 'ssh.session-log.start', requestId: id, contractVersion: CONTRACT_VERSION,
+          payload: { sessionId, host, port, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }) } })
+        : { requestId: id, ...failure('FORBIDDEN') });
     },
     openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod,
       gatewayProfileIds?: readonly string[]): Promise<OpenSftpFilesReply> {
@@ -680,6 +692,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         return listenSshTrust(value => {
           if (isSshTrustEvent(value)) {
             try { listener(value); } catch { /* A trust decision listener cannot interrupt transport ownership. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onSshSessionLogStatus(listener: (event: SshSessionLogStatus) => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenSshSessionLog(value => {
+          if (isSshSessionLogStatus(value)) {
+            try { listener(value); } catch { /* A log status listener cannot interrupt session cleanup. */ }
           }
         });
       } catch { return () => {}; }

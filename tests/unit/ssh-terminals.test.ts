@@ -565,3 +565,45 @@ test('changed host keys block SSH and produce a non-secret warning event', async
   assert.deepEqual(trust.revoked, [{ host: 'server.example.net', port: 22 }]);
   await controller.dispose();
 });
+
+test('SSH activity exposes lifecycle and terminal I/O without credential values', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'private-user', secret: 'private-password' }), trust);
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  controller.subscribeActivity(event => activity.push(event));
+
+  assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+  assert.equal((await controller.write(sessionId, 'id\n')).ok, true);
+  assert.equal((await controller.resize(sessionId, { columns: 100, rows: 30 })).ok, true);
+  for (const listener of provider.listeners) listener({ kind: 'data', sessionId, sequence: 1, data: 'remote output\n' });
+  assert.equal((await controller.close(sessionId)).ok, true);
+
+  assert.deepEqual(activity.map(event => event.type), [
+    'credential-prompt-started', 'credential-prompt-finished', 'transport', 'host-trust', 'transport',
+    'terminal-input', 'terminal-resize', 'terminal-output', 'session-closed'
+  ]);
+  assert.equal(activity.some(event => event.data === 'id\n'), true);
+  assert.equal(activity.some(event => event.data === 'remote output\n'), true);
+  const serialized = JSON.stringify(activity);
+  assert.equal(serialized.includes('private-user'), false);
+  assert.equal(serialized.includes('private-password'), false);
+  await controller.dispose();
+});
+
+test('SSH credential prompt timeout is logged as its own phase', async () => {
+  const provider = new FakeProvider();
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'timeout' }), new FakeTrust());
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  controller.subscribeActivity(event => activity.push(event));
+
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(activity.slice(-1)[0], {
+    type: 'connection-failed', sessionId, phase: 'credential-prompt', code: 'TIMEOUT'
+  });
+  assert.equal(provider.opened.length, 0);
+  await controller.dispose();
+});

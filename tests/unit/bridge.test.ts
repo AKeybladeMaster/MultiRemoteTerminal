@@ -14,7 +14,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     return valid;
   }, id);
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-    'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
+    'openSshTerminal', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile',
@@ -28,8 +28,29 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload starts an SSH session log without accepting a renderer filesystem path', async () => {
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  let invocations = 0;
+  const denied = await createBridge(async () => { invocations++; return { requestId: id(), ok: true, result: { sessionId, fileName: 'session.log' } }; }, id)
+    .startSshSessionLog('linux.internal', 22);
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(invocations, 0);
+  const bridge = createBridge(async request => {
+    invocations++;
+    assert.deepEqual(request, { command: 'ssh.session-log.start', requestId: id(), contractVersion: 1,
+      payload: { sessionId: id(), host: 'linux.internal', port: 22 } });
+    return { requestId: id(), ok: true, result: { sessionId: id(), fileName: 'session.log' } };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+  undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => true);
+  assert.deepEqual(await bridge.startSshSessionLog('linux.internal', 22), {
+    requestId: id(), ok: true, result: { sessionId: id(), fileName: 'session.log' }
+  });
+  assert.equal(invocations, 1);
 });
 
 test('preload exposes a path-free custom logo picker command', async () => {

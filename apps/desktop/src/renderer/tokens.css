@@ -436,6 +436,10 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .ssh-connect-dialog input:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .ssh-connect-dialog select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .ssh-connect-dialog input[type="number"] { width: min(260px, 100%); }
+.ssh-session-log-option { display: grid; gap: 5px; margin: 8px 0 0; }
+.ssh-connect-dialog .ssh-session-log-option label { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+.ssh-connect-dialog .ssh-session-log-option input[type="checkbox"] { width: 16px; min-height: 16px; flex: 0 0 16px; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
+.ssh-session-log-option p { margin: 0 0 3px 24px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .telnet-plaintext-warning, .tunnel-exposure-warning { margin: 0 0 16px; padding: 11px 12px; border-left: 3px solid #e59d32; background: color-mix(in srgb, #e59d32 14%, var(--surface)); color: var(--text); font-size: 13px; line-height: 1.5; }
 .telnet-plaintext-warning strong, .tunnel-exposure-warning strong { display: block; margin-bottom: 3px; }
 .telnet-connect-dialog .ssh-connect-actions { margin-top: 10px; }
