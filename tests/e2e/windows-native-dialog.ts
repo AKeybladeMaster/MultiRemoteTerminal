@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 export type NativeSshLogDialogAction = 'cancel-consent' | 'cancel-save' | 'save' | 'close-app';
 export type NativeSshCredentialBundleDialogAction = 'cancel-credential-export' | 'export-credential' | 'cancel-credential-import' | 'import-credential';
 export type NativeCustomLogoDialogAction = 'cancel-logo' | 'select-logo';
+export type NativeLocalTextDialogAction = 'cancel-local-text' | 'select-local-text';
 
 export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, filePath?: string, targetProcessId?: number): Promise<void> {
   if (action === 'save' && (!filePath || !filePath.toLowerCase().endsWith('.log'))) {
@@ -30,7 +31,14 @@ export async function runNativeCustomLogoDialog(action: NativeCustomLogoDialogAc
   await runNativeDialog(action, filePath, undefined, 'custom logo');
 }
 
-async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialBundleDialogAction | NativeCustomLogoDialogAction,
+export async function runNativeLocalTextDialog(action: NativeLocalTextDialogAction, filePath?: string): Promise<void> {
+  if (action === 'select-local-text' && (!filePath || !filePath.toLowerCase().endsWith('.txt'))) {
+    throw new Error('Selecting the native local text dialog requires a .txt path.');
+  }
+  await runNativeDialog(action, filePath, undefined, 'local text file');
+}
+
+async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialBundleDialogAction | NativeCustomLogoDialogAction | NativeLocalTextDialogAction,
   filePath: string | undefined, targetProcessId: number | undefined, description: string): Promise<void> {
   if (process.platform !== 'win32') throw new Error(`Native ${description} dialog automation is Windows-only.`);
   const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');

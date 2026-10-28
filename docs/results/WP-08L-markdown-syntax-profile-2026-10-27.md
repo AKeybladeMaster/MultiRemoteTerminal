@@ -22,7 +22,7 @@
 
 ## Limitations and security
 
-The preview remains text-only and does not render, validate, execute, modify or persist Markdown. It is a bounded lexical aid, not a CommonMark parser: nested block containers, setext headings, indented code blocks, reference links, extension syntax and multiline inline constructs are outside this profile. The 256,000-step work budget can leave later text uncolored, and the editor displays that preview truncation while retaining all content for editing. The local editor E2E uses the existing guarded path hook rather than automating native file-picker selection. No dependency was added.
+The preview remains text-only and does not render, validate, execute, modify or persist Markdown. It is a bounded lexical aid, not a CommonMark parser: nested block containers, setext headings, indented code blocks, reference links, extension syntax and multiline inline constructs are outside this profile. The 256,000-step work budget can leave later text uncolored, and the editor displays that preview truncation while retaining all content for editing. This syntax-profile E2E uses the existing guarded path hook; the separate WP-08D editor acceptance now automates native file-picker selection and cancellation. No dependency was added.
 
 See [ADR-0043](../adr/ADR-0043-markdown-text-syntax-profile.md).
 

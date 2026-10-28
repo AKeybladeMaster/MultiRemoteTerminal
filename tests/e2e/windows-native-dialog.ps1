@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo')]
+    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo', 'cancel-local-text', 'select-local-text')]
     [string] $Action,
     [string] $FilePath = '',
     [int] $TargetProcessId = 0
@@ -182,6 +182,23 @@ if ($Action -like '*credential-*' -or $Action -eq 'export-credential' -or $Actio
         } while ([DateTime]::UtcNow -lt $deadline)
         throw 'The native Save dialog closed without creating the selected credential bundle.'
     }
+    exit 0
+}
+
+if ($Action -in @('cancel-local-text', 'select-local-text')) {
+    $title = 'Choose a local text file'
+    $localTextDialog = Wait-Dialog $title
+    if ($Action -eq 'cancel-local-text') {
+        Send-DialogKeys $localTextDialog '{ESC}'
+        Wait-DialogClosed $title
+        exit 0
+    }
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.txt') {
+        throw 'A full .txt path is required for native local text file selection.'
+    }
+    Set-DialogFilename $localTextDialog $FilePath
+    Send-DialogKeys $localTextDialog '{ENTER}'
+    Wait-DialogClosed $title
     exit 0
 }
 

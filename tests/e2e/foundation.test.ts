@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
-import { runNativeCustomLogoDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
+import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 interface Ssh2FixtureClient extends EventEmitter {
@@ -587,16 +587,27 @@ function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promis
 }
 
 test('Windows local text editor preserves drafts on conflict and saves the selected file', async () => {
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-local-text-editor-e2e-'));
+  test.skip(process.platform !== 'win32', 'Native local text picker automation is Windows-only.');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-local-text-editor-e2e-');
   const path = join(profile, 'settings.txt');
-  await writeFile(path, 'name=old\r\nlegacy=1\n');
-  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
-    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    await writeFile(path, 'name=old\r\nlegacy=1\n');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const openLocalFile = page.getByRole('button', { name: 'Edit local file', exact: true });
+    await openLocalFile.click();
+    await runNativeLocalTextDialog('cancel-local-text');
     const editor = page.getByTestId('local-text-editor');
+    await expect(editor).toBeHidden();
+    await expect(page.locator('body')).not.toContainText(path);
+    expect(await readFile(path, 'utf8')).toBe('name=old\r\nlegacy=1\n');
+
+    await openLocalFile.click();
+    await runNativeLocalTextDialog('select-local-text', path);
     const contents = editor.getByRole('textbox', { name: 'File contents' });
     await expect(editor.getByRole('heading', { name: 'settings.txt', exact: true })).toBeVisible();
     await expect(contents).toHaveValue('name=old\nlegacy=1\n');
@@ -618,8 +629,11 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor).toBeHidden();
   } finally {
-    await app.close();
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 });
 

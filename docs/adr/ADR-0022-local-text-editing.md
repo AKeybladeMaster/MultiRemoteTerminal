@@ -23,4 +23,4 @@ This slice completes local file opening and explicit local save/reload behavior.
 
 ## Verification
 
-See [WP-08D local text editor results](../results/WP-08D-local-text-editor-2026-10-26.md) for focused unit, contract, build, lint and Windows UI evidence.
+See [WP-08D local text editor results](../results/WP-08D-local-text-editor-2026-10-26.md) for focused unit, contract, build, lint and Windows UI evidence, including native picker cancellation and selection.

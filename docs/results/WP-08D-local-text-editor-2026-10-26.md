@@ -48,3 +48,23 @@ No remaining documented-standard violations or baseline smells. The follow-up co
 ### Spec
 
 No remaining findings. F-014/P-27 remain partial because syntax profiles and autosave are still open. Local and remote E2Es verify the mixed-line-ending notice and saved bytes use the first detected style. The local E2E's guarded path hook and native-picker automation limitation are accurately documented. No scope creep was identified.
+
+## Native picker acceptance follow-up (2026-10-28)
+
+The Windows local-editor E2E now omits the selected-path argument and drives Electron's actual **Choose a local text file** dialog. It first cancels and verifies the editor stays closed, the selected path is absent from renderer text, and file bytes are unchanged; it then selects the fixture through the native dialog and completes the existing mixed-line-ending, external-change conflict, draft-preservation, reload and save checks. The test profile is created under the workspace `.tmp` directory and removed in `finally`.
+
+Validation on Windows x64:
+
+- `corepack pnpm build`: passed; Vite reported the existing renderer chunk-size advisory.
+- `corepack pnpm typecheck`: passed.
+- `corepack pnpm lint`: passed, including import-boundary checks.
+- PowerShell parser check for `tests/e2e/windows-native-dialog.ps1`: passed.
+- Focused Windows Electron E2E: **1 passed**, including native picker cancellation and selection.
+- `git diff --check`: passed.
+
+This acceptance adds no production behavior or dependency. P-27/F-014 remain PARTIAL for broader language profiles, autosave and the existing documented file-replacement platform limitations.
+
+## Independent review
+
+- **Spec:** no findings. Native picker cancellation and selection are covered; F-014/P-27 correctly remain partial for broader profiles, autosave and the documented replacement limitations.
+- **Standards:** the first pass found that a rejected Electron close could skip profile cleanup. A nested `finally` now always removes the workspace temporary profile. Follow-up review found no remaining documented breach or baseline smell.
