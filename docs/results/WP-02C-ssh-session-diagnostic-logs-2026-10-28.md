@@ -37,3 +37,9 @@ P-45 is VERIFIED for the specified per-session logging flow. The packaged checks
 - Fresh source SSH-log E2Es passed 2/2. In the package smoke run, the artifact/fuse and SBOM/hash tests passed 2/2, then the workspace-local NSIS install/offline-launch/uninstall test passed 1/1. The combined runner was stopped after that case; the remaining portable-terminal and portable-SSH-log-shutdown cases were run separately and passed 1/1 each.
 - Consolidated all P-45 E2E scratch roots under the workspace `.tmp` directory. The final NSIS install/offline-launch/persistence/tamper/uninstall case passed 1/1 after this change; install, profile and tamper paths are now workspace-local by default.
 - Final independent reviews: Spec found no mismatch or acceptance gap; Standards confirmed the workspace-temp fix and found no remaining issue. Reviewers inspected the candidate; they did not rerun tests. Final typecheck and lint passed, along with the focused NSIS rerun and `git diff --check`.
+
+## Native Save dialog package revalidation (2026-10-28)
+
+The portable shutdown E2E intermittently failed while its one-off UI Automation code checked the native filename field. The test now uses the existing `Set-DialogFilename` helper and still requires the `.log` file to appear at the exact selected path. The focused shutdown case passed 3/3 repeats. Under Node 24.14.1 and pnpm 12.15.0, `corepack pnpm package:win:smoke` passed all five packaged checks, including native portable SSH-log finalization.
+
+The broader `corepack pnpm check` run passed typecheck, lint, and all 578 unit tests. Its source E2E suite reported 54 passed, 14 failed, and 5 skipped; the five package cases are covered by the separate 5/5 package smoke run. The other E2E failures are recorded in the [resume snapshot](../CODEX-RESUME.md) and do not change the verified P-45 behavior.

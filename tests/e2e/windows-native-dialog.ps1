@@ -138,15 +138,6 @@ function ConvertTo-SendKeysLiteral([string] $text) {
     return $result.ToString()
 }
 
-function Wait-FilenameValue([System.Windows.Automation.AutomationElement] $field, [string] $expected) {
-    $deadline = [DateTime]::UtcNow.AddSeconds(1)
-    do {
-        if ($field.Current.Name -eq $expected) { return $true }
-        Start-Sleep -Milliseconds 50
-    } while ([DateTime]::UtcNow -lt $deadline)
-    return $false
-}
-
 function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
     Focus-Dialog $dialog
     [System.Windows.Forms.SendKeys]::SendWait('%n')
@@ -248,30 +239,7 @@ if ($Action -eq 'cancel-save') {
 if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.log') {
     throw 'A full .log path is required for native Save dialog selection.'
 }
-Focus-Dialog $saveDialog
-[System.Windows.Forms.SendKeys]::SendWait('%n')
-Start-Sleep -Milliseconds 100
-$fileNameField = [System.Windows.Automation.AutomationElement]::FocusedElement
-if ($null -eq $fileNameField -or $fileNameField.Current.ClassName -ne 'Edit' -or $fileNameField.Current.AutomationId -ne '1001') {
-    throw 'Could not focus the native Save dialog filename field.'
-}
-$fieldHandle = [IntPtr]::new([long]$fileNameField.Current.NativeWindowHandle)
-if ($fieldHandle -eq [IntPtr]::Zero) { throw 'The native filename field has no window handle.' }
-$valueSet = $false
-try {
-    $legacyPattern = $fileNameField.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
-    $legacyPattern.SetValue($FilePath)
-    $valueSet = Wait-FilenameValue $fileNameField $FilePath
-} catch { }
-if (-not $valueSet -and [MrtNativeDialog]::SetWindowText($fieldHandle, $FilePath)) {
-    $valueSet = Wait-FilenameValue $fileNameField $FilePath
-}
-if (-not $valueSet) {
-    [System.Windows.Forms.SendKeys]::SendWait('^a')
-    [System.Windows.Forms.SendKeys]::SendWait((ConvertTo-SendKeysLiteral $FilePath))
-    $valueSet = Wait-FilenameValue $fileNameField $FilePath
-}
-if (-not $valueSet) { throw 'The native filename field did not confirm the selected path.' }
+Set-DialogFilename $saveDialog $FilePath
 Send-DialogKeys $saveDialog '{ENTER}'
 Wait-DialogClosed 'Save sensitive SSH session log'
 
