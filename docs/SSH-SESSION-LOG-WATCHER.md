@@ -4,7 +4,7 @@
 
 ## Problem
 
-The renderer currently maps the SSH `TIMEOUT` error to “The SSH connection timed out.” That category can come from the native SSH credential prompt (120-second timeout) or SSH transport setup (130-second timeout); the UI does not identify the phase. A user troubleshooting a VPN route also needs to see which connection operations ran and what the terminal returned.
+The renderer reports `TIMEOUT` as an SSH setup timeout because it can come from the native credential prompt (120 seconds), first-use host-key approval (2 minutes), SSH transport setup (130 seconds), or the worker-open watchdog (140 seconds). A separate 15-second timeout bounds persistence when the user approves a host key; that error belongs to the approval action rather than the SSH-open error. The optional log records credential-prompt, host-trust, and transport phases; it does not identify a VPN, TCP route, or SSH server as the cause on its own. A user troubleshooting a VPN route also needs to see which connection operations ran and what the terminal returned.
 
 ## User behavior
 

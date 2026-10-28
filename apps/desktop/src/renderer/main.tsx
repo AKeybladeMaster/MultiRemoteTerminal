@@ -220,7 +220,7 @@ function sshOpenError(code: string): string {
   if (code === 'HOST_KEY_REJECTED') return 'The SSH host was not trusted, so the connection was stopped.';
   if (code === 'HOST_KEY_CHANGED') return 'The SSH host key changed. The connection was blocked.';
   if (code === 'CANCELLED') return 'The SSH connection was cancelled.';
-  if (code === 'TIMEOUT') return 'The SSH connection timed out.';
+  if (code === 'TIMEOUT') return 'SSH setup timed out. It can occur during credential entry, host approval, or connection setup. If you chose to record this attempt, review its log for the last phase.';
   return `Could not connect to the SSH server (${code}).`;
 }
 
