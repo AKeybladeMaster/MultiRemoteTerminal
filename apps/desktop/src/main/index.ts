@@ -113,6 +113,7 @@ const sshSessionLogWriter = createSshSessionLogWriter(status => {
 });
 let stopActiveTerminals = (): void => {};
 let focusRequested = false;
+let appWindowCloseRequested = false;
 const rendererGestures = new RendererGestureGate();
 const droppedUploads = new DroppedUploadRegistry();
 const e2eRemoteFileDrop = isE2ETestHookEnabled('--mrt-e2e-file-drop', app.isPackaged, process.env, process.argv);
@@ -139,11 +140,17 @@ function createWindow(): void {
   });
   window = current;
   windowReady = false;
+  current.on('close', () => {
+    appWindowCloseRequested = true;
+    // Window teardown can end SSH sessions before before-quit runs.
+    void sshSessionLogWriter.closeAll();
+  });
   const webContentsId = current.webContents.id;
+  // App close finalizes logs as shutdown before renderer teardown.
   current.webContents.once('destroyed', () => {
     rendererGestures.clear(webContentsId);
     droppedUploads.clearSender(webContentsId);
-    finishSshSessionLogsOwnedBy(webContentsId, pendingSshSessionLogs, sshSessionLogOwnerBySessionId, sshSessionLogWriter);
+    if (!appWindowCloseRequested) finishSshSessionLogsOwnedBy(webContentsId, pendingSshSessionLogs, sshSessionLogOwnerBySessionId, sshSessionLogWriter);
   });
   current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   current.webContents.on('will-navigate', event => event.preventDefault());
@@ -163,8 +170,10 @@ function createWindow(): void {
   });
   current.webContents.on('render-process-gone', () => {
     droppedUploads.clearSender(webContentsId);
-    finishSshSessionLogsOwnedBy(webContentsId, pendingSshSessionLogs, sshSessionLogOwnerBySessionId, sshSessionLogWriter);
-    stopActiveTerminals();
+    if (!appWindowCloseRequested) {
+      finishSshSessionLogsOwnedBy(webContentsId, pendingSshSessionLogs, sshSessionLogOwnerBySessionId, sshSessionLogWriter);
+      stopActiveTerminals();
+    }
   });
   void current.loadURL(APP_URL);
 }
@@ -1002,8 +1011,8 @@ function boot(): void {
     powerShellProfileScripts.clear();
     for (const pending of pendingSshSessionLogs.values()) clearTimeout(pending.timer);
     pendingSshSessionLogs.clear();
-    void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(),
-      localTextEditor.closeAll(), sshSessionLogWriter.closeAll()]))
+    void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => sshSessionLogWriter.closeAll())
+      .then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });

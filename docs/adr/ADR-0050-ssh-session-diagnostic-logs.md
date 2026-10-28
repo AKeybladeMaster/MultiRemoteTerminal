@@ -1,6 +1,6 @@
 # ADR-0050: Explicit local SSH session diagnostic logs
 
-**Status:** Accepted; implementation has partial Windows acceptance (2026-10-28)
+**Status:** Accepted; Windows acceptance verified (2026-10-28)
 
 ## Context
 
@@ -21,4 +21,4 @@ The user can inspect the complete opted-in terminal exchange and connection life
 
 ## Verification
 
-Focused unit tests cover ordered JSONL records, duplicate IDs, failed-open finalization, file and queue caps, and SSH lifecycle/I/O events without credential values. Windows loopback E2E verifies opt-in failed-connect logging, terminal input/output, credential exclusion, and flush on close. Native picker selection/cancellation and packaged SSH-log acceptance remain open, so P-45 stays PARTIAL. See [WP-02C results](../results/WP-02C-ssh-session-diagnostic-logs-2026-10-28.md) and [the feature design](../SSH-SESSION-LOG-WATCHER.md).
+Focused unit tests cover ordered JSONL records, duplicate IDs, failed-open finalization, file and queue caps, simulated `ENOSPC` status while the SSH controller continues input/output, worker-exit failure propagation, and lifecycle/I/O records without credential values. Windows loopback E2E verifies opt-in failed-connect logging, terminal input/output, credential exclusion, flush on close, native consent/Save cancellation and selected-path creation. Portable Windows x64 package E2E verifies an active log stays open until process exit and ends with `application-shutdown`. Windows x64 NSIS install/offline-launch/uninstall acceptance passed with a workspace-local temporary install path; see [WP-02C results](../results/WP-02C-ssh-session-diagnostic-logs-2026-10-28.md) and [the feature design](../SSH-SESSION-LOG-WATCHER.md).

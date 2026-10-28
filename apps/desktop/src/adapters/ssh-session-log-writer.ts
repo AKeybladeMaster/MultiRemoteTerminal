@@ -33,6 +33,8 @@ interface ActiveLog {
   readonly startedAt: number;
   readonly endpoints: readonly SshHostEndpoint[];
   bytesQueued: number;
+  started: boolean;
+  writeError: boolean;
   finishing?: Promise<void>;
 }
 
@@ -46,6 +48,7 @@ export interface SshSessionLogWriter {
 export function createSshSessionLogWriter(
   onStatus: (status: SshSessionLogStatus) => void = () => {},
   maxFileBytes = SSH_SESSION_LOG_MAX_FILE_BYTES,
+  createStream: (path: string) => WriteStream = path => createWriteStream(path, { flags: 'w', mode: 0o600, highWaterMark: 64 * 1024 }),
 ): SshSessionLogWriter {
   const active = new Map<string, ActiveLog>();
 
@@ -67,12 +70,14 @@ export function createSshSessionLogWriter(
     if (log.finishing) return log.finishing;
     log.finishing = (async () => {
       const finalLine = line(log, { type: 'log-finished', reason });
-      if (log.stream.writableLength + Buffer.byteLength(finalLine, 'utf8') <= SSH_SESSION_LOG_MAX_PENDING_BYTES &&
+      if (log.writeError || log.stream.destroyed) log.stream.destroy();
+      else if (log.stream.writableLength + Buffer.byteLength(finalLine, 'utf8') <= SSH_SESSION_LOG_MAX_PENDING_BYTES &&
           log.bytesQueued + Buffer.byteLength(finalLine, 'utf8') <= maxFileBytes) {
         log.bytesQueued += Buffer.byteLength(finalLine, 'utf8');
         log.stream.end(finalLine, 'utf8');
       } else log.stream.end();
       try { await waitForSshSessionLogStream(finished(log.stream), log.stream); } catch { status = 'write-error'; }
+      if (log.writeError) status = 'write-error';
       if (active.get(log.sessionId) === log) active.delete(log.sessionId);
       try {
         if (status) onStatus({ sessionId: log.sessionId, status: 'stopped', reason: status, fileName: log.fileName });
@@ -91,10 +96,14 @@ export function createSshSessionLogWriter(
           !normalized || normalized.length < 1 || normalized.length > 4 || normalized.some(endpoint => endpoint === undefined)) {
         return failure(active.has(sessionId) ? 'BUSY' : 'INVALID_REQUEST');
       }
-      const stream = createWriteStream(path, { flags: 'w', mode: 0o600, highWaterMark: 64 * 1024 });
-      const log: ActiveLog = { sessionId, fileName: basename(path), stream, startedAt: performance.now(), endpoints: normalized as SshHostEndpoint[], bytesQueued: 0 };
+      const stream = createStream(path);
+      const log: ActiveLog = { sessionId, fileName: basename(path), stream, startedAt: performance.now(), endpoints: normalized as SshHostEndpoint[],
+        bytesQueued: 0, started: false, writeError: false };
       active.set(sessionId, log);
-      stream.on('error', () => { void finalize(log, 'write-error', 'write-error'); });
+      stream.on('error', () => {
+        log.writeError = true;
+        if (log.started && active.get(sessionId) === log) void finalize(log, 'write-error', 'write-error');
+      });
       try {
         await waitForSshSessionLogStream(new Promise<void>((resolve, reject) => {
           stream.once('open', () => resolve());
@@ -102,6 +111,7 @@ export function createSshSessionLogWriter(
         }), stream);
         const header = line(log, { type: 'attempt-started', target: log.endpoints.at(-1), gateways: log.endpoints.slice(0, -1) });
         if (!enqueue(log, header, true)) throw new Error('log start record exceeds limits');
+        log.started = true;
         return { ok: true, result: { fileName: log.fileName } };
       } catch {
         active.delete(sessionId);

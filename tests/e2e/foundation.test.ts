@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
+import { runNativeSshLogDialog } from './windows-native-ssh-session-log-dialog.ts';
+import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 interface Ssh2FixtureClient extends EventEmitter {
   end(): void;
@@ -959,7 +961,7 @@ test('SSH quick connect validates the address before any credential prompt and r
 test('SSH session log captures failed opens and active terminal input/output, then flushes on close', async () => {
   test.skip(process.platform !== 'win32', 'SSH session log E2E acceptance runs on Windows');
   test.setTimeout(90_000);
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-session-log-e2e-'));
+  const profile = await createWorkspaceTempDirectory('mrt-ssh-session-log-e2e-');
   const secret = 'sftp-e2e-secret';
   const username = 'mrt-e2e-user';
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
@@ -1029,6 +1031,49 @@ test('SSH session log captures failed opens and active terminal input/output, th
       await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     };
 
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const defaultDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await expect(defaultDialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' })).not.toBeChecked();
+    await defaultDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await defaultDialog.getByLabel('Port').fill(String(address.port));
+    await defaultDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const defaultTrust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(defaultTrust).toBeVisible({ timeout: 15_000 });
+    await defaultTrust.getByRole('button', { name: 'Trust key and connect' }).click();
+    const defaultTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(defaultTab).toBeVisible({ timeout: 20_000 });
+    const defaultPanelId = await defaultTab.getAttribute('aria-controls');
+    if (!defaultPanelId) throw new Error('Missing default SSH terminal panel');
+    const defaultPanel = page.locator(`#${defaultPanelId}`);
+    await expect(defaultPanel.locator('.xterm-rows')).toContainText('MRT-SESSION-LOG-READY', { timeout: 15_000 });
+    const defaultCanary = 'MRT-DEFAULT-SESSION-CANARY';
+    await defaultPanel.locator('.terminal-host').click();
+    await page.keyboard.type(defaultCanary);
+    await page.keyboard.press('Enter');
+    await expect(defaultPanel.locator('.xterm-rows')).toContainText(defaultCanary, { timeout: 10_000 });
+    expect(await logNames()).toEqual([]);
+
+    const savedName = 'Unlogged SSH profile';
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill(savedName);
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const reopenButton = page.getByRole('button', { name: `Open ${savedName}`, exact: true });
+    await expect(reopenButton).toBeVisible();
+    await reopenButton.click();
+    const reopenedTab = page.getByRole('tab', { name: savedName, exact: true });
+    await expect(reopenedTab).toBeVisible({ timeout: 20_000 });
+    const reopenedPanelId = await reopenedTab.getAttribute('aria-controls');
+    if (!reopenedPanelId) throw new Error('Missing reopened saved SSH terminal panel');
+    const reopenedPanel = page.locator(`#${reopenedPanelId}`);
+    await expect(reopenedPanel.locator('.xterm-rows')).toContainText('MRT-SESSION-LOG-READY', { timeout: 15_000 });
+    const reopenedCanary = 'MRT-SAVED-SESSION-CANARY';
+    await reopenedPanel.locator('.terminal-host').click();
+    await page.keyboard.type(reopenedCanary);
+    await page.keyboard.press('Enter');
+    await expect(reopenedPanel.locator('.xterm-rows')).toContainText(reopenedCanary, { timeout: 10_000 });
+    expect(await logNames()).toEqual([]);
+
     await openLoggingDialog(unavailableAddress.port);
     await expect.poll(async () => (await logNames()).length, { timeout: 15_000 }).toBe(1);
     const failedLogName = (await logNames())[0];
@@ -1039,17 +1084,16 @@ test('SSH session log captures failed opens and active terminal input/output, th
     expect(failedLog.some(record => record.type === 'attempt-started')).toBe(true);
     expect(failedLog.find(record => record.type === 'connection-failed')).toMatchObject({ phase: 'transport' });
     expect(failedLog.at(-1)).toMatchObject({ type: 'log-finished', reason: 'connection-failed' });
+    expect(failedLog.some(record => record.type === 'host-trust')).toBe(false);
     const failedLogText = await readFile(join(profile, failedLogName), 'utf8');
     expect(failedLogText).not.toContain(username);
     expect(failedLogText).not.toContain(secret);
     expect(failedLogText).not.toContain(profile);
 
     await openLoggingDialog(address.port);
-    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
-    await expect(trust, `Fixture errors: ${fixtureErrors.join(', ')}; page: ${await page.locator('body').innerText()}`)
-      .toBeVisible({ timeout: 15_000 });
-    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
-    const sshTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    const sshTabs = page.getByRole('tab').filter({ hasText: /SSH/ });
+    await expect(sshTabs).toHaveCount(3, { timeout: 20_000 });
+    const sshTab = sshTabs.last();
     await expect(sshTab).toBeVisible({ timeout: 20_000 });
     const panelId = await sshTab.getAttribute('aria-controls');
     if (!panelId) throw new Error('Missing logged SSH terminal panel');
@@ -1070,6 +1114,7 @@ test('SSH session log captures failed opens and active terminal input/output, th
       const output = records.filter(record => record.type === 'terminal-output').map(record => String(record.data ?? '')).join('');
       return input.includes(canary) && output.includes(canary);
     }, { timeout: 15_000 }).toBe(true);
+    expect((await logRecords(activeLogName)).some(record => record.type === 'host-trust' && record.outcome === 'trusted')).toBe(true);
     const activeLogText = await readFile(join(profile, activeLogName), 'utf8');
     expect(activeLogText).toContain('127.0.0.1');
     expect(activeLogText).not.toContain(username);
@@ -1079,12 +1124,83 @@ test('SSH session log captures failed opens and active terminal input/output, th
     await app.close();
     app = undefined;
     const closedLog = await logRecords(activeLogName);
-    expect(closedLog.at(-1)?.type).toBe('log-finished');
-    expect(['session-closed', 'application-shutdown']).toContain(closedLog.at(-1)?.reason);
+    expect(closedLog.at(-1)).toMatchObject({ type: 'log-finished', reason: 'application-shutdown' });
   } finally {
     await app?.close();
     for (const client of clients) client.end();
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SSH session log native consent and Save dialogs support cancellation and local file selection', async () => {
+  test.skip(process.platform !== 'win32', 'Native SSH session log dialog acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ssh-session-log-dialog-e2e-');
+  const selectedLogPath = join(profile, 'native-selected.log');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    const unusedPortServer = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      unusedPortServer.once('error', rejectListen);
+      unusedPortServer.listen(0, '127.0.0.1', resolveListen);
+    });
+    const unusedAddress = unusedPortServer.address();
+    if (!unusedAddress || typeof unusedAddress === 'string') throw new Error('Could not reserve an unused loopback port');
+    await new Promise<void>((resolveClose, rejectClose) => {
+      unusedPortServer.close(error => error ? rejectClose(error) : resolveClose());
+    });
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const sshTabs = () => page.getByRole('tab').filter({ hasText: /SSH/ });
+    const logNames = async () => (await readDirectory(profile)).filter(name => name.toLowerCase().endsWith('.log'));
+    const credentialPromptCount = () => app!.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'));
+    const requestLoggedConnection = async () => {
+      await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+      await dialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' }).check();
+      await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+      await dialog.getByLabel('Port').fill(String(unusedAddress.port));
+      await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    };
+    const expectAttemptCancelled = async () => {
+      await expect.poll(credentialPromptCount).toBe(0);
+      await expect(sshTabs()).toHaveCount(0);
+      expect(await logNames()).toEqual([]);
+    };
+
+    await requestLoggedConnection();
+    await runNativeSshLogDialog('cancel-consent');
+    await expectAttemptCancelled();
+
+    await requestLoggedConnection();
+    await runNativeSshLogDialog('cancel-save');
+    await expectAttemptCancelled();
+
+    await requestLoggedConnection();
+    await runNativeSshLogDialog('save', selectedLogPath);
+    await expect.poll(credentialPromptCount, { timeout: 15_000 }).toBe(1);
+    await expect.poll(async () => {
+      const text = await readFile(selectedLogPath, 'utf8').catch(() => '');
+      return text.includes('"type":"log-finished"') && text.includes('"reason":"connection-failed"');
+    }, { timeout: 20_000 }).toBe(true);
+
+    const records = (await readFile(selectedLogPath, 'utf8')).split('\n').filter(Boolean)
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(records.some(record => record.type === 'attempt-started')).toBe(true);
+    expect(records.find(record => record.type === 'connection-failed')).toMatchObject({ phase: 'transport' });
+    expect(records.at(-1)).toMatchObject({ type: 'log-finished', reason: 'connection-failed' });
+    expect(await logNames()).toEqual(['native-selected.log']);
+    const text = await readFile(selectedLogPath, 'utf8');
+    expect(text).not.toContain('mrt-e2e-user');
+    expect(text).not.toContain('sftp-e2e-secret');
+    expect(text).not.toContain(profile);
+    await expect(sshTabs()).toHaveCount(0);
+  } finally {
+    await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

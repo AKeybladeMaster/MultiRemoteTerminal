@@ -1,6 +1,6 @@
 # SSH session log watcher (F-027 / P-45)
 
-**Status:** In progress (WP-02C). Windows loopback acceptance now covers a failed open, active terminal input/output, credential exclusion and flush on close. Native Save picker selection/cancellation and packaged SSH-log acceptance remain open; P-45 is PARTIAL.
+**Status:** Verified for F-027/P-45 on Windows (WP-02C). Windows loopback E2E covers default-off and saved-profile reopen behavior, failed opens, live terminal input/output, credential exclusion, flush, native consent/Save cancellation and selected-path logging. Focused tests simulate `ENOSPC`, verify the `stopped/write-error` status callback and prove the active SSH controller still accepts input/output; worker-exit failure propagation and failed-log final status are also covered. Portable Windows x64 package E2E verifies an active log ends with `application-shutdown`. The Windows x64 NSIS test also completed install, offline launch and uninstall using a workspace-local temporary install path; signed distribution remains unverified.
 
 ## Problem
 
@@ -38,7 +38,7 @@ The renderer never receives or supplies a filesystem path. A trusted submit with
 3. A failed attempt contains ordered start, observable phase/failure and elapsed-time records; the same `TIMEOUT` code alone is never presented as proof of a VPN, TCP or SSH-protocol cause.
 4. A live SSH session records writes from every existing terminal input path and received output, with timestamps and escaped data, plus resize and close.
 5. Credential dialog contents, private-key bytes, passwords passed through the vault, SFTP contents and tunnel traffic do not enter the log.
-6. Queue/file caps, disk-full, worker crash and shutdown finalize or safely stop the logger without blocking or closing the SSH transport. The UI reports the final recording state.
+6. Queue/file caps, disk-full, worker crash and shutdown finalize or safely stop the logger without blocking or closing the SSH transport. Focused tests verify the `write-error` status after simulated `ENOSPC`, continued SSH input/output after recording stops, sanitized worker-failure activity and failed-log final status. The UI reports the final recording state.
 7. Windows E2E verifies native path selection, failed open, live input/output, final flush and content boundaries. Focused application/adapter tests verify validation, order, caps and cleanup.
 
 ## Related decisions

@@ -1,17 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { Writable } from 'node:stream';
 import type { WriteStream } from 'node:fs';
 import { createSshSessionLogWriter, SSH_SESSION_LOG_MAX_PENDING_BYTES, waitForSshSessionLogStream } from '../../apps/desktop/src/adapters/ssh-session-log-writer.ts';
 
 const sessionId = '11111111-1111-4111-8111-111111111111';
+const workspaceTempRoot = resolve('.tmp');
+
+async function createWorkspaceTempDirectory(): Promise<string> {
+  await mkdir(workspaceTempRoot, { recursive: true });
+  return mkdtemp(join(workspaceTempRoot, 'mrt-ssh-log-'));
+}
 
 test('SSH session log writes ordered JSONL with escaped terminal data and no filesystem path', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'mrt-ssh-log-'));
+  const directory = await createWorkspaceTempDirectory();
   const path = join(directory, 'session.log');
   const writer = createSshSessionLogWriter();
   try {
@@ -39,8 +44,9 @@ test('SSH session log writes ordered JSONL with escaped terminal data and no fil
 });
 
 test('SSH session log rejects duplicate live session IDs and finalizes an attempt failure', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'mrt-ssh-log-'));
-  const writer = createSshSessionLogWriter();
+  const directory = await createWorkspaceTempDirectory();
+  let status: unknown;
+  const writer = createSshSessionLogWriter(event => { status = event; });
   try {
     const started = await writer.start(sessionId, join(directory, 'failed.log'), [{ host: 'linux.internal', port: 22 }]);
     assert.equal(started.ok, true);
@@ -53,6 +59,7 @@ test('SSH session log rejects duplicate live session IDs and finalizes an attemp
     assert.match(contents, /"phase":"credential-prompt"/u);
     assert.match(contents, /"type":"connection-failed"/u);
     assert.match(contents, /"networkFailure":"DNS_LOOKUP_FAILED"/u);
+    assert.deepEqual(status, { sessionId, status: 'finished', reason: 'connection-failed', fileName: 'failed.log' });
   } finally {
     await writer.closeAll();
     await rm(directory, { recursive: true, force: true });
@@ -60,7 +67,7 @@ test('SSH session log rejects duplicate live session IDs and finalizes an attemp
 });
 
 test('SSH session log stops at its file cap and keeps a complete final record', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'mrt-ssh-log-'));
+  const directory = await createWorkspaceTempDirectory();
   const path = join(directory, 'capped.log');
   let status: unknown;
   const writer = createSshSessionLogWriter(event => { status = event; }, 2_048);
@@ -81,7 +88,7 @@ test('SSH session log stops at its file cap and keeps a complete final record', 
 });
 
 test('SSH session log bounds the pending writer queue', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'mrt-ssh-log-'));
+  const directory = await createWorkspaceTempDirectory();
   const path = join(directory, 'queued.log');
   let status: unknown;
   const writer = createSshSessionLogWriter(event => { status = event; });

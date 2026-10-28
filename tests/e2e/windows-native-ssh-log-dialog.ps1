@@ -1,0 +1,211 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app')]
+    [string] $Action,
+    [string] $FilePath = '',
+    [int] $TargetProcessId = 0
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class MrtNativeDialog {
+    public delegate bool WindowCallback(IntPtr window, IntPtr parameter);
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(WindowCallback callback, IntPtr parameter);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr window, StringBuilder text, int maxCount);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SetWindowText(IntPtr window, string text);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint attach, uint attachTo, bool shouldAttach);
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetActiveWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr window);
+    public static bool ActivateWindow(IntPtr window) {
+        if (GetForegroundWindow() == window) return true;
+        uint currentThread = GetCurrentThreadId();
+        uint targetProcess;
+        uint targetThread = GetWindowThreadProcessId(window, out targetProcess);
+        uint foregroundProcess;
+        uint foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out foregroundProcess);
+        bool attachedForeground = foregroundThread != 0 && foregroundThread != currentThread &&
+            AttachThreadInput(currentThread, foregroundThread, true);
+        bool attachedTarget = targetThread != 0 && targetThread != currentThread && targetThread != foregroundThread &&
+            AttachThreadInput(currentThread, targetThread, true);
+        try {
+            BringWindowToTop(window);
+            SetForegroundWindow(window);
+            SetActiveWindow(window);
+            SetFocus(window);
+            return GetForegroundWindow() == window;
+        } finally {
+            if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+            if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+        }
+    }
+    public static IntPtr FindTopLevelWindow(string expectedTitle, int expectedProcessId) {
+        IntPtr result = IntPtr.Zero;
+        WindowCallback callback = (window, parameter) => {
+            if (!IsWindowVisible(window)) return true;
+            var title = new StringBuilder(512);
+            GetWindowText(window, title, title.Capacity);
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            if ((expectedProcessId == 0 || processId == expectedProcessId) &&
+                String.Equals(title.ToString(), expectedTitle, StringComparison.Ordinal)) {
+                result = window;
+                return false;
+            }
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        return result;
+    }
+}
+"@
+
+function Wait-Dialog([string] $title, [int] $timeoutSeconds = 20, [int] $processId = 0) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    do {
+        $window = [MrtNativeDialog]::FindTopLevelWindow($title, $processId)
+        if ($window -ne [IntPtr]::Zero) { return $window }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Timed out waiting for native dialog '$title'."
+}
+
+function Wait-DialogClosed([string] $title, [int] $timeoutSeconds = 10, [int] $processId = 0) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    do {
+        if ([MrtNativeDialog]::FindTopLevelWindow($title, $processId) -eq [IntPtr]::Zero) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Native dialog '$title' did not close."
+}
+
+function Focus-Dialog([IntPtr] $dialog) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    do {
+        if ([MrtNativeDialog]::ActivateWindow($dialog)) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Could not focus the native SSH log dialog.'
+}
+
+function Send-DialogKeys([IntPtr] $dialog, [string] $keys) {
+    Focus-Dialog $dialog
+    Start-Sleep -Milliseconds 100
+    [System.Windows.Forms.SendKeys]::SendWait($keys)
+}
+
+function ConvertTo-SendKeysLiteral([string] $text) {
+    $result = [System.Text.StringBuilder]::new()
+    foreach ($character in $text.ToCharArray()) {
+        switch ([string]$character) {
+            '+' { [void]$result.Append('{+}') }
+            '^' { [void]$result.Append('{^}') }
+            '%' { [void]$result.Append('{%}') }
+            '~' { [void]$result.Append('{~}') }
+            '(' { [void]$result.Append('{(}') }
+            ')' { [void]$result.Append('{)}') }
+            '{' { [void]$result.Append('{{}') }
+            '}' { [void]$result.Append('{}}') }
+            default { [void]$result.Append($character) }
+        }
+    }
+    return $result.ToString()
+}
+
+function Wait-FilenameValue([System.Windows.Automation.AutomationElement] $field, [string] $expected) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(1)
+    do {
+        if ($field.Current.Name -eq $expected) { return $true }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+if ($Action -eq 'close-app') {
+    if ($TargetProcessId -lt 1) { throw 'A target app process ID is required.' }
+    $appWindow = Wait-Dialog 'MultiRemoteTerminal' 20 $TargetProcessId
+    if (-not [MrtNativeDialog]::PostMessage($appWindow, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
+        throw 'Could not close the packaged app window.'
+    }
+    Wait-DialogClosed 'MultiRemoteTerminal' 10 $TargetProcessId
+    exit 0
+}
+
+$consent = Wait-Dialog 'Sensitive SSH session log'
+if ($Action -eq 'cancel-consent') {
+    Send-DialogKeys $consent '{ENTER}'
+    Wait-DialogClosed 'Sensitive SSH session log'
+    exit 0
+}
+
+Send-DialogKeys $consent '{LEFT}{ENTER}'
+Wait-DialogClosed 'Sensitive SSH session log'
+$saveDialog = Wait-Dialog 'Save sensitive SSH session log'
+if ($Action -eq 'cancel-save') {
+    Send-DialogKeys $saveDialog '{ESC}'
+    Wait-DialogClosed 'Save sensitive SSH session log'
+    exit 0
+}
+
+if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.log') {
+    throw 'A full .log path is required for native Save dialog selection.'
+}
+Focus-Dialog $saveDialog
+[System.Windows.Forms.SendKeys]::SendWait('%n')
+Start-Sleep -Milliseconds 100
+$fileNameField = [System.Windows.Automation.AutomationElement]::FocusedElement
+if ($null -eq $fileNameField -or $fileNameField.Current.ClassName -ne 'Edit' -or $fileNameField.Current.AutomationId -ne '1001') {
+    throw 'Could not focus the native Save dialog filename field.'
+}
+$fieldHandle = [IntPtr]::new([long]$fileNameField.Current.NativeWindowHandle)
+if ($fieldHandle -eq [IntPtr]::Zero) { throw 'The native filename field has no window handle.' }
+$valueSet = $false
+try {
+    $legacyPattern = $fileNameField.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
+    $legacyPattern.SetValue($FilePath)
+    $valueSet = Wait-FilenameValue $fileNameField $FilePath
+} catch { }
+if (-not $valueSet -and [MrtNativeDialog]::SetWindowText($fieldHandle, $FilePath)) {
+    $valueSet = Wait-FilenameValue $fileNameField $FilePath
+}
+if (-not $valueSet) {
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    [System.Windows.Forms.SendKeys]::SendWait((ConvertTo-SendKeysLiteral $FilePath))
+    $valueSet = Wait-FilenameValue $fileNameField $FilePath
+}
+if (-not $valueSet) { throw 'The native filename field did not confirm the selected path.' }
+Send-DialogKeys $saveDialog '{ENTER}'
+Wait-DialogClosed 'Save sensitive SSH session log'
+
+$deadline = [DateTime]::UtcNow.AddSeconds(10)
+do {
+    if (Test-Path -LiteralPath $FilePath -PathType Leaf) { exit 0 }
+    Start-Sleep -Milliseconds 100
+} while ([DateTime]::UtcNow -lt $deadline)
+throw 'The native Save dialog closed without creating the selected log file.'
