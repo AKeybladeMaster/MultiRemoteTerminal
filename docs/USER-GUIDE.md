@@ -85,8 +85,11 @@ that the remote file still matches the version you opened; if another process
 changed it, the editor keeps your draft and asks you to reload before trying
 again. **Reload** replaces the editor contents after you confirm discarding a
 draft. Closing with unsaved changes also asks for confirmation. Binary files,
-invalid UTF-8 and larger files are not opened by the text editor. Saves are
-explicit. The syntax profile automatically recognizes Markdown (`.md`, `.markdown`),
+invalid UTF-8 and larger files are not opened by the text editor. Saving is
+explicit by default. To opt in, check **Save automatically after 1 second of
+inactivity**. It uses the same revision check, so a conflict keeps your draft
+and stops automatic retries until you edit again. This option resets when you
+close the editor or open another file. The syntax profile automatically recognizes Markdown (`.md`, `.markdown`),
 Shell (`.sh`, `.bash`, `.zsh`, `.ksh`), PowerShell (`.ps1`, `.psm1`, `.psd1`, `.pssc`),
 Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`), INI configuration (`.ini`, `.cfg`), XML (`.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`) and JSON files; you
 can choose another profile from **Syntax profile**. Colors are visual hints only:
@@ -97,7 +100,7 @@ collections and block scalar text; the INI profile colors section headers, keys,
 quoted values, common numbers/booleans and full-line comments. INI inline comments
 and dialect validation are not supported. The XML profile colors tags, attributes, quoted values, comments, CDATA, declarations and text entity references; it does not resolve entities or validate XML. The editor does not render, validate or execute
 the file. Preview coloring is bounded, while
-the full file remains editable. Autosave is not available. Files with a consistent
+the full file remains editable. Files with a consistent
 line-ending convention keep it when saved. Mixed line endings use the first
 line-ending style found in the file.
 

@@ -255,6 +255,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-editor-syntax-controls select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .text-editor-syntax-controls select:disabled { opacity: .8; }
 .text-editor-syntax-controls p { flex: 1 1 100%; }
+.text-editor-autosave { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .text-editor-code-surface {
   position: relative; flex: 1 1 auto; width: 100%; min-height: 120px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px;
   background: var(--terminal-background); overscroll-behavior: contain;

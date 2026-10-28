@@ -19,6 +19,7 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
   const contentId = useId();
   const [file, setFile] = useState<LocalTextFile>();
   const [draft, setDraft] = useState('');
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
   const [busy, setBusy] = useState<'loading' | 'saving'>();
   const [error, setError] = useState<string>();
   const [closeIntent, setCloseIntent] = useState<CloseIntent>();
@@ -37,6 +38,7 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
     if (!open || !initialFile) return;
     setFile(initialFile);
     setDraft(textareaContent(initialFile.content));
+    setAutoSaveEnabled(false);
     setBusy(undefined);
     setError(undefined);
     setCloseIntent(undefined);
@@ -78,6 +80,12 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
     setCloseIntent(undefined);
   }, [busy, bytes, closeIntent, dirty, draft, file, lineEnding]);
 
+  useEffect(() => {
+    if (!open || !autoSaveEnabled || !dirty || busy !== undefined || closeIntent || bytes === undefined || error) return;
+    const timeout = window.setTimeout(() => { void save(); }, 1_000);
+    return () => window.clearTimeout(timeout);
+  }, [autoSaveEnabled, busy, bytes, closeIntent, dirty, error, open, save]);
+
   const requestClose = useCallback(() => {
     if (busy) return;
     if (dirty) setCloseIntent('close');
@@ -111,6 +119,7 @@ export function LocalTextEditorDialog({ open, file: initialFile, onClose }: Loca
         onClick={() => resolveCloseIntent(true)}>{closeIntent === 'reload' ? 'Discard and reload' : 'Discard and close'}</button>
     </div>}
     <TextEditorContent key={file?.selectionId ?? 'empty'} contentId={contentId} fileName={file?.fileName ?? ''} value={draft}
+      autoSaveEnabled={autoSaveEnabled} onAutoSaveChange={setAutoSaveEnabled}
       disabled={!file || busy !== undefined} describedBy={`${contentId}-hint`}
       onChange={value => { setDraft(value); setError(undefined); setCloseIntent(undefined); }} />
     <p id={`${contentId}-hint`} className="remote-text-editor-hint">
