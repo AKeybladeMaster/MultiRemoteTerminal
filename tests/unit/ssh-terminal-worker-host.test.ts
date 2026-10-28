@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { UtilityProcess } from 'electron';
+import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
 import { SshTerminalWorkerHost } from '../../apps/desktop/src/adapters/ssh-terminal-worker-host.ts';
 
 class FakeUtilityProcess extends EventEmitter {
@@ -21,6 +22,18 @@ class FakeUtilityProcess extends EventEmitter {
     this.killed = true;
     queueMicrotask(() => this.emit('exit', 0));
     return true;
+  }
+}
+
+class CategorizedOpenFailureUtilityProcess extends FakeUtilityProcess {
+  override postMessage(input: unknown): void {
+    const request = input as Record<string, unknown>;
+    this.requests.push(request);
+    const failedOpen = request.command === 'open';
+    queueMicrotask(() => this.emit('message', {
+      version: 1, type: 'reply', requestId: request.requestId, ok: !failedOpen,
+      ...(failedOpen ? { errorCode: 'UNAVAILABLE', networkFailure: 'HOST_UNREACHABLE' } : { result: {} })
+    }));
   }
 }
 
@@ -145,6 +158,37 @@ test('worker host consumes the raw message payload emitted by Electron utilityPr
   assert.equal(worker.requests[0]?.command, 'open');
   await host.shutdown();
   assert.equal(worker.requests.at(-1)?.command, 'shutdown');
+  assert.equal(worker.killed, true);
+});
+
+test('worker crash reports a sanitized failure for each active SSH terminal', async () => {
+  const worker = new FakeUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const events: LocalTerminalEvent[] = [];
+  host.subscribe(event => events.push(event));
+
+  await host.open(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' },
+    { columns: 80, rows: 24 }, async () => true);
+  worker.emit('exit', 9);
+
+  assert.deepEqual(events, [{ kind: 'failure', sessionId, error: { code: 'UNAVAILABLE', target: 'terminal', retryable: true } }]);
+  await host.shutdown();
+});
+
+test('worker host preserves only the validated network failure category on an SSH open error', async () => {
+  const worker = new CategorizedOpenFailureUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+
+  await assert.rejects(host.open(sessionId, { host: 'server.example.net', port: 22 }, { username: 'alice', password: 'secret' },
+    { columns: 80, rows: 24 }, async () => true), error => {
+      assert.equal((error as { code?: string }).code, 'UNAVAILABLE');
+      assert.equal((error as { networkFailure?: string }).networkFailure, 'HOST_UNREACHABLE');
+      assert.equal((error as Error).message, 'SSH terminal operation failed');
+      return true;
+    });
+  await host.shutdown();
   assert.equal(worker.killed, true);
 });
 

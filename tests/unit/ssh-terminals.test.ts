@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import type { WriteStream } from 'node:fs';
+import { resolve } from 'node:path';
+import { Writable } from 'node:stream';
+import { createSshSessionLogWriter, SSH_SESSION_LOG_MAX_FILE_BYTES } from '../../apps/desktop/src/adapters/ssh-session-log-writer.ts';
 import { createSshTerminalController, SshTerminalProviderError } from '../../packages/application/src/ssh-terminals.ts';
 import type { SshAuthenticationCredentials, SshPrivateKeySelection, SshTerminalProvider } from '../../packages/application/src/ssh-terminals.ts';
 import type { CredentialPrompt, CredentialPromptCancellation, CredentialPromptResult } from '../../packages/application/src/credential-prompt.ts';
@@ -85,6 +89,7 @@ class FakeProvider implements SshTerminalProvider {
   readonly closed: string[] = [];
   readonly listeners = new Set<(event: LocalTerminalEvent) => void>();
   readonly listedDirectories: Array<{ readonly sessionId: string; readonly path: string; readonly cancellation?: CancellationSignal }> = [];
+  openError: Error | undefined;
   waitForDirectoryCancellation = false;
   directoryError: Error | undefined;
   directoryListStarted: (() => void) | undefined;
@@ -105,6 +110,7 @@ class FakeProvider implements SshTerminalProvider {
     this.gatewayCredentialRefs.push(...gatewayHops.map(hop => hop.credentials));
     for (const hop of gatewayHops) if (!await verifyHost(hop.endpoint, evidence)) throw new Error('Gateway host verification failed');
     if (!await verifyHost(endpoint, evidence)) throw new Error('Host verification failed');
+    if (this.openError) throw this.openError;
   }
   async openFiles(session: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
@@ -564,4 +570,130 @@ test('changed host keys block SSH and produce a non-secret warning event', async
   assert.equal((await controller.revokeHostKey(warning.host, warning.port)).ok, true);
   assert.deepEqual(trust.revoked, [{ host: 'server.example.net', port: 22 }]);
   await controller.dispose();
+});
+
+test('SSH activity exposes lifecycle and terminal I/O without credential values', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'private-user', secret: 'private-password' }), trust);
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  controller.subscribeActivity(event => activity.push(event));
+
+  assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+  assert.equal((await controller.write(sessionId, 'id\n')).ok, true);
+  assert.equal((await controller.resize(sessionId, { columns: 100, rows: 30 })).ok, true);
+  for (const listener of provider.listeners) listener({ kind: 'data', sessionId, sequence: 1, data: 'remote output\n' });
+  assert.equal((await controller.close(sessionId)).ok, true);
+
+  assert.deepEqual(activity.map(event => event.type), [
+    'credential-prompt-started', 'credential-prompt-finished', 'transport', 'host-trust', 'transport',
+    'terminal-input', 'terminal-resize', 'terminal-output', 'session-closed'
+  ]);
+  assert.equal(activity.some(event => event.data === 'id\n'), true);
+  assert.equal(activity.some(event => event.data === 'remote output\n'), true);
+  const serialized = JSON.stringify(activity);
+  assert.equal(serialized.includes('private-user'), false);
+  assert.equal(serialized.includes('private-password'), false);
+  await controller.dispose();
+});
+
+test('SSH transport activity records only an allowlisted network failure category', async () => {
+  const provider = new FakeProvider();
+  const privateRawMessage = 'getaddrinfo ENOTFOUND internal-host.private.example';
+  provider.openError = Object.assign(new SshTerminalProviderError('UNAVAILABLE'), {
+    message: privateRawMessage,
+    networkFailure: 'DNS_LOOKUP_FAILED'
+  });
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider,
+    promptWith({ kind: 'provided', username: 'private-user', secret: 'private-password' }), trust);
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  controller.subscribeActivity(event => activity.push(event));
+
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(activity.find(event => event.type === 'transport' && event.outcome === 'failed'), {
+    type: 'transport', sessionId, outcome: 'failed', code: 'UNAVAILABLE', networkFailure: 'DNS_LOOKUP_FAILED'
+  });
+  const serialized = JSON.stringify(activity);
+  assert.equal(serialized.includes(privateRawMessage), false);
+  assert.equal(serialized.includes('private-user'), false);
+  assert.equal(serialized.includes('private-password'), false);
+  await controller.dispose();
+});
+
+test('SSH worker failure is surfaced as a transport failure and ends that runtime session', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  const terminalEvents: LocalTerminalEvent[] = [];
+  controller.subscribeActivity(event => activity.push(event));
+  controller.subscribe(event => terminalEvents.push(event));
+
+  assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+  for (const listener of provider.listeners) {
+    listener({ kind: 'failure', sessionId, error: { code: 'UNAVAILABLE', target: 'terminal', retryable: true } });
+  }
+
+  assert.deepEqual(activity.at(-1), { type: 'connection-failed', sessionId, phase: 'transport', code: 'UNAVAILABLE' });
+  assert.deepEqual(terminalEvents.at(-1), { kind: 'failure', sessionId, error: { code: 'UNAVAILABLE', target: 'terminal', retryable: true } });
+  assert.equal((await controller.write(sessionId, 'echo after crash\n')).ok, false);
+  await controller.dispose();
+});
+
+test('SSH credential prompt timeout is logged as its own phase', async () => {
+  const provider = new FakeProvider();
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'timeout' }), new FakeTrust());
+  const activity: Array<{ type: string; [key: string]: unknown }> = [];
+  controller.subscribeActivity(event => activity.push(event));
+
+  const result = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(activity.slice(-1)[0], {
+    type: 'connection-failed', sessionId, phase: 'credential-prompt', code: 'TIMEOUT'
+  });
+  assert.equal(provider.opened.length, 0);
+  await controller.dispose();
+});
+
+test('SSH log disk-full error reports stopped recording without closing or blocking the live session', async () => {
+  const provider = new FakeProvider();
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  let resolveStatus: ((status: unknown) => void) | undefined;
+  const stopped = new Promise<unknown>(resolveStatusPromise => { resolveStatus = resolveStatusPromise; });
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      if (chunk.toString().includes('"type":"terminal-output"')) {
+        callback(Object.assign(new Error('disk full'), { code: 'ENOSPC' }));
+      } else callback();
+    }
+  }) as unknown as WriteStream;
+  queueMicrotask(() => stream.emit('open', 0));
+  const logWriter = createSshSessionLogWriter(status => resolveStatus?.(status), SSH_SESSION_LOG_MAX_FILE_BYTES, () => stream);
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust);
+  const terminalEvents: LocalTerminalEvent[] = [];
+  controller.subscribe(event => terminalEvents.push(event));
+  controller.subscribeActivity(event => logWriter.append(event));
+
+  try {
+    assert.equal((await logWriter.start(sessionId, resolve('.tmp', 'ssh-session-log-enospc.log'), [{ host: 'server.example.net', port: 22 }])).ok, true);
+    assert.equal((await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 })).ok, true);
+    for (const listener of provider.listeners) listener({ kind: 'data', sessionId, sequence: 1, data: 'first output' });
+
+    assert.deepEqual(await stopped, { sessionId, status: 'stopped', reason: 'write-error', fileName: 'ssh-session-log-enospc.log' });
+    for (const listener of provider.listeners) listener({ kind: 'data', sessionId, sequence: 2, data: 'later output' });
+    assert.equal((await controller.write(sessionId, 'echo still-connected\n')).ok, true);
+    assert.equal(terminalEvents.filter(event => event.kind === 'data').length, 2);
+    assert.deepEqual(provider.closed, []);
+  } finally {
+    await logWriter.closeAll();
+    await controller.dispose();
+  }
 });

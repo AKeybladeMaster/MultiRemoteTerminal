@@ -220,7 +220,7 @@ function sshOpenError(code: string): string {
   if (code === 'HOST_KEY_REJECTED') return 'The SSH host was not trusted, so the connection was stopped.';
   if (code === 'HOST_KEY_CHANGED') return 'The SSH host key changed. The connection was blocked.';
   if (code === 'CANCELLED') return 'The SSH connection was cancelled.';
-  if (code === 'TIMEOUT') return 'The SSH connection timed out.';
+  if (code === 'TIMEOUT') return 'SSH setup timed out. It can occur during credential entry, host approval, or connection setup. If you chose to record this attempt, review its log for the last phase.';
   return `Could not connect to the SSH server (${code}).`;
 }
 
@@ -336,6 +336,7 @@ function Workbench() {
   const [sshConnectOpen, setSshConnectOpen] = useState(false);
   const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
   const [sshAuthenticationMethod, setSshAuthenticationMethod] = useState<SshAuthenticationMethod>('password');
+  const [recordSshSessionLog, setRecordSshSessionLog] = useState(false);
   const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' | 'sftp' }>>();
   const [sshGatewayProfiles, setSshGatewayProfiles] = useState<readonly Extract<SavedSessionDefinition, { kind: 'ssh' }>[]>([]);
   const [sshGatewayProfileIds, setSshGatewayProfileIds] = useState<readonly string[]>([]);
@@ -1272,6 +1273,7 @@ function Workbench() {
     sshConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSshConnectMode(mode);
     setSshAuthenticationMethod('password');
+    setRecordSshSessionLog(false);
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
     setSshGatewayProfileIds([]);
@@ -1528,6 +1530,12 @@ function Workbench() {
     });
   }), []);
 
+  useEffect(() => window.multiRemoteTerminal.onSshSessionLogStatus(event => {
+    setAlert(event.status === 'finished'
+      ? `SSH session log saved to ${event.fileName}.`
+      : `SSH session log stopped (${event.reason}). The SSH connection remains active.`);
+  }), []);
+
   useEffect(() => window.multiRemoteTerminal.onTunnelStatus(status => {
     setTunnels(current => current.map(item => item.definition.id === status.tunnelId ? { ...item, status } : item));
     if (status.state === 'failed') setTunnelError(tunnelOpenError(status.errorCode));
@@ -1577,7 +1585,7 @@ function Workbench() {
   }, [enabledLocalShells, rememberOpenedSession, workbenchPreferencesLoaded]);
 
   const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [],
-    savedProfileId?: string, authenticationMethod: SshAuthenticationMethod = 'password') => {
+    savedProfileId?: string, authenticationMethod: SshAuthenticationMethod = 'password', recordSessionLog = false) => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -1596,9 +1604,20 @@ function Workbench() {
     setSshGatewayProfileIds([]);
     setPaletteOpen(false);
     setAlert(undefined);
-    const sessionId = crypto.randomUUID();
+    let sessionId: string;
+    if (recordSessionLog) {
+      const log = await window.multiRemoteTerminal.startSshSessionLog(validatedEndpoint.host, validatedEndpoint.port, gatewayProfileIds);
+      if (!log.ok) {
+        if (log.error.code !== 'CANCELLED') setAlert(log.error.code === 'INVALID_REQUEST'
+          ? 'Choose a filename ending in .log to record this SSH session.'
+          : `SSH session logging could not start (${log.error.code}).`);
+        return;
+      }
+      sessionId = log.result.sessionId;
+      setAlert(`Recording SSH session to ${log.result.fileName}. The local log includes terminal input/output and endpoint details.`);
+    } else sessionId = crypto.randomUUID();
     const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24,
-      gatewayProfileIds, savedProfileId, authenticationMethod);
+      gatewayProfileIds, savedProfileId, authenticationMethod, recordSessionLog);
     pendingOpenRequests.current.set(sessionId, { transport: 'ssh', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'ssh', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -2648,6 +2667,7 @@ function Workbench() {
 
   function cancelSshConnect() {
     setSshConnectOpen(false);
+    setRecordSshSessionLog(false);
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
     setSshGatewayProfileIds([]);
@@ -2662,7 +2682,7 @@ function Workbench() {
     const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
     const routedTitle = [...names, sshGatewayTarget.name].join(' → ');
     if (sshGatewayTarget.kind === 'sftp') void openSftpFiles(sshHost, sshPort, routedTitle, sshAuthenticationMethod, selected);
-    else void openSshTerminal(sshHost, sshPort, routedTitle, selected, sshGatewayTarget.id, sshAuthenticationMethod);
+    else void openSshTerminal(sshHost, sshPort, routedTitle, selected, sshGatewayTarget.id, sshAuthenticationMethod, recordSshSessionLog);
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string, credentialProfileId?: string): void {
@@ -3291,7 +3311,7 @@ function Workbench() {
         <form onSubmit={event => { event.preventDefault();
           if (sshGatewayTarget) connectThroughSelectedGateways();
           else if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle, sshAuthenticationMethod);
-          else void openSshTerminal(sshHost, sshPort, sshSavedTitle, [], undefined, sshAuthenticationMethod);
+          else void openSshTerminal(sshHost, sshPort, sshSavedTitle, [], undefined, sshAuthenticationMethod, recordSshSessionLog);
         }}>
           <label htmlFor="ssh-host">Host name or IP address</label>
           <input ref={sshHostInput} id="ssh-host" name="host" type="text" autoComplete="off" spellCheck={false}
@@ -3306,13 +3326,19 @@ function Workbench() {
             <option value="private-key">Private key file</option>
             <option value="agent">Windows OpenSSH agent</option>
           </select>
+          {sshConnectMode === 'terminal' && <div className="ssh-session-log-option">
+            <label htmlFor="ssh-session-log"><input id="ssh-session-log" type="checkbox" aria-describedby="ssh-session-log-warning" checked={recordSshSessionLog}
+              onChange={event => setRecordSshSessionLog(event.target.checked)} />Record this SSH session to a local .log file</label>
+            <p id="ssh-session-log-warning">The file contains endpoint details and exact terminal input/output. It may include secrets typed into the remote shell or printed by it. SSH credential prompts and key material are excluded. Store it according to company policy.</p>
+          </div>}
           {sshGatewayTarget && <SshGatewayRoutePicker idPrefix="ssh" profiles={sshGatewayProfiles}
             targetEndpoint={canonicalizeSshHostEndpoint({ host: sshGatewayTarget.host, port: sshGatewayTarget.port })}
             selectedProfileIds={sshGatewayProfileIds} onChange={setSshGatewayProfileIds} />}
           {sshConnectError && <p className="dialog-error" role="alert">{sshConnectError}</p>}
           <div className="ssh-connect-actions">
             <button type="button" onClick={cancelSshConnect}>Cancel</button>
-            <button type="submit" className="ssh-primary" disabled={Boolean(sshGatewayTarget && sshGatewayProfileIds.length === 0)}>Connect</button>
+            <button type="submit" className="ssh-primary" data-mrt-ssh-session-log-consent-trigger
+              disabled={Boolean(sshGatewayTarget && sshGatewayProfileIds.length === 0)}>Connect</button>
           </div>
         </form>
       </section>

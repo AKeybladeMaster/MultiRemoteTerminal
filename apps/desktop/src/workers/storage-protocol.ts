@@ -11,11 +11,14 @@ import { isMacroDefinition, isMacroId, normalizeMacroDraft } from '../../../../p
 import type { MacroDefinition, MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import { isMacroShortcutBinding, isMacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
-import { isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { isCurrentWorkbenchPreferences, isWorkbenchPreferences, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import { MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES } from '../../../../packages/domain/src/workbench-settings-template.ts';
 import { basename, dirname, isAbsolute } from 'node:path';
 import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
+import type { ImportedSshCredentialReference, SshCredentialBundleProfile } from '../../../../packages/application/src/ssh-credential-bundle.ts';
+import { MAX_SSH_CREDENTIAL_BUNDLE_BYTES, MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES } from '../../../../packages/application/src/ssh-credential-bundle.ts';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -31,7 +34,9 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.count' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.get'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.set'; readonly id: string; readonly reference: CredentialReference | null; readonly expectedReference: CredentialReference | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.attach-imported'; readonly credentials: readonly ImportedSshCredentialReference[] }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.credential.clear-all' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.create'; readonly draft: SavedSessionDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'session.remember'; readonly draft: SavedSessionDraft }
@@ -54,6 +59,10 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'macro.shortcut.remove'; readonly macroId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.get' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.save'; readonly preferences: WorkbenchPreferences }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.template.export'; readonly path: string; readonly temporaryPath: string; readonly preferences: WorkbenchPreferences }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'preferences.template.import'; readonly path: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'credential.bundle.read'; readonly path: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'credential.bundle.write'; readonly path: string; readonly temporaryPath: string; readonly contents: Uint8Array }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.list' }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
@@ -72,6 +81,7 @@ export type StorageWorkerResult =
   | { readonly kind: 'session'; readonly value: SavedSessionDefinition }
   | { readonly kind: 'sessionLookup'; readonly value: SavedSessionDefinition | null }
   | { readonly kind: 'credentialReference'; readonly value: CredentialReference | null }
+  | { readonly kind: 'sshCredentialReferences'; readonly value: readonly SshCredentialBundleProfile[] }
   | { readonly kind: 'changed'; readonly value: boolean }
   | { readonly kind: 'folderExport'; readonly value: { readonly folderCount: number; readonly sessionCount: number } }
   | { readonly kind: 'folderImport'; readonly value: { readonly folderCount: number; readonly sessionCount: number; readonly createdFolderCount: number; readonly createdSessionCount: number } }
@@ -84,6 +94,9 @@ export type StorageWorkerResult =
   | { readonly kind: 'macroShortcuts'; readonly value: readonly MacroShortcutBinding[] }
   | { readonly kind: 'macroShortcut'; readonly value: MacroShortcutBinding }
   | { readonly kind: 'preferences'; readonly value: WorkbenchPreferences }
+  | { readonly kind: 'preferencesTemplateExport'; readonly value: { readonly bytesSaved: number } }
+  | { readonly kind: 'encryptedCredentialBundle'; readonly value: Uint8Array }
+  | { readonly kind: 'encryptedCredentialBundleWrite'; readonly value: { readonly bytesSaved: number } }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -150,9 +163,14 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'session.credential.get' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) && isSessionDefinitionId(value.id)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'session.credential.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.credential.set' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id', 'reference', 'expectedReference']) &&
       isSessionDefinitionId(value.id) && (value.reference === null || parseCredentialReference(value.reference)) &&
       (value.expectedReference === null || parseCredentialReference(value.expectedReference))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'session.credential.attach-imported' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'credentials']) &&
+      Array.isArray(value.credentials) && value.credentials.length > 0 && value.credentials.length <= MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES &&
+      value.credentials.every(isImportedSshCredentialReference) && new Set(value.credentials.map(item => item.sessionId)).size === value.credentials.length &&
+      new Set(value.credentials.map(item => item.reference)).size === value.credentials.length) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.credential.clear-all' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if (value.command === 'session.create' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSavedSessionDraft(value.draft)) {
     return value as unknown as StorageWorkerRequest;
@@ -201,6 +219,19 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'preferences.get' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if (value.command === 'preferences.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'preferences']) &&
       normalizeWorkbenchPreferences(value.preferences)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'preferences.template.export' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path', 'temporaryPath', 'preferences']) &&
+      isFilePath(value.path) && isExportTemporaryPath(value.path, value.temporaryPath) && isCurrentWorkbenchPreferences(value.preferences)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'preferences.template.import' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path']) && isFilePath(value.path)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'credential.bundle.read' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path']) && isFilePath(value.path)) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'credential.bundle.write' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'path', 'temporaryPath', 'contents']) &&
+      isFilePath(value.path) && isExportTemporaryPath(value.path, value.temporaryPath) && value.contents instanceof Uint8Array &&
+      value.contents.byteLength > 0 && value.contents.byteLength <= MAX_SSH_CREDENTIAL_BUNDLE_BYTES) return value as unknown as StorageWorkerRequest;
   if (value.command === 'tunnel.list' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   if ((value.command === 'tunnel.get' || value.command === 'tunnel.remove') && exactKeys(value, ['version', 'type', 'requestId', 'command', 'id']) &&
       isTunnelId(value.id)) return value as unknown as StorageWorkerRequest;
@@ -235,6 +266,8 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'session' && exactKeys(value, ['kind', 'value']) && isSavedSessionDefinition(value.value)) return true;
   if (value.kind === 'sessionLookup' && exactKeys(value, ['kind', 'value']) && (value.value === null || isSavedSessionDefinition(value.value))) return true;
   if (value.kind === 'credentialReference' && exactKeys(value, ['kind', 'value']) && (value.value === null || parseCredentialReference(value.value))) return true;
+  if (value.kind === 'sshCredentialReferences' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) &&
+      value.value.length <= MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES && value.value.every(isSshCredentialBundleProfile)) return true;
   if (value.kind === 'changed' && exactKeys(value, ['kind', 'value']) && typeof value.value === 'boolean') return true;
   if (value.kind === 'folderExport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value, ['folderCount', 'sessionCount'])) return true;
   if (value.kind === 'folderImport' && exactKeys(value, ['kind', 'value']) && isRecordCounts(value.value,
@@ -252,7 +285,26 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'macroShortcuts' && exactKeys(value, ['kind', 'value']) && Array.isArray(value.value) && value.value.every(isMacroShortcutBinding)) return true;
   if (value.kind === 'macroShortcut' && exactKeys(value, ['kind', 'value']) && isMacroShortcutBinding(value.value)) return true;
   if (value.kind === 'preferences' && exactKeys(value, ['kind', 'value']) && isWorkbenchPreferences(value.value)) return true;
+  if (value.kind === 'preferencesTemplateExport' && exactKeys(value, ['kind', 'value']) && record(value.value) &&
+      exactKeys(value.value, ['bytesSaved']) && Number.isSafeInteger(value.value.bytesSaved) &&
+      (value.value.bytesSaved as number) > 0 && (value.value.bytesSaved as number) <= MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES) return true;
+  if (value.kind === 'encryptedCredentialBundle' && exactKeys(value, ['kind', 'value']) && value.value instanceof Uint8Array &&
+      value.value.byteLength > 0 && value.value.byteLength <= MAX_SSH_CREDENTIAL_BUNDLE_BYTES) return true;
+  if (value.kind === 'encryptedCredentialBundleWrite' && exactKeys(value, ['kind', 'value']) && record(value.value) &&
+      exactKeys(value.value, ['bytesSaved']) && Number.isSafeInteger(value.value.bytesSaved) && (value.value.bytesSaved as number) > 0 &&
+      (value.value.bytesSaved as number) <= MAX_SSH_CREDENTIAL_BUNDLE_BYTES) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
+}
+
+function isImportedSshCredentialReference(value: unknown): value is ImportedSshCredentialReference {
+  if (!record(value) || !exactKeys(value, ['sessionId', 'host', 'port', 'reference']) || !isSessionDefinitionId(value.sessionId) ||
+      !parseCredentialReference(value.reference)) return false;
+  return endpoint({ host: value.host, port: value.port });
+}
+
+function isSshCredentialBundleProfile(value: unknown): value is SshCredentialBundleProfile {
+  return record(value) && exactKeys(value, ['profile', 'reference']) && isSavedSessionDefinition(value.profile) &&
+    value.profile.kind === 'ssh' && parseCredentialReference(value.reference) !== undefined;
 }
 
 function isRecordCounts(value: unknown, keys: readonly string[]): value is Record<string, number> {

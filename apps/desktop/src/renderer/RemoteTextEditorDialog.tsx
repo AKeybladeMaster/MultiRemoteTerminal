@@ -27,6 +27,7 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
   const contentId = useId();
   const [file, setFile] = useState<RemoteTextFile>();
   const [draft, setDraft] = useState('');
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
   const [busy, setBusy] = useState<Operation['kind']>();
   const [phase, setPhase] = useState<'preparing' | FileTransferProgress['phase']>();
   const [cancelling, setCancelling] = useState(false);
@@ -90,6 +91,7 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
   useEffect(() => {
     if (!open || !remotePath) return;
     setCloseIntent(undefined);
+    setAutoSaveEnabled(false);
     void loadRef.current(true);
     return () => {
       const operation = operationRef.current;
@@ -138,6 +140,12 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
     onSaved();
   }, [bytes, closeIntent, dirty, draft, file, lineEnding, onSaved, remotePath, sessionId]);
 
+  useEffect(() => {
+    if (!open || !autoSaveEnabled || !dirty || busy !== undefined || closeIntent || bytes === undefined || error) return;
+    const timeout = window.setTimeout(() => { void save(); }, 1_000);
+    return () => window.clearTimeout(timeout);
+  }, [autoSaveEnabled, busy, bytes, closeIntent, dirty, error, open, save]);
+
   const requestClose = useCallback(() => {
     if (operationRef.current || busy !== undefined || phaseRef.current === 'committing') return;
     if (dirty) setCloseIntent('close');
@@ -177,7 +185,8 @@ export function RemoteTextEditorDialog({ open, sessionId, remotePath, onClose, o
       </button>
     </div>}
     <TextEditorContent key={`${sessionId}:${remotePath ?? ''}`} contentId={contentId} fileName={remotePath?.slice(remotePath.lastIndexOf('/') + 1) ?? ''}
-      value={draft} disabled={!file || busy !== undefined} describedBy={`${contentId}-hint`}
+      value={draft} disabled={!file || busy !== undefined} autoSaveEnabled={autoSaveEnabled} onAutoSaveChange={setAutoSaveEnabled}
+      describedBy={`${contentId}-hint`}
       onChange={value => { setDraft(value); setError(undefined); setCloseIntent(undefined); }} />
     <p id={`${contentId}-hint`} className="remote-text-editor-hint">
       {bytes === undefined ? 'This file contains unsupported characters or exceeds 512 KB.' : `${bytes.toLocaleString()} of ${MAX_REMOTE_TEXT_FILE_BYTES.toLocaleString()} bytes · UTF-8`}

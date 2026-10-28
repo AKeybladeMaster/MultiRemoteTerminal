@@ -7,11 +7,13 @@ interface TextEditorContentProps {
   readonly fileName: string;
   readonly value: string;
   readonly disabled: boolean;
+  readonly autoSaveEnabled: boolean;
   readonly describedBy: string;
+  readonly onAutoSaveChange: (enabled: boolean) => void;
   readonly onChange: (value: string) => void;
 }
 
-export function TextEditorContent({ contentId, fileName, value, disabled, describedBy, onChange }: TextEditorContentProps) {
+export function TextEditorContent({ contentId, fileName, value, disabled, autoSaveEnabled, describedBy, onAutoSaveChange, onChange }: TextEditorContentProps) {
   const profileId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLPreElement>(null);
@@ -43,10 +45,21 @@ export function TextEditorContent({ contentId, fileName, value, disabled, descri
         <option value="sql">SQL (PostgreSQL style)</option>
         <option value="toml">TOML</option>
         <option value="yaml">YAML</option>
+        <option value="ini">INI configuration</option>
+        <option value="xml">XML</option>
+        <option value="dotenv">Environment file</option>
+        <option value="properties">Java properties</option>
         <option value="json">JSON</option>
       </select>
+      <label className="text-editor-autosave">
+        <input type="checkbox" checked={autoSaveEnabled} disabled={disabled}
+          onChange={event => onAutoSaveChange(event.currentTarget.checked)} />
+        Save automatically after 1 second of inactivity
+      </label>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts, .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
+        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg,
+        .env/.env.* and *.env, .properties, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts,
+        .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
       </p>
     </div>
     <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>

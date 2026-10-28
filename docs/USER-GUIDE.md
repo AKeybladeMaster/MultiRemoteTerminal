@@ -85,17 +85,22 @@ that the remote file still matches the version you opened; if another process
 changed it, the editor keeps your draft and asks you to reload before trying
 again. **Reload** replaces the editor contents after you confirm discarding a
 draft. Closing with unsaved changes also asks for confirmation. Binary files,
-invalid UTF-8 and larger files are not opened by the text editor. Saves are
-explicit. The syntax profile automatically recognizes Markdown (`.md`, `.markdown`),
+invalid UTF-8 and larger files are not opened by the text editor. Saving is
+explicit by default. To opt in, check **Save automatically after 1 second of
+inactivity**. It uses the same revision check, so a conflict keeps your draft
+and stops automatic retries until you edit again. This option resets when you
+close the editor or open another file. The syntax profile automatically recognizes Markdown (`.md`, `.markdown`),
 Shell (`.sh`, `.bash`, `.zsh`, `.ksh`), PowerShell (`.ps1`, `.psm1`, `.psd1`, `.pssc`),
-Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`) and JSON files; you
+Python (`.py`, `.pyw`, `.pyi`), JavaScript/TypeScript (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.mts`, `.cts`), PostgreSQL-oriented SQL (`.sql`, `.pgsql`, `.psql`), TOML (`.toml`), YAML (`.yaml`, `.yml`), INI configuration (`.ini`, `.cfg`), XML (`.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`), environment files (`.env`, `.env.*`, `*.env`), Java Properties (.properties) and JSON files; you
 can choose another profile from **Syntax profile**. Colors are visual hints only:
 the Markdown profile colors common headings, lists, block quotes, code, emphasis
 and direct links; the TOML profile colors common keys, strings, values, comments and
 table headers; the YAML profile colors common keys, scalar values, comments,
-collections and block scalar text. The editor does not render, validate or execute
+collections and block scalar text; the INI profile colors section headers, keys,
+quoted values, common numbers/booleans and full-line comments. INI inline comments
+and dialect validation are not supported. The Java Properties profile colors leading #/! comments, keys, separators and raw values. Inline comment markers remain value text, continued logical entries are left uncolored, and escapes are not decoded. The XML profile colors tags, attributes, quoted values, comments, CDATA, declarations and text entity references; it does not resolve entities or validate XML. Environment-file colors are limited to common ASCII `KEY=value` assignments, optional `export`, quoted values and comments; values are not expanded or executed, and multiline values are unsupported. The editor does not render, validate or execute
 the file. Preview coloring is bounded, while
-the full file remains editable. Autosave is not available. Files with a consistent
+the full file remains editable. Files with a consistent
 line-ending convention keep it when saved. Mixed line endings use the first
 line-ending style found in the file.
 
@@ -135,6 +140,14 @@ session saving, set a startup greeting, and configure terminal text colors.
 The greeting supports up to 512 Unicode code points, is stored in the local app
 profile, and appears below the tab bar after startup until you dismiss it. The
 greeting is plain text and never runs in a terminal. Leave it blank to hide it.
+
+To move these settings to another installation, choose **Export settings
+template** or **Load settings template** in Workbench settings. Export uses the
+current draft and a native Save dialog. The versioned JSON template includes
+workbench settings, the custom logo, and saved PowerShell script text, but not
+saved connections or credentials; review the script before sharing the file.
+Loading validates the entire file and updates only the current draft. Choose
+**Save changes** to apply it. Import never runs a saved script.
 
 The **Optional connection types** settings control whether new Telnet, FTP/FTPS,
 serial, RDP, VNC, or local TFTP work can start. Saved profiles stay in the local

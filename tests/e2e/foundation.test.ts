@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
+import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
+import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 interface Ssh2FixtureClient extends EventEmitter {
   end(): void;
@@ -585,18 +587,31 @@ function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promis
 }
 
 test('Windows local text editor preserves drafts on conflict and saves the selected file', async () => {
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-local-text-editor-e2e-'));
+  test.skip(process.platform !== 'win32', 'Native local text picker automation is Windows-only.');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-local-text-editor-e2e-');
   const path = join(profile, 'settings.txt');
-  await writeFile(path, 'name=old\r\nlegacy=1\n');
-  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
-    `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    await writeFile(path, 'name=old\r\nlegacy=1\n');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const openLocalFile = page.getByRole('button', { name: 'Edit local file', exact: true });
+    await openLocalFile.click();
+    await runNativeLocalTextDialog('cancel-local-text');
     const editor = page.getByTestId('local-text-editor');
+    await expect(editor).toBeHidden();
+    await expect(page.locator('body')).not.toContainText(path);
+    expect(await readFile(path, 'utf8')).toBe('name=old\r\nlegacy=1\n');
+
+    await openLocalFile.click();
+    await runNativeLocalTextDialog('select-local-text', path);
     const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const autoSave = editor.getByRole('checkbox', { name: 'Save automatically after 1 second of inactivity', exact: true });
     await expect(editor.getByRole('heading', { name: 'settings.txt', exact: true })).toBeVisible();
+    await expect(autoSave).not.toBeChecked();
     await expect(contents).toHaveValue('name=old\nlegacy=1\n');
     await expect(editor.getByRole('note')).toHaveText('Mixed line endings will be normalized to CRLF when you save.');
     await contents.fill('name=draft\nlegacy=1\n');
@@ -612,12 +627,196 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
     await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(editor.getByRole('status')).toHaveText('Saved');
     expect(await readFile(path, 'utf8')).toBe('name=final\r\nlegacy=external\r\n');
+    await contents.fill('name=autosaved\nlegacy=external\n');
+    await autoSave.check();
+    await expect(editor.getByRole('status')).toHaveText('Saved', { timeout: 15_000 });
+    expect(await readFile(path, 'utf8')).toBe('name=autosaved\r\nlegacy=external\r\n');
+    await writeFile(path, 'name=external-autosave\r\nlegacy=external\r\n');
+    await contents.fill('name=autosave-draft\nlegacy=external\n');
+    await expect(editor.getByRole('alert')).toContainText('changed since it was opened', { timeout: 15_000 });
+    await expect(contents).toHaveValue('name=autosave-draft\nlegacy=external\n');
+    expect(await readFile(path, 'utf8')).toBe('name=external-autosave\r\nlegacy=external\r\n');
+    await editor.getByRole('button', { name: 'Reload', exact: true }).click();
+    await editor.getByRole('button', { name: 'Discard and reload', exact: true }).click();
+    await expect(contents).toHaveValue('name=external-autosave\nlegacy=external\n');
     await expect(page.locator('body')).not.toContainText(path);
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor).toBeHidden();
+    await openLocalFile.click();
+    await runNativeLocalTextDialog('select-local-text', path);
+    await expect(autoSave).not.toBeChecked();
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
   } finally {
-    await app.close();
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
+test('local text editor auto-detects INI and colors its bounded lexical subset', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ini-editor-e2e-');
+  const path = join(profile, 'settings.ini');
+  const source = '; service config\n[server]\nhost = "127.0.0.1"\nport = 22\nenabled = true\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(contents).toHaveValue(source);
+    await expect(editor.locator('[data-token-kind="ini-comment"]')).toHaveText('; service config');
+    await expect(editor.locator('[data-token-kind="ini-section"]')).toHaveText('[server]');
+    await expect(editor.locator('[data-token-kind="ini-key"]').first()).toHaveText('host');
+    await expect(editor.locator('[data-token-kind="ini-string"]')).toHaveText('"127.0.0.1"');
+    await expect(editor.locator('[data-token-kind="ini-number"]')).toHaveText('22');
+    await expect(editor.locator('[data-token-kind="ini-literal"]')).toHaveText('true');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('ini');
+    await expect(editor.locator('[data-token-kind="ini-section"]')).toHaveText('[server]');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
+test('local text editor auto-detects XML and keeps the source unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-xml-editor-e2e-');
+  const path = join(profile, 'service.xml');
+  const source = '<?xml version="1.0"?>\n<!-- service -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="xml-declaration"]')).toHaveText('<?xml version="1.0"?>');
+    await expect(editor.locator('[data-token-kind="xml-comment"]')).toHaveText('<!-- service -->');
+    await expect(editor.locator('[data-token-kind="xml-tag"]').first()).toHaveText('server');
+    await expect(editor.locator('[data-token-kind="xml-tag"]').first()).toHaveCSS('color', 'rgb(105, 170, 252)');
+    await expect(editor.locator('[data-token-kind="xml-attribute"]')).toHaveText('host');
+    await expect(editor.locator('[data-token-kind="xml-string"]')).toHaveText('"localhost"');
+    await expect(editor.locator('[data-token-kind="xml-entity"]')).toHaveText('&amp;');
+    await expect(editor.locator('[data-token-kind="xml-cdata"]')).toHaveText('<![CDATA[<literal>]]>');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('xml');
+    await expect(editor.locator('[data-token-kind="xml-tag"]').first()).toHaveText('server');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
+test('local text editor auto-detects dotenv and keeps the source unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-dotenv-editor-e2e-');
+  const path = join(profile, '.env.local');
+  const source = '# deployment\nexport API_URL="https://example.test/a#fragment" # endpoint\nPORT=8443\nFEATURE_FLAG=true\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="dotenv-comment"]').first()).toHaveText('# deployment');
+    await expect(editor.locator('[data-token-kind="dotenv-export"]')).toHaveText('export');
+    await expect(editor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    await expect(editor.locator('[data-token-kind="dotenv-string"]')).toHaveText('"https://example.test/a#fragment"');
+    await expect(editor.locator('[data-token-kind="dotenv-value"]').first()).toHaveText('8443');
+    await expect(editor.locator('[data-token-kind="dotenv-comment"]').nth(1)).toHaveText('# endpoint');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('dotenv');
+    await expect(editor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
+test('local text editor auto-detects Java properties and keeps the source unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-properties-editor-e2e-');
+  const path = join(profile, 'messages_en.properties');
+  const source = '# messages\n! locale metadata\nwelcome = Hello world\nurl: https://example.test/#anchor\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), '--user-data-dir=' + profile, '--mrt-e2e-local-text-editor',
+      '--mrt-e2e-local-text-file=' + path], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveCount(2);
+    await expect(editor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    await expect(editor.locator('[data-token-kind="properties-value"]').nth(1)).toHaveText('https://example.test/#anchor');
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('properties');
+    await expect(editor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 });
 
@@ -956,6 +1155,253 @@ test('SSH quick connect validates the address before any credential prompt and r
   }
 });
 
+test('SSH session log captures failed opens and active terminal input/output, then flushes on close', async () => {
+  test.skip(process.platform !== 'win32', 'SSH session log E2E acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ssh-session-log-e2e-');
+  const secret = 'sftp-e2e-secret';
+  const username = 'mrt-e2e-user';
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  const server = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === username && context.password === secret) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        const stream = acceptShell();
+        stream.write('MRT-SESSION-LOG-READY\r\n');
+        stream.on('data', data => stream.write(Buffer.isBuffer(data) ? data : String(data)));
+      });
+    }));
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    const unavailablePortServer = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      unavailablePortServer.once('error', rejectListen);
+      unavailablePortServer.listen(0, '127.0.0.1', resolveListen);
+    });
+    const unavailableAddress = unavailablePortServer.address();
+    if (!unavailableAddress || typeof unavailableAddress === 'string') throw new Error('Could not reserve an unused loopback port');
+    await new Promise<void>((resolveClose, rejectClose) => {
+      unavailablePortServer.close(error => error ? rejectClose(error) : resolveClose());
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH session log fixture did not bind a TCP address');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
+      '--mrt-e2e-ssh-session-log', `--mrt-e2e-ssh-session-log-root=${profile}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+
+    const logNames = async () => (await readDirectory(profile)).filter(name => name.toLowerCase().endsWith('.log'));
+    const logRecords = async (name: string) => {
+      try {
+        return (await readFile(join(profile, name), 'utf8')).split('\n').filter(Boolean)
+          .map(line => JSON.parse(line) as Record<string, unknown>);
+      } catch { return []; }
+    };
+    const openLoggingDialog = async (port: number) => {
+      await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+      const logging = dialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' });
+      await expect(logging).not.toBeChecked();
+      await logging.check();
+      await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+      await dialog.getByLabel('Port').fill(String(port));
+      await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    };
+
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const defaultDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await expect(defaultDialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' })).not.toBeChecked();
+    await defaultDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await defaultDialog.getByLabel('Port').fill(String(address.port));
+    await defaultDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const defaultTrust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(defaultTrust).toBeVisible({ timeout: 15_000 });
+    await defaultTrust.getByRole('button', { name: 'Trust key and connect' }).click();
+    const defaultTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(defaultTab).toBeVisible({ timeout: 20_000 });
+    const defaultPanelId = await defaultTab.getAttribute('aria-controls');
+    if (!defaultPanelId) throw new Error('Missing default SSH terminal panel');
+    const defaultPanel = page.locator(`#${defaultPanelId}`);
+    await expect(defaultPanel.locator('.xterm-rows')).toContainText('MRT-SESSION-LOG-READY', { timeout: 15_000 });
+    const defaultCanary = 'MRT-DEFAULT-SESSION-CANARY';
+    await defaultPanel.locator('.terminal-host').click();
+    await page.keyboard.type(defaultCanary);
+    await page.keyboard.press('Enter');
+    await expect(defaultPanel.locator('.xterm-rows')).toContainText(defaultCanary, { timeout: 10_000 });
+    expect(await logNames()).toEqual([]);
+
+    const savedName = 'Unlogged SSH profile';
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill(savedName);
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const reopenButton = page.getByRole('button', { name: `Open ${savedName}`, exact: true });
+    await expect(reopenButton).toBeVisible();
+    await reopenButton.click();
+    const reopenedTab = page.getByRole('tab', { name: savedName, exact: true });
+    await expect(reopenedTab).toBeVisible({ timeout: 20_000 });
+    const reopenedPanelId = await reopenedTab.getAttribute('aria-controls');
+    if (!reopenedPanelId) throw new Error('Missing reopened saved SSH terminal panel');
+    const reopenedPanel = page.locator(`#${reopenedPanelId}`);
+    await expect(reopenedPanel.locator('.xterm-rows')).toContainText('MRT-SESSION-LOG-READY', { timeout: 15_000 });
+    const reopenedCanary = 'MRT-SAVED-SESSION-CANARY';
+    await reopenedPanel.locator('.terminal-host').click();
+    await page.keyboard.type(reopenedCanary);
+    await page.keyboard.press('Enter');
+    await expect(reopenedPanel.locator('.xterm-rows')).toContainText(reopenedCanary, { timeout: 10_000 });
+    expect(await logNames()).toEqual([]);
+
+    await openLoggingDialog(unavailableAddress.port);
+    await expect.poll(async () => (await logNames()).length, { timeout: 15_000 }).toBe(1);
+    const failedLogName = (await logNames())[0];
+    if (!failedLogName) throw new Error('The failed SSH attempt did not create a log');
+    await expect.poll(async () => (await logRecords(failedLogName)).some(record =>
+      record.type === 'log-finished' && record.reason === 'connection-failed'), { timeout: 20_000 }).toBe(true);
+    const failedLog = await logRecords(failedLogName);
+    expect(failedLog.some(record => record.type === 'attempt-started')).toBe(true);
+    expect(failedLog.find(record => record.type === 'connection-failed')).toMatchObject({ phase: 'transport' });
+    expect(failedLog.at(-1)).toMatchObject({ type: 'log-finished', reason: 'connection-failed' });
+    expect(failedLog.some(record => record.type === 'host-trust')).toBe(false);
+    const failedLogText = await readFile(join(profile, failedLogName), 'utf8');
+    expect(failedLogText).not.toContain(username);
+    expect(failedLogText).not.toContain(secret);
+    expect(failedLogText).not.toContain(profile);
+
+    await openLoggingDialog(address.port);
+    const sshTabs = page.getByRole('tab').filter({ hasText: /SSH/ });
+    await expect(sshTabs).toHaveCount(3, { timeout: 20_000 });
+    const sshTab = sshTabs.last();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Missing logged SSH terminal panel');
+    const panel = page.locator(`#${panelId}`);
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-SESSION-LOG-READY', { timeout: 15_000 });
+    await expect.poll(async () => (await logNames()).length, { timeout: 15_000 }).toBe(2);
+    const activeLogName = (await logNames()).find(name => name !== failedLogName);
+    if (!activeLogName) throw new Error('The active SSH session did not create a distinct log');
+
+    const canary = 'MRT-SESSION-LOG-CANARY';
+    await panel.locator('.terminal-host').click();
+    await page.keyboard.type(canary);
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText(canary, { timeout: 10_000 });
+    await expect.poll(async () => {
+      const records = await logRecords(activeLogName);
+      const input = records.filter(record => record.type === 'terminal-input').map(record => String(record.data ?? '')).join('');
+      const output = records.filter(record => record.type === 'terminal-output').map(record => String(record.data ?? '')).join('');
+      return input.includes(canary) && output.includes(canary);
+    }, { timeout: 15_000 }).toBe(true);
+    expect((await logRecords(activeLogName)).some(record => record.type === 'host-trust' && record.outcome === 'trusted')).toBe(true);
+    const activeLogText = await readFile(join(profile, activeLogName), 'utf8');
+    expect(activeLogText).toContain('127.0.0.1');
+    expect(activeLogText).not.toContain(username);
+    expect(activeLogText).not.toContain(secret);
+    expect(activeLogText).not.toContain(profile);
+
+    await app.close();
+    app = undefined;
+    const closedLog = await logRecords(activeLogName);
+    expect(closedLog.at(-1)).toMatchObject({ type: 'log-finished', reason: 'application-shutdown' });
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('SSH session log native consent and Save dialogs support cancellation and local file selection', async () => {
+  test.skip(process.platform !== 'win32', 'Native SSH session log dialog acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ssh-session-log-dialog-e2e-');
+  const selectedLogPath = join(profile, 'native-selected.log');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    const unusedPortServer = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      unusedPortServer.once('error', rejectListen);
+      unusedPortServer.listen(0, '127.0.0.1', resolveListen);
+    });
+    const unusedAddress = unusedPortServer.address();
+    if (!unusedAddress || typeof unusedAddress === 'string') throw new Error('Could not reserve an unused loopback port');
+    await new Promise<void>((resolveClose, rejectClose) => {
+      unusedPortServer.close(error => error ? rejectClose(error) : resolveClose());
+    });
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const sshTabs = () => page.getByRole('tab').filter({ hasText: /SSH/ });
+    const logNames = async () => (await readDirectory(profile)).filter(name => name.toLowerCase().endsWith('.log'));
+    const credentialPromptCount = () => app!.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'));
+    const requestLoggedConnection = async () => {
+      await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+      const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+      await dialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' }).check();
+      await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+      await dialog.getByLabel('Port').fill(String(unusedAddress.port));
+      await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    };
+    const expectAttemptCancelled = async () => {
+      await expect.poll(credentialPromptCount).toBe(0);
+      await expect(sshTabs()).toHaveCount(0);
+      expect(await logNames()).toEqual([]);
+    };
+
+    await requestLoggedConnection();
+    await runNativeSshLogDialog('cancel-consent');
+    await expectAttemptCancelled();
+
+    await requestLoggedConnection();
+    await runNativeSshLogDialog('cancel-save');
+    await expectAttemptCancelled();
+
+    await requestLoggedConnection();
+    await runNativeSshLogDialog('save', selectedLogPath);
+    await expect.poll(credentialPromptCount, { timeout: 15_000 }).toBe(1);
+    await expect.poll(async () => {
+      const text = await readFile(selectedLogPath, 'utf8').catch(() => '');
+      return text.includes('"type":"log-finished"') && text.includes('"reason":"connection-failed"');
+    }, { timeout: 20_000 }).toBe(true);
+
+    const records = (await readFile(selectedLogPath, 'utf8')).split('\n').filter(Boolean)
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(records.some(record => record.type === 'attempt-started')).toBe(true);
+    expect(records.find(record => record.type === 'connection-failed')).toMatchObject({ phase: 'transport' });
+    expect(records.at(-1)).toMatchObject({ type: 'log-finished', reason: 'connection-failed' });
+    expect(await logNames()).toEqual(['native-selected.log']);
+    const text = await readFile(selectedLogPath, 'utf8');
+    expect(text).not.toContain('mrt-e2e-user');
+    expect(text).not.toContain('sftp-e2e-secret');
+    expect(text).not.toContain(profile);
+    await expect(sshTabs()).toHaveCount(0);
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('SSH private-key mode authenticates a trusted terminal and standalone SFTP session', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-private-key-e2e-'));
@@ -1212,7 +1658,7 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
 
 test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
   test.setTimeout(180_000);
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-sftp-e2e-profile-'));
+  const profile = await createWorkspaceTempDirectory('mrt-sftp-e2e-profile-');
   const remoteRoot = join(profile, 'remote-files');
   const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
   const hostileOutputPathLiteral = JSON.stringify(hostileOutputPath).replace(/'/gu, '&#39;');
@@ -1321,6 +1767,14 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ts'), 'export const answer: number = 42;\n');
     await writeFile(join(remoteRoot, 'remote.sql'), 'SELECT COUNT(*)::INTEGER FROM users WHERE id >= $1;\n');
     await writeFile(join(remoteRoot, 'remote.toml'), '# app config\n[server]\nhost = "localhost"\nport = 8080\n');
+    const remoteIniSource = '; app config\n[server]\nhost = "localhost"\nport = 8080\nenabled = yes\n';
+    await writeFile(join(remoteRoot, 'remote.ini'), remoteIniSource);
+    const remoteXmlSource = '<?xml version="1.0"?>\n<!-- app config -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
+    await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
+    const remoteEnvSource = '# remote configuration\nexport API_URL="https://example.test/remote"\nPORT=22\n';
+    await writeFile(join(remoteRoot, '.env.production'), remoteEnvSource);
+    const remotePropertiesSource = '# remote messages\nwelcome = Hello from SFTP\nurl: https://example.test/#remote\n';
+    await writeFile(join(remoteRoot, 'remote.properties'), remotePropertiesSource);
     const remoteMarkdownSource = '# Remote guide\n\n> **bold quote**\n- item with `inline` and [guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n' + '**cap**\n'.repeat(4_100);
     await writeFile(join(remoteRoot, 'remote.md'), remoteMarkdownSource);
     const remoteYamlSource = `# app config
@@ -1402,6 +1856,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await editButton.click();
     const editor = page.getByRole('dialog', { name: 'editor.txt' });
     const editorText = editor.getByRole('textbox', { name: 'File contents' });
+    const autoSave = editor.getByRole('checkbox', { name: 'Save automatically after 1 second of inactivity', exact: true });
     await expect(editor.getByRole('status')).toContainText('Reading file', { timeout: 15_000 });
     const editorClose = editor.getByRole('button', { name: 'Close', exact: true });
     await expect(editorClose).toBeDisabled();
@@ -1412,6 +1867,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(editButton).toBeEnabled({ timeout: 15_000 });
     await editButton.click();
     await expect(editorText).toHaveValue('original remote text\nsecond line\n');
+    await expect(autoSave).not.toBeChecked();
     await expect(editor.getByRole('note')).toHaveText('Mixed line endings will be normalized to CRLF when you save.');
     await editorText.fill('edited from app\nsecond line\n');
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
@@ -1427,13 +1883,18 @@ ${'# preview cap\n'.repeat(4_100)}`;
     expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('edited from app\r\nsecond line\r\n');
     await expect(editor.getByRole('note')).toHaveCount(0);
 
+    await editorText.fill('saved automatically\nsecond line\n');
+    await autoSave.check();
+    await expect(editor.getByRole('status')).toHaveText('Saved', { timeout: 15_000 });
+    expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('saved automatically\r\nsecond line\r\n');
+
     await editor.getByRole('button', { name: 'Reload', exact: true }).click();
-    await expect(editorText).toHaveValue('edited from app\nsecond line\n');
+    await expect(editorText).toHaveValue('saved automatically\nsecond line\n');
     await editorText.fill('draft kept on conflict\nsecond line\n');
     await writeFile(join(remoteRoot, 'editor.txt'), 'remote changed!\r\nsecond line\r\n');
-    await editor.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect(editor.getByRole('alert')).toContainText('remote file changed', { timeout: 15_000 });
     await expect(editorText).toHaveValue('draft kept on conflict\nsecond line\n');
+    expect(await readFile(join(remoteRoot, 'editor.txt'), 'utf8')).toBe('remote changed!\r\nsecond line\r\n');
     await editor.getByRole('button', { name: 'Reload', exact: true }).click();
     await editor.getByRole('button', { name: 'Discard and reload', exact: true }).click();
     await expect(editorText).toHaveValue('remote changed!\nsecond line\n');
@@ -1443,6 +1904,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remoteSyntaxEdit.click();
     const remoteSyntaxEditor = page.getByRole('dialog', { name: 'remote.zsh' });
     await expect(remoteSyntaxEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteSyntaxEditor.getByRole('checkbox', { name: 'Save automatically after 1 second of inactivity', exact: true })).not.toBeChecked();
     await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-keyword"]').first()).toHaveText('if');
     await expect(remoteSyntaxEditor.locator('[data-token-kind="shell-builtin"]').first()).toHaveText('true');
     await remoteSyntaxEditor.getByRole('button', { name: 'Close', exact: true }).click();
@@ -1492,6 +1954,71 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(remoteTomlEditor.locator('[data-token-kind="toml-number"]').first()).toHaveText('8080');
     await remoteTomlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteTomlEditor).toHaveCount(0);
+    const remoteIniEdit = sftpPanel.getByRole('button', { name: 'Edit remote.ini', exact: true });
+    await remoteIniEdit.click();
+    const remoteIniEditor = page.getByRole('dialog', { name: 'remote.ini' });
+    await expect(remoteIniEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-comment"]')).toHaveText('; app config');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-section"]')).toHaveText('[server]');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-key"]').first()).toHaveText('host');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-string"]')).toHaveText('"localhost"');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-number"]')).toHaveText('8080');
+    await expect(remoteIniEditor.locator('[data-token-kind="ini-literal"]')).toHaveText('yes');
+    expect(await remoteIniEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteIniSource);
+    await remoteIniEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteIniEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.ini'), 'utf8')).toBe(remoteIniSource);
+    const remoteXmlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.xml', exact: true });
+    await remoteXmlEdit.click();
+    const remoteXmlEditor = page.getByRole('dialog', { name: 'remote.xml' });
+    await expect(remoteXmlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-declaration"]')).toHaveText('<?xml version="1.0"?>');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-comment"]')).toHaveText('<!-- app config -->');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-tag"]').first()).toHaveText('server');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-attribute"]')).toHaveText('host');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-string"]')).toHaveText('"localhost"');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-entity"]')).toHaveText('&amp;');
+    await expect(remoteXmlEditor.locator('[data-token-kind="xml-cdata"]')).toHaveText('<![CDATA[<literal>]]>');
+    expect(await remoteXmlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteXmlSource);
+    expect(await remoteXmlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteXmlSource);
+    await remoteXmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteXmlEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.xml'), 'utf8')).toBe(remoteXmlSource);
+    const remoteEnvEdit = sftpPanel.getByRole('button', { name: 'Edit .env.production', exact: true });
+    await remoteEnvEdit.click();
+    const remoteEnvEditor = page.getByRole('dialog', { name: '.env.production' });
+    const remoteEnvSyntax = remoteEnvEditor.getByLabel('Syntax profile');
+    await expect(remoteEnvSyntax).toHaveValue('auto');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-comment"]')).toHaveText('# remote configuration');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-export"]')).toHaveText('export');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-string"]')).toHaveText('"https://example.test/remote"');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-value"]')).toHaveText('22');
+    expect(await remoteEnvEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteEnvSource);
+    await remoteEnvSyntax.selectOption('plain');
+    await expect(remoteEnvEditor.locator('[data-token-kind]')).toHaveCount(0);
+    await remoteEnvSyntax.selectOption('dotenv');
+    await expect(remoteEnvEditor.locator('[data-token-kind="dotenv-key"]').first()).toHaveText('API_URL');
+    await remoteEnvEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteEnvEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, '.env.production'), 'utf8')).toBe(remoteEnvSource);
+    const remotePropertiesEdit = sftpPanel.getByRole('button', { name: 'Edit remote.properties', exact: true });
+    await remotePropertiesEdit.click();
+    const remotePropertiesEditor = page.getByRole('dialog', { name: 'remote.properties' });
+    const remotePropertiesSyntax = remotePropertiesEditor.getByLabel('Syntax profile');
+    await expect(remotePropertiesSyntax).toHaveValue('auto');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-comment"]')).toHaveText('# remote messages');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-value"]').nth(1))
+      .toHaveText('https://example.test/#remote');
+    expect(await remotePropertiesEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remotePropertiesSource);
+    await remotePropertiesSyntax.selectOption('plain');
+    await expect(remotePropertiesEditor.locator('[data-token-kind]')).toHaveCount(0);
+    await remotePropertiesSyntax.selectOption('properties');
+    await expect(remotePropertiesEditor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
+    await remotePropertiesEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remotePropertiesEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.properties'), 'utf8')).toBe(remotePropertiesSource);
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
@@ -1709,10 +2236,13 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(contextualFiles.getByText(/Downloaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
   } finally {
-    for (const client of clients) client.end();
-    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
-    await app?.close();
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    try {
+      for (const client of clients) client.end();
+      if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 });
 
@@ -6630,6 +7160,259 @@ test('local shell tool visibility persists and controls command palette entries 
   }
 });
 
+test('encrypted SSH credential bundles restore saved passwords across Windows app profiles', async () => {
+  test.skip(process.platform !== 'win32', 'Credential bundle acceptance runs on Windows');
+  test.setTimeout(120_000);
+  const root = await createWorkspaceTempDirectory('mrt-ssh-credential-bundle-e2e-');
+  const sourceProfile = join(root, 'source');
+  const targetProfile = join(root, 'target');
+  const folderBundlePath = join(root, 'ssh-session.mrt-session-folder.json');
+  const credentialBundlePath = join(root, 'ssh-credentials.mrtcred');
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  let acceptedPasswords = 0;
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') {
+        acceptedPasswords += 1;
+        context.accept();
+      } else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-CREDENTIAL-BUNDLE-RESTORED\r\n'));
+    }));
+  });
+  server.on('error', error => fixtureErrors.push(error.message));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let listening = false;
+  try {
+    await mkdir(sourceProfile);
+    await mkdir(targetProfile);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The credential bundle SSH fixture did not bind a TCP address');
+    const launch = (profile: string) => electron.launch({
+      args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials', '--mrt-e2e-master-password'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' }
+    });
+
+    app = await launch(sourceProfile);
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connectDialog.getByLabel('Port').fill(String(address.port));
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    let trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog, `SSH fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    let sshTab = page.getByRole('tab').filter({ hasText: `127.0.0.1:${address.port} - SSH` }).last();
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    let panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The SSH fixture session has no terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
+
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill('Bundle SSH');
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Open Bundle SSH', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Actions for saved session Bundle SSH' }).click();
+    await page.getByRole('button', { name: 'Save password…', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
+
+    await page.getByRole('button', { name: '+ Folder', exact: true }).click();
+    const folderDialog = page.getByRole('dialog', { name: 'Create folder' });
+    await folderDialog.getByLabel('Folder name').fill('Credential transfer');
+    await folderDialog.getByRole('button', { name: 'Create folder', exact: true }).click();
+    await page.getByRole('button', { name: 'Actions for saved session Bundle SSH' }).click();
+    await page.getByRole('button', { name: 'Move saved session Bundle SSH', exact: true }).click();
+    const moveDialog = page.getByRole('dialog', { name: 'Move Bundle SSH' });
+    await moveDialog.getByLabel('Move to').selectOption({ label: 'Credential transfer' });
+    await moveDialog.getByRole('button', { name: 'Move', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Collapse folder Credential transfer', exact: true })).toBeVisible();
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Reflect.set(nativeDialog, '__mrtE2EOriginalSaveDialog', nativeDialog.showSaveDialog.bind(nativeDialog));
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: async () => ({ canceled: false, filePath }) });
+    }, folderBundlePath);
+    await page.getByRole('button', { name: 'Actions for folder Credential transfer' }).click();
+    await page.getByRole('button', { name: 'Export folder Credential transfer', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
+
+    expect(await app.evaluate(({ dialog: nativeDialog }) => {
+      const original = Reflect.get(nativeDialog, '__mrtE2EOriginalSaveDialog');
+      if (typeof original !== 'function') return false;
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: original });
+      Reflect.deleteProperty(nativeDialog, '__mrtE2EOriginalSaveDialog');
+      return typeof nativeDialog.showSaveDialog;
+    })).toBe('function');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    const exportCredentials = settings.getByRole('button', { name: /Export encrypted SSH passwords/ });
+    await exportCredentials.click();
+    await runNativeSshCredentialBundleDialog('cancel-credential-export');
+    await expect(exportCredentials).toBeEnabled({ timeout: 30_000 });
+    expect(await readFile(credentialBundlePath).catch(() => undefined)).toBeUndefined();
+    await exportCredentials.click();
+    await runNativeSshCredentialBundleDialog('export-credential', credentialBundlePath);
+    await expect(settings.getByText('Encrypted bundle exported with 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    const encryptedBundle = await readFile(credentialBundlePath, 'utf8');
+    expect(encryptedBundle).not.toContain('sftp-e2e-secret');
+    expect(encryptedBundle).not.toContain('mrt-e2e-user');
+    expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
+    await app.close();
+    app = undefined;
+
+    app = await launch(targetProfile);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Reflect.set(nativeDialog, '__mrtE2EOriginalOpenDialog', nativeDialog.showOpenDialog.bind(nativeDialog));
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, folderBundlePath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1 saved session');
+    await expect(page.getByRole('button', { name: 'Collapse folder Credential transfer', exact: true })).toBeVisible();
+    expect(await app.evaluate(({ dialog: nativeDialog }) => {
+      const original = Reflect.get(nativeDialog, '__mrtE2EOriginalOpenDialog');
+      if (typeof original !== 'function') return false;
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: original });
+      Reflect.deleteProperty(nativeDialog, '__mrtE2EOriginalOpenDialog');
+      return typeof nativeDialog.showOpenDialog;
+    })).toBe('function');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    const importCredentials = settings.getByRole('button', { name: /Import encrypted SSH passwords/ });
+    await importCredentials.click();
+    await runNativeSshCredentialBundleDialog('cancel-credential-import');
+    await expect(importCredentials).toBeEnabled({ timeout: 30_000 });
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(0);
+
+    await page.getByRole('button', { name: 'Open Bundle SSH', exact: true }).click();
+    trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    sshTab = page.getByRole('tab', { name: 'Bundle SSH', exact: true });
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The imported SSH profile has no terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
+    await expect.poll(() => acceptedPasswords, { timeout: 10_000 }).toBe(2);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(1);
+    await sshTab.focus();
+    await page.keyboard.press('Control+W');
+    const closeConfirmation = page.getByRole('alertdialog');
+    await expect(closeConfirmation).toBeVisible();
+    await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
+    await expect(sshTab).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await importCredentials.click();
+    await runNativeSshCredentialBundleDialog('import-credential', credentialBundlePath);
+    await expect(settings.getByText('Imported 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
+
+    await page.getByRole('button', { name: 'Open Bundle SSH', exact: true }).click();
+    sshTab = page.getByRole('tab', { name: 'Bundle SSH', exact: true });
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The imported SSH profile has no terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
+    await expect.poll(() => acceptedPasswords, { timeout: 10_000 }).toBe(3);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(1);
+  } finally {
+    for (const client of clients) client.end();
+    await app?.close();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('settings profile templates round-trip between Windows app profiles and require an explicit save', async () => {
+  test.skip(process.platform !== 'win32', 'Settings profile template acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const root = await mkdtemp(join(tmpdir(), 'mrt-settings-profile-e2e-'));
+  const sourceProfile = join(root, 'source');
+  const targetProfile = join(root, 'target');
+  const templatePath = join(root, 'workbench-settings.json');
+  await mkdir(sourceProfile);
+  await mkdir(targetProfile);
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${sourceProfile}`], env: electronEnvironment() });
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByLabel('Startup greeting').fill('MRT template greeting — ready');
+    await settings.getByLabel('Saved PowerShell script').fill("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePath }) });
+    }, templatePath);
+    await settings.getByRole('button', { name: 'Export settings template…', exact: true }).click();
+    await expect(settings.locator('.settings-save-status')).toContainText('Settings template exported.');
+    const templateText = await readFile(templatePath, 'utf8');
+    const template = JSON.parse(templateText) as { format?: unknown; version?: unknown; preferences?: Record<string, unknown> };
+    expect(template).toMatchObject({ format: 'multiremote-terminal/workbench-settings', version: 1 });
+    expect(template.preferences).toMatchObject({ startupGreeting: 'MRT template greeting — ready',
+      powerShellProfileScript: "Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'" });
+    expect(templateText).not.toMatch(/credential|password|privateKey/i);
+    await app.close();
+    app = undefined;
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, templatePath);
+    await settings.getByRole('button', { name: 'Load settings template…', exact: true }).click();
+    await expect(settings.getByLabel('Startup greeting')).toHaveValue('MRT template greeting — ready');
+    await expect(settings.getByLabel('Saved PowerShell script')).toHaveValue("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
+    await expect(settings.locator('.settings-save-status')).toContainText('Template loaded into this draft.');
+    await expect(page.locator('.xterm-rows').first()).not.toContainText('MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN');
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.locator('.settings-save-status')).toContainText('Settings saved.');
+    await app.close();
+    app = undefined;
+
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${targetProfile}`], env: electronEnvironment() });
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByLabel('Startup greeting')).toHaveValue('MRT template greeting — ready');
+    await expect(settings.getByLabel('Saved PowerShell script')).toHaveValue("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
+  } finally {
+    await app?.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('local shell availability blocks new and saved-profile launches while preserving active sessions and profiles', async () => {
   test.setTimeout(60_000);
   test.skip(process.platform !== 'win32', 'Local shell availability acceptance requires Windows');
@@ -6840,22 +7623,30 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
 });
 
 test('custom workbench logo is bounded, persists across restart, and resets to the built-in wordmark', async () => {
+  test.skip(process.platform !== 'win32', 'Native custom-logo picker acceptance runs on Windows');
   test.setTimeout(90_000);
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-custom-logo-e2e-'));
+  const profile = await createWorkspaceTempDirectory('mrt-custom-logo-e2e-');
   const logoPath = join(profile, 'selected-logo.png');
   const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==', 'base64');
   const launch = () => electron.launch({
-    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo', `--mrt-e2e-custom-logo-file=${logoPath}`],
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo'],
     env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
-  let app = await launch();
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    app = await launch();
     let page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await writeFile(logoPath, validPng);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    const chooseLogo = settings.getByRole('button', { name: 'Choose PNG logo', exact: true });
+    await chooseLogo.click();
+    await runNativeCustomLogoDialog('cancel-logo');
+    await expect(chooseLogo).toBeEnabled();
+    await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toHaveCount(0);
+    await chooseLogo.click();
+    await runNativeCustomLogoDialog('select-logo', logoPath);
     const preview = settings.getByRole('img', { name: 'Selected workbench logo' });
     await expect(preview).toBeVisible();
     await expect(preview).toHaveJSProperty('naturalWidth', 1);
@@ -6876,6 +7667,7 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
 
     await writeFile(logoPath, Buffer.from('not a PNG image'));
     await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    await runNativeCustomLogoDialog('select-logo', logoPath);
     await expect(settings.getByRole('alert')).toContainText('Choose a valid PNG image');
     await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
     await settings.getByRole('button', { name: 'Use built-in wordmark', exact: true }).click();
@@ -6890,7 +7682,7 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
   } finally {
-    await app.close();
+    await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

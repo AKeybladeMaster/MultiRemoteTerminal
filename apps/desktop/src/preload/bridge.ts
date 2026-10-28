@@ -1,12 +1,12 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, CONTRACT_VERSION, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
   SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL,
-  SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
+  SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import type { RemoteFileDropContext } from '../../../../packages/contracts/src/commands.ts';
 import { createBridge } from './client.ts';
 import { installRemoteFileDropStore } from './remote-file-drop.ts';
 import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
-  installTftpServerActionGestureStore, installPowerShellProfileGestureStore } from './paste-gesture.ts';
+  installTftpServerActionGestureStore, installPowerShellProfileGestureStore, installSshSessionLogConsentGestureStore } from './paste-gesture.ts';
 
 const pasteGestures = installTerminalPasteGestureStore(document, async sessionId =>
   await ipcRenderer.invoke(PASTE_GESTURE_CHANNEL, { sessionId }) === true);
@@ -22,6 +22,8 @@ const tftpServerActionGestures = installTftpServerActionGestureStore(document, a
   await ipcRenderer.invoke(TFTP_SERVER_ACTION_GESTURE_CHANNEL, action === 'choose-root' ? { action } : { action, selectionId, port }) === true);
 const powerShellProfileGestures = installPowerShellProfileGestureStore(document, async sessionId =>
   await ipcRenderer.invoke(POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, { sessionId }) === true);
+const sshSessionLogConsentGestures = installSshSessionLogConsentGestureStore(document, async (sessionId, host, port, gatewayProfileIds) =>
+  await ipcRenderer.invoke(SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, { sessionId, host, port, gatewayProfileIds }) === true);
 const remoteFileDrops = installRemoteFileDropStore(document, file => webUtils.getPathForFile(file as File), request =>
   ipcRenderer.invoke(REMOTE_FILE_DROP_CHANNEL, request), (context: RemoteFileDropContext, tokens: readonly string[]) =>
     ipcRenderer.invoke(COMMAND_CHANNEL, { command: 'files.drop.discard', requestId: globalThis.crypto.randomUUID(), contractVersion: CONTRACT_VERSION,
@@ -70,5 +72,9 @@ const bridge = createBridge(request => ipcRenderer.invoke(COMMAND_CHANNEL, reque
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);
     ipcRenderer.on(TFTP_SERVER_STATUS_EVENT_CHANNEL, receive);
     return () => ipcRenderer.removeListener(TFTP_SERVER_STATUS_EVENT_CHANNEL, receive);
-  }, sessionId => powerShellProfileGestures.consume(sessionId));
+  }, sessionId => powerShellProfileGestures.consume(sessionId), listener => {
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) => listener(value);
+    ipcRenderer.on(SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, receive);
+    return () => ipcRenderer.removeListener(SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, receive);
+  }, (sessionId, host, port, gatewayProfileIds) => sshSessionLogConsentGestures.consume(sessionId, host, port, gatewayProfileIds));
 contextBridge.exposeInMainWorld('multiRemoteTerminal', bridge);

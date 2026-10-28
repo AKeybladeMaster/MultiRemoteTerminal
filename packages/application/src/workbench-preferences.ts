@@ -1,6 +1,6 @@
 import { failure } from '../../domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../domain/src/errors.ts';
-import { normalizeWorkbenchPreferences, toWorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
+import { isCurrentWorkbenchPreferences, normalizeWorkbenchPreferences, toWorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
 import type { CancellationSignal } from './cancellation.ts';
 import { StorageOperationError } from './storage-errors.ts';
@@ -20,13 +20,26 @@ export interface WorkbenchPreferencesStore {
   saveWorkbenchPreferences(preferences: WorkbenchPreferences, cancellation?: CancellationSignal): Promise<WorkbenchPreferences>;
 }
 
+export interface WorkbenchSettingsTemplateStore {
+  exportWorkbenchSettingsTemplate(path: string, preferences: WorkbenchPreferences, cancellation?: CancellationSignal): Promise<{ readonly bytesSaved: number }>;
+  importWorkbenchSettingsTemplate(path: string, cancellation?: CancellationSignal): Promise<WorkbenchPreferences>;
+}
+
+export interface WorkbenchSettingsTemplateDialog {
+  selectExportPath(): Promise<string | undefined>;
+  selectImportPath(): Promise<string | undefined>;
+}
+
 export interface WorkbenchPreferencesManager {
   read(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>>;
   readStartup(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchStartupPreferences>>;
   save(value: unknown, cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>>;
+  exportTemplate(value: unknown, cancellation?: CancellationSignal): Promise<Outcome<{ readonly bytesSaved: number }>>;
+  importTemplate(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>>;
 }
 
-export function createWorkbenchPreferencesManager(store: WorkbenchPreferencesStore): WorkbenchPreferencesManager {
+export function createWorkbenchPreferencesManager(store: WorkbenchPreferencesStore, templateStore?: WorkbenchSettingsTemplateStore,
+  templateDialog?: WorkbenchSettingsTemplateDialog): WorkbenchPreferencesManager {
   return {
     async read(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>> {
       if (cancellation?.aborted) return failure('CANCELLED');
@@ -44,6 +57,25 @@ export function createWorkbenchPreferencesManager(store: WorkbenchPreferencesSto
       if (cancellation?.aborted) return failure('CANCELLED');
       try { return { ok: true, result: await store.saveWorkbenchPreferences(preferences, cancellation) }; }
       catch (error) { return failure(storageErrorCode(error)); }
+    },
+    async exportTemplate(value: unknown, cancellation?: CancellationSignal): Promise<Outcome<{ readonly bytesSaved: number }>> {
+      if (!isCurrentWorkbenchPreferences(value)) return failure('INVALID_REQUEST');
+      if (!templateStore || !templateDialog) return failure('UNAVAILABLE');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try {
+        const path = await templateDialog.selectExportPath();
+        if (cancellation?.aborted || !path) return failure('CANCELLED');
+        return { ok: true, result: await templateStore.exportWorkbenchSettingsTemplate(path, value, cancellation) };
+      } catch (error) { return failure(storageErrorCode(error)); }
+    },
+    async importTemplate(cancellation?: CancellationSignal): Promise<Outcome<WorkbenchPreferences>> {
+      if (!templateStore || !templateDialog) return failure('UNAVAILABLE');
+      if (cancellation?.aborted) return failure('CANCELLED');
+      try {
+        const path = await templateDialog.selectImportPath();
+        if (cancellation?.aborted || !path) return failure('CANCELLED');
+        return { ok: true, result: await templateStore.importWorkbenchSettingsTemplate(path, cancellation) };
+      } catch (error) { return failure(storageErrorCode(error)); }
     }
   };
 }

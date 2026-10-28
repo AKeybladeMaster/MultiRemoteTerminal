@@ -14,7 +14,7 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     return valid;
   }, id);
   assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-    'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
+    'openSshTerminal', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile',
@@ -22,13 +22,36 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'chooseTftpRoot',
     'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-    'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
+    'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'exportWorkbenchSettingsTemplate', 'importWorkbenchSettingsTemplate',
+    'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
     'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
     'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession', 'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential',
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
+    'exportSshCredentialBundle', 'importSshCredentialBundle',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-    'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('preload starts an SSH session log without accepting a renderer filesystem path', async () => {
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  let invocations = 0;
+  const denied = await createBridge(async () => { invocations++; return { requestId: id(), ok: true, result: { sessionId, fileName: 'session.log' } }; }, id)
+    .startSshSessionLog('linux.internal', 22);
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(invocations, 0);
+  const bridge = createBridge(async request => {
+    invocations++;
+    assert.deepEqual(request, { command: 'ssh.session-log.start', requestId: id(), contractVersion: 1,
+      payload: { sessionId: id(), host: 'linux.internal', port: 22 } });
+    return { requestId: id(), ok: true, result: { sessionId: id(), fileName: 'session.log' } };
+  }, id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+  undefined, undefined, undefined, undefined, undefined, undefined, undefined, async () => true);
+  assert.deepEqual(await bridge.startSshSessionLog('linux.internal', 22), {
+    requestId: id(), ok: true, result: { sessionId: id(), fileName: 'session.log' }
+  });
+  assert.equal(invocations, 1);
 });
 
 test('preload exposes a path-free custom logo picker command', async () => {
@@ -38,6 +61,20 @@ test('preload exposes a path-free custom logo picker command', async () => {
     return { requestId: id(), ok: true, result: { dataUrl } };
   }, id);
   assert.deepEqual(await bridge.selectCustomLogo(), { requestId: id(), ok: true, result: { dataUrl } });
+});
+
+test('preload exposes path-free encrypted credential bundle commands', async () => {
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return { requestId: request.requestId, ok: true, result: { credentialCount: 2 } };
+  }, id);
+  assert.deepEqual(await bridge.exportSshCredentialBundle(), { requestId: id(), ok: true, result: { credentialCount: 2 } });
+  assert.deepEqual(await bridge.importSshCredentialBundle(), { requestId: id(), ok: true, result: { credentialCount: 2 } });
+  assert.deepEqual(seen, [
+    { command: 'credential.bundle.export', requestId: id(), contractVersion: 1, payload: {} },
+    { command: 'credential.bundle.import', requestId: id(), contractVersion: 1, payload: {} }
+  ]);
 });
 
 test('preload routes tunnel manager requests and validates runtime status events', async () => {
@@ -341,6 +378,22 @@ test('preload exposes saved-folder import and export through fixed commands', as
   assert.deepEqual(seen, [
     { command: 'session.folder.export', requestId: id(), contractVersion: 1, payload: { id: folderId } },
     { command: 'session.folder.import', requestId: id(), contractVersion: 1, payload: {} }
+  ]);
+});
+
+test('preload exposes settings template import and export through fixed path-free commands', async () => {
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return request.command === 'preferences.template.export'
+      ? { requestId: id(), ok: true, result: { bytesSaved: 128 } }
+      : { requestId: id(), ok: true, result: DEFAULT_WORKBENCH_PREFERENCES };
+  }, id);
+  assert.equal((await bridge.exportWorkbenchSettingsTemplate(DEFAULT_WORKBENCH_PREFERENCES)).ok, true);
+  assert.equal((await bridge.importWorkbenchSettingsTemplate()).ok, true);
+  assert.deepEqual(seen, [
+    { command: 'preferences.template.export', requestId: id(), contractVersion: 1, payload: { preferences: DEFAULT_WORKBENCH_PREFERENCES } },
+    { command: 'preferences.template.import', requestId: id(), contractVersion: 1, payload: {} }
   ]);
 });
 

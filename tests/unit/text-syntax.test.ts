@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, dotenv, Java properties and JSON from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -29,6 +29,22 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'sql');
   }
   assert.equal(resolveTextSyntaxProfile('auto', 'settings.TOML'), 'toml');
+  for (const fileName of ['settings.ini', 'service.CFG']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'ini');
+  }
+  assert.equal(resolveTextSyntaxProfile('ini', 'script.sh'), 'ini');
+  for (const fileName of ['service.xml', 'schema.XSD', 'view.xslt', 'icon.svg']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'xml');
+  }
+  assert.equal(resolveTextSyntaxProfile('xml', 'page.html'), 'xml');
+  for (const fileName of ['.env', '.env.local', '.env.production.example', 'service.env', 'C:\\app\\.env.test']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'dotenv');
+  }
+  assert.equal(resolveTextSyntaxProfile('dotenv', 'settings.txt'), 'dotenv');
+  for (const fileName of ['messages.properties', 'CONFIG.PROPERTIES', 'C:\\app\\i18n\\messages_en.properties']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'properties');
+  }
+  assert.equal(resolveTextSyntaxProfile('properties', 'settings.txt'), 'properties');
   for (const fileName of ['settings.yaml', 'inventory.YML']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'yaml');
   }
@@ -1047,4 +1063,216 @@ test('shell syntax preview keeps malformed expansion scans within a linear allow
   const boundedPreview = medianRuntime(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   assert.ok(boundedPreview <= smaller * 8 + 10,
     `64,000 code units took ${boundedPreview.toFixed(1)}ms after 16,000 took ${smaller.toFixed(1)}ms`);
+});
+
+test('INI syntax preview colors sections, keys, separators, quoted values, literals, numbers and full-line comments', () => {
+  const source = [
+    '; main settings',
+    '[server]',
+    'host.name = "local\\"host"',
+    'port: 8080',
+    'enabled = YES',
+    'timeout = -1.5e2',
+    'malformed line',
+    '[unterminated',
+    'unclosed = "not closed',
+    'path = C:\\app ; inline text stays uncolored'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'ini');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '; main settings', kind: 'ini-comment' },
+    { text: '[server]', kind: 'ini-section' },
+    { text: 'host.name', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: '"local\\"host"', kind: 'ini-string' },
+    { text: 'port', kind: 'ini-key' },
+    { text: ':', kind: 'ini-operator' },
+    { text: '8080', kind: 'ini-number' },
+    { text: 'enabled', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: 'YES', kind: 'ini-literal' },
+    { text: 'timeout', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: '-1.5e2', kind: 'ini-number' },
+    { text: 'unclosed', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' },
+    { text: 'path', kind: 'ini-key' },
+    { text: '=', kind: 'ini-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+});
+
+test('INI syntax preview stops at shared character and token bounds', () => {
+  const oversized = highlightTextSyntax(`value = "${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}"`, 'ini');
+  assert.equal(oversized.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(oversized.isTruncated, true);
+  assert.ok(oversized.tokens.every(token => token.end <= oversized.highlightedThrough));
+
+  const manyComments = highlightTextSyntax('; comment\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'ini');
+  assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyComments.isTruncated, true);
+});
+
+test('dotenv syntax preview colors assignments, export, quoted values and separated comments without parsing values', () => {
+  const source = [
+    '# deployment settings',
+    'export API_URL = "https://example.test/a#fragment" # endpoint',
+    'DATABASE_URL=postgres://localhost/app',
+    'TOKEN=a#b',
+    'HASH=#literal',
+    'EMPTY=',
+    'INVALID-NAME=value',
+    'BROKEN="unterminated'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'dotenv');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '# deployment settings', kind: 'dotenv-comment' },
+    { text: 'export', kind: 'dotenv-export' },
+    { text: 'API_URL', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: '"https://example.test/a#fragment"', kind: 'dotenv-string' },
+    { text: '# endpoint', kind: 'dotenv-comment' },
+    { text: 'DATABASE_URL', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: 'postgres://localhost/app', kind: 'dotenv-value' },
+    { text: 'TOKEN', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: 'a#b', kind: 'dotenv-value' },
+    { text: 'HASH', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: '#literal', kind: 'dotenv-value' },
+    { text: 'EMPTY', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' },
+    { text: 'BROKEN', kind: 'dotenv-key' },
+    { text: '=', kind: 'dotenv-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+  assert.ok(preview.tokens.every((token, index) => token.start >= 0 && token.end <= source.length &&
+    (index === 0 || preview.tokens[index - 1]!.end <= token.start)));
+});
+
+test('dotenv syntax preview stops at shared character and token bounds without coloring a partial line', () => {
+  const oversized = highlightTextSyntax(`LONG=${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}`, 'dotenv');
+  assert.equal(oversized.highlightedThrough, 0);
+  assert.equal(oversized.isTruncated, true);
+  assert.deepEqual(oversized.tokens, []);
+
+  const manyAssignments = highlightTextSyntax('A=x\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'dotenv');
+  assert.equal(manyAssignments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyAssignments.isTruncated, true);
+});
+
+test('Java properties syntax preview colors keys, separators, opaque values and leading comments', () => {
+  const source = [
+    '# primary',
+    '  ! vendor',
+    'alpha=one',
+    'escaped\\=equals:two',
+    'escaped\\:colon = a#literal',
+    'even\\\\: value',
+    'escaped\\ key: value with spaces',
+    'whitespace\fseparator',
+    'lone',
+    'empty=',
+    '=ignored',
+    'joined=first\\',
+    '  #continuation\\',
+    '  value',
+    'after=plain',
+    '# comment\\',
+    'double=value\\\\'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'properties');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '# primary', kind: 'properties-comment' },
+    { text: '! vendor', kind: 'properties-comment' },
+    { text: 'alpha', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'one', kind: 'properties-value' },
+    { text: 'escaped\\=equals', kind: 'properties-key' },
+    { text: ':', kind: 'properties-operator' },
+    { text: 'two', kind: 'properties-value' },
+    { text: 'escaped\\:colon', kind: 'properties-key' },
+    { text: ' = ', kind: 'properties-operator' },
+    { text: 'a#literal', kind: 'properties-value' },
+    { text: 'even\\\\', kind: 'properties-key' },
+    { text: ': ', kind: 'properties-operator' },
+    { text: 'value', kind: 'properties-value' },
+    { text: 'escaped\\ key', kind: 'properties-key' },
+    { text: ': ', kind: 'properties-operator' },
+    { text: 'value with spaces', kind: 'properties-value' },
+    { text: 'whitespace', kind: 'properties-key' },
+    { text: '\f', kind: 'properties-operator' },
+    { text: 'separator', kind: 'properties-value' },
+    { text: 'lone', kind: 'properties-key' },
+    { text: 'empty', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'after', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'plain', kind: 'properties-value' },
+    { text: '# comment\\', kind: 'properties-comment' },
+    { text: 'double', kind: 'properties-key' },
+    { text: '=', kind: 'properties-operator' },
+    { text: 'value\\\\', kind: 'properties-value' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+  assert.ok(preview.tokens.every((token, index) => token.start >= 0 && token.end <= source.length &&
+    (index === 0 || preview.tokens[index - 1]!.end <= token.start)));
+});
+
+test('Java properties syntax preview respects shared character and token bounds', () => {
+  const oversized = highlightTextSyntax('key=' + 'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100), 'properties');
+  assert.equal(oversized.highlightedThrough, 0);
+  assert.equal(oversized.isTruncated, true);
+  assert.deepEqual(oversized.tokens, []);
+
+  const manyProperties = highlightTextSyntax('k=v\n'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'properties');
+  assert.equal(manyProperties.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyProperties.isTruncated, true);
+});
+
+test('XML syntax preview colors tags, attributes, quoted values, comments, declarations, CDATA and text entities', () => {
+  const source = '<?xml version="1.0"?>\n<!-- service -->\n<server host="127.0.0.1">service &amp; app<![CDATA[<literal>]]></server>\n';
+  const preview = highlightTextSyntax(source, 'xml');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '<?xml version="1.0"?>', kind: 'xml-declaration' },
+    { text: '<!-- service -->', kind: 'xml-comment' },
+    { text: '<', kind: 'xml-operator' },
+    { text: 'server', kind: 'xml-tag' },
+    { text: 'host', kind: 'xml-attribute' },
+    { text: '=', kind: 'xml-operator' },
+    { text: '"127.0.0.1"', kind: 'xml-string' },
+    { text: '>', kind: 'xml-operator' },
+    { text: '&amp;', kind: 'xml-entity' },
+    { text: '<![CDATA[<literal>]]>', kind: 'xml-cdata' },
+    { text: '</', kind: 'xml-operator' },
+    { text: 'server', kind: 'xml-tag' },
+    { text: '>', kind: 'xml-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+
+  const doctypeSource = '<!DOCTYPE root [<!-- ] > --> <!ELEMENT root (#PCDATA)>]><root value="a > b"/>';
+  const doctype = highlightTextSyntax(doctypeSource, 'xml');
+  assert.equal(doctypeSource.slice(doctype.tokens[0]!.start, doctype.tokens[0]!.end), '<!DOCTYPE root [<!-- ] > --> <!ELEMENT root (#PCDATA)>]>');
+  assert.equal(doctype.tokens[0]!.kind, 'xml-declaration');
+  assert.equal(doctypeSource.slice(doctype.tokens[doctype.tokens.length - 2]!.start, doctype.tokens[doctype.tokens.length - 2]!.end), '"a > b"');
+});
+
+test('XML syntax preview leaves malformed constructs uncolored and respects shared preview bounds', () => {
+  for (const source of ['<open', '<open <nested/>', '<item value="unterminated', '<!-- no end <nested>']) {
+    assert.equal(highlightTextSyntax(source, 'xml').tokens.length, 0);
+  }
+
+  const oversized = highlightTextSyntax(`<item>${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}`, 'xml');
+  assert.equal(oversized.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(oversized.isTruncated, true);
+  assert.ok(oversized.tokens.every(token => token.end <= oversized.highlightedThrough));
+
+  const manyTags = highlightTextSyntax('<x/>'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'xml');
+  assert.equal(manyTags.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyTags.isTruncated, true);
 });

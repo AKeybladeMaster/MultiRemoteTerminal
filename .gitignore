@@ -5,6 +5,7 @@ apps/desktop/resources/multiremote-terminal.ico
 artifacts/
 apps/desktop/native/build/
 .cache/
+.tmp/
 test-results/
 playwright-report/
 *.tsbuildinfo

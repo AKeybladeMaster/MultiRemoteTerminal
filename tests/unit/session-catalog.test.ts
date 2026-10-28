@@ -175,6 +175,38 @@ test('credential references bind only SSH terminal profiles and remain absent fr
   } finally { database.close(); }
 });
 
+test('SQLite encrypted credential import attaches only exact empty SSH profiles in one transaction', async () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(database).migrate();
+    const catalog = new SqliteSessionCatalogRepository(database);
+    const first = await catalog.createSession({ kind: 'ssh', name: 'First', host: 'first.example.net', port: 22 });
+    const second = await catalog.createSession({ kind: 'ssh', name: 'Second', host: 'second.example.net', port: 2222 });
+    await catalog.createSession({ kind: 'sftp', name: 'Files only', host: 'files.example.net', port: 22 });
+    if (first.kind !== 'ssh' || second.kind !== 'ssh') throw new Error('Expected SSH profiles');
+    const existingReference = parseCredentialReference('b64504d8-9bbc-4e11-a4e2-345fcc039841')!;
+    const firstImportedReference = parseCredentialReference('a9a58812-27f6-49ad-b68f-afed445eb329')!;
+    const secondImportedReference = parseCredentialReference('f17d390d-47dd-4ded-8a1e-42db5d0a133e')!;
+    assert.equal(await catalog.setSessionCredentialReference(second.id, existingReference, null), true);
+    assert.equal((await catalog.listSshCredentials()).length, 1);
+
+    assert.equal(await catalog.attachImportedSshCredentials([
+      { sessionId: first.id, host: first.host, port: first.port, reference: firstImportedReference },
+      { sessionId: second.id, host: second.host, port: second.port, reference: secondImportedReference }
+    ]), false, 'a conflict on the second row rejects the complete batch');
+    assert.equal(await catalog.getSessionCredentialReference(first.id), undefined, 'the first write rolled back');
+    assert.equal(await catalog.getSessionCredentialReference(second.id), existingReference, 'the prior credential is untouched');
+
+    assert.equal(await catalog.attachImportedSshCredentials([
+      { sessionId: first.id, host: first.host, port: first.port, reference: firstImportedReference }
+    ]), true);
+    assert.equal(await catalog.attachImportedSshCredentials([
+      { sessionId: first.id, host: 'wrong.example.net', port: first.port, reference: secondImportedReference }
+    ]), false, 'a changed endpoint cannot acquire the imported credential');
+    assert.deepEqual(new Set((await catalog.listSshCredentials()).map(item => item.profile.id)), new Set([first.id, second.id]));
+  } finally { database.close(); }
+});
+
 test('remembering a connection reuses its normalized profile and updates its last-used time', async () => {
   const database = new DatabaseSync(':memory:');
   try {

@@ -15,6 +15,7 @@ import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferRes
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../domain/src/file-transfer.ts';
 import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../domain/src/remote-text-file.ts';
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../domain/src/remote-text-file.ts';
+import type { SshCredentialPromptCategory, SshSessionActivity, SshSessionLogFailurePhase, SshTransportNetworkFailure } from './ssh-session-activity.ts';
 
 export interface SshTerminalCredentials {
   username: string;
@@ -56,11 +57,13 @@ export type SshTerminalProviderErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | '
 
 export class SshTerminalProviderError extends Error {
   readonly code: SshTerminalProviderErrorCode;
+  readonly networkFailure?: SshTransportNetworkFailure;
 
-  constructor(code: SshTerminalProviderErrorCode) {
+  constructor(code: SshTerminalProviderErrorCode, networkFailure?: SshTransportNetworkFailure) {
     super('SSH terminal operation failed');
     this.name = 'SshTerminalProviderError';
     this.code = code;
+    if (networkFailure) this.networkFailure = networkFailure;
   }
 }
 
@@ -136,6 +139,7 @@ export interface SshTerminalController {
   closeAll(): Promise<void>;
   subscribe(listener: (event: LocalTerminalEvent) => void): () => void;
   subscribeTrust(listener: (event: SshTrustEvent) => void): () => void;
+  subscribeActivity(listener: (event: SshSessionActivity) => void): () => void;
   dispose(): Promise<void>;
 }
 
@@ -148,6 +152,7 @@ interface SessionState {
   state: SshTerminalSession['state'];
   pendingInputChars: number;
   pendingEvents: LocalTerminalEvent[];
+  failurePhase: SshSessionLogFailurePhase;
   failureCode?: 'HOST_KEY_REJECTED' | 'HOST_KEY_CHANGED' | 'TIMEOUT';
 }
 
@@ -234,6 +239,7 @@ export function createSshTerminalController(
   const sessionByTrustToken = new Map<string, string>();
   const terminalListeners = new Set<(event: LocalTerminalEvent) => void>();
   const trustListeners = new Set<(event: SshTrustEvent) => void>();
+  const activityListeners = new Set<(event: SshSessionActivity) => void>();
   const transfers = new Map<string, ActiveSftpTransfer>();
   let shutdownPromise: Promise<void> | undefined;
   let disposed = false;
@@ -241,6 +247,9 @@ export function createSshTerminalController(
   const stopListening = provider.subscribe(event => {
     const session = sessions.get(event.sessionId);
     if (!session || session.state === 'closing') return;
+    if (event.kind === 'data') publishActivity({ type: 'terminal-output', sessionId: event.sessionId, sequence: event.sequence, data: event.data });
+    if (event.kind === 'exit') publishActivity({ type: 'session-exited', sessionId: event.sessionId, exitCode: event.exitCode });
+    if (event.kind === 'failure') publishActivity({ type: 'connection-failed', sessionId: event.sessionId, phase: 'transport', code: event.error.code });
     if (event.kind === 'exit' || event.kind === 'failure') {
       for (const transfer of transfers.values()) {
         if (transfer.sessionId === event.sessionId && transfer.phase !== 'committing') transfer.cancellation.cancel();
@@ -272,6 +281,21 @@ export function createSshTerminalController(
     }
   }
 
+  function publishActivity(event: SshSessionActivity): void {
+    for (const listener of activityListeners) {
+      try { listener(event); } catch { /* A diagnostic writer cannot interrupt SSH transport cleanup. */ }
+    }
+  }
+
+  async function promptCredential(session: SessionState, purpose: 'ssh-password' | 'ssh-key-passphrase' | 'ssh-agent-username',
+    category: SshCredentialPromptCategory, context: string) {
+    session.failurePhase = 'credential-prompt';
+    publishActivity({ type: 'credential-prompt-started', sessionId: session.sessionId, category });
+    const result = await credentialPrompt.prompt(purpose, session.cancellation.token, context);
+    publishActivity({ type: 'credential-prompt-finished', sessionId: session.sessionId, category, outcome: result.kind });
+    return result;
+  }
+
   function dropTrustToken(sessionId: string, token: string): void {
     sessionByTrustToken.delete(token);
     const tokens = trustTokensBySession.get(sessionId);
@@ -280,6 +304,7 @@ export function createSshTerminalController(
   }
 
   function failOpen(session: SessionState, code: ErrorCode) {
+    publishActivity({ type: 'connection-failed', sessionId: session.sessionId, phase: session.failurePhase, code });
     if (sessions.get(session.sessionId) === session) sessions.delete(session.sessionId);
     session.state = 'failed';
     session.pendingEvents.length = 0;
@@ -287,17 +312,32 @@ export function createSshTerminalController(
   }
 
   async function verifyHost(session: SessionState, endpoint: SshHostEndpoint, evidence: HostKeyEvidence): Promise<boolean> {
+    session.failurePhase = 'host-trust';
     if (session.cancellation.token.aborted || sessions.get(session.sessionId) !== session || !isHostKeyEvidence(evidence) ||
         !session.endpoints.some(candidate => hostEndpointKey(candidate) === hostEndpointKey(endpoint))) return false;
     let inspected: Outcome<HostTrustDecision>;
     try { inspected = await hostTrust.inspect(endpoint, evidence, session.cancellation.token); }
-    catch { return false; }
-    if (!inspected.ok) return false;
+    catch {
+      publishActivity({ type: 'host-trust', sessionId: session.sessionId, host: endpoint.host, port: endpoint.port, outcome: 'unavailable' });
+      return false;
+    }
+    if (!inspected.ok) {
+      publishActivity({ type: 'host-trust', sessionId: session.sessionId, host: endpoint.host, port: endpoint.port, outcome: 'unavailable' });
+      return false;
+    }
     const decision = inspected.result;
-    if (decision.kind === 'trusted' || decision.kind === 'approved') return true;
-    if (decision.kind === 'rejected') return false;
+    if (decision.kind === 'trusted' || decision.kind === 'approved') {
+      publishActivity({ type: 'host-trust', sessionId: session.sessionId, host: endpoint.host, port: endpoint.port, outcome: decision.kind });
+      session.failurePhase = 'transport';
+      return true;
+    }
+    if (decision.kind === 'rejected') {
+      publishActivity({ type: 'host-trust', sessionId: session.sessionId, host: endpoint.host, port: endpoint.port, outcome: 'rejected' });
+      return false;
+    }
     if (decision.kind === 'changed') {
       session.failureCode = 'HOST_KEY_CHANGED';
+      publishActivity({ type: 'host-trust', sessionId: session.sessionId, host: decision.host, port: decision.port, outcome: 'changed' });
       publishTrust({ kind: 'changed', sessionId: session.sessionId, host: decision.host, port: decision.port,
         algorithm: decision.algorithm, fingerprint: decision.fingerprint });
       return false;
@@ -311,9 +351,13 @@ export function createSshTerminalController(
     publishTrust({ kind: 'challenge', sessionId: session.sessionId, challenge });
     const resolution = await hostTrust.waitForResolution(challenge.token);
     dropTrustToken(session.sessionId, challenge.token);
+    publishActivity({ type: 'host-trust', sessionId: session.sessionId, host: endpoint.host, port: endpoint.port,
+      outcome: resolution === 'approved' ? 'approved' : resolution === 'expired' ? 'expired' : 'rejected' });
     if (resolution === 'rejected' || resolution === 'cancelled') session.failureCode = 'HOST_KEY_REJECTED';
     else if (resolution === 'expired') session.failureCode = 'TIMEOUT';
-    return resolution === 'approved' && !session.cancellation.token.aborted && sessions.get(session.sessionId) === session;
+    const approved = resolution === 'approved' && !session.cancellation.token.aborted && sessions.get(session.sessionId) === session;
+    if (approved) session.failurePhase = 'transport';
+    return approved;
   }
 
   async function openConnection(sessionId: string, host: string, port: number, size?: TerminalSize,
@@ -330,7 +374,7 @@ export function createSshTerminalController(
     if (!gateways) { clearAuthenticationSelection(authenticationSelection); return failure('INVALID_REQUEST'); }
     const mode = size === undefined ? 'files' : 'terminal';
     const session: SessionState = { sessionId, endpoint, endpoints: [...gateways, endpoint], cancellation: createCancellationSource(), mode,
-      state: 'starting', pendingInputChars: 0, pendingEvents: [] };
+      state: 'starting', pendingInputChars: 0, pendingEvents: [], failurePhase: 'credential-prompt' };
     sessions.set(sessionId, session);
 
     let username = '';
@@ -342,7 +386,7 @@ export function createSshTerminalController(
     const gatewayCredentials: SshConnectionGatewayCredentials[] = [];
     try {
       for (const [index, gatewayEndpoint] of gateways.entries()) {
-        const credential = await credentialPrompt.prompt('ssh-password', session.cancellation.token,
+        const credential = await promptCredential(session, 'ssh-password', 'password',
           `Gateway ${index + 1}: ${gatewayEndpoint.host}:${gatewayEndpoint.port}`);
         if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
         if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
@@ -354,7 +398,7 @@ export function createSshTerminalController(
       }
 
       if (privateKey) {
-        const credential = await credentialPrompt.prompt('ssh-key-passphrase', session.cancellation.token,
+        const credential = await promptCredential(session, 'ssh-key-passphrase', 'key-passphrase',
           `SSH destination: ${endpoint.host}:${endpoint.port}\nSelected key: ${privateKey.fileName}`);
         if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
         if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
@@ -364,7 +408,7 @@ export function createSshTerminalController(
             credential.secret.length > 65_536 || credential.secret.includes('\0')) return failOpen(session, 'INVALID_REQUEST');
         providerCredentials = { username, privateKey: privateKey.data, passphrase: credential.secret };
       } else if (useAgent) {
-        const credential = await credentialPrompt.prompt('ssh-agent-username', session.cancellation.token,
+        const credential = await promptCredential(session, 'ssh-agent-username', 'agent-username',
           `SSH destination: ${endpoint.host}:${endpoint.port}`);
         if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
         if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
@@ -377,8 +421,9 @@ export function createSshTerminalController(
       } else if (savedCredentials) {
         username = savedCredentials.username;
         password = savedCredentials.password;
+        session.failurePhase = 'authentication';
       } else {
-        const credential = await credentialPrompt.prompt('ssh-password', session.cancellation.token, `SSH destination: ${endpoint.host}:${endpoint.port}`);
+        const credential = await promptCredential(session, 'ssh-password', 'password', `SSH destination: ${endpoint.host}:${endpoint.port}`);
         if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) return failOpen(session, 'CANCELLED');
         if (credential.kind === 'cancelled') return failOpen(session, 'CANCELLED');
         if (credential.kind !== 'provided') return failOpen(session, credential.kind === 'timeout' ? 'TIMEOUT' : 'UNAVAILABLE');
@@ -389,8 +434,11 @@ export function createSshTerminalController(
       providerCredentials ??= { username, password };
 
       const verifyEndpoint = (remoteEndpoint: SshHostEndpoint, evidence: HostKeyEvidence) => verifyHost(session, remoteEndpoint, evidence);
+      session.failurePhase = 'transport';
+      publishActivity({ type: 'transport', sessionId, outcome: 'started' });
       if (size === undefined) await provider.openFiles(sessionId, endpoint, providerCredentials, verifyEndpoint, gatewayCredentials);
       else await provider.open(sessionId, endpoint, providerCredentials, size, verifyEndpoint, gatewayCredentials);
+      publishActivity({ type: 'transport', sessionId, outcome: 'ready' });
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session || session.state === 'closing') {
         await provider.close(sessionId).catch(() => undefined);
         return failOpen(session, 'CANCELLED');
@@ -406,6 +454,12 @@ export function createSshTerminalController(
       if (sessions.get(sessionId) === session) await provider.close(sessionId).catch(() => undefined);
       for (const token of trustTokensBySession.get(sessionId) ?? []) hostTrust.reject(token);
       const providerCode = error instanceof SshTerminalProviderError ? error.code : undefined;
+      const networkFailure = error instanceof SshTerminalProviderError ? error.networkFailure : undefined;
+      if (providerCode === 'AUTHENTICATION_FAILED') session.failurePhase = 'authentication';
+      if (session.failurePhase === 'transport' || session.failurePhase === 'authentication') {
+        publishActivity({ type: 'transport', sessionId, outcome: 'failed', ...(providerCode ? { code: providerCode } : {}),
+          ...(networkFailure ? { networkFailure } : {}) });
+      }
       return failOpen(session, session.cancellation.token.aborted ? 'CANCELLED' : session.failureCode ?? providerCode ?? 'UNAVAILABLE');
     } finally {
       username = '';
@@ -448,6 +502,7 @@ export function createSshTerminalController(
     session.pendingInputChars += data.length;
     try {
       await provider.write(sessionId, data);
+      publishActivity({ type: 'terminal-input', sessionId, data });
       return { ok: true, result: EMPTY_RESULT };
     } catch { return failure('UNAVAILABLE', 'terminal'); }
     finally { session.pendingInputChars -= data.length; }
@@ -457,7 +512,11 @@ export function createSshTerminalController(
     const session = sessions.get(sessionId);
     if (!session || session.mode !== 'terminal' || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
     if (!isTerminalSize(size)) return failure('INVALID_REQUEST');
-    try { await provider.resize(sessionId, size); return { ok: true, result: EMPTY_RESULT }; }
+    try {
+      await provider.resize(sessionId, size);
+      publishActivity({ type: 'terminal-resize', sessionId, columns: size.columns, rows: size.rows });
+      return { ok: true, result: EMPTY_RESULT };
+    }
     catch { return failure('UNAVAILABLE', 'terminal'); }
   }
 
@@ -618,6 +677,7 @@ export function createSshTerminalController(
     const session = sessions.get(sessionId);
     if (!session) return failure('NOT_FOUND', 'terminal');
     session.state = 'closing';
+    publishActivity({ type: 'session-closed', sessionId });
     session.cancellation.cancel();
     const closingTransfers = [...transfers.values()].filter(transfer => transfer.sessionId === sessionId);
     for (const transfer of closingTransfers) transfer.cancellation.cancel();
@@ -654,6 +714,7 @@ export function createSshTerminalController(
       for (const transfer of activeTransfers) transfer.cancellation.cancel();
       for (const session of sessions.values()) {
         session.state = 'closing';
+        publishActivity({ type: 'session-closed', sessionId: session.sessionId });
         session.cancellation.cancel();
       }
       for (const tokens of trustTokensBySession.values()) for (const token of tokens) hostTrust.reject(token);
@@ -672,6 +733,10 @@ export function createSshTerminalController(
       trustListeners.add(listener);
       return () => trustListeners.delete(listener);
     },
+    subscribeActivity(listener: (event: SshSessionActivity) => void) {
+      activityListeners.add(listener);
+      return () => activityListeners.delete(listener);
+    },
     async dispose() {
       disposed = true;
       await this.closeAll().catch(() => undefined);
@@ -679,6 +744,7 @@ export function createSshTerminalController(
       stopListening();
       terminalListeners.clear();
       trustListeners.clear();
+      activityListeners.clear();
     }
   });
 }

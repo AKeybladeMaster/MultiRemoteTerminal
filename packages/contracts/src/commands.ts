@@ -11,6 +11,7 @@ import type { RdpLaunchResult } from '../../application/src/rdp-viewer.ts';
 import type { VncLaunchResult } from '../../application/src/vnc-viewer.ts';
 import type { LocalTextFile, LocalTextFileSaveResult } from '../../domain/src/local-text-file.ts';
 import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ssh-terminals.ts';
+import type { SshSessionLogStatus } from '../../application/src/ssh-session-activity.ts';
 import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
 import type { SerialTerminalSession } from '../../application/src/serial-terminals.ts';
 import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
@@ -48,6 +49,7 @@ import { isMacroShortcutBinding, isMacroShortcutCode } from '../../domain/src/ma
 import type { MacroShortcutBinding, MacroShortcutCode } from '../../domain/src/macro-shortcut.ts';
 import { isCurrentWorkbenchPreferences, isWorkbenchStartupPreferences, normalizeWorkbenchPreferences } from '../../domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../domain/src/workbench-preferences.ts';
+import { MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES } from '../../domain/src/workbench-settings-template.ts';
 import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
 import { isCustomLogoDataUrl } from '../../domain/src/custom-logo.ts';
 import type { CustomLogoSelection } from '../../domain/src/custom-logo.ts';
@@ -64,11 +66,13 @@ export const FTP_CONSENT_GESTURE_CHANNEL = 'mrt:ftp-consent-gesture:v1';
 export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
 export const VNC_LAUNCH_GESTURE_CHANNEL = 'mrt:vnc-launch-gesture:v1';
 export const TFTP_SERVER_ACTION_GESTURE_CHANNEL = 'mrt:tftp-server-action-gesture:v1';
+export const SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL = 'mrt:ssh-session-log-consent-gesture:v1';
 export const TFTP_SERVER_STATUS_EVENT_CHANNEL = 'mrt:tftp-server-status:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
 export const TERMINAL_EVENT_CHANNEL = 'mrt:terminal-event:v1';
 export const SSH_TRUST_EVENT_CHANNEL = 'mrt:ssh-trust-event:v1';
+export const SSH_SESSION_LOG_STATUS_EVENT_CHANNEL = 'mrt:ssh-session-log-status:v1';
 export const TUNNEL_STATUS_EVENT_CHANNEL = 'mrt:tunnel-status-event:v1';
 export const MAX_REMOTE_FILE_DROP_COUNT = 16;
 export const APP_URL = 'mrt://app/index.html';
@@ -109,7 +113,9 @@ export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sess
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
 export type SshAuthenticationMethod = 'password' | 'private-key' | 'agent';
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
-  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod }>;
+  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod; readonly recordSessionLog?: boolean }>;
+export type StartSshSessionLogRequest = Request<'ssh.session-log.start', { readonly sessionId: string; readonly host: string; readonly port: number;
+  readonly gatewayProfileIds?: readonly string[] }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number;
   readonly authenticationMethod?: SshAuthenticationMethod; readonly gatewayProfileIds?: readonly string[] }>;
 export type CloseSftpFilesRequest = Request<'sftp.close', { readonly sessionId: string }>;
@@ -185,6 +191,8 @@ export type UnlockCredentialVaultRequest = Request<'vault.unlock', Record<string
 export type EnableCredentialVaultMasterPasswordRequest = Request<'vault.master.enable', Record<string, never>>;
 export type DisableCredentialVaultMasterPasswordRequest = Request<'vault.master.disable', Record<string, never>>;
 export type ResetCredentialVaultRequest = Request<'vault.reset', Record<string, never>>;
+export type ExportSshCredentialBundleRequest = Request<'credential.bundle.export', Record<string, never>>;
+export type ImportSshCredentialBundleRequest = Request<'credential.bundle.import', Record<string, never>>;
 export type ListSshTunnelsRequest = Request<'tunnel.list', Record<string, never>>;
 export type SaveSshTunnelRequest = Request<'tunnel.save', { readonly id?: string; readonly sessionId: string; readonly name: string;
   readonly mode: 'local' | 'remote'; readonly bindHost: '127.0.0.1'; readonly bindPort: number; readonly targetHost: string; readonly targetPort: number } |
@@ -203,9 +211,11 @@ export type SelectCustomLogoRequest = Request<'branding.logo.select', Record<str
 export type GetWorkbenchPreferencesRequest = Request<'preferences.get', Record<string, never>>;
 export type GetWorkbenchSettingsPreferencesRequest = Request<'preferences.settings.get', Record<string, never>>;
 export type SaveWorkbenchPreferencesRequest = Request<'preferences.save', { readonly preferences: WorkbenchPreferences }>;
+export type ExportWorkbenchSettingsTemplateRequest = Request<'preferences.template.export', { readonly preferences: WorkbenchPreferences }>;
+export type ImportWorkbenchSettingsTemplateRequest = Request<'preferences.template.import', Record<string, never>>;
 export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTerminalRequest | PreviewPowerShellProfileScriptRequest | ApplyPowerShellProfileScriptRequest |
   PasteTerminalRequest | ResizeTerminalRequest | AcknowledgeTerminalRequest | CloseTerminalRequest |
-  OpenSshTerminalRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
+  OpenSshTerminalRequest | StartSshSessionLogRequest | OpenSftpFilesRequest | CloseSftpFilesRequest | WriteSshTerminalRequest | PasteSshTerminalRequest | ResizeSshTerminalRequest | AcknowledgeSshTerminalRequest | CloseSshTerminalRequest | DecideSshHostRequest | RevokeSshHostRequest | ListSshDirectoryRequest |
   UploadSshFileRequest | UploadDroppedSshFileRequest | DownloadSshFileRequest | ReadSshTextFileRequest | SaveSshTextFileRequest | CancelSshTransferRequest |
   DiscardRemoteFileDropHandlesRequest |
   OpenLocalTextFileRequest | ReloadLocalTextFileRequest | SaveLocalTextFileRequest | CloseLocalTextFileRequest |
@@ -218,9 +228,11 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   HasSessionCredentialRequest | SaveSessionCredentialRequest | ForgetSessionCredentialRequest | GetCredentialVaultStateRequest | LockCredentialVaultRequest | UnlockCredentialVaultRequest |
   EnableCredentialVaultMasterPasswordRequest | DisableCredentialVaultMasterPasswordRequest | ResetCredentialVaultRequest |
+  ExportSshCredentialBundleRequest | ImportSshCredentialBundleRequest |
   ListSshTunnelsRequest | SaveSshTunnelRequest | DeleteSshTunnelRequest | StartSshTunnelRequest | StopSshTunnelRequest |
   ListMacrosRequest | CreateMacroRequest | UpdateMacroRequest | DeleteMacroRequest | ListMacroShortcutsRequest | SetMacroShortcutRequest | DeleteMacroShortcutRequest |
-  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest;
+  SelectCustomLogoRequest | GetWorkbenchPreferencesRequest | GetWorkbenchSettingsPreferencesRequest | SaveWorkbenchPreferencesRequest |
+  ExportWorkbenchSettingsTemplateRequest | ImportWorkbenchSettingsTemplateRequest;
 
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
@@ -230,6 +242,7 @@ export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' |
 export type OpenSerialTerminalResult = Pick<SerialTerminalSession, 'sessionId' | 'configuration' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
 export type OpenSshTerminalReply = CommandReply<OpenSshTerminalResult>;
+export type StartSshSessionLogReply = CommandReply<{ readonly sessionId: string; readonly fileName: string }>;
 export type OpenSftpFilesReply = CommandReply<OpenSshTerminalResult>;
 export type OpenTelnetTerminalReply = CommandReply<OpenTelnetTerminalResult>;
 export type ListSerialPortsReply = CommandReply<readonly SerialPortInfo[]>;
@@ -287,6 +300,9 @@ export type WorkbenchStartupPreferencesReply = CommandReply<WorkbenchStartupPref
 export interface PowerShellProfileScriptPreview { readonly previewId: string; readonly script: string; }
 export type PowerShellProfileScriptPreviewReply = CommandReply<PowerShellProfileScriptPreview>;
 export type SelectCustomLogoReply = CommandReply<CustomLogoSelection>;
+export type ExportWorkbenchSettingsTemplateReply = CommandReply<{ readonly bytesSaved: number }>;
+export type ImportWorkbenchSettingsTemplateReply = CommandReply<WorkbenchPreferences>;
+export type SshCredentialBundleReply = CommandReply<{ readonly credentialCount: number }>;
 export type TerminalActionReply = CommandReply<Record<string, never>>;
 export type CredentialVaultStatus = 'uninitialized' | 'available' | 'locked' | 'unavailable';
 export type CredentialVaultMode = 'windows-account' | 'master-password';
@@ -307,7 +323,8 @@ export interface DesktopBridge {
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod): Promise<OpenSshTerminalReply>;
+    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog?: boolean): Promise<OpenSshTerminalReply>;
+  startSshSessionLog(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<StartSshSessionLogReply>;
   openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod,
     gatewayProfileIds?: readonly string[]): Promise<OpenSftpFilesReply>;
   writeSshTerminal(sessionId: string, data: string): Promise<TerminalActionReply>;
@@ -380,6 +397,8 @@ export interface DesktopBridge {
   enableMasterPasswordVault(): Promise<CredentialVaultStateReply>;
   disableMasterPasswordVault(): Promise<CredentialVaultStateReply>;
   resetCredentialVault(): Promise<CredentialVaultStateReply>;
+  exportSshCredentialBundle(): Promise<SshCredentialBundleReply>;
+  importSshCredentialBundle(): Promise<SshCredentialBundleReply>;
   listSshTunnels(): Promise<ListSshTunnelsReply>;
   saveSshTunnel(draft: SshTunnelDraft): Promise<SaveSshTunnelReply>;
   deleteTunnel(id: string): Promise<TerminalActionReply>;
@@ -396,7 +415,10 @@ export interface DesktopBridge {
   getWorkbenchPreferences(): Promise<WorkbenchStartupPreferencesReply>;
   getWorkbenchSettingsPreferences(): Promise<WorkbenchPreferencesReply>;
   saveWorkbenchPreferences(preferences: WorkbenchPreferences): Promise<WorkbenchPreferencesReply>;
+  exportWorkbenchSettingsTemplate(preferences: WorkbenchPreferences): Promise<ExportWorkbenchSettingsTemplateReply>;
+  importWorkbenchSettingsTemplate(): Promise<ImportWorkbenchSettingsTemplateReply>;
   onTerminalEvent(listener: (event: LocalTerminalEvent) => void): () => void;
+  onSshSessionLogStatus(listener: (event: SshSessionLogStatus) => void): () => void;
   onSshTrustEvent(listener: (event: SshTrustEvent) => void): () => void;
   onTunnelStatus(listener: (status: TunnelRunStatus) => void): () => void;
   onTftpServerStatus(listener: (status: TftpServerStatus) => void): () => void;
@@ -425,6 +447,17 @@ export function parsePasteGestureRequest(value: unknown): string | undefined {
 
 export const parseTelnetConsentGestureRequest = parsePasteGestureRequest;
 export const parseFtpConsentGestureRequest = parsePasteGestureRequest;
+
+export function parseSshSessionLogConsentGestureRequest(value: unknown): { readonly sessionId: string; readonly host: string; readonly port: number;
+  readonly gatewayProfileIds: readonly string[] } | undefined {
+  if (!record(value)) return undefined;
+  const hasGateways = Object.hasOwn(value, 'gatewayProfileIds');
+  if (!exactKeys(value, ['sessionId', 'host', 'port', ...(hasGateways ? ['gatewayProfileIds'] : [])]) ||
+      typeof value.sessionId !== 'string' || !UUID.test(value.sessionId) || typeof value.host !== 'string' || !Number.isInteger(value.port) ||
+      hasGateways && !isSshGatewayProfileIds(value.gatewayProfileIds)) return undefined;
+  const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
+  return endpoint ? { sessionId: value.sessionId, ...endpoint, gatewayProfileIds: (value.gatewayProfileIds ?? []) as readonly string[] } : undefined;
+}
 
 export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
   if (!record(value) || !exactKeys(value, ['host', 'port'])) return undefined;
@@ -517,20 +550,29 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   const sshOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
   const sshOpenHasProfile = Object.hasOwn(payload, 'profileId');
   const sshOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
+  const sshOpenHasSessionLog = Object.hasOwn(payload, 'recordSessionLog');
   const sshOpenOptionalKeys = [
     ...(sshOpenHasGateways ? ['gatewayProfileIds'] : []),
     ...(sshOpenHasProfile ? ['profileId'] : []),
-    ...(sshOpenHasAuthenticationMethod ? ['authenticationMethod'] : [])
+    ...(sshOpenHasAuthenticationMethod ? ['authenticationMethod'] : []),
+    ...(sshOpenHasSessionLog ? ['recordSessionLog'] : [])
   ];
   const validSshOpenKeys = exactKeys(payload, [...sshOpenBaseKeys, ...sshOpenOptionalKeys]) &&
     (!sshOpenHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
     (!sshOpenHasProfile || isSessionDefinitionId(payload.profileId)) &&
     (!sshOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
-      payload.authenticationMethod === 'agent');
+      payload.authenticationMethod === 'agent') && (!sshOpenHasSessionLog || typeof payload.recordSessionLog === 'boolean');
   if (value.command === 'ssh.open' && validSshOpenKeys &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
     return { ok: true, result: value as unknown as OpenSshTerminalRequest };
+  }
+  const sshLogHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
+  if (value.command === 'ssh.session-log.start' && exactKeys(payload, ['sessionId', 'host', 'port', ...(sshLogHasGateways ? ['gatewayProfileIds'] : [])]) &&
+      typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
+      (!sshLogHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
+      canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
+    return { ok: true, result: value as unknown as StartSshSessionLogRequest };
   }
   const sftpOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
   const sftpOpenHasGateways = Object.hasOwn(payload, 'gatewayProfileIds');
@@ -734,6 +776,9 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     if (value.command === 'vault.master.disable') return { ok: true, result: value as unknown as DisableCredentialVaultMasterPasswordRequest };
     return { ok: true, result: value as unknown as ResetCredentialVaultRequest };
   }
+  if ((value.command === 'credential.bundle.export' || value.command === 'credential.bundle.import') && exactKeys(payload, [])) {
+    return { ok: true, result: value as unknown as ExportSshCredentialBundleRequest | ImportSshCredentialBundleRequest };
+  }
   if (value.command === 'tunnel.list' && exactKeys(payload, [])) return { ok: true, result: value as unknown as ListSshTunnelsRequest };
   if (value.command === 'tunnel.save' && normalizeSshTunnelDraft(payload)) return { ok: true, result: value as unknown as SaveSshTunnelRequest };
   const tunnelStartHasGateways = value.command === 'tunnel.start' && Object.hasOwn(payload, 'gatewayProfileIds');
@@ -766,9 +811,15 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'preferences.save' && exactKeys(payload, ['preferences']) && normalizeWorkbenchPreferences(payload.preferences)) {
     return { ok: true, result: value as unknown as SaveWorkbenchPreferencesRequest };
   }
+  if (value.command === 'preferences.template.export' && exactKeys(payload, ['preferences']) && isCurrentWorkbenchPreferences(payload.preferences)) {
+    return { ok: true, result: value as unknown as ExportWorkbenchSettingsTemplateRequest };
+  }
+  if (value.command === 'preferences.template.import' && exactKeys(payload, [])) {
+    return { ok: true, result: value as unknown as ImportWorkbenchSettingsTemplateRequest };
+  }
   if (typeof value.command === 'string' && ['app.describe', 'terminal.open', 'terminal.write', 'powershell.profile.preview', 'powershell.profile.apply',
     'terminal.paste', 'terminal.resize', 'terminal.ack', 'terminal.close',
-    'ssh.open', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
+    'ssh.open', 'ssh.session-log.start', 'ssh.write', 'ssh.paste', 'ssh.resize', 'ssh.ack', 'ssh.close', 'sftp.open', 'sftp.close', 'ssh.host.approve', 'ssh.host.reject', 'ssh.host.revoke', 'ssh.files.list',
     'ssh.files.upload', 'ssh.files.upload-dropped', 'ssh.files.download', 'ssh.files.read-text', 'ssh.files.write-text', 'ssh.files.cancel', 'files.drop.discard',
     'local-text.open', 'local-text.reload', 'local-text.save', 'local-text.close',
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
@@ -778,9 +829,10 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
-    'vault.master.enable', 'vault.master.disable', 'vault.reset',
+    'vault.master.enable', 'vault.master.disable', 'vault.reset', 'credential.bundle.export', 'credential.bundle.import',
     'tunnel.list', 'tunnel.save', 'tunnel.delete', 'tunnel.start', 'tunnel.stop', 'macro.list', 'macro.create', 'macro.update', 'macro.delete',
-    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save'].includes(value.command)) {
+    'macro.shortcut.list', 'macro.shortcut.set', 'macro.shortcut.delete', 'branding.logo.select', 'preferences.get', 'preferences.settings.get', 'preferences.save',
+    'preferences.template.export', 'preferences.template.import'].includes(value.command)) {
     return failure('INVALID_REQUEST');
   }
   return failure('UNKNOWN_COMMAND');
@@ -868,6 +920,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
       typeof value.result.previewId === 'string' && UUID.test(value.result.previewId) && typeof value.result.script === 'string' &&
       normalizePowerShellProfileScript(value.result.script) === value.result.script && value.result.script.length > 0;
     if (request.command === 'ssh.open') return validSshOpenResult(value.result, request);
+    if (request.command === 'ssh.session-log.start') return record(value.result) && exactKeys(value.result, ['sessionId', 'fileName']) &&
+      value.result.sessionId === request.payload.sessionId &&
+      typeof value.result.fileName === 'string' && value.result.fileName.length <= 255 && value.result.fileName.toLowerCase().endsWith('.log') &&
+      !/[\\/\0]/u.test(value.result.fileName);
     if (request.command === 'sftp.open') return validSshOpenResult(value.result, request);
     if (request.command === 'telnet.open') return validTelnetOpenResult(value.result, request);
     if (request.command === 'serial.ports.list') return isCanonicalSerialPortList(value.result);
@@ -916,6 +972,8 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
     if (request.command === 'session.folder.export') return isFolderExportResult(value.result);
     if (request.command === 'session.folder.import') return isFolderImportResult(value.result);
     if (request.command === 'session.credential.has') return typeof value.result === 'boolean';
+    if (request.command === 'credential.bundle.export' || request.command === 'credential.bundle.import') return record(value.result) &&
+      exactKeys(value.result, ['credentialCount']) && isCount(value.result.credentialCount);
     if (request.command === 'vault.state' || request.command === 'vault.unlock' || request.command === 'vault.master.enable' ||
         request.command === 'vault.master.disable' || request.command === 'vault.reset') return isCredentialVaultSnapshot(value.result);
     if (request.command === 'tunnel.list') return Array.isArray(value.result) && value.result.every(isSshTunnelSnapshot);
@@ -935,6 +993,10 @@ export function isCommandReply(value: unknown, request: CommandRequest): value i
       isCustomLogoDataUrl(value.result.dataUrl);
     if (request.command === 'preferences.get') return isWorkbenchStartupPreferences(value.result);
     if (request.command === 'preferences.settings.get' || request.command === 'preferences.save') return isCurrentWorkbenchPreferences(value.result);
+    if (request.command === 'preferences.template.export') return record(value.result) && exactKeys(value.result, ['bytesSaved']) &&
+      Number.isSafeInteger(value.result.bytesSaved) && (value.result.bytesSaved as number) > 0 &&
+      (value.result.bytesSaved as number) <= MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES;
+    if (request.command === 'preferences.template.import') return isCurrentWorkbenchPreferences(value.result);
     return record(value.result) && exactKeys(value.result, []);
   }
   return exactKeys(value, ['requestId', 'ok', 'error']) && validError(value.error);
@@ -988,6 +1050,14 @@ export function isSshTrustEvent(value: unknown): value is SshTrustEvent {
       /^SHA256:[A-Za-z0-9+/]{43}$/.test(challenge.fingerprint);
   }
   return false;
+}
+
+export function isSshSessionLogStatus(value: unknown): value is SshSessionLogStatus {
+  return record(value) && exactKeys(value, ['sessionId', 'status', 'reason', 'fileName']) && typeof value.sessionId === 'string' && UUID.test(value.sessionId) &&
+    typeof value.fileName === 'string' && value.fileName.length <= 255 && value.fileName.toLowerCase().endsWith('.log') && !/[\\/\0]/u.test(value.fileName) &&
+    (value.status === 'stopped'
+      ? ['file-size-limit', 'queue-limit', 'record-limit', 'write-error'].includes(value.reason as string)
+      : value.status === 'finished' && ['connection-failed', 'session-closed', 'session-exited', 'application-shutdown'].includes(value.reason as string));
 }
 
 export function isDescribeReply(value: unknown, requestId: string): value is DescribeReply {

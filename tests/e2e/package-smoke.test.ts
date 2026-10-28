@@ -1,12 +1,13 @@
 import { chromium, test, expect } from '@playwright/test';
 import type { Browser, Page } from '@playwright/test';
 import { getCurrentFuseWire, FuseState, FuseV1Options, FuseVersion } from '@electron/fuses';
-import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join, resolve, win32 } from 'node:path';
+import { runNativeSshLogDialog } from './windows-native-dialog.ts';
+import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 function cleanEnvironment(): Record<string, string> {
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
@@ -16,6 +17,7 @@ function cleanEnvironment(): Record<string, string> {
 interface PackagedApp {
   readonly process: ReturnType<typeof spawn>;
   readonly browser: Browser;
+  readonly windowProcessId: number;
   readonly page: Page;
 }
 
@@ -45,6 +47,16 @@ async function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: nu
     const timer = setTimeout(() => finish(false), timeoutMs);
     child.once('exit', onExit);
   });
+}
+
+async function waitForProcessIdExit(processId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { process.kill(processId, 0); }
+    catch { return true; }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
+  }
+  return false;
 }
 
 async function terminateProcessTree(child: ReturnType<typeof spawn>): Promise<void> {
@@ -82,12 +94,17 @@ async function launchPackagedApp(executable: string, args: readonly string[] = [
   let browser: Browser | undefined;
   try {
     browser = await connectToPackagedApp(debugPort);
+    const cdp = await browser.newBrowserCDPSession();
+    const processInfo = await cdp.send('SystemInfo.getProcessInfo');
+    await cdp.detach();
+    const windowProcessId = processInfo.processInfo.find(info => info.type === 'browser')?.id;
+    if (!windowProcessId) throw new Error('The packaged app did not expose its browser process ID');
     const context = browser.contexts()[0];
     if (!context) throw new Error('The packaged app did not expose its browser context');
     await expect.poll(() => context.pages().length, { timeout: 30_000 }).toBeGreaterThan(0);
     const page = context.pages()[0];
     if (!page) throw new Error('The packaged app did not create a window');
-    return { process: appProcess, browser, page };
+    return { process: appProcess, browser, windowProcessId, page };
   } catch (error) {
     if (browser) await browser.close().catch(() => undefined);
     await terminateProcessTree(appProcess);
@@ -276,7 +293,7 @@ test('NSIS package works offline at 200% scale, persists local settings, and uni
   test.setTimeout(240_000);
   const artifacts = resolve('artifacts/windows');
   const installer = join(artifacts, 'MultiRemoteTerminal Setup 0.0.0.exe');
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-installer-smoke-'));
+  const temporaryRoot = await createWorkspaceTempDirectory('mrt-installer-smoke-');
   const installDirectory = join(temporaryRoot, 'installed');
   let app: PackagedApp | undefined;
   try {
@@ -343,7 +360,7 @@ test('portable app opens a usable terminal and keeps profile data beside the exe
     'Run on Windows x64 through package:win:smoke; signature verification is outside this smoke');
   test.setTimeout(180_000);
   const portableArtifact = resolve('artifacts/windows/MultiRemoteTerminal 0.0.0.exe');
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'mrt-portable-smoke-'));
+  const temporaryRoot = await createWorkspaceTempDirectory('mrt-portable-smoke-');
   const portableExecutable = join(temporaryRoot, 'MultiRemoteTerminal.exe');
   await copyFile(portableArtifact, portableExecutable);
   let app: PackagedApp | undefined;
@@ -358,6 +375,49 @@ test('portable app opens a usable terminal and keeps profile data beside the exe
     expect(app.process.exitCode).toBeNull();
     const profileStat = await stat(expected);
     expect(profileStat.isDirectory()).toBe(true);
+  } finally {
+    if (app) await closePackagedApp(app);
+    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+  }
+});
+
+test('portable app finalizes an active SSH session log on shutdown', async () => {
+  test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
+    'Run on Windows x64 through package:win:smoke; signature verification is outside this smoke');
+  test.setTimeout(90_000);
+  const portableArtifact = resolve('artifacts/windows/MultiRemoteTerminal 0.0.0.exe');
+  const temporaryRoot = await createWorkspaceTempDirectory('mrt-portable-ssh-log-');
+  const portableExecutable = join(temporaryRoot, 'MultiRemoteTerminal.exe');
+  await copyFile(portableArtifact, portableExecutable);
+  let app: PackagedApp | undefined;
+  try {
+    app = await launchPackagedApp(portableExecutable);
+    await expect(app.page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
+    const sshLogPath = join(temporaryRoot, 'packaged-ssh-session.log');
+    await app.page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const sshDialog = app.page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await sshDialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' }).check();
+    await sshDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await sshDialog.getByLabel('Port').fill(String(await reserveLoopbackPort()));
+    await sshDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await runNativeSshLogDialog('save', sshLogPath);
+    await expect.poll(async () => await readFile(sshLogPath, 'utf8').catch(() => ''), { timeout: 15_000 })
+      .toContain('"type":"attempt-started"');
+    await expect.poll(async () => await readFile(sshLogPath, 'utf8').catch(() => ''), { timeout: 15_000 })
+      .toContain('"type":"credential-prompt-started"');
+    const activeRecords = (await readFile(sshLogPath, 'utf8')).split('\n').filter(Boolean)
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(activeRecords.some(record => record.type === 'log-finished')).toBe(false);
+
+    await runNativeSshLogDialog('close-app', undefined, app.windowProcessId);
+    if (!await waitForProcessIdExit(app.windowProcessId, 30_000)) throw new Error('The packaged app process did not exit after its window closed');
+    if (!await waitForProcessExit(app.process, 30_000)) throw new Error('The portable launcher did not exit after the packaged app closed');
+    await app.browser.close();
+    app = undefined;
+    const records = (await readFile(sshLogPath, 'utf8')).split('\n').filter(Boolean)
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(records.at(-1), `Unexpected shutdown log records: ${records.map(record => `${record.type}:${record.reason ?? ''}`).join(', ')}`)
+      .toMatchObject({ type: 'log-finished', reason: 'application-shutdown' });
   } finally {
     if (app) await closePackagedApp(app);
     await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });

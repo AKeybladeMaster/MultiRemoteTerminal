@@ -1,4 +1,6 @@
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
+import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import { isSshGatewayProfileIds } from '../../../../packages/domain/src/ssh-route.ts';
 
 const GESTURE_TTL_MS = 750;
 const MAX_PENDING_GESTURES = 64;
@@ -6,7 +8,7 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 
 export type TftpServerAction = 'choose-root' | 'start';
 export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent' | 'external-viewer-launch' |
-  'tftp-server-action' | 'powershell-profile-script';
+  'tftp-server-action' | 'powershell-profile-script' | 'ssh-session-log';
 
 export class RendererGestureGate {
   private readonly expiresAtByGesture = new Map<string, number>();
@@ -28,6 +30,16 @@ export class RendererGestureGate {
   consumeExternalViewerLaunch(senderId: number, protocol: 'rdp' | 'vnc', host: string, port: number): boolean {
     const endpoint = canonicalizeRemoteEndpoint({ host, port });
     return endpoint !== undefined && this.consumeScope(senderId, `${protocol}\u0000${endpoint.host}\u0000${endpoint.port}`, 'external-viewer-launch');
+  }
+
+  issueSshSessionLog(senderId: number, sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]): void {
+    const scope = this.sshSessionLogScope(sessionId, host, port, gatewayProfileIds);
+    if (Number.isSafeInteger(senderId) && senderId > 0 && scope) this.issueScope(senderId, scope, 'ssh-session-log');
+  }
+
+  consumeSshSessionLog(senderId: number, sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]): boolean {
+    const scope = this.sshSessionLogScope(sessionId, host, port, gatewayProfileIds);
+    return scope !== undefined && this.consumeScope(senderId, scope, 'ssh-session-log');
   }
 
   issueTftpServerAction(senderId: number, action: TftpServerAction, selectionId?: string, port?: number): void {
@@ -71,6 +83,12 @@ export class RendererGestureGate {
   }
 
   private key(senderId: number, scope: string, purpose: RendererGesturePurpose): string { return `${senderId}/${purpose}/${scope}`; }
+
+  private sshSessionLogScope(sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]): string | undefined {
+    const endpoint = canonicalizeSshHostEndpoint({ host, port });
+    return SESSION_ID.test(sessionId) && endpoint && isSshGatewayProfileIds(gatewayProfileIds)
+      ? `${sessionId}\u0000${endpoint.host}\u0000${endpoint.port}\u0000${gatewayProfileIds.join('\u0000')}` : undefined;
+  }
 
   private tftpScope(action: TftpServerAction, selectionId?: string, port?: number): string | undefined {
     if (action === 'choose-root') return 'choose-root';

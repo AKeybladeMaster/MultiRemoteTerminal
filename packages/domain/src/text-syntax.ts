@@ -7,8 +7,11 @@ const MAX_MARKDOWN_INLINE_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_MARKDOWN_INLINE_LOOKAHEAD_STEPS = 256_000;
 const MAX_TOML_DOTTED_KEY_LOOKAHEAD_CODE_UNITS = 512;
 const MAX_YAML_KEY_LOOKAHEAD_CODE_UNITS = 1_024;
+const MAX_XML_ENTITY_CODE_UNITS = 64;
+const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
+const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'dotenv', 'properties', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -23,6 +26,10 @@ export type TextSyntaxTokenKind =
   | 'sql-function' | 'sql-keyword' | 'sql-literal' | 'sql-string' | 'sql-comment' | 'sql-number' | 'sql-operator'
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
+  | 'ini-section' | 'ini-key' | 'ini-string' | 'ini-number' | 'ini-literal' | 'ini-comment' | 'ini-operator'
+  | 'dotenv-key' | 'dotenv-value' | 'dotenv-string' | 'dotenv-comment' | 'dotenv-operator' | 'dotenv-export'
+  | 'properties-key' | 'properties-value' | 'properties-comment' | 'properties-operator'
+  | 'xml-tag' | 'xml-attribute' | 'xml-string' | 'xml-comment' | 'xml-cdata' | 'xml-declaration' | 'xml-entity' | 'xml-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
   | 'markdown-heading' | 'markdown-list' | 'markdown-quote' | 'markdown-rule' | 'markdown-code'
@@ -193,10 +200,14 @@ const yamlNanPattern = /^\.nan$/iu;
 export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: string): ResolvedTextSyntaxProfile {
   if (profile !== 'auto') return profile;
   const name = fileName.toLowerCase();
+  if (/(?:^|[\\/])(?:\.env(?:\.[^\\/]+)?|[^\\/]+\.env)$/.test(name)) return 'dotenv';
+  if (/\.properties$/.test(name)) return 'properties';
   if (/\.(?:md|markdown)$/.test(name)) return 'markdown';
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
   if (/\.(?:yaml|yml)$/.test(name)) return 'yaml';
+  if (/\.(?:ini|cfg)$/.test(name)) return 'ini';
+  if (/\.(?:xml|xsd|xsl|xslt|svg)$/.test(name)) return 'xml';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -220,7 +231,11 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
           : profile === 'sql' ? scanSql(text, limit, tokens)
             : profile === 'toml' ? scanToml(text, limit, tokens)
               : profile === 'yaml' ? scanYaml(text, limit, tokens)
-                : scanJson(text, limit, tokens);
+                : profile === 'ini' ? scanIni(text, limit, tokens)
+                  : profile === 'xml' ? scanXml(text, limit, tokens)
+                    : profile === 'dotenv' ? scanDotenv(text, limit, tokens)
+                      : profile === 'properties' ? scanProperties(text, limit, tokens)
+                      : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1359,6 +1374,406 @@ function scanToml(text: string, limit: number, tokens: TextSyntaxToken[]): numbe
     lineHasContent = true;
   }
   return limit;
+}
+
+function scanIni(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let lineStart = 0;
+  while (lineStart < limit) {
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && (text[contentStart] === ' ' || text[contentStart] === '\t')) contentStart += 1;
+
+    if (contentStart < lineEnd && (text[contentStart] === ';' || text[contentStart] === '#')) {
+      if (!addToken(tokens, contentStart, lineEnd, 'ini-comment')) return contentStart;
+    } else if (contentStart < lineEnd && text[contentStart] === '[') {
+      let close = contentStart + 1;
+      while (close < lineEnd && text[close] !== ']') close += 1;
+      if (close < lineEnd && close > contentStart + 1) {
+        let trailing = close + 1;
+        while (trailing < lineEnd && (text[trailing] === ' ' || text[trailing] === '\t')) trailing += 1;
+        if (trailing === lineEnd && !addToken(tokens, contentStart, close + 1, 'ini-section')) return contentStart;
+      }
+    } else if (contentStart < lineEnd) {
+      let separator = contentStart;
+      while (separator < lineEnd && text[separator] !== '=' && text[separator] !== ':') separator += 1;
+      if (separator < lineEnd) {
+        let keyEnd = separator;
+        while (keyEnd > contentStart && (text[keyEnd - 1] === ' ' || text[keyEnd - 1] === '\t')) keyEnd -= 1;
+        if (keyEnd > contentStart) {
+          if (!addToken(tokens, contentStart, keyEnd, 'ini-key')) return contentStart;
+          if (!addToken(tokens, separator, separator + 1, 'ini-operator')) return separator;
+
+          let valueStart = separator + 1;
+          while (valueStart < lineEnd && (text[valueStart] === ' ' || text[valueStart] === '\t')) valueStart += 1;
+          let valueEnd = lineEnd;
+          while (valueEnd > valueStart && (text[valueEnd - 1] === ' ' || text[valueEnd - 1] === '\t')) valueEnd -= 1;
+          if (valueStart < valueEnd) {
+            if (text[valueStart] === '"' || text[valueStart] === '\'') {
+              const stringEnd = scanIniQuotedValue(text, valueStart, valueEnd);
+              if (stringEnd === valueEnd && !addToken(tokens, valueStart, stringEnd, 'ini-string')) return valueStart;
+            } else {
+              const value = text.slice(valueStart, valueEnd);
+              const literal = iniLiterals.has(value.toLowerCase());
+              if (literal && !addToken(tokens, valueStart, valueEnd, 'ini-literal')) return valueStart;
+              if (!literal && iniNumberPattern.test(value) && !addToken(tokens, valueStart, valueEnd, 'ini-number')) return valueStart;
+            }
+          }
+        }
+      }
+    }
+
+    if (lineEnd >= limit) break;
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
+  }
+  return limit;
+}
+
+function scanIniQuotedValue(text: string, start: number, end: number): number {
+  const quote = text[start]!;
+  let index = start + 1;
+  while (index < end) {
+    if (text[index] === '\\') { index += index + 1 < end ? 2 : 1; continue; }
+    if (text[index] === quote) return index + 1;
+    index += 1;
+  }
+  return start;
+}
+
+function scanDotenv(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let lineStart = 0;
+  while (lineStart < limit) {
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    if (lineEnd === limit && limit < text.length) return lineStart;
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && (text[contentStart] === ' ' || text[contentStart] === '\t')) contentStart += 1;
+
+    if (contentStart < lineEnd && text[contentStart] === '#') {
+      if (!addToken(tokens, contentStart, lineEnd, 'dotenv-comment')) return contentStart;
+    } else if (contentStart < lineEnd) {
+      let keyStart = contentStart;
+      const exportEnd = contentStart + 'export'.length;
+      const hasExport = text.startsWith('export', contentStart) && exportEnd < lineEnd &&
+        (text[exportEnd] === ' ' || text[exportEnd] === '\t');
+      if (hasExport) {
+        keyStart = exportEnd;
+        while (keyStart < lineEnd && (text[keyStart] === ' ' || text[keyStart] === '\t')) keyStart += 1;
+      }
+
+      const keyEnd = scanDotenvKey(text, keyStart, lineEnd);
+      let separator = keyEnd;
+      while (separator < lineEnd && (text[separator] === ' ' || text[separator] === '\t')) separator += 1;
+      if (keyEnd > keyStart && text[separator] === '=') {
+        if (hasExport && !addToken(tokens, contentStart, exportEnd, 'dotenv-export')) return contentStart;
+        if (!addToken(tokens, keyStart, keyEnd, 'dotenv-key')) return keyStart;
+        if (!addToken(tokens, separator, separator + 1, 'dotenv-operator')) return separator;
+        const stop = scanDotenvValue(text, separator + 1, lineEnd, tokens);
+        if (stop !== undefined) return stop;
+      }
+    }
+
+    if (lineEnd >= limit) break;
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
+  }
+  return limit;
+}
+
+function scanDotenvKey(text: string, start: number, end: number): number {
+  if (start >= end || !isDotenvKeyStart(text.charCodeAt(start))) return start;
+  let index = start + 1;
+  while (index < end && isDotenvKeyPart(text.charCodeAt(index))) index += 1;
+  return index;
+}
+
+function isDotenvKeyStart(unit: number): boolean {
+  return unit === 95 || (unit >= 65 && unit <= 90) || (unit >= 97 && unit <= 122);
+}
+
+function isDotenvKeyPart(unit: number): boolean {
+  return isDotenvKeyStart(unit) || (unit >= 48 && unit <= 57);
+}
+
+function scanDotenvValue(text: string, start: number, end: number, tokens: TextSyntaxToken[]): number | undefined {
+  let valueStart = start;
+  while (valueStart < end && (text[valueStart] === ' ' || text[valueStart] === '\t')) valueStart += 1;
+  let valueEnd = end;
+  while (valueEnd > valueStart && (text[valueEnd - 1] === ' ' || text[valueEnd - 1] === '\t')) valueEnd -= 1;
+  if (valueStart >= valueEnd) return undefined;
+
+  if (text[valueStart] === '"' || text[valueStart] === "'") {
+    const stringEnd = scanIniQuotedValue(text, valueStart, valueEnd);
+    if (stringEnd === valueStart) return undefined;
+    let trailing = stringEnd;
+    while (trailing < valueEnd && (text[trailing] === ' ' || text[trailing] === '\t')) trailing += 1;
+    if (trailing === valueEnd) {
+      return addToken(tokens, valueStart, stringEnd, 'dotenv-string') ? undefined : valueStart;
+    }
+    if (trailing > stringEnd && text[trailing] === '#') {
+      if (!addToken(tokens, valueStart, stringEnd, 'dotenv-string')) return valueStart;
+      if (!addToken(tokens, trailing, end, 'dotenv-comment')) return trailing;
+    }
+    return undefined;
+  }
+
+  let commentStart = -1;
+  for (let index = valueStart; index < valueEnd; index += 1) {
+    if (text[index] === '#' && (text[index - 1] === ' ' || text[index - 1] === '\t')) {
+      commentStart = index;
+      break;
+    }
+  }
+  let plainEnd = commentStart < 0 ? valueEnd : commentStart;
+  while (plainEnd > valueStart && (text[plainEnd - 1] === ' ' || text[plainEnd - 1] === '\t')) plainEnd -= 1;
+  if (plainEnd > valueStart && !addToken(tokens, valueStart, plainEnd, 'dotenv-value')) return valueStart;
+  if (commentStart >= 0 && !addToken(tokens, commentStart, end, 'dotenv-comment')) return commentStart;
+  return undefined;
+}
+
+function scanProperties(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let lineStart = 0;
+  let continues = false;
+  while (lineStart < limit) {
+    const lineEnd = scanLineEnd(text, lineStart, limit);
+    if (lineEnd === limit && limit < text.length) return lineStart;
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && isPropertiesWhitespace(text.charCodeAt(contentStart))) contentStart += 1;
+    const commentLine: boolean = !continues && contentStart < lineEnd && (text[contentStart] === '#' || text[contentStart] === '!');
+    const nextContinues: boolean = !commentLine && lineEnd < limit && hasOddTrailingPropertiesBackslashes(text, lineStart, lineEnd);
+
+    if (!continues && !nextContinues && commentLine) {
+      if (!addToken(tokens, contentStart, lineEnd, 'properties-comment')) return contentStart;
+    } else if (!continues && !nextContinues && contentStart < lineEnd) {
+      const keyEnd = scanPropertiesKey(text, contentStart, lineEnd);
+      if (keyEnd > contentStart) {
+        if (!addToken(tokens, contentStart, keyEnd, 'properties-key')) return contentStart;
+        let valueStart = keyEnd;
+        while (valueStart < lineEnd && isPropertiesWhitespace(text.charCodeAt(valueStart))) valueStart += 1;
+        const hasWhitespaceSeparator = valueStart > keyEnd;
+        if (text[valueStart] === '=' || text[valueStart] === ':') {
+          valueStart += 1;
+          while (valueStart < lineEnd && isPropertiesWhitespace(text.charCodeAt(valueStart))) valueStart += 1;
+          if (!addToken(tokens, keyEnd, valueStart, 'properties-operator')) return keyEnd;
+          if (valueStart < lineEnd && !addToken(tokens, valueStart, lineEnd, 'properties-value')) return valueStart;
+        } else if (hasWhitespaceSeparator) {
+          if (!addToken(tokens, keyEnd, valueStart, 'properties-operator')) return keyEnd;
+          if (valueStart < lineEnd && !addToken(tokens, valueStart, lineEnd, 'properties-value')) return valueStart;
+        }
+      }
+    }
+
+    continues = nextContinues;
+    if (lineEnd >= limit) break;
+    lineStart = lineEnd + (text[lineEnd] === '\r' && lineEnd + 1 < limit && text[lineEnd + 1] === '\n' ? 2 : 1);
+  }
+  return limit;
+}
+
+function scanPropertiesKey(text: string, start: number, end: number): number {
+  let index = start;
+  let escaped = false;
+  while (index < end) {
+    const unit = text.charCodeAt(index);
+    if (escaped) escaped = false;
+    else if (unit === 92) escaped = true;
+    else if (unit === 61 || unit === 58 || isPropertiesWhitespace(unit)) break;
+    index += 1;
+  }
+  return index;
+}
+
+function isPropertiesWhitespace(unit: number): boolean {
+  return unit === 32 || unit === 9 || unit === 12;
+}
+
+function hasOddTrailingPropertiesBackslashes(text: string, start: number, end: number): boolean {
+  let count = 0;
+  for (let index = end - 1; index >= start && text.charCodeAt(index) === 92; index -= 1) count += 1;
+  return count % 2 === 1;
+}
+
+function scanXml(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  while (index < limit) {
+    if (text[index] === '<') {
+      if (text.startsWith('<!--', index)) {
+        const close = findXmlSequenceEnd(text, '-->', index + 4, limit);
+        if (close === undefined) return limit;
+        if (!addToken(tokens, index, close + 3, 'xml-comment')) return index;
+        index = close + 3;
+        continue;
+      }
+      if (text.startsWith('<![CDATA[', index)) {
+        const close = findXmlSequenceEnd(text, ']]>', index + 9, limit);
+        if (close === undefined) return limit;
+        if (!addToken(tokens, index, close + 3, 'xml-cdata')) return index;
+        index = close + 3;
+        continue;
+      }
+      if (text.startsWith('<?', index)) {
+        const close = findXmlSequenceEnd(text, '?>', index + 2, limit);
+        if (close === undefined) return limit;
+        if (!addToken(tokens, index, close + 2, 'xml-declaration')) return index;
+        index = close + 2;
+        continue;
+      }
+      if (text.startsWith('<!', index)) {
+        const end = findXmlDeclarationEnd(text, index, limit);
+        if (end === undefined) return limit;
+        if (!addToken(tokens, index, end, 'xml-declaration')) return index;
+        index = end;
+        continue;
+      }
+
+      const nameStart = index + (text[index + 1] === '/' ? 2 : 1);
+      if (nameStart < limit && isXmlNameStart(text[nameStart]!)) {
+        const tagEnd = findXmlTagEnd(text, index, limit);
+        if (tagEnd === undefined) return limit;
+        const stoppedAt = scanXmlTag(text, index, tagEnd, tokens);
+        if (stoppedAt !== undefined) return stoppedAt;
+        index = tagEnd + 1;
+        continue;
+      }
+    }
+
+    if (text[index] === '&') {
+      const end = findXmlEntityReferenceEnd(text, index, limit);
+      if (end !== undefined) {
+        if (!addToken(tokens, index, end, 'xml-entity')) return index;
+        index = end;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function findXmlTagEnd(text: string, start: number, limit: number): number | undefined {
+  let quote: string | undefined;
+  for (let index = start + 1; index < limit; index += 1) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+    } else if (character === '"' || character === '\'') {
+      quote = character;
+    } else if (character === '<') {
+      return undefined;
+    } else if (character === '>') {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function scanXmlTag(text: string, start: number, tagEnd: number, tokens: TextSyntaxToken[]): number | undefined {
+  let index = start + (text[start + 1] === '/' ? 2 : 1);
+  if (!addToken(tokens, start, index, 'xml-operator')) return start;
+  const tagNameEnd = scanXmlName(text, index, tagEnd);
+  if (tagNameEnd === index) return undefined;
+  if (!addToken(tokens, index, tagNameEnd, 'xml-tag')) return index;
+  index = tagNameEnd;
+
+  while (index < tagEnd) {
+    if (isWhitespace(text[index]!)) { index += 1; continue; }
+    if (text[index] === '/' && index + 1 === tagEnd) {
+      if (!addToken(tokens, index, tagEnd + 1, 'xml-operator')) return index;
+      return undefined;
+    }
+    if (text[index] === '=') {
+      if (!addToken(tokens, index, index + 1, 'xml-operator')) return index;
+      index += 1;
+      continue;
+    }
+
+    const attributeEnd = scanXmlName(text, index, tagEnd);
+    if (attributeEnd === index) { index += 1; continue; }
+    if (!addToken(tokens, index, attributeEnd, 'xml-attribute')) return index;
+    index = attributeEnd;
+    while (index < tagEnd && isWhitespace(text[index]!)) index += 1;
+    if (text[index] !== '=') continue;
+    if (!addToken(tokens, index, index + 1, 'xml-operator')) return index;
+    index += 1;
+    while (index < tagEnd && isWhitespace(text[index]!)) index += 1;
+    if (text[index] !== '"' && text[index] !== '\'') continue;
+    const quote = text[index]!;
+    let valueEnd = index + 1;
+    while (valueEnd < tagEnd && text[valueEnd] !== quote) valueEnd += 1;
+    if (valueEnd < tagEnd && !addToken(tokens, index, valueEnd + 1, 'xml-string')) return index;
+    index = valueEnd + 1;
+  }
+
+  if (!addToken(tokens, tagEnd, tagEnd + 1, 'xml-operator')) return tagEnd;
+  return undefined;
+}
+
+function findXmlDeclarationEnd(text: string, start: number, limit: number): number | undefined {
+  let quote: string | undefined;
+  let internalSubsetDepth = 0;
+  for (let index = start + 2; index < limit; index += 1) {
+    const character = text[index]!;
+    if (quote === undefined && text.startsWith('<!--', index)) {
+      const close = findXmlSequenceEnd(text, '-->', index + 4, limit);
+      if (close === undefined) return undefined;
+      index = close + 2;
+    } else if (quote === undefined && text.startsWith('<?', index)) {
+      const close = findXmlSequenceEnd(text, '?>', index + 2, limit);
+      if (close === undefined) return undefined;
+      index = close + 1;
+    } else if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+    } else if (character === '"' || character === '\'') {
+      quote = character;
+    } else if (character === '[') {
+      internalSubsetDepth += 1;
+    } else if (character === ']' && internalSubsetDepth > 0) {
+      internalSubsetDepth -= 1;
+    } else if (character === '>' && internalSubsetDepth === 0) {
+      return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function findXmlSequenceEnd(text: string, sequence: string, start: number, limit: number): number | undefined {
+  for (let index = start; index + sequence.length <= limit; index += 1) {
+    if (text.startsWith(sequence, index)) return index;
+  }
+  return undefined;
+}
+
+function findXmlEntityReferenceEnd(text: string, start: number, limit: number): number | undefined {
+  let index = start + 1;
+  if (text[index] === '#') {
+    index += 1;
+    const hexadecimal = text[index] === 'x' || text[index] === 'X';
+    if (hexadecimal) index += 1;
+    const digitStart = index;
+    while (index < limit && (hexadecimal ? isHexDigit(text[index]!) : isDigit(text[index]!))) index += 1;
+    if (index === digitStart) return undefined;
+  } else {
+    if (index >= limit || !isXmlNameStart(text[index]!)) return undefined;
+    index = scanXmlName(text, index, Math.min(limit, start + MAX_XML_ENTITY_CODE_UNITS));
+  }
+  return index < limit && text[index] === ';' && index + 1 - start <= MAX_XML_ENTITY_CODE_UNITS ? index + 1 : undefined;
+}
+
+function findXmlNameEnd(text: string, start: number, limit: number): number {
+  let index = start;
+  while (index < limit && isXmlNamePart(text[index]!)) index += 1;
+  return index;
+}
+
+function scanXmlName(text: string, start: number, limit: number): number {
+  return start < limit && isXmlNameStart(text[start]!) ? findXmlNameEnd(text, start, limit) : start;
+}
+
+function isXmlNameStart(character: string): boolean {
+  // shortcut: XML names are ASCII-oriented, upgrade when Unicode-name files need precise coloring.
+  return character === '_' || character === ':' ||
+    (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
+}
+
+function isXmlNamePart(character: string): boolean {
+  return isXmlNameStart(character) || character === '-' || character === '.' || isDigit(character);
 }
 
 function scanTomlString(text: string, start: number, limit: number): number {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
   parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
+import { parseSshSessionLogConsentGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
@@ -94,6 +95,8 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest(open).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'private-key' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'agent' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, recordSessionLog: true } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, recordSessionLog: 'yes' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
@@ -105,6 +108,10 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
+
+  assert.deepEqual(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, gatewayProfileIds }),
+    { sessionId, host: 'server.example.com', port: 22, gatewayProfileIds });
+  assert.equal(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, secret: true }), undefined);
 
   const challenge = { kind: 'challenge', sessionId, challenge: { token: 'A'.repeat(32), host: 'server.example.com', port: 22,
     algorithm: 'ssh-ed25519', fingerprint: `SHA256:${'A'.repeat(43)}` } };
@@ -247,6 +254,15 @@ test('remote text editing accepts bounded file payloads and exact path-bound rep
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result }, parsedSave.result), true);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, bytesSaved: result.bytesSaved + 1 } }, parsedSave.result), false);
     assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { ...result, path: '/other/file' } }, parsedSave.result), false);
+  }
+  for (const command of ['credential.bundle.export', 'credential.bundle.import'] as const) {
+    const bundle = { command, requestId: request.requestId, contractVersion: 1, payload: {} };
+    const parsed = parseRequest(bundle);
+    assert.equal(parsed.ok, true);
+    assert.equal(parseRequest({ ...bundle, payload: { path: 'C:\\secret.mrtcred' } }).ok, false);
+    assert.equal(parsed.ok && isCommandReply({ requestId: request.requestId, ok: true, result: { credentialCount: 2 } }, parsed.result), true);
+    assert.equal(parsed.ok && isCommandReply({ requestId: request.requestId, ok: true,
+      result: { credentialCount: 2, password: 'must-not-reach-renderer' } }, parsed.result), false);
   }
 });
 
@@ -398,6 +414,19 @@ test('saved-session IPC accepts only supported non-secret definitions and valida
   assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1, payload: {} }).ok, true);
   assert.equal(parseRequest({ command: 'session.folder.import', requestId: request.requestId, contractVersion: 1,
     payload: { path: 'C:\\private.json' } }).ok, false, 'the renderer cannot provide a filesystem path');
+
+  const settingsTemplate = { command: 'preferences.template.export', requestId: request.requestId, contractVersion: 1,
+    payload: { preferences: DEFAULT_WORKBENCH_PREFERENCES } };
+  const parsedSettingsTemplate = parseRequest(settingsTemplate);
+  assert.equal(parsedSettingsTemplate.ok, true);
+  if (parsedSettingsTemplate.ok) {
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { bytesSaved: 128 } }, parsedSettingsTemplate.result), true);
+    assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { bytesSaved: -1 } }, parsedSettingsTemplate.result), false);
+  }
+  const settingsTemplateImport = { command: 'preferences.template.import', requestId: request.requestId, contractVersion: 1, payload: {} };
+  assert.equal(parseRequest(settingsTemplateImport).ok, true);
+  assert.equal(parseRequest({ ...settingsTemplateImport, payload: { path: 'C:\\private.json' } }).ok, false,
+    'the renderer cannot provide a settings-template path');
 });
 
 test('RDP IPC validates the external viewer target and its launch-requested result', () => {

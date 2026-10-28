@@ -1,5 +1,7 @@
 import { isHostKeyEvidence } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
+import { isSshTransportNetworkFailure } from '../../../../packages/application/src/ssh-session-activity.ts';
+import type { SshTransportNetworkFailure } from '../../../../packages/application/src/ssh-session-activity.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { isTerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
@@ -54,7 +56,8 @@ export type SshWorkerErrorCode = 'INVALID_REQUEST' | 'UNAVAILABLE' | 'NOT_SUPPOR
 export type SshWorkerMessage =
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing |
       FileTransferResult | RemoteTextFile | RemoteTextFileSaveResult | { readonly bindPort: number } }
-  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: SshWorkerErrorCode }
+  | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: SshWorkerErrorCode;
+      readonly networkFailure?: SshTransportNetworkFailure }
   | { readonly version: 1; readonly type: 'progress'; readonly requestId: string; readonly progress: FileTransferProgress }
   | { readonly version: 1; readonly type: 'event'; readonly event: LocalTerminalEvent }
   | { readonly version: 1; readonly type: 'host-key'; readonly sessionId: string; readonly checkId: string; readonly endpoint: SshHostEndpoint; readonly evidence: { readonly algorithm: string; readonly fingerprint: string; readonly publicKey: Uint8Array } };
@@ -172,8 +175,13 @@ export function parseSshWorkerMessage(value: unknown): SshWorkerMessage | undefi
           isPortResult(value.result))) {
       return value as unknown as SshWorkerMessage;
     }
-    if (!value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode']) && ERROR_CODES.includes(value.errorCode as SshWorkerErrorCode)) {
-      return value as unknown as SshWorkerMessage;
+    if (!value.ok && ERROR_CODES.includes(value.errorCode as SshWorkerErrorCode)) {
+      if (exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode'])) return value as unknown as SshWorkerMessage;
+      if (exactKeys(value, ['version', 'type', 'requestId', 'ok', 'errorCode', 'networkFailure']) &&
+          isSshTransportNetworkFailure(value.networkFailure) &&
+          (value.networkFailure === 'CONNECTION_TIMEOUT' ? value.errorCode === 'TIMEOUT' : value.errorCode === 'UNAVAILABLE')) {
+        return value as unknown as SshWorkerMessage;
+      }
     }
   }
   if (value.type === 'host-key' && exactKeys(value, ['version', 'type', 'sessionId', 'checkId', 'endpoint', 'evidence']) &&

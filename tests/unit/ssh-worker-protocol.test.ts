@@ -84,6 +84,17 @@ test('SSH worker events reject invalid error categories and oversized terminal c
   assert.equal(parseSshWorkerMessage(data), undefined);
 });
 
+test('SSH worker error replies accept only normalized network failure categories', () => {
+  const failure = { version: 1, type: 'reply', requestId, ok: false, errorCode: 'UNAVAILABLE' };
+  assert.deepEqual(parseSshWorkerMessage({ ...failure, networkFailure: 'DNS_LOOKUP_FAILED' }), {
+    ...failure, networkFailure: 'DNS_LOOKUP_FAILED'
+  });
+  assert.equal(parseSshWorkerMessage({ ...failure, networkFailure: 'getaddrinfo ENOTFOUND private-host' }), undefined);
+  assert.equal(parseSshWorkerMessage({ ...failure, errorCode: 'AUTHENTICATION_FAILED', networkFailure: 'DNS_LOOKUP_FAILED' }), undefined);
+  assert.equal(parseSshWorkerMessage({ ...failure, errorCode: 'TIMEOUT', networkFailure: 'CONNECTION_TIMEOUT' })?.type, 'reply');
+  assert.equal(parseSshWorkerMessage({ ...failure, errorCode: 'UNAVAILABLE', networkFailure: 'CONNECTION_TIMEOUT' }), undefined);
+});
+
 test('SSH worker validates bounded remote-directory requests and listing replies', () => {
   const list = { version: 1, type: 'request', requestId, command: 'files.list', sessionId, path: '/home/alice' };
   assert.equal(parseSshWorkerInput(list)?.type, 'request');

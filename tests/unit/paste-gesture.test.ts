@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
-import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
+import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installSshSessionLogConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
   installTftpServerActionGestureStore, installPowerShellProfileGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
@@ -31,6 +31,13 @@ test('main renderer gesture gate is one-shot, short-lived, sender-scoped, purpos
   gate.issueExternalViewerLaunch(11, 'rdp', 'DESK.EXAMPLE.COM', 3389);
   assert.equal(gate.consumeExternalViewerLaunch(11, 'rdp', 'desk.example.com', 3389), true, 'RDP endpoint is canonicalized');
   assert.equal(gate.consumeExternalViewerLaunch(11, 'rdp', 'desk.example.com', 3389), false, 'RDP gesture is one-shot');
+  const gateways = ['11111111-1111-4111-8111-111111111111'];
+  gate.issueSshSessionLog(11, firstSession, 'LINUX.EXAMPLE.COM.', 22, gateways);
+  assert.equal(gate.consumeSshSessionLog(12, firstSession, 'linux.example.com', 22, gateways), false, 'session-log consent is sender-scoped');
+  assert.equal(gate.consumeSshSessionLog(11, firstSession, 'linux.example.com', 22, []), false, 'session-log consent is route-scoped');
+  gate.issueSshSessionLog(11, firstSession, 'LINUX.EXAMPLE.COM.', 22, gateways);
+  assert.equal(gate.consumeSshSessionLog(11, firstSession, 'linux.example.com', 22, gateways), true, 'session-log endpoint is canonicalized');
+  assert.equal(gate.consumeSshSessionLog(11, firstSession, 'linux.example.com', 22, gateways), false, 'session-log consent is one-shot');
 });
 
 test('preload authorizes only trusted paste keys from a terminal and binds them to that session', async () => {
@@ -164,6 +171,48 @@ test('preload Telnet consent requires a trusted submit for the same endpoint and
   submit?.(event(true));
   now += 751;
   assert.equal(await gestures.consume(firstSession, 'console.example.com', 23), false, 'expired consent is rejected');
+  gestures.dispose();
+  assert.equal(submit, undefined);
+});
+
+test('preload SSH log consent requires a trusted opted-in submit for the same endpoint and gateway route', async () => {
+  let now = 60;
+  let submit: ((event: Event) => void) | undefined;
+  const authorized: Array<{ sessionId: string; host: string; port: number; gatewayProfileIds: readonly string[] }> = [];
+  const inputs = new Map<string, { readonly value: string; readonly checked?: boolean }>([
+    ['button[data-mrt-ssh-session-log-consent-trigger]', { value: '' }], ['#ssh-session-log', { value: '', checked: true }],
+    ['input[name="host"]', { value: 'LINUX.Example.com.' }], ['input[name="port"]', { value: '22' }],
+    ['select[name="sshGateway1"]', { value: '11111111-1111-4111-8111-111111111111' }]
+  ]);
+  const form = {
+    closest(selector: string) { return selector === 'form' ? this : null; },
+    querySelector(selector: string) { return inputs.get(selector) ?? null; }
+  };
+  const documentTarget = {
+    addEventListener(_type: 'submit', listener: (event: Event) => void) { submit = listener; },
+    removeEventListener(_type: 'submit', listener: (event: Event) => void) { if (submit === listener) submit = undefined; }
+  };
+  const gestures = installSshSessionLogConsentGestureStore(documentTarget, async (sessionId, host, port, gatewayProfileIds) => {
+    authorized.push({ sessionId, host, port, gatewayProfileIds });
+    return true;
+  }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'submit', isTrusted, target: form }) as unknown as Event;
+  const gateways = ['11111111-1111-4111-8111-111111111111'];
+  submit?.(event(false));
+  assert.equal(await gestures.consume(firstSession, 'linux.example.com', 22, gateways), false, 'scripted submits cannot grant consent');
+  inputs.set('#ssh-session-log', { value: '', checked: false });
+  submit?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'linux.example.com', 22, gateways), false, 'unchecked recording cannot grant consent');
+  inputs.set('#ssh-session-log', { value: '', checked: true });
+  submit?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'linux.example.com', 22, []), false, 'consent cannot authorize a different route');
+  submit?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'linux.example.com', 22, gateways), true);
+  assert.equal(await gestures.consume(firstSession, 'linux.example.com', 22, gateways), false, 'consent is one-shot');
+  assert.deepEqual(authorized, [{ sessionId: firstSession, host: 'linux.example.com', port: 22, gatewayProfileIds: gateways }]);
+  submit?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume(firstSession, 'linux.example.com', 22, gateways), false, 'expired consent is rejected');
   gestures.dispose();
   assert.equal(submit, undefined);
 });

@@ -58,6 +58,13 @@ function errorCode(error: unknown): SshWorkerErrorCode {
   return 'UNAVAILABLE';
 }
 
+function errorDetails(error: unknown): { readonly errorCode: SshWorkerErrorCode; readonly networkFailure?: NonNullable<SshTerminalProviderError['networkFailure']> } {
+  if (error instanceof SshTerminalProviderError && error.networkFailure) {
+    return { errorCode: error.code, networkFailure: error.networkFailure };
+  }
+  return { errorCode: errorCode(error) };
+}
+
 function resolveHostCheck(request: Extract<SshWorkerRequest, { type: 'host-key-result' }>): void {
   const pending = pendingHostChecks.get(request.checkId);
   if (!pending || pending.sessionId !== request.sessionId) return;
@@ -101,7 +108,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
       const result = await provider.listRemoteDirectory(request.sessionId, request.path, cancellation.signal);
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
     } catch (error) {
-      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, ...errorDetails(error) });
     } finally { pendingFileOperations.delete(request.requestId); }
     return;
   }
@@ -128,7 +135,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
               request.expectedRevision, cancellation.signal, onProgress);
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result });
     } catch (error) {
-      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
+      send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, ...errorDetails(error) });
     } finally {
       if (pendingFileOperations.get(request.operationId)?.cancellation === cancellation) pendingFileOperations.delete(request.operationId);
     }
@@ -170,7 +177,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     else await stop();
     send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: {} });
   } catch (error) {
-    send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, errorCode: errorCode(error) });
+    send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: false, ...errorDetails(error) });
   }
 }
 

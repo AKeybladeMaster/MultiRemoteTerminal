@@ -4,6 +4,8 @@ You are implementing MultiRemoteTerminal in
 `https://github.com/AKeybladeMaster/MultiRemoteTerminal.git`
 on a Windows developer workstation.
 
+When resuming on another PC, read [the current resume snapshot](CODEX-RESUME.md) for verified branch, test, and artifact state. The specification and project documents below remain authoritative.
+
 **At each task:** inspect the current branch, worktree, remote refs and latest result records. Read the entire `AGENTS.md`, `docs/SPEC-001-MultiRemoteTerminal.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/FEATURE-MATRIX.md`, `docs/IMPLEMENTATION-PLAN.md`, `docs/GLOSSARY.md`, and relevant `docs/adr/` decisions before changing code. Treat the documentation as the design baseline, then verify current source and test evidence; preserve completed work and continue with the next open slice.
 
 Use the installed skills in `C:\Users\Beasty\.agents\skills\` by reading each relevant `<skill>/SKILL.md`:

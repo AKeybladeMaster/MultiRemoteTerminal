@@ -215,3 +215,35 @@ test('preferences manager preserves the corrupt-storage error category', async (
     error: { code: 'CORRUPT', target: 'application', retryable: false }
   });
 });
+
+test('settings template import returns a draft without persisting it and export requires a selected path', async () => {
+  const imported = { ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Imported draft' };
+  let exported: unknown;
+  let saved = false;
+  const store = {
+    async readWorkbenchPreferences() { return DEFAULT_WORKBENCH_PREFERENCES; },
+    async saveWorkbenchPreferences(preferences: typeof DEFAULT_WORKBENCH_PREFERENCES) { saved = true; return preferences; },
+    async exportWorkbenchSettingsTemplate(_path: string, preferences: typeof DEFAULT_WORKBENCH_PREFERENCES) {
+      exported = preferences;
+      return { bytesSaved: 256 };
+    },
+    async importWorkbenchSettingsTemplate() { return imported; }
+  };
+  const manager = createWorkbenchPreferencesManager(store, store, {
+    async selectExportPath() { return 'C:\\settings.json'; },
+    async selectImportPath() { return 'C:\\settings.json'; }
+  });
+
+  assert.deepEqual(await manager.exportTemplate(DEFAULT_WORKBENCH_PREFERENCES), { ok: true, result: { bytesSaved: 256 } });
+  assert.deepEqual(exported, DEFAULT_WORKBENCH_PREFERENCES);
+  assert.deepEqual(await manager.importTemplate(), { ok: true, result: imported });
+  assert.equal(saved, false, 'loading a template only prepares the settings draft');
+
+  const cancelled = createWorkbenchPreferencesManager(store, store, {
+    async selectExportPath() { return undefined; },
+    async selectImportPath() { return undefined; }
+  });
+  assert.deepEqual(await cancelled.exportTemplate(DEFAULT_WORKBENCH_PREFERENCES), {
+    ok: false, error: { code: 'CANCELLED', target: 'application', retryable: false }
+  });
+});

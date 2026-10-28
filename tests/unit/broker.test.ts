@@ -7,6 +7,7 @@ import type { AuditEvent, CommandActions } from '../../apps/desktop/src/main/bro
 import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/renderer-request-cancellation.ts';
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
+import { createCancellationSource } from '../../packages/application/src/cancellation.ts';
 import type { SshAuthenticationSelection } from '../../packages/application/src/ssh-terminals.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 import { failure } from '../../packages/domain/src/errors.ts';
@@ -30,6 +31,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   selectFtpUploadFile: async () => undefined, selectFtpDownloadPath: async () => undefined, resolveFtpTransferConflict: async () => undefined,
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined,
   selectSshPrivateKey: async () => failure('CANCELLED'), selectSshDownloadPath: async () => undefined,
+  authorizeSshSessionLog: () => false, consumeSshSessionLogAttempt: () => undefined,
   resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
   selectCustomLogo: async () => ({ ok: true, result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } }),
   discardDroppedUploadHandles: () => {}, terminals: {
@@ -89,6 +91,9 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async saveSshCredential() { return { ok: true, result: {} } as const; },
     async forgetSshCredential() { return { ok: true, result: {} } as const; },
     async resolveSshCredential() { return { ok: true, result: undefined } as const; }
+  }, credentialBundles: {
+    async export() { return { ok: true, result: { credentialCount: 1 } } as const; },
+    async import() { return { ok: true, result: { credentialCount: 1 } } as const; }
   }, macros: {
     list: async () => ({ ok: true, result: [] }),
     create: async () => ({ ok: true, result: emptyMacro }),
@@ -107,8 +112,25 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   }, preferences: {
     read: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES }),
     readStartup: async () => ({ ok: true, result: toWorkbenchStartupPreferences(DEFAULT_WORKBENCH_PREFERENCES) }),
-    save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES })
+    save: async value => ({ ok: true, result: value as typeof DEFAULT_WORKBENCH_PREFERENCES }),
+    exportTemplate: async () => ({ ok: true, result: { bytesSaved: 128 } }),
+    importTemplate: async () => ({ ok: true, result: DEFAULT_WORKBENCH_PREFERENCES })
   }, tftpServer: { getStatus: () => ({ state: 'stopped' }), stop: noOp }
+});
+
+test('encrypted credential bundle broker commands accept no renderer path or secret', async () => {
+  const requests = [
+    { command: 'credential.bundle.export', requestId: request.requestId, contractVersion: 1, payload: {} },
+    { command: 'credential.bundle.import', requestId: request.requestId, contractVersion: 1, payload: {} }
+  ];
+  for (const input of requests) {
+    assert.deepEqual(await dispatchCommand(owner, input, actions(), () => {}), {
+      requestId: request.requestId, ok: true, result: { credentialCount: 1 }
+    });
+  }
+  const rejected = await dispatchCommand(owner, { ...requests[0], payload: { path: 'C:\\outside.mrtcred' } }, actions(), () => {});
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.error.code, 'INVALID_REQUEST');
 });
 
 test('PowerShell profile application requires the trusted main-process gesture before using a saved preview', async () => {
@@ -191,6 +213,8 @@ test('preferences broker accepts changed logos only from the bounded main-proces
   const manager = {
     async read() { return { ok: true as const, result: stored }; },
     async readStartup() { return { ok: true as const, result: toWorkbenchStartupPreferences(stored) }; },
+    async exportTemplate() { return { ok: true as const, result: { bytesSaved: 128 } }; },
+    async importTemplate() { return { ok: true as const, result: stored }; },
     async save(value: unknown) {
       saveCount++;
       stored = value as typeof DEFAULT_WORKBENCH_PREFERENCES;
@@ -277,6 +301,122 @@ test('saved SSH opens resolve the profile credential in main and clear it after 
   assert.equal(received?.password, '');
   assert.deepEqual(secret, { username: '', password: '' });
   assert.equal(JSON.stringify(reply).includes('must-not-reach-renderer'), false);
+});
+
+test('SSH session log selection is delegated to the native main-process action with the validated endpoint', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const base = actions();
+  let selectedEndpoints: readonly { readonly host: string; readonly port: number }[] | undefined;
+  const wired: CommandActions = { ...base, authorizeSshSessionLog: () => true, async startSshSessionLog(receivedSessionId, endpoints) {
+    assert.equal(receivedSessionId, sessionId);
+    selectedEndpoints = endpoints;
+    return { ok: true, result: { sessionId: receivedSessionId, fileName: 'session.log' } };
+  } };
+  const reply = await dispatchCommand(owner, { command: 'ssh.session-log.start', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'linux.internal', port: 22 } }, wired, () => {});
+  assert.deepEqual(selectedEndpoints, [{ host: 'linux.internal', port: 22 }]);
+  assert.deepEqual(reply, { requestId: request.requestId, ok: true, result: { sessionId, fileName: 'session.log' } });
+});
+
+test('SSH session log start requires a fresh main-process consent before route lookup or file selection', async () => {
+  let starts = 0;
+  let routeLookups = 0;
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    sessionCatalog: { ...base.sessionCatalog, async get() { routeLookups++; return { ok: true, result: emptySavedSession }; } },
+    async startSshSessionLog(sessionId) { starts++; return { ok: true, result: { sessionId, fileName: 'session.log' } }; }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.session-log.start', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', host: 'linux.internal', port: 22,
+      gatewayProfileIds: ['11111111-1111-4111-8111-111111111111'] } }, wired, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ok: false, error: { code: 'FORBIDDEN', target: 'application', retryable: false } });
+  assert.equal(routeLookups, 0);
+  assert.equal(starts, 0);
+});
+
+test('SSH logged open requires and consumes the exact main-process attempt binding', async () => {
+  let opened = 0;
+  let finished: unknown;
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    consumeSshSessionLogAttempt: (_sessionId, endpoints, required) => {
+      assert.equal(required, true);
+      assert.deepEqual(endpoints, [{ host: 'server.example.net', port: 22 }]);
+      return 'FORBIDDEN';
+    },
+    async finishSshSessionLog(sessionId, reason, connectionFailure) { finished = { sessionId, reason, connectionFailure }; },
+    sshTerminals: { ...base.sshTerminals, async open() { opened++; return failure('UNAVAILABLE', 'terminal'); } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', host: 'server.example.net', port: 22, columns: 80, rows: 24,
+      recordSessionLog: true } }, wired, () => {});
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(opened, 0);
+  assert.deepEqual(finished, { sessionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', reason: 'connection-failed',
+    connectionFailure: { phase: 'preflight', code: 'FORBIDDEN' } });
+});
+
+test('SSH session logs record safe preflight failures before they finish', async () => {
+  const finished: Array<{ sessionId: string; reason: string; connectionFailure?: unknown }> = [];
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    async finishSshSessionLog(sessionId, reason, connectionFailure) { finished.push({ sessionId, reason, connectionFailure }); },
+    sessionCatalog: { ...base.sessionCatalog, async get() { return failure('NOT_FOUND'); } },
+    async selectSshPrivateKey() { return failure('CANCELLED'); },
+    sessionCredentials: { ...base.sessionCredentials, async resolveSshCredential() { return failure('UNAVAILABLE'); } }
+  };
+  const open = (sessionId: string, payload: Record<string, unknown>) => dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId,
+    contractVersion: 1, payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, ...payload } }, wired, () => {});
+
+  await open('c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', { gatewayProfileIds: ['11111111-1111-4111-8111-111111111111'] });
+  await open('d8f87744-bd2c-4c0d-9a18-a4a324dd71fd', { authenticationMethod: 'private-key' });
+  await open('e8f87744-bd2c-4c0d-9a18-a4a324dd71fd', { profileId: '11111111-1111-4111-8111-111111111111' });
+
+  assert.deepEqual(finished, [
+    { sessionId: 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', reason: 'connection-failed', connectionFailure: { phase: 'preflight', code: 'NOT_FOUND' } },
+    { sessionId: 'd8f87744-bd2c-4c0d-9a18-a4a324dd71fd', reason: 'connection-failed', connectionFailure: { phase: 'preflight', code: 'CANCELLED' } },
+    { sessionId: 'e8f87744-bd2c-4c0d-9a18-a4a324dd71fd', reason: 'connection-failed', connectionFailure: { phase: 'preflight', code: 'UNAVAILABLE' } }
+  ]);
+});
+
+test('SSH open cancelled while the private-key picker is open never reaches the terminal controller', async () => {
+  const sessionId = 'f8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const cancellation = createCancellationSource();
+  const selected = { data: Buffer.from('one-time-private-key'), fileName: 'id_ed25519' };
+  let resolveSelection!: (selection: { ok: true; result: typeof selected }) => void;
+  let notifyPickerEntered!: () => void;
+  const pickerEntered = new Promise<void>(resolve => { notifyPickerEntered = resolve; });
+  const selection = new Promise<{ ok: true; result: typeof selected }>(resolve => { resolveSelection = resolve; });
+  const opened: string[] = [];
+  const finished: unknown[] = [];
+  const base = actions();
+  const wired: CommandActions = {
+    ...base,
+    cancellation,
+    async selectSshPrivateKey() { notifyPickerEntered(); return selection; },
+    async finishSshSessionLog(receivedSessionId, reason, connectionFailure) { finished.push({ sessionId: receivedSessionId, reason, connectionFailure }); },
+    sshTerminals: { ...base.sshTerminals, async open(receivedSessionId, host, port) {
+      opened.push(receivedSessionId);
+      return { ok: true, result: { sessionId: receivedSessionId, endpoint: { host, port }, state: 'running' } };
+    } }
+  };
+  const opening = dispatchCommand(owner, { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, authenticationMethod: 'private-key' } }, wired, () => {});
+
+  await pickerEntered;
+  cancellation.abort();
+  resolveSelection({ ok: true, result: selected });
+  const reply = await opening;
+
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'CANCELLED');
+  assert.deepEqual(opened, []);
+  assert.deepEqual([...selected.data], new Array(selected.data.length).fill(0));
+  assert.deepEqual(finished, [{ sessionId, reason: 'connection-failed', connectionFailure: { phase: 'preflight', code: 'CANCELLED' } }]);
 });
 
 test('SSH key selection is held in main, passed once to the controller and cleared before the reply', async () => {

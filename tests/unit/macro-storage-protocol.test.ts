@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { join, basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import { parseStorageWorkerMessage, parseStorageWorkerRequest, STORAGE_WORKER_PROTOCOL_VERSION } from '../../apps/desktop/src/workers/storage-protocol.ts';
 
 const requestId = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -42,4 +44,26 @@ test('storage worker exposes a payload-free bulk credential-reference reset', ()
   assert.equal(parseStorageWorkerRequest({ ...request, references: [] }), undefined);
   assert.ok(parseStorageWorkerMessage({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
     result: { kind: 'changed', value: true } }));
+});
+
+test('storage worker carries only bounded encrypted credential bundle bytes and exact attachment metadata', () => {
+  const destination = join(tmpdir(), 'credentials.mrtcred');
+  const temporaryPath = join(tmpdir(), `.${basename(destination)}.${requestId}.tmp`);
+  const attach = { version: 1, type: 'request', requestId, command: 'session.credential.attach-imported', credentials: [
+    { sessionId: '11111111-1111-4111-8111-111111111111', host: 'server.example.net', port: 22,
+      reference: '22222222-2222-4222-8222-222222222222' }
+  ] };
+  assert.ok(parseStorageWorkerRequest(attach));
+  assert.equal(parseStorageWorkerRequest({ ...attach, credentials: [...attach.credentials, ...attach.credentials] }), undefined);
+  assert.equal(parseStorageWorkerRequest({ ...attach, credentials: [{ ...attach.credentials[0], password: 'plaintext' }] }), undefined);
+  const write = { version: 1, type: 'request', requestId, command: 'credential.bundle.write', path: destination, temporaryPath,
+    contents: new Uint8Array([1, 2, 3]) };
+  assert.ok(parseStorageWorkerRequest(write));
+  assert.equal(parseStorageWorkerRequest({ ...write, contents: 'plaintext' }), undefined);
+  const read = { version: 1, type: 'request', requestId, command: 'credential.bundle.read', path: destination };
+  assert.ok(parseStorageWorkerRequest(read));
+  assert.ok(parseStorageWorkerMessage({ version: 1, type: 'reply', requestId, ok: true,
+    result: { kind: 'encryptedCredentialBundle', value: new Uint8Array([1, 2, 3]) } }));
+  assert.equal(parseStorageWorkerMessage({ version: 1, type: 'reply', requestId, ok: true,
+    result: { kind: 'encryptedCredentialBundle', value: new Uint8Array() } }), undefined);
 });
