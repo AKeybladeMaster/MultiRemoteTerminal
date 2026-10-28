@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential')]
+    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo')]
     [string] $Action,
     [string] $FilePath = '',
     [int] $TargetProcessId = 0
@@ -182,6 +182,23 @@ if ($Action -like '*credential-*' -or $Action -eq 'export-credential' -or $Actio
         } while ([DateTime]::UtcNow -lt $deadline)
         throw 'The native Save dialog closed without creating the selected credential bundle.'
     }
+    exit 0
+}
+
+if ($Action -in @('cancel-logo', 'select-logo')) {
+    $title = 'Choose a PNG logo'
+    $logoDialog = Wait-Dialog $title
+    if ($Action -eq 'cancel-logo') {
+        Send-DialogKeys $logoDialog '{ESC}'
+        Wait-DialogClosed $title
+        exit 0
+    }
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.png') {
+        throw 'A full .png path is required for native logo selection.'
+    }
+    Set-DialogFilename $logoDialog $FilePath
+    Send-DialogKeys $logoDialog '{ENTER}'
+    Wait-DialogClosed $title
     exit 0
 }
 

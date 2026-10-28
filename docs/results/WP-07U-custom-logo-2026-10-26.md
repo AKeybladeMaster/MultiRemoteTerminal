@@ -1,4 +1,4 @@
-# WP-07U custom logo acceptance (partial)
+# WP-07U custom logo acceptance (verified)
 
 **Requirements:** P-35; F-009 (logo portion)
 **Decision:** [ADR-0028](../adr/ADR-0028-custom-logo-storage.md)
@@ -17,7 +17,7 @@
 - `corepack pnpm lint`: passed, including import-boundary checks.
 - Windows x64 `corepack pnpm build`: passed. Vite reported its existing advisory for a JavaScript chunk above 500 KiB.
 - `corepack pnpm setup:electron`: passed.
-- Windows Electron E2E `corepack pnpm exec playwright test tests/e2e/foundation.test.ts -g "custom workbench logo"`: **1 passed**. It selects a valid PNG, verifies the preview and saved header image, restarts the app and verifies persistence, rejects malformed input without discarding the previous selection, resets to the built-in wordmark, then restarts and verifies the reset persisted.
+- Windows Electron E2E `corepack pnpm exec playwright test tests/e2e/foundation.test.ts -g "custom workbench logo"`: **1 passed**. It cancels and selects through the actual native PNG picker, verifies the preview and saved header image, restarts the app and verifies persistence, selects malformed PNG input through the picker without discarding the previous selection, resets to the built-in wordmark, then restarts and verifies the reset persisted.
 - Reviewed the E2E Settings screenshot at `test-results/custom-logo-settings.png`.
 
 The first E2E attempt correctly rejected the initial fixture: its IHDR CRC was valid but its IDAT CRC was not. The test now uses a generated 1×1 PNG with valid chunk CRCs; the final E2E run passes.
@@ -28,10 +28,12 @@ The final review also found the Architecture schema table still described workbe
 
 ## Remaining acceptance
 
-The E2E hook supplies a bounded absolute file path to the picker, exercising the real main-process file read and Electron `nativeImage` decode/re-encode path. It does not automate the native Windows file dialog itself, its PNG filter, or its cancellation behavior. P-35 therefore remains **PARTIAL** pending direct native-dialog acceptance. F-009 remains incomplete while profile-script controls remain open.
-
-Direct UI automation was attempted using the installed Computer Use skill. `@oai/sky` initialized, but `list_apps` reported that its native pipe was unavailable on the initial call, a delayed retry, and a retry after kernel reset/reinitialization. No native-dialog action was attempted.
+The Windows E2E automates the actual native picker with UI Automation and keyboard input; cancellation and `.png` selection pass. P-35 is **VERIFIED**. F-009 remains incomplete while shell/tool installation, update and removal controls remain open.
 
 ## Security and limitations
 
 The renderer receives image bytes only, never the selected path. PNG signature, source size and dimensions are checked before native decoding; decoded dimensions and encoded output size are checked again. SVG and other image formats are rejected. The data URL is bounded and stored unencrypted as a non-secret workbench preference in the local SQLite settings row. The logo may identify the user or organization, so it remains within that local profile and is not included in saved-session exports.
+
+## Native picker follow-up (2026-10-28)
+
+The E2E now drives the actual Windows `Choose a PNG logo` picker for both cancellation and valid/malformed PNG selection, with its user profile under workspace `.tmp`. Spec review confirmed P-35 VERIFIED and F-009 still incomplete for shell/tool lifecycle. Standards findings about non-Windows execution and cleanup on Electron launch failure were fixed; Standards confirmed closure and found no remaining issue. Reviewers inspected but did not rerun tests. Final checks passed: typecheck, lint/import boundaries, PowerShell syntax, `git diff --check`, and the native-picker E2E 1/1.

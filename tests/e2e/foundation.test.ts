@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
-import { runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
+import { runNativeCustomLogoDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 interface Ssh2FixtureClient extends EventEmitter {
@@ -7342,22 +7342,30 @@ test('terminal keyword highlighting saves rules, preserves ANSI colors, and rest
 });
 
 test('custom workbench logo is bounded, persists across restart, and resets to the built-in wordmark', async () => {
+  test.skip(process.platform !== 'win32', 'Native custom-logo picker acceptance runs on Windows');
   test.setTimeout(90_000);
-  const profile = await mkdtemp(join(tmpdir(), 'mrt-custom-logo-e2e-'));
+  const profile = await createWorkspaceTempDirectory('mrt-custom-logo-e2e-');
   const logoPath = join(profile, 'selected-logo.png');
   const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==', 'base64');
   const launch = () => electron.launch({
-    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo', `--mrt-e2e-custom-logo-file=${logoPath}`],
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo'],
     env: { ...electronEnvironment(), MRT_E2E: '1' }
   });
-  let app = await launch();
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    app = await launch();
     let page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await writeFile(logoPath, validPng);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
-    await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    const chooseLogo = settings.getByRole('button', { name: 'Choose PNG logo', exact: true });
+    await chooseLogo.click();
+    await runNativeCustomLogoDialog('cancel-logo');
+    await expect(chooseLogo).toBeEnabled();
+    await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toHaveCount(0);
+    await chooseLogo.click();
+    await runNativeCustomLogoDialog('select-logo', logoPath);
     const preview = settings.getByRole('img', { name: 'Selected workbench logo' });
     await expect(preview).toBeVisible();
     await expect(preview).toHaveJSProperty('naturalWidth', 1);
@@ -7378,6 +7386,7 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
 
     await writeFile(logoPath, Buffer.from('not a PNG image'));
     await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
+    await runNativeCustomLogoDialog('select-logo', logoPath);
     await expect(settings.getByRole('alert')).toContainText('Choose a valid PNG image');
     await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
     await settings.getByRole('button', { name: 'Use built-in wordmark', exact: true }).click();
@@ -7392,7 +7401,7 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
   } finally {
-    await app.close();
+    await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });

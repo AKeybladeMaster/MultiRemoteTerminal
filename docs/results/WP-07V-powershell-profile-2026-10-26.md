@@ -21,7 +21,7 @@
 
 ## Security notes and remaining work
 
-The app-managed script is stored as local plain text. It can execute arbitrary PowerShell commands with the user's Windows account permissions; users must review the preview and must not put secrets in the field. This feature does not sandbox script execution or claim that a preview determines whether a script is safe. Native logo-picker acceptance, provider/tool management and the other documented release gates remain open. See [ADR-0029](../adr/ADR-0029-powershell-profile-execution.md).
+The app-managed script is stored as local plain text. It can execute arbitrary PowerShell commands with the user's Windows account permissions; users must review the preview and must not put secrets in the field. This feature does not sandbox script execution or claim that a preview determines whether a script is safe. Provider/tool management and the other documented release gates remain open. See [ADR-0029](../adr/ADR-0029-powershell-profile-execution.md).
 
 ## Review follow-up
 

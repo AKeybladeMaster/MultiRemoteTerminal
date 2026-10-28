@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 
 export type NativeSshLogDialogAction = 'cancel-consent' | 'cancel-save' | 'save' | 'close-app';
 export type NativeSshCredentialBundleDialogAction = 'cancel-credential-export' | 'export-credential' | 'cancel-credential-import' | 'import-credential';
+export type NativeCustomLogoDialogAction = 'cancel-logo' | 'select-logo';
 
 export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, filePath?: string, targetProcessId?: number): Promise<void> {
   if (action === 'save' && (!filePath || !filePath.toLowerCase().endsWith('.log'))) {
@@ -22,7 +23,14 @@ export async function runNativeSshCredentialBundleDialog(action: NativeSshCreden
   await runNativeDialog(action, filePath, undefined, 'SSH credential bundle');
 }
 
-async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialBundleDialogAction,
+export async function runNativeCustomLogoDialog(action: NativeCustomLogoDialogAction, filePath?: string): Promise<void> {
+  if (action === 'select-logo' && (!filePath || !filePath.toLowerCase().endsWith('.png'))) {
+    throw new Error('Selecting the native custom logo dialog requires a .png path.');
+  }
+  await runNativeDialog(action, filePath, undefined, 'custom logo');
+}
+
+async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialBundleDialogAction | NativeCustomLogoDialogAction,
   filePath: string | undefined, targetProcessId: number | undefined, description: string): Promise<void> {
   if (process.platform !== 'win32') throw new Error(`Native ${description} dialog automation is Windows-only.`);
   const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');

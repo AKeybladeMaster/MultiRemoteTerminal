@@ -28,4 +28,4 @@
 
 ## Security and remaining acceptance
 
-The preference gates new local-shell entry points; it does not terminate running processes. The main broker is authoritative, saved profiles remain available for re-enabling, and settings-read failure is closed to new starts. P-21/P-37/F-009 remain partial for broader provider lifecycle, native logo-picker acceptance, real WSL interoperability, and Windows 10 and signed-release acceptance.
+The preference gates new local-shell entry points; it does not terminate running processes. The main broker is authoritative, saved profiles remain available for re-enabling, and settings-read failure is closed to new starts. P-21/P-37/F-009 remain partial for broader provider lifecycle, real WSL interoperability, and Windows 10 and signed-release acceptance. P-35 native logo-picker selection/cancellation is verified in WP-07U.
