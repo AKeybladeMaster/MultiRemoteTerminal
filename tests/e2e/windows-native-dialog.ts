@@ -2,19 +2,32 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
 export type NativeSshLogDialogAction = 'cancel-consent' | 'cancel-save' | 'save' | 'close-app';
+export type NativeSshCredentialBundleDialogAction = 'cancel-credential-export' | 'export-credential' | 'cancel-credential-import' | 'import-credential';
 
 export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, filePath?: string, targetProcessId?: number): Promise<void> {
-  if (process.platform !== 'win32') throw new Error('Native SSH log dialog automation is Windows-only.');
   if (action === 'save' && (!filePath || !filePath.toLowerCase().endsWith('.log'))) {
     throw new Error('Selecting the native SSH log dialog requires a .log path.');
   }
   if (action === 'close-app' && (!targetProcessId || !Number.isSafeInteger(targetProcessId))) {
     throw new Error('Closing the packaged app requires its process ID.');
   }
+  await runNativeDialog(action, filePath, targetProcessId, 'SSH session log');
+}
 
+export async function runNativeSshCredentialBundleDialog(action: NativeSshCredentialBundleDialogAction, filePath?: string): Promise<void> {
+  if ((action === 'export-credential' || action === 'import-credential') &&
+      (!filePath || !filePath.toLowerCase().endsWith('.mrtcred'))) {
+    throw new Error('Selecting the native credential bundle dialog requires a .mrtcred path.');
+  }
+  await runNativeDialog(action, filePath, undefined, 'SSH credential bundle');
+}
+
+async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialBundleDialogAction,
+  filePath: string | undefined, targetProcessId: number | undefined, description: string): Promise<void> {
+  if (process.platform !== 'win32') throw new Error(`Native ${description} dialog automation is Windows-only.`);
   const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
-    resolve('tests/e2e/windows-native-ssh-log-dialog.ps1'), '-Action', action];
+    resolve('tests/e2e/windows-native-dialog.ps1'), '-Action', action];
   if (filePath) args.push('-FilePath', filePath);
   if (targetProcessId) args.push('-TargetProcessId', String(targetProcessId));
   const child = spawn(executable, args, { cwd: resolve('.'), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
@@ -38,8 +51,8 @@ export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, fi
     }, 35_000);
     child.once('error', error => finish(error));
     child.once('exit', (code, signal) => {
-      if (timedOut) finish(new Error('Timed out automating the native SSH session log dialog.'));
-      else if (code !== 0) finish(new Error(`Native SSH log dialog automation failed (${signal ?? code}): ${errorText.trim()}`));
+      if (timedOut) finish(new Error(`Timed out automating the native ${description} dialog.`));
+      else if (code !== 0) finish(new Error(`Native ${description} dialog automation failed (${signal ?? code}): ${errorText.trim()}`));
       else finish();
     });
   });

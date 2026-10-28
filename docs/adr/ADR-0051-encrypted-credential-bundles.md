@@ -21,4 +21,4 @@ Users can move saved SSH passwords between profiles protected by different Windo
 
 ## Verification
 
-Unit and adapter tests cover authenticated round-trip, wrong-password/tamper rejection, exact schema and size limits, path-free contracts, atomic file access, exact profile matching, conflict rollback and ambiguous-worker safety. Windows Electron E2E verifies explicit cross-profile export/import with a test-only native prompt/dialog harness and confirms secrets do not cross the renderer boundary. Native picker acceptance remains a manual Windows check; F-018 stays PARTIAL until its release acceptance gates pass.
+Unit and adapter tests cover authenticated round-trip, wrong-password/tamper rejection, exact schema and size limits, path-free contracts, atomic file access, exact profile matching, conflict rollback and ambiguous-worker safety. Windows Electron E2E verifies native Save/Open picker selection and cancellation through UI Automation, cross-profile import/authentication with a test-only passphrase prompt, and secret exclusion from the renderer. F-018 stays PARTIAL pending the signing/release decision.

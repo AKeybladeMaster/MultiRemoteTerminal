@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app')]
+    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential')]
     [string] $Action,
     [string] $FilePath = '',
     [int] $TargetProcessId = 0
@@ -145,6 +145,44 @@ function Wait-FilenameValue([System.Windows.Automation.AutomationElement] $field
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
     return $false
+}
+
+function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
+    Focus-Dialog $dialog
+    [System.Windows.Forms.SendKeys]::SendWait('%n')
+    Start-Sleep -Milliseconds 100
+    $field = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -eq $field -or $field.Current.ClassName -notin @('Edit', 'ComboBox')) {
+        throw 'Could not focus the native dialog filename field.'
+    }
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    [System.Windows.Forms.SendKeys]::SendWait((ConvertTo-SendKeysLiteral $filePath))
+}
+
+if ($Action -like '*credential-*' -or $Action -eq 'export-credential' -or $Action -eq 'import-credential') {
+    $isExport = $Action -in @('cancel-credential-export', 'export-credential')
+    $title = if ($isExport) { 'Export encrypted SSH credentials' } else { 'Import encrypted SSH credentials' }
+    $credentialDialog = Wait-Dialog $title
+    if ($Action.StartsWith('cancel-')) {
+        Send-DialogKeys $credentialDialog '{ESC}'
+        Wait-DialogClosed $title
+        exit 0
+    }
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.mrtcred') {
+        throw 'A full .mrtcred path is required for native credential bundle selection.'
+    }
+    Set-DialogFilename $credentialDialog $FilePath
+    Send-DialogKeys $credentialDialog '{ENTER}'
+    Wait-DialogClosed $title
+    if ($isExport) {
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            if (Test-Path -LiteralPath $FilePath -PathType Leaf) { exit 0 }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $deadline)
+        throw 'The native Save dialog closed without creating the selected credential bundle.'
+    }
+    exit 0
 }
 
 if ($Action -eq 'close-app') {

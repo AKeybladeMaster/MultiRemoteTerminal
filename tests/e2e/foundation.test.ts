@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
-import { runNativeSshLogDialog } from './windows-native-ssh-session-log-dialog.ts';
+import { runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 interface Ssh2FixtureClient extends EventEmitter {
@@ -6882,7 +6882,7 @@ test('local shell tool visibility persists and controls command palette entries 
 test('encrypted SSH credential bundles restore saved passwords across Windows app profiles', async () => {
   test.skip(process.platform !== 'win32', 'Credential bundle acceptance runs on Windows');
   test.setTimeout(120_000);
-  const root = await mkdtemp(join(tmpdir(), 'mrt-ssh-credential-bundle-e2e-'));
+  const root = await createWorkspaceTempDirectory('mrt-ssh-credential-bundle-e2e-');
   const sourceProfile = join(root, 'source');
   const targetProfile = join(root, 'target');
   const folderBundlePath = join(root, 'ssh-session.mrt-session-folder.json');
@@ -6965,19 +6965,30 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     await moveDialog.getByRole('button', { name: 'Move', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Collapse folder Credential transfer', exact: true })).toBeVisible();
     await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Reflect.set(nativeDialog, '__mrtE2EOriginalSaveDialog', nativeDialog.showSaveDialog.bind(nativeDialog));
       Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: async () => ({ canceled: false, filePath }) });
     }, folderBundlePath);
     await page.getByRole('button', { name: 'Actions for folder Credential transfer' }).click();
     await page.getByRole('button', { name: 'Export folder Credential transfer', exact: true }).click();
     await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
 
-    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
-      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: async () => ({ canceled: false, filePath }) });
-    }, credentialBundlePath);
+    expect(await app.evaluate(({ dialog: nativeDialog }) => {
+      const original = Reflect.get(nativeDialog, '__mrtE2EOriginalSaveDialog');
+      if (typeof original !== 'function') return false;
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true, value: original });
+      Reflect.deleteProperty(nativeDialog, '__mrtE2EOriginalSaveDialog');
+      return typeof nativeDialog.showSaveDialog;
+    })).toBe('function');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
-    await settings.getByRole('button', { name: 'Export encrypted SSH passwords…', exact: true }).click();
+    const exportCredentials = settings.getByRole('button', { name: /Export encrypted SSH passwords/ });
+    await exportCredentials.click();
+    await runNativeSshCredentialBundleDialog('cancel-credential-export');
+    await expect(exportCredentials).toBeEnabled({ timeout: 30_000 });
+    expect(await readFile(credentialBundlePath).catch(() => undefined)).toBeUndefined();
+    await exportCredentials.click();
+    await runNativeSshCredentialBundleDialog('export-credential', credentialBundlePath);
     await expect(settings.getByText('Encrypted bundle exported with 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
     const encryptedBundle = await readFile(credentialBundlePath, 'utf8');
     expect(encryptedBundle).not.toContain('sftp-e2e-secret');
@@ -6990,21 +7001,28 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Reflect.set(nativeDialog, '__mrtE2EOriginalOpenDialog', nativeDialog.showOpenDialog.bind(nativeDialog));
       Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [filePath] }) });
     }, folderBundlePath);
     await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
     await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1 saved session');
     await expect(page.getByRole('button', { name: 'Collapse folder Credential transfer', exact: true })).toBeVisible();
-    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
-      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [filePath] }) });
-    }, credentialBundlePath);
+    expect(await app.evaluate(({ dialog: nativeDialog }) => {
+      const original = Reflect.get(nativeDialog, '__mrtE2EOriginalOpenDialog');
+      if (typeof original !== 'function') return false;
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true, value: original });
+      Reflect.deleteProperty(nativeDialog, '__mrtE2EOriginalOpenDialog');
+      return typeof nativeDialog.showOpenDialog;
+    })).toBe('function');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
-    await settings.getByRole('button', { name: 'Import encrypted SSH passwords…', exact: true }).click();
-    await expect(settings.getByText('Imported 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    const importCredentials = settings.getByRole('button', { name: /Import encrypted SSH passwords/ });
+    await importCredentials.click();
+    await runNativeSshCredentialBundleDialog('cancel-credential-import');
+    await expect(importCredentials).toBeEnabled({ timeout: 30_000 });
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
-    expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(0);
 
     await page.getByRole('button', { name: 'Open Bundle SSH', exact: true }).click();
     trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
@@ -7016,7 +7034,31 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     if (!panelId) throw new Error('The imported SSH profile has no terminal panel');
     await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
     await expect.poll(() => acceptedPasswords, { timeout: 10_000 }).toBe(2);
-    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(0);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(1);
+    await sshTab.focus();
+    await page.keyboard.press('Control+W');
+    const closeConfirmation = page.getByRole('alertdialog');
+    await expect(closeConfirmation).toBeVisible();
+    await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
+    await expect(sshTab).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await importCredentials.click();
+    await runNativeSshCredentialBundleDialog('import-credential', credentialBundlePath);
+    await expect(settings.getByText('Imported 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
+
+    await page.getByRole('button', { name: 'Open Bundle SSH', exact: true }).click();
+    sshTab = page.getByRole('tab', { name: 'Bundle SSH', exact: true });
+    await expect(sshTab).toBeVisible({ timeout: 20_000 });
+    panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The imported SSH profile has no terminal panel');
+    await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-CREDENTIAL-BUNDLE-RESTORED', { timeout: 15_000 });
+    await expect.poll(() => acceptedPasswords, { timeout: 10_000 }).toBe(3);
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(1);
   } finally {
     for (const client of clients) client.end();
     await app?.close();

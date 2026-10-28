@@ -1,6 +1,6 @@
 # WP-03H — Encrypted SSH credential bundles
 
-**Status:** Implementation complete; native-picker and release acceptance remain pending.
+**Status:** Implementation and native Windows picker acceptance complete; signing/release decision remains pending.
 
 **Requirements:** F-018; N-002 secret handling.
 **Branch:** `dev-1`.
@@ -21,14 +21,16 @@ All checks ran on Windows x64 using the repository-pinned Node `24.14.1` and pnp
 - `corepack pnpm lint` — passed, including static import-boundary checks.
 - `corepack pnpm test` — 563 passed, 0 failed.
 - `corepack pnpm build` — passed; native system-directory bridge built for x64.
-- Focused Playwright E2E — 1 passed. It exported from one app profile, imported the saved profile definition and credential bundle into another, then confirmed SSH authentication succeeded without prompting again. The test also checked that the password did not appear in renderer text or the encrypted bundle.
+- Windows Playwright E2E — 1 passed. It canceled and selected the actual native Save/Open dialogs, exported from one app profile, imported the saved profile definition and credential bundle into another, and checked password exclusion from renderer text and the encrypted bundle. After canceling import, it reopened the profile and verified SSH credential prompting was still required; after successful import, the same profile authenticated without another prompt. All test files and profiles were under workspace `.tmp`.
 - `corepack pnpm package:win` — passed. Created NSIS and portable x64 executables, per-artifact CycloneDX SBOMs, and `SHA256SUMS.txt` under ignored `artifacts/windows/`.
 - Packaged-app smoke E2E — 4 passed: Electron fuses/ASAR integrity, SBOM and checksums, NSIS offline install/persistence/tamper rejection/uninstall, and portable startup with local terminal workflows.
 
 Independent N-002 security review found no confirmed findings and verified salt-length validation, credential import/export boundaries, and secret handling. Independent specification and standards reviews found no requirements gaps or hard standards breaches.
 
+Follow-up Spec review corrected stale native-picker wording in ADR-0051 and the implementation plan; final review confirmed the spec, matrix, plan, ADR and result record agree. Standards follow-up concerns were addressed by removing global desktop window-title diagnostics, renaming the shared native-dialog helper, and verifying a canceled import still requires SSH credentials before a successful import avoids another prompt. Reviewers inspected the changes but did not rerun tests. Final follow-up checks passed: typecheck, lint, PowerShell syntax, `git diff --check`, credential-bundle E2E 1/1, and the shared SSH-log E2Es 2/2.
+
 ## Remaining acceptance
 
-The E2E harness substitutes the native file picker APIs; direct Windows picker selection and cancellation still need manual acceptance. The generated executables are `NotSigned` because no Authenticode release certificate was configured. F-018 therefore remains PARTIAL until picker acceptance and the signing/release decision are complete.
+The E2E now automates the actual Windows native picker windows through UI Automation and SendKeys; it covers cancellation and path selection for both export and import. The generated executables are `NotSigned` because no Authenticode release certificate was configured. F-018 remains PARTIAL pending the signing/release decision.
 
 The bundle necessarily exposes plaintext to the main-process export/import operation while it is unlocked. Passphrase quality remains the user's responsibility; anyone with both the bundle and passphrase can recover its saved SSH passwords.

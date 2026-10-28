@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { join, resolve, win32 } from 'node:path';
-import { runNativeSshLogDialog } from './windows-native-ssh-session-log-dialog.ts';
+import { runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 function cleanEnvironment(): Record<string, string> {
