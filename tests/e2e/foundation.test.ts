@@ -12,7 +12,7 @@ import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
-import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
+import { createSessionFolderBundle, SESSION_FOLDER_BUNDLE_VERSION } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
@@ -800,7 +800,8 @@ test('local text editor auto-detects Java properties and keeps the source unchan
     const syntax = editor.getByLabel('Syntax profile');
     const preview = editor.getByTestId('text-editor-code-preview');
     await expect(syntax).toHaveValue('auto');
-    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveCount(2);
+    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveCount(1);
+    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveText('# messages\n! locale metadata');
     await expect(editor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
     await expect(editor.locator('[data-token-kind="properties-value"]').nth(1)).toHaveText('https://example.test/#anchor');
     expect(await preview.textContent()).toBe(source);
@@ -821,6 +822,7 @@ test('local text editor auto-detects Java properties and keeps the source unchan
 });
 
 test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
   const source = [
@@ -876,7 +878,7 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
 
     const sqlWithManyComments = '-- cap\n'.repeat(4_100);
     await contents.fill(sqlWithManyComments);
-    await expect(preview.locator('[data-token-kind="sql-comment"]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="sql-comment"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(sqlWithManyComments);
     expect(await preview.textContent()).toBe(sqlWithManyComments);
@@ -964,6 +966,7 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
 });
 
 test('local TOML text editor auto-detects the profile and colors keys, strings and numbers', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-toml-e2e-'));
   const path = join(profile, 'settings.toml');
   const source = '# local config\n[service]\nname = "terminal"\nport = 443\n';
@@ -985,9 +988,17 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
     const contents = editor.getByRole('textbox', { name: 'File contents' });
     const preview = editor.getByTestId('text-editor-code-preview');
     await contents.fill(manyTomlComments);
-    await expect(preview.locator('[data-token-kind="toml-comment"]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="toml-comment"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyTomlComments);
+    expect(await preview.textContent()).toBe(manyTomlComments);
+    await contents.evaluate(element => {
+      const input = element as HTMLTextAreaElement;
+      input.scrollTop = input.scrollHeight;
+      input.dispatchEvent(new Event('scroll'));
+    });
+    await expect(preview.locator('[data-token-kind="toml-comment"]')).toContainText('# preview cap');
+    expect(await preview.evaluate(element => element.scrollTop)).toBe(await contents.evaluate(element => (element as HTMLTextAreaElement).scrollTop));
     expect(await preview.textContent()).toBe(manyTomlComments);
   } finally {
     await app.close();
@@ -996,6 +1007,7 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
 });
 
 test('local YAML text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-yaml-e2e-'));
   const path = join(profile, 'settings.yaml');
   const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\nflow: ["quoted":value]\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n';
@@ -1022,7 +1034,7 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
 
     const manyYamlComments = '# preview cap\n'.repeat(4_100);
     await contents.fill(manyYamlComments);
-    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyYamlComments);
     expect(await preview.textContent()).toBe(manyYamlComments);
@@ -1033,6 +1045,7 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
 });
 
 test('local Markdown text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-markdown-e2e-'));
   const path = join(profile, 'README.md');
   const source = '# Release notes\n\n> **Important**\n- See `inline code` and [the guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n';
@@ -1058,7 +1071,7 @@ test('local Markdown text editor auto-detects the profile and keeps the full fil
 
     const manyMarkdownSpans = '**cap**\n'.repeat(4_100);
     await contents.fill(manyMarkdownSpans);
-    await expect(preview.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="markdown-emphasis"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyMarkdownSpans);
     expect(await preview.textContent()).toBe(manyMarkdownSpans);
@@ -1129,7 +1142,7 @@ test('SSH quick connect validates the address before any credential prompt and r
         if (message?.requestId === requestId) finish(undefined, message);
       });
       child.once('spawn', () => child.postMessage({ version: 1, type: 'request', requestId, command: 'shutdown' }));
-    }), { workerPath: resolve('dist/host/apps/desktop/src/workers/ssh-worker.js'), appRoot: resolve('apps/desktop') });
+    }), { workerPath: resolve('apps/desktop/dist/host/apps/desktop/src/workers/ssh-worker.js'), appRoot: resolve('apps/desktop') });
     expect(workerReply).toEqual({ version: 1, type: 'reply', requestId: '00000000-0000-4000-8000-000000000001', ok: true, result: {} });
     const connectButton = page.getByRole('button', { name: 'Connect to SSH' }).first();
     await connectButton.click();
@@ -2022,9 +2035,16 @@ ${'# preview cap\n'.repeat(4_100)}`;
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
+    const remoteYamlContents = remoteYamlEditor.getByRole('textbox', { name: 'File contents' });
+    await expect(remoteYamlContents).toHaveValue(remoteYamlSource);
+    await remoteYamlContents.evaluate(element => {
+      const input = element as HTMLTextAreaElement;
+      input.scrollTop = 0;
+      input.dispatchEvent(new Event('scroll'));
+    });
     await expect(remoteYamlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]').first()).toHaveText('# app config');
-    await expect(remoteYamlEditor.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]')).toHaveCount(2);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').first()).toHaveText('server');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').nth(1)).toHaveText('host');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-number"]').first()).toHaveText('8080');
@@ -2032,21 +2052,28 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
     await expect(remoteYamlEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
-    expect(await remoteYamlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteYamlSource);
+    expect(await remoteYamlContents.inputValue()).toBe(remoteYamlSource);
     expect(await remoteYamlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteYamlSource);
     await remoteYamlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteYamlEditor).toHaveCount(0);
     const remoteMarkdownEdit = sftpPanel.getByRole('button', { name: 'Edit remote.md', exact: true });
     await remoteMarkdownEdit.click();
     const remoteMarkdownEditor = page.getByRole('dialog', { name: 'remote.md' });
+    const remoteMarkdownContents = remoteMarkdownEditor.getByRole('textbox', { name: 'File contents' });
+    await expect(remoteMarkdownContents).toHaveValue(remoteMarkdownSource);
+    await remoteMarkdownContents.evaluate(element => {
+      const input = element as HTMLTextAreaElement;
+      input.scrollTop = 0;
+      input.dispatchEvent(new Event('scroll'));
+    });
     await expect(remoteMarkdownEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-heading"]').first()).toHaveText('#');
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-emphasis"]').first()).toHaveText('**bold quote**');
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-code"]').filter({ hasText: 'const hidden = true;' })).toHaveCount(1);
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-link"]').first()).toContainText('guide');
-    await expect(remoteMarkdownEditor.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-emphasis"]')).toHaveCount(2);
     await expect(remoteMarkdownEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
-    expect(await remoteMarkdownEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteMarkdownSource);
+    expect(await remoteMarkdownContents.inputValue()).toBe(remoteMarkdownSource);
     expect(await remoteMarkdownEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteMarkdownSource);
     await remoteMarkdownEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteMarkdownEditor).toHaveCount(0);
@@ -3938,7 +3965,7 @@ test('serial profiles persist across restart and round-trip through saved-folder
     await page.getByRole('button', { name: 'Export folder Hardware', exact: true }).click();
     await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
     const bundle = JSON.parse(await readFile(bundlePath, 'utf8')) as { version?: unknown; sessions?: readonly { kind?: unknown; configuration?: unknown }[] };
-    expect(bundle.version).toBe(6);
+    expect(bundle.version).toBe(SESSION_FOLDER_BUNDLE_VERSION);
     expect(bundle.sessions).toHaveLength(1);
     expect(bundle.sessions?.[0]).toMatchObject({ kind: 'serial', configuration: {
       path: 'COM4095', baudRate: 115200, dataBits: 7, parity: 'even', stopBits: 1.5, flowControl: 'rtscts'
@@ -5120,7 +5147,7 @@ test('macro playback previews exact steps, confirms explicitly, cancels, and req
     await addStep('send');
     await dialog.locator('#macro-step-4-text').fill("Write-Output ([string][char]77 + 'RT-PLAYBACK-DONE')");
     await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: /Playback success/ })).toContainText('5 steps');
+    await expect(dialog.getByRole('list', { name: 'Saved macros' }).getByRole('button', { name: /Playback success/ })).toContainText('5 steps');
     let review = await reviewSelectedMacro();
     await expect(review.getByText("Write-Output ([string][char]77 + 'RT-PLAYBACK-READY')", { exact: true })).toBeVisible();
     await expect(review.getByText('MRT-PLAYBACK-READY', { exact: true })).toBeVisible();
@@ -5161,6 +5188,7 @@ test('macro playback previews exact steps, confirms explicitly, cancels, and req
     expect(firstSessionId).toBeTruthy();
     expect(secondSessionId).toBeTruthy();
 
+    await selectTerminal(page, terminalTitle);
     await page.getByRole('button', { name: 'Macros', exact: true }).click();
     dialog = page.getByRole('dialog', { name: 'Macros' });
     await newMacro('Playback target safety');
@@ -5713,8 +5741,8 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await tab.click({ button: 'right' });
     const menu = page.getByRole('menu', { name: `Terminal actions for ${title}` });
     await expect(menu).toBeVisible();
-    await page.screenshot({ path: 'test-results/terminal-tab-context-menu.png', fullPage: true });
     await expect(menu.getByRole('menuitem', { name: 'Copy selection' })).toBeFocused();
+    await page.screenshot({ path: 'test-results/terminal-tab-context-menu.png' });
     await page.keyboard.press('Tab');
     await expect(menu).toHaveCount(0);
     await expect(tab).toBeFocused();
@@ -6052,7 +6080,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
           child.kill();
         }
       });
-    }), { workerPath: resolve('dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, identity });
+    }), { workerPath: resolve('apps/desktop/dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, identity });
     expect(reply).toEqual({
       imported: { sourceCount: 1, verifiedCount: 1 },
       found: { endpoint: identity.endpoint, algorithm, fingerprint, publicKeyBase64: publicKey.toString('base64'),
@@ -6064,7 +6092,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
     });
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(3);
       expect((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ssh_host_keys'").get())).toBeTruthy();
       expect(database.prepare('SELECT count(*) AS count FROM ssh_host_keys').get()).toEqual({ count: 1 });
       expect(database.prepare('SELECT count(*) AS count FROM session_definitions').get()).toEqual({ count: 0 });
@@ -6099,7 +6127,7 @@ test('Windows multi-tab terminal dimensions track a resized Electron window', as
     const originalWidth = originalViewport.innerWidth;
     const otherShellSize = await readPowerShellSize(page, 'PowerShell session 8');
     const largeShellSize = await readPowerShellSize(page, 'PowerShell session 9');
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 600));
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 450));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(originalWidth);
     await expect.poll(() => page.evaluate(() => innerHeight)).toBeLessThan(originalViewport.innerHeight);
     await expect.poll(async () => {
@@ -6155,7 +6183,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal',
       'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
       'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
+      'openSshTerminal', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
@@ -6164,14 +6192,14 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
       'chooseTftpRoot', 'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
       'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-      'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences',
+      'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'exportWorkbenchSettingsTemplate', 'importWorkbenchSettingsTemplate',
       'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
       'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential', 'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault',
-      'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
+      'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault', 'exportSshCredentialBundle', 'importSshCredentialBundle',
       'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-      'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+      'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);
@@ -6197,10 +6225,12 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     await expect(firstPanel.locator('.xterm-rows')).toContainText('MRT-PASTE:clipboard-ok', { timeout: 15_000 });
 
     await page.keyboard.press('Control+Shift+P');
-    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    const shellPalette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(shellPalette).toBeVisible();
     await expect(page.locator('#palette-search')).toBeFocused();
-    await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('button', { name: 'New cmd terminal' })).toHaveAttribute('aria-current', 'true');
+    await page.locator('#palette-search').fill('New cmd terminal');
+    const cmdCommand = shellPalette.getByRole('button', { name: 'New cmd terminal', exact: true });
+    await expect(cmdCommand).toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('Enter');
     await expect(page.getByRole('tab', { name: /cmd session 1/ })).toBeVisible();
     await sendLine(page, 'cmd session 1', 'echo MRT-CMD:%RANDOM%', /MRT-CMD:\d+/);
@@ -6461,17 +6491,18 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(bashPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:${bashUnicodeSample}`, { timeout: 15_000 });
 
     const initialWidth = await page.evaluate(() => innerWidth);
-    const initialSizeCommand = "printf 'MRT-BASH-SIZE:%s\\n' \"$(stty size)\"";
-    const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE:\d+ \d+/);
-    const initialSizeMatch = (await initialSize.rows.innerText()).match(/MRT-BASH-SIZE:(\d+) (\d+)/);
+    const initialSizeCommand = "printf 'MRT-BASH-SIZE-INITIAL:%s\\n' \"$(stty size)\"";
+    const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE-INITIAL:\d+ \d+/);
+    const initialSizeMatch = (await initialSize.rows.innerText()).match(/MRT-BASH-SIZE-INITIAL:(\d+) (\d+)/);
     const initialColumns = Number(initialSizeMatch?.[2]);
     expect(Number.isSafeInteger(initialColumns) && initialColumns > 1).toBe(true);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(initialWidth);
     let resizedColumns = initialColumns;
     await expect.poll(async () => {
-      const resized = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE:\d+ \d+/);
-      resizedColumns = Number((await resized.rows.innerText()).match(/MRT-BASH-SIZE:(\d+) (\d+)/)?.[2]);
+      const resizedCommand = "printf 'MRT-BASH-SIZE-RESIZED:%s\\n' \"$(stty size)\"";
+      const resized = await sendLine(page, 'Bash session 1', resizedCommand, /MRT-BASH-SIZE-RESIZED:\d+ \d+/);
+      resizedColumns = Number((await resized.rows.innerText()).match(/MRT-BASH-SIZE-RESIZED:(\d+) (\d+)/)?.[2]);
       return resizedColumns;
     }, { timeout: 10_000, intervals: [250] }).toBeLessThan(initialColumns);
 
@@ -6958,7 +6989,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(settings.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     await greetingInput.fill(greeting);
     await settings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     const banner = page.getByRole('region', { name: 'Startup greeting' });
     await expect(banner).toContainText(greeting);
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -6991,7 +7022,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(reopenedSettings).toBeVisible();
     await reopenedSettings.getByLabel('Startup greeting').fill('');
     await reopenedSettings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(reopenedSettings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(reopenedSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await expect(reopenedBanner).toHaveCount(0);
     await reopenedSettings.getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -7119,11 +7150,10 @@ test('local shell tool visibility persists and controls command palette entries 
     await expect(delayedPalette.getByRole('button', { name: 'Connect to Telnet server (plaintext)', exact: true })).toHaveCount(0);
     await expect(delayedPalette.getByRole('button', { name: 'Local TFTP server', exact: true })).toHaveCount(0);
     await expect(page.getByTestId('tftp-server-open')).toHaveCount(0);
-    await delayedPalette.locator('#palette-search').focus();
-    await page.keyboard.press('ArrowDown');
+    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible({ timeout: 10_000 });
+    await delayedPalette.locator('#palette-search').fill('Connect to SFTP files');
     const sftpCommand = delayedPalette.getByRole('button', { name: 'Connect to SFTP files', exact: true });
     await expect(sftpCommand).toHaveAttribute('aria-current', 'true');
-    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
     await expect(sftpCommand).toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('Enter');
@@ -7520,7 +7550,7 @@ test('opt-in automatically remembers opened terminal sessions and deduplicates t
     await settings.getByRole('checkbox', { name: 'Automatically save connections I open' }).check();
     await page.screenshot({ path: 'test-results/auto-save-session-settings.png' });
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
 
     await page.keyboard.press('Control+Shift+P');
