@@ -7728,3 +7728,33 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
+
+test('security settings explain SSH host verification and tunnel bind scope', async () => {
+  test.skip(process.platform !== 'win32', 'Security policy settings E2E runs on Windows');
+  const profile = await createWorkspaceTempDirectory('mrt-security-policy-e2e-');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const policy = settings.getByRole('region', { name: 'Security policy' });
+    await expect(policy.getByText(/New SSH hosts require explicit fingerprint approval/u)).toBeVisible();
+    await expect(policy.getByText(/A changed key blocks the connection/u)).toBeVisible();
+    await expect(policy.getByText(/Verify the new fingerprint independently before resetting saved host trust and reconnecting/u)).toBeVisible();
+    await expect(policy.getByText(/Local and SOCKS tunnels bind to 127\.0\.0\.1/u)).toBeVisible();
+    await expect(policy.getByText(/Remote forwarding requests 127\.0\.0\.1/u)).toBeVisible();
+    await expect(policy.getByText(/GatewayPorts policy may expose the listener more widely/u)).toBeVisible();
+    await expect(policy.getByText(/Review the server's forwarding policy before starting/u)).toBeVisible();
+    const vault = settings.locator('.settings-highlights').filter({ hasText: 'Credential vault' });
+    await expect(vault.getByText('Protection: Windows account', { exact: true })).toBeVisible();
+    await expect(vault.getByRole('status')).toContainText('Unlocked');
+    await expect(vault.getByRole('button', { name: 'Lock credentials', exact: true })).toBeVisible();
+    await expect(vault.getByRole('button', { name: 'Use a master password', exact: true })).toBeVisible();
+    await expect(vault.getByText(/Saved SSH passwords use Windows account protection/u)).toBeVisible();
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
