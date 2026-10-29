@@ -2398,8 +2398,11 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   let acceptedPasswordAttempts = 0;
+  const fixtureErrors: string[] = [];
+  let shuttingDown = false;
   const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
     const client = rawClient as Ssh2FixtureClient;
+    client.on('error', error => { if (!shuttingDown) fixtureErrors.push(error.message); });
     client.on('authentication', (rawContext: unknown) => {
       const context = rawContext as Ssh2AuthenticationContext;
       if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === secret) {
@@ -2413,6 +2416,7 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
       session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SECRET-BOUNDARY-READY\r\n'));
     }));
   });
+  server.on('error', error => { if (!shuttingDown) fixtureErrors.push(`server: ${error.message}`); });
   const mainConsoleMessages: string[] = [];
   const rendererConsoleMessages: string[] = [];
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
@@ -2490,7 +2494,9 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     expect(await page.locator('body').innerText()).not.toContain(secret);
     expect(rendererConsoleMessages.join('\n')).not.toContain(secret);
     expect(pageErrors).toEqual([]);
+    expect(fixtureErrors).toEqual([]);
 
+    shuttingDown = true;
     await app.close();
     app = undefined;
     expect(mainConsoleMessages.join('\n')).not.toContain(secret);
@@ -2515,6 +2521,7 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
       }
     }
   } finally {
+    shuttingDown = true;
     await app?.close();
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -3322,6 +3329,11 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     for (let hop = 0; hop < expectedTrustPorts.length; hop += 1) {
       const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
       await expect(trust).toBeVisible({ timeout: 15_000 });
+      await expect.poll(async () => {
+        const facts = await trust.locator('.ssh-host-facts').textContent() ?? '';
+        const port = facts.match(/127\.0\.0\.1:(\d+)/)?.[1];
+        return port !== undefined && expectedTrustPorts.includes(port) && !approvedTrustPorts.includes(port);
+      }, { timeout: 15_000 }).toBe(true);
       const facts = await trust.locator('.ssh-host-facts').textContent() ?? '';
       const observedPort = facts.match(/127\.0\.0\.1:(\d+)/)?.[1];
       expect(observedPort).toBeDefined();
