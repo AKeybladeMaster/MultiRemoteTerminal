@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { EventEmitter } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
@@ -4317,6 +4318,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   let stouCount = 0;
   let uploadTransferStartedCount = 0;
   let firstDropReplyPending = false;
+  const mainConsoleMessages: string[] = [];
+  const rendererConsoleMessages: string[] = [];
+  let appProfilePath: string | undefined;
   const control = createServer(socket => {
     controlSockets.add(socket);
     socket.on('error', () => {});
@@ -4535,11 +4539,15 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     socket.once('close', () => passive?.close());
   });
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
-  const launch = async () => electron.launch({
-    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials', '--mrt-e2e-ftp-transfers',
-      '--mrt-e2e-file-drop', `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
-    env: { ...electronEnvironment(), MRT_E2E: '1' }
-  });
+  const launch = async () => {
+    const instance = await electron.launch({
+      args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials', '--mrt-e2e-ftp-transfers',
+        '--mrt-e2e-file-drop', `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
+      env: { ...electronEnvironment(), MRT_E2E: '1' }
+    });
+    instance.on('console', message => mainConsoleMessages.push(message.text()));
+    return instance;
+  };
   try {
     await writePatternFile(uploadSource, largeTransferSize, 0x41);
     expectedLargeFileDigest = await hashFile(uploadSource);
@@ -4552,6 +4560,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     const address = control.address() as AddressInfo;
     app = await launch();
     let page = await app.firstWindow();
+    page.on('console', message => rendererConsoleMessages.push(message.text()));
+    appProfilePath = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Connect to FTP / FTPS files', exact: true }).first().click();
     let dialog = page.getByRole('dialog', { name: 'Connect to FTP or FTPS files' });
@@ -4743,6 +4753,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
 
     app = await launch();
     page = await app.firstWindow();
+    page.on('console', message => rendererConsoleMessages.push(message.text()));
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     const savedProfile = page.getByRole('button', { name: 'Open FTP loopback', exact: true });
     await expect(savedProfile).toBeVisible({ timeout: 15_000 });
@@ -4754,6 +4765,37 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => connectionCount).toBe(4);
+    expect(await page.locator('body').innerText()).not.toContain('ftp-e2e-secret');
+    expect(rendererConsoleMessages.join('\n')).not.toContain('ftp-e2e-secret');
+    await app.close();
+    app = undefined;
+    expect(mainConsoleMessages.join('\n')).not.toContain('ftp-e2e-secret');
+    if (!appProfilePath) throw new Error('The FTP app profile path was not captured');
+    const pendingDirectories = [appProfilePath];
+    while (pendingDirectories.length > 0) {
+      const directory = pendingDirectories.pop();
+      if (!directory) continue;
+      for (const entry of await readDirectory(directory, { withFileTypes: true })) {
+        const filePath = join(directory, entry.name);
+        expect(entry.name).not.toContain('ftp-e2e-secret');
+        if (entry.isDirectory()) pendingDirectories.push(filePath);
+        else if (entry.isFile()) {
+          const secret = Buffer.from('ftp-e2e-secret', 'utf8');
+          const stream = createReadStream(filePath);
+          let tail = Buffer.alloc(0);
+          let foundSecret = false;
+          for await (const chunk of stream) {
+            const bytes = Buffer.concat([tail, chunk]);
+            if (bytes.includes(secret)) {
+              foundSecret = true;
+              break;
+            }
+            tail = bytes.subarray(Math.max(0, bytes.length - secret.length + 1));
+          }
+          expect(foundSecret, filePath).toBe(false);
+        }
+      }
+    }
   } finally {
     await app?.close();
     for (const socket of controlSockets) socket.destroy();
