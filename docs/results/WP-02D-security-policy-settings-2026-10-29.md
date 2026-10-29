@@ -18,4 +18,4 @@ Workbench Settings now has an accessible Security policy group describing explic
 
 ## Remaining acceptance
 
-P-42 remains partial pending a Windows host-key-rotation E2E and the all-flow secret-exclusion review. The wider security release checklist and signing decision also remain open; see [SECURITY.md](../SECURITY.md#release-security-gate).
+P-42 remains partial pending the all-flow secret-exclusion review. [WP-02E](WP-02E-host-key-rotation-e2e-2026-10-29.md) closes the host-key-rotation E2E. The wider security release checklist and signing decision also remain open; see [SECURITY.md](../SECURITY.md#release-security-gate).

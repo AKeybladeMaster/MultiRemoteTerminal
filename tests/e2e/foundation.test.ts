@@ -2273,6 +2273,155 @@ ${'# preview cap\n'.repeat(4_100)}`;
   }
 });
 
+test('a changed SSH host key stays blocked until explicit trust reset and re-approval', async () => {
+  test.skip(process.platform !== 'win32', 'SSH host-key rotation acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ssh-host-rotation-e2e-');
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const originalKey = ssh2.utils.generateKeyPairSync('ed25519');
+  const rotatedKey = ssh2.utils.generateKeyPairSync('ed25519');
+  const fingerprintFor = (publicKey: string): string => {
+    const parsed = ssh2.utils.parseKey(publicKey);
+    if (parsed instanceof Error) throw new Error('The host-rotation fixture public key could not be parsed');
+    return `SHA256:${createHash('sha256').update(parsed.getPublicSSH()).digest('base64').replace(/=+$/u, '')}`;
+  };
+  const originalFingerprint = fingerprintFor(originalKey.public);
+  const rotatedFingerprint = fingerprintFor(rotatedKey.public);
+  expect(rotatedFingerprint).not.toBe(originalFingerprint);
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  const originalCounts = { authenticationAttempts: 0, shellRequests: 0 };
+  const rotatedCounts = { authenticationAttempts: 0, shellRequests: 0 };
+  let activeServer: Ssh2FixtureServer | undefined;
+  let activeServerListening = false;
+  const createHost = (privateKey: string, readyText: string, counts: typeof originalCounts): Ssh2FixtureServer => {
+    const server = new ssh2.Server({ hostKeys: [privateKey] }, rawClient => {
+      const client = rawClient as Ssh2FixtureClient;
+      clients.add(client);
+      client.once('close', () => clients.delete(client));
+      client.on('error', error => fixtureErrors.push(error.message));
+      client.on('authentication', (rawContext: unknown) => {
+        counts.authenticationAttempts += 1;
+        const context = rawContext as Ssh2AuthenticationContext;
+        if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+        else context.reject();
+      });
+      client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          counts.shellRequests += 1;
+          acceptShell().write(`${readyText}\r\n`);
+        });
+      }));
+    });
+    server.on('error', error => fixtureErrors.push(error.message));
+    return server;
+  };
+  const startHost = async (privateKey: string, readyText: string, counts: typeof originalCounts, port: number): Promise<number> => {
+    const server = createHost(privateKey, readyText, counts);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const fail = (error: Error) => rejectListen(error);
+      server.once('error', fail);
+      server.listen(port, '127.0.0.1', () => { server.off('error', fail); resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH host-rotation fixture did not bind a loopback port');
+    activeServer = server;
+    activeServerListening = true;
+    return address.port;
+  };
+  const stopHost = async () => {
+    for (const client of clients) client.end();
+    const server = activeServer;
+    if (!server || !activeServerListening) return;
+    activeServer = undefined;
+    activeServerListening = false;
+    await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+  };
+  const readTrustedFingerprint = (port: number): unknown => {
+    const database = new DatabaseSync(join(profile, 'multiremote-terminal.sqlite'), { readOnly: true });
+    try {
+      return (database.prepare('SELECT sha256_fingerprint FROM ssh_host_keys WHERE canonical_host = ? AND port = ?')
+        .get('127.0.0.1', port) as { readonly sha256_fingerprint?: unknown } | undefined)?.sha256_fingerprint;
+    } finally { database.close(); }
+  };
+  const connect = async (page: Page, port: number) => {
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(port));
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+  };
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    const port = await startHost(originalKey.private, 'MRT-SSH-ROTATION-ORIGINAL', originalCounts, 0);
+    const launchApp = async (): Promise<Page> => {
+      const launched = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+        env: { ...electronEnvironment(), MRT_E2E: '1' } });
+      app = launched;
+      const page = await launched.firstWindow();
+      await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+      return page;
+    };
+    const closeApp = async () => {
+      const runningApp = app;
+      if (!runningApp) throw new Error('The host-trust app was not running');
+      await runningApp.close();
+      app = undefined;
+    };
+
+    let page = await launchApp();
+    await connect(page, port);
+    const firstTrust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(firstTrust, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await expect(firstTrust.locator('.ssh-fingerprint')).toHaveText(originalFingerprint);
+    expect(originalCounts.authenticationAttempts).toBe(0);
+    await firstTrust.getByRole('button', { name: 'Trust key and connect', exact: true }).click();
+    await expect(page.locator('.xterm-rows').filter({ hasText: 'MRT-SSH-ROTATION-ORIGINAL' }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(originalCounts.shellRequests).toBe(1);
+    expect(readTrustedFingerprint(port)).toBe(originalFingerprint);
+
+    await closeApp();
+    await stopHost();
+    const rotatedPort = await startHost(rotatedKey.private, 'MRT-SSH-ROTATION-ACCEPTED', rotatedCounts, port);
+    expect(rotatedPort).toBe(port);
+    page = await launchApp();
+    await connect(page, port);
+    const changedTrust = page.getByRole('alertdialog', { name: 'SSH host key changed' });
+    await expect(changedTrust, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await expect(changedTrust.locator('.ssh-fingerprint')).toHaveText(rotatedFingerprint);
+    await expect(changedTrust).not.toContainText(originalFingerprint);
+    expect(rotatedCounts.authenticationAttempts).toBe(0);
+    expect(rotatedCounts.shellRequests).toBe(0);
+    expect(readTrustedFingerprint(port)).toBe(originalFingerprint);
+
+    await changedTrust.getByRole('button', { name: 'Reset saved host trust', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Saved host trust was reset.' })).toBeVisible();
+    expect(rotatedCounts.authenticationAttempts).toBe(0);
+    expect(rotatedCounts.shellRequests).toBe(0);
+    await connect(page, port);
+    const renewedTrust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(renewedTrust).toBeVisible({ timeout: 15_000 });
+    await expect(renewedTrust.locator('.ssh-fingerprint')).toHaveText(rotatedFingerprint);
+    expect(rotatedCounts.authenticationAttempts).toBe(0);
+    await renewedTrust.getByRole('button', { name: 'Trust key and connect', exact: true }).click();
+    await expect(page.locator('.xterm-rows').filter({ hasText: 'MRT-SSH-ROTATION-ACCEPTED' }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(rotatedCounts.authenticationAttempts).toBe(1);
+    expect(rotatedCounts.shellRequests).toBe(1);
+
+    await closeApp();
+    await stopHost();
+    expect(readTrustedFingerprint(port)).toBe(rotatedFingerprint);
+  } finally {
+    await app?.close();
+    await stopHost();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('a lost SSH transport fails its tab cleanly and allows explicit saved-profile reconnect', async () => {
   test.skip(process.platform !== 'win32', 'Run the SSH credential and recovery acceptance on Windows');
   test.setTimeout(90_000);
