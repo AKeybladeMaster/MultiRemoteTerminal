@@ -134,11 +134,30 @@ function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
     if ($valuePattern.Current.Value -cne $filePath) { throw 'The native dialog filename field did not retain the selected path.' }
 }
 
-function Find-SshCredentialWindow {
+function Get-TargetProcessIds([int] $rootProcessId) {
+    $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId)
+    $processIds = @{}
+    $processIds[[string]$rootProcessId] = $true
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($process in $processes) {
+            $childProcessId = [int]$process.ProcessId
+            if ($processIds.ContainsKey([string]$process.ParentProcessId) -and -not $processIds.ContainsKey([string]$childProcessId)) {
+                $processIds[[string]$childProcessId] = $true
+                $changed = $true
+            }
+        }
+    }
+    return ,@($processIds.Keys | ForEach-Object { [int]$_ })
+}
+
+function Find-SshCredentialWindow([int[]] $targetProcessIds) {
     $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
         [System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
     foreach ($window in $windows) {
         try {
+            if ($targetProcessIds -notcontains [int]$window.Current.ProcessId) { continue }
             $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                 [System.Windows.Automation.Condition]::TrueCondition)
         } catch { continue }
@@ -152,20 +171,21 @@ function Find-SshCredentialWindow {
     return $null
 }
 
-function Wait-SshCredentialWindow([int] $timeoutSeconds = 20) {
+function Wait-SshCredentialWindow([int] $rootProcessId, [int] $timeoutSeconds = 20) {
     $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
     do {
-        $window = Find-SshCredentialWindow
+        $targetProcessIds = Get-TargetProcessIds $rootProcessId
+        $window = Find-SshCredentialWindow $targetProcessIds
         if ($null -ne $window) { return $window }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     throw 'Timed out waiting for the native SSH credential prompt.'
 }
 
-function Wait-SshCredentialWindowClosed([int] $timeoutSeconds = 10) {
+function Wait-SshCredentialWindowClosed([int[]] $targetProcessIds, [int] $timeoutSeconds = 10) {
     $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
     do {
-        if ($null -eq (Find-SshCredentialWindow)) { return }
+        if ($null -eq (Find-SshCredentialWindow $targetProcessIds)) { return }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     throw 'The native SSH credential prompt did not close.'
@@ -177,13 +197,14 @@ if ($Action -eq 'submit-ssh-credential') {
     $username = [string]$fixturePayload.username
     $password = [string]$fixturePayload.password
     $fixturePayload = $null
-    if ([string]::IsNullOrWhiteSpace($username) -or $username.Length -gt 256 -or $username -match '[\x00\r\n]' -or
-        [string]::IsNullOrEmpty($password) -or $password.Length -gt 256 -or $password -match '[\x00\r\n]') {
+    if ($TargetProcessId -lt 1 -or $username -notmatch '^[A-Za-z0-9]+$' -or $username.Length -gt 256 -or
+        $password -notmatch '^[A-Za-z0-9]+$' -or $password.Length -gt 256) {
         throw 'The native SSH credential fixture input is invalid.'
     }
 
     try {
-        $credentialWindow = Wait-SshCredentialWindow
+        $credentialWindow = Wait-SshCredentialWindow $TargetProcessId
+        $targetProcessIds = Get-TargetProcessIds $TargetProcessId
         $editCondition = [System.Windows.Automation.PropertyCondition]::new(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
         $fields = $credentialWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
@@ -210,11 +231,12 @@ if ($Action -eq 'submit-ssh-credential') {
         $passwordField.SetFocus()
         [System.Windows.Forms.SendKeys]::SendWait($password)
         [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-        Wait-SshCredentialWindowClosed
+        Wait-SshCredentialWindowClosed $targetProcessIds
     } finally {
         $username = $null
         $password = $null
         $credentialWindow = $null
+        $targetProcessIds = $null
         $fields = $null
         $usernameField = $null
         $passwordField = $null

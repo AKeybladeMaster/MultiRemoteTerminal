@@ -17,12 +17,13 @@ export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, fi
   await runNativeDialog(action, filePath, targetProcessId, 'SSH session log');
 }
 
-export async function runNativeSshCredentialPrompt(username: string, password: string): Promise<void> {
-  if (username.length === 0 || username.length > 256 || /[\u0000\r\n]/u.test(username) ||
-      password.length === 0 || password.length > 256 || /[\u0000\r\n]/u.test(password)) {
-    throw new Error('Native SSH credential prompt automation requires bounded single-line fixture values.');
+export async function runNativeSshCredentialPrompt(username: string, password: string, targetProcessId: number): Promise<void> {
+  // SendKeys treats printable punctuation as key syntax; package fixtures use an alphanumeric alphabet.
+  if (!/^[A-Za-z0-9]+$/u.test(username) || username.length > 256 || !/^[A-Za-z0-9]+$/u.test(password) || password.length > 256 ||
+      !Number.isSafeInteger(targetProcessId) || targetProcessId < 1) {
+    throw new Error('Native SSH credential prompt automation requires alphanumeric fixture values and a valid app process ID.');
   }
-  await runNativeDialog('submit-ssh-credential', undefined, undefined, 'Windows SSH credential prompt', JSON.stringify({ username, password }));
+  await runNativeDialog('submit-ssh-credential', undefined, targetProcessId, 'Windows SSH credential prompt', JSON.stringify({ username, password }));
 }
 
 export async function runNativeSshCredentialBundleDialog(action: NativeSshCredentialBundleDialogAction, filePath?: string): Promise<void> {

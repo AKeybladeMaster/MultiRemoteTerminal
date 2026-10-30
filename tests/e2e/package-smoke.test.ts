@@ -471,7 +471,7 @@ test('portable package submits synthetic credentials through the shipped Windows
     await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
     await dialog.getByLabel('Port').fill(String(address.port));
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
-    await runNativeSshCredentialPrompt(username, password);
+    await runNativeSshCredentialPrompt(username, password, app.process.pid!);
 
     const trust = app.page.getByRole('dialog', { name: 'Verify this SSH host' });
     await expect(trust, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 20_000 });
