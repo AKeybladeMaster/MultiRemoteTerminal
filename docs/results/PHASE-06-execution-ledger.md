@@ -30,7 +30,7 @@
 
 ## Code freeze and repository state
 
-- Candidate remains on `dev-1`; the last verified Phase 05 commit was `e549052f62701d301595afa40a81ebe4ae702bb8` on both local and `origin/dev-1`. No Phase 06 changes have been committed or pushed.
+- Phase 06 implementation and gate evidence were committed as `9a42e80c64e971b09c3653b6965b7b36ff54ea76` and pushed to `origin/dev-1`; `git ls-remote` verified that remote hash. Phase 06 remains BLOCKED/PARTIAL; no `main` promotion was attempted.
 - Preserve and exclude pre-existing user changes in `AGENTS.md`, `pnpm-workspace.yaml`, `docs/agents/`, `docs/CODEX-RESUME.md` and `session-context.md`. None is part of the Phase 06 candidate.
 - No package, lockfile, IPC command, worker, persistence format or file-write path is changed by WP-08S.
 - The current system desktop was already locked during the gate; no attempt was made to unlock or bypass it. Native-dialog helper experiments were fully reverted. The pre-existing `artifacts/windows/MultiRemoteTerminal-data` profile remained unchanged (61 files, 8,588,389 bytes, identical SHA-256 hashes before/after packaging).
