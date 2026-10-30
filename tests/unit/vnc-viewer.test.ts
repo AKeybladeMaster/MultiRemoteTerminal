@@ -43,6 +43,20 @@ test('TigerVNC discovery checks only fixed paths inside OS-known Program Files d
   assert.equal(resolveTigerVncViewerPath(['C:\\Attacker'], () => false), undefined);
 });
 
+test('TigerVNC discovery supports the fixed per-user Programs install after Program Files', () => {
+  const checked: string[] = [];
+  const executable = resolveTigerVncViewerPath(['C:\\Program Files'], candidate => {
+    checked.push(candidate);
+    return candidate === 'C:\\Users\\Tester\\AppData\\Local\\Programs\\TigerVNC\\vncviewer.exe';
+  }, 'C:\\Users\\Tester\\AppData\\Local');
+  assert.equal(executable, 'C:\\Users\\Tester\\AppData\\Local\\Programs\\TigerVNC\\vncviewer.exe');
+  assert.deepEqual(checked, [
+    'C:\\Program Files\\TigerVNC\\vncviewer.exe',
+    'C:\\Users\\Tester\\AppData\\Local\\Programs\\TigerVNC\\vncviewer.exe'
+  ]);
+  assert.equal(resolveTigerVncViewerPath([], () => true, 'relative\\AppData\\Local'), undefined);
+});
+
 test('Windows VNC adapter spawns TigerVNC with a validated target and no shell', async () => {
   const child = new EventEmitter() as EventEmitter & { unref(): void };
   let detached = false;
@@ -77,6 +91,18 @@ test('Windows VNC adapter reports missing viewers and unsupported platforms', as
   await assert.rejects(unsupported.launch({ host: 'vnc.example.com', port: 5900 }), error =>
     error instanceof VncViewerError && error.code === 'NOT_SUPPORTED');
   assert.equal(directoriesRead, false);
+});
+
+test('Windows VNC adapter keeps Program Files discovery when Local AppData is unavailable', async () => {
+  const child = new EventEmitter() as EventEmitter & { unref(): void };
+  child.unref = () => {};
+  const viewer = new WindowsVncViewer({ getProgramFilesDirectories: () => ['C:\\Program Files'],
+    getLocalAppDataDirectory() { throw new Error('Known folder unavailable'); } }, (command => {
+      assert.equal(command, 'C:\\Program Files\\TigerVNC\\vncviewer.exe');
+      setImmediate(() => child.emit('spawn'));
+      return child as never;
+    }) as VncSpawn, 'win32', () => true);
+  await viewer.launch({ host: 'vnc.example.com', port: 5900 });
 });
 
 test('Windows VNC adapter kills a pending viewer on cancellation and rejects spawn failure', async () => {

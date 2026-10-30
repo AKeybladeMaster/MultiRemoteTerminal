@@ -52,6 +52,17 @@ bool resolve_known_folder(REFKNOWNFOLDERID folder_id, std::string* utf8) {
   return converted;
 }
 
+napi_value get_local_app_data_directory(napi_env env, napi_callback_info) {
+  std::string path;
+  if (!resolve_known_folder(FOLDERID_LocalAppData, &path)) return throw_system_directory_error(env);
+
+  napi_value result;
+  if (napi_create_string_utf8(env, path.data(), path.size(), &result) != napi_ok) {
+    return throw_system_directory_error(env);
+  }
+  return result;
+}
+
 napi_value get_program_files_directories(napi_env env, napi_callback_info) {
   std::array<std::string, 2> paths;
   size_t count = 0;
@@ -74,6 +85,8 @@ napi_value initialize(napi_env env, napi_value exports) {
   napi_value method;
   if (napi_create_function(env, "getSystemDirectory", NAPI_AUTO_LENGTH, get_system_directory, nullptr, &method) != napi_ok ||
       napi_set_named_property(env, exports, "getSystemDirectory", method) != napi_ok ||
+      napi_create_function(env, "getLocalAppDataDirectory", NAPI_AUTO_LENGTH, get_local_app_data_directory, nullptr, &method) != napi_ok ||
+      napi_set_named_property(env, exports, "getLocalAppDataDirectory", method) != napi_ok ||
       napi_create_function(env, "getProgramFilesDirectories", NAPI_AUTO_LENGTH, get_program_files_directories, nullptr, &method) != napi_ok ||
       napi_set_named_property(env, exports, "getProgramFilesDirectories", method) != napi_ok) {
     return throw_system_directory_error(env);

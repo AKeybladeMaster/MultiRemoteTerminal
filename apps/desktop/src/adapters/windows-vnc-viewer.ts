@@ -8,6 +8,7 @@ import type { VncViewerProvider } from '../../../../packages/application/src/vnc
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 
 interface ProgramFilesDirectories {
+  getLocalAppDataDirectory?(): string;
   getProgramFilesDirectories(): readonly string[];
 }
 
@@ -31,10 +32,13 @@ export type VncPathExists = (candidate: string) => boolean;
 const START_TIMEOUT_MS = 5_000;
 const VIEWER_RELATIVE_PATH = join('TigerVNC', 'vncviewer.exe');
 
-export function resolveTigerVncViewerPath(programFilesDirectories: readonly string[], pathExists: VncPathExists = existsSync): string | undefined {
-  for (const directory of programFilesDirectories.slice(0, 2)) {
-    if (!isAbsolute(directory)) continue;
-    const candidate = join(directory, VIEWER_RELATIVE_PATH);
+export function resolveTigerVncViewerPath(programFilesDirectories: readonly string[], pathExists: VncPathExists = existsSync,
+  localAppDataDirectory?: string): string | undefined {
+  const candidates = programFilesDirectories.slice(0, 2).filter(isAbsolute).map(directory => join(directory, VIEWER_RELATIVE_PATH));
+  if (localAppDataDirectory && isAbsolute(localAppDataDirectory)) {
+    candidates.push(join(localAppDataDirectory, 'Programs', VIEWER_RELATIVE_PATH));
+  }
+  for (const candidate of candidates) {
     try { if (pathExists(candidate)) return candidate; }
     catch { /* An unreadable or unavailable install location is skipped. */ }
   }
@@ -65,7 +69,12 @@ export class WindowsVncViewer implements VncViewerProvider {
   async launch(endpoint: VncEndpoint, cancellation?: CancellationSignal): Promise<void> {
     if (this.platform !== 'win32') throw new VncViewerError('NOT_SUPPORTED');
     let executable: string | undefined;
-    try { executable = resolveTigerVncViewerPath(this.programFilesDirectories.getProgramFilesDirectories(), this.pathExists); }
+    try {
+      const programFilesDirectories = this.programFilesDirectories.getProgramFilesDirectories();
+      let localAppDataDirectory: string | undefined;
+      try { localAppDataDirectory = this.programFilesDirectories.getLocalAppDataDirectory?.(); } catch { /* Program Files installs remain usable. */ }
+      executable = resolveTigerVncViewerPath(programFilesDirectories, this.pathExists, localAppDataDirectory);
+    }
     catch { throw new VncViewerError('UNAVAILABLE'); }
     if (!executable) throw new VncViewerError('UNAVAILABLE');
     const target = formatVncTarget(endpoint);

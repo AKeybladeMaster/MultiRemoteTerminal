@@ -265,6 +265,10 @@ function boot(): void {
       const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getSystemDirectory(): string };
       return bridge.getSystemDirectory();
     },
+    getLocalAppDataDirectory(): string {
+      const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getLocalAppDataDirectory(): string };
+      return bridge.getLocalAppDataDirectory();
+    },
     getProgramFilesDirectories(): readonly string[] {
       const bridge = loadNative(join(dist, 'native/system_directory.node')) as { getProgramFilesDirectories(): readonly string[] };
       return bridge.getProgramFilesDirectories();

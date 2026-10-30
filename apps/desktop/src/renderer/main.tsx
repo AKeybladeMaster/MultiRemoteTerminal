@@ -261,7 +261,7 @@ function vncOpenError(code: string): string {
   if (code === 'NOT_SUPPORTED') return 'VNC viewer launches are disabled in Workbench settings or unavailable on this computer.';
   if (code === 'CANCELLED') return 'Opening TigerVNC was cancelled.';
   if (code === 'INVALID_REQUEST') return 'Enter a valid host name or IP address and port.';
-  if (code === 'UNAVAILABLE') return 'TigerVNC was not found in its standard Program Files location. Install TigerVNC and try again.';
+  if (code === 'UNAVAILABLE') return 'TigerVNC was not found in its standard Program Files or per-user Programs location. Install TigerVNC and try again.';
   return `TigerVNC could not be started (${code}).`;
 }
 
@@ -1383,7 +1383,7 @@ function Workbench() {
       if (!reply.ok) return vncOpenError(reply.error.code);
       setAlert('TigerVNC was opened outside this app. Connection status is not tracked here.');
       return undefined;
-    } catch { return 'TigerVNC could not be started. Check that it is installed in Program Files.'; }
+    } catch { return 'TigerVNC could not be started. Check that it is installed in Program Files or your per-user Programs folder.'; }
   }, []);
 
   const saveVncProfile = useCallback(async (name: string, host: string, port: number): Promise<string | undefined> => {

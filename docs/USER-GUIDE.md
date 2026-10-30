@@ -27,7 +27,7 @@ an internet connection.
   workbench; the app cannot confirm connection state. Encryption depends on
   the VNC server configuration. Save a credential-free VNC profile to reopen
   the same target later. TigerVNC must be installed in a standard Program Files
-  location for the app to find it.
+  location or the current user's Local AppData\\Programs\\TigerVNC folder.
 
 ## Work with tabs
 
