@@ -320,6 +320,112 @@ test('preload keeps later terminal input behind a paste awaiting gesture authori
   assert.deepEqual(commands, ['terminal.paste', 'terminal.write']);
 });
 
+test('preload orders local input and authorized paste after the resize reply before close', async () => {
+  const sessionId = id();
+  const commands: string[] = [];
+  let gestureConsumed = false;
+  let finishResize!: (reply: unknown) => void;
+  const bridge = createBridge(request => {
+    commands.push(request.command);
+    if (request.command === 'terminal.resize') return new Promise(resolve => { finishResize = resolve; });
+    return Promise.resolve({ requestId: request.requestId, ok: true, result: {} });
+  }, id, undefined, undefined, undefined, () => { gestureConsumed = true; return true; });
+
+  const resize = bridge.resizeTerminal(sessionId, 96, 24);
+  const write = bridge.writeTerminal(sessionId, 'p');
+  const paste = bridge.pasteTerminal(sessionId);
+  const close = bridge.closeTerminal(sessionId);
+  assert.equal(gestureConsumed, true, 'paste authorization is consumed in the initiating user event');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, ['terminal.resize']);
+
+  finishResize({ requestId: id(), ok: true, result: {} });
+  const replies = await Promise.all([resize, write, paste, close]);
+  assert.equal(replies.every(reply => reply.ok), true);
+  assert.deepEqual(commands, ['terminal.resize', 'terminal.write', 'terminal.paste', 'terminal.close']);
+});
+
+test('preload drains an in-flight local paste before resize', async () => {
+  const sessionId = id();
+  const commands: string[] = [];
+  let finishPaste!: (reply: unknown) => void;
+  const bridge = createBridge(request => {
+    commands.push(request.command);
+    return request.command === 'terminal.paste'
+      ? new Promise(resolve => { finishPaste = resolve; })
+      : Promise.resolve({ requestId: request.requestId, ok: true, result: {} });
+  }, id, undefined, undefined, undefined, () => true);
+
+  const paste = bridge.pasteTerminal(sessionId);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const resize = bridge.resizeTerminal(sessionId, 96, 24);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, ['terminal.paste']);
+
+  finishPaste({ requestId: id(), ok: true, result: {} });
+  const replies = await Promise.all([paste, resize]);
+  assert.equal(replies.every(reply => reply.ok), true);
+  assert.deepEqual(commands, ['terminal.paste', 'terminal.resize']);
+});
+
+test('preload drains sent local input before resize and holds later input behind it', async () => {
+  const sessionId = id();
+  const commands: string[] = [];
+  let finishFirstWrite!: (reply: unknown) => void;
+  let finishResize!: (reply: unknown) => void;
+  const bridge = createBridge(request => {
+    commands.push(request.command);
+    if (request.command === 'terminal.write' && commands.filter(command => command === 'terminal.write').length === 1) {
+      return new Promise(resolve => { finishFirstWrite = resolve; });
+    }
+    if (request.command === 'terminal.resize') return new Promise(resolve => { finishResize = resolve; });
+    return Promise.resolve({ requestId: request.requestId, ok: true, result: {} });
+  }, id);
+
+  const firstWrite = bridge.writeTerminal(sessionId, 'a');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const resize = bridge.resizeTerminal(sessionId, 96, 24);
+  const laterWrite = bridge.writeTerminal(sessionId, 'b');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, ['terminal.write']);
+
+  finishFirstWrite({ requestId: id(), ok: true, result: {} });
+  assert.equal((await firstWrite).ok, true);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(commands, ['terminal.write', 'terminal.resize']);
+
+  finishResize({ requestId: id(), ok: true, result: {} });
+  const replies = await Promise.all([resize, laterWrite]);
+  assert.equal(replies.every(reply => reply.ok), true);
+  assert.deepEqual(commands, ['terminal.write', 'terminal.resize', 'terminal.write']);
+});
+
+test('a local resize timeout keeps input held until its IPC invocation settles', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = id();
+  const commands: string[] = [];
+  let finishResize!: (reply: unknown) => void;
+  const bridge = createBridge(request => {
+    commands.push(request.command);
+    return request.command === 'terminal.resize'
+      ? new Promise(resolve => { finishResize = resolve; })
+      : Promise.resolve({ requestId: request.requestId, ok: true, result: {} });
+  }, id);
+
+  const resize = bridge.resizeTerminal(sessionId, 96, 24);
+  const write = bridge.writeTerminal(sessionId, 'p');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(5_000);
+  const resizeReply = await resize;
+  assert.equal(resizeReply.ok, false);
+  if (!resizeReply.ok) assert.equal(resizeReply.error.code, 'TIMEOUT');
+  assert.deepEqual(commands, ['terminal.resize']);
+
+  finishResize({ requestId: id(), ok: true, result: {} });
+  assert.equal((await write).ok, true);
+  assert.deepEqual(commands, ['terminal.resize', 'terminal.write']);
+});
+
 test('preload sends a pending write before a paste requested while it is still in flight', async () => {
   const sessionId = id();
   const commands: string[] = [];
