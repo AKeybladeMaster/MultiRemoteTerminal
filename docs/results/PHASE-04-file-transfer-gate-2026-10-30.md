@@ -2,7 +2,7 @@
 
 **Implementation candidate commit:** `b6979d976394bce900d522bb1d000e3d2f79abf5` (removes automatic path-only FTP `DELE`, preserves uncertain upload artifacts and overwrite backups, and warns about uncertain upload timeouts).
 
-**Disposition:** Final code verification passed for the corrective candidate. Phase 04 remains **PARTIAL** because native Explorer gestures, sustained throughput, real FTP/FTPS interoperability and worker-termination cleanup remain unverified. Independent reviews are pending; no promotion to `main` was attempted.
+**Disposition:** Final code verification passed for the corrective candidate. Phase 04 remains **PARTIAL** because native Explorer gestures, sustained throughput, real FTP/FTPS interoperability and worker-termination cleanup remain unverified. The final reviews found no Critical or Important findings; their documentation corrections are recorded below. No promotion to `main` was attempted.
 
 ## Verification
 
@@ -34,4 +34,10 @@ The corrected FTP regression and reconnect E2E use a controlled loopback fixture
 
 The full E2E suite's Git Bash resize test remains an explicit skip and is still a Phase 02 blocker. Five package-only tests skipped in `pnpm check` were covered by the separate 5/5 package-smoke run. No skip was counted as a pass.
 
-The first unit-gate attempt used relative `TEMP`/`TMP` values and failed filesystem fixtures with `Host trust store path must be absolute`. A minimized test reproduced the failure, and the same test passed with absolute workspace-local temp paths. One initial rollback-regression assertion selected an earlier backup in the same fixture; it was narrowed to match the saved bytes. The final unit and full-check reruns passed. Independent specification, standards and implementation reviews of this exact candidate are pending; no promotion is authorized while Phase 02 and broader Phase 04 acceptance remain open.
+The first unit-gate attempt used relative `TEMP`/`TMP` values and failed filesystem fixtures with `Host trust store path must be absolute`. A minimized test reproduced the failure, and the same test passed with absolute workspace-local temp paths. One initial rollback-regression assertion selected an earlier backup in the same fixture; it was narrowed to match the saved bytes. The final unit and full-check reruns passed. Independent reviews are complete; no promotion is authorized while Phase 02 and broader Phase 04 acceptance remain open.
+
+## Independent review dispositions
+
+- **Implementation review:** no findings in candidate `723aa592eb7eda5b76be59a60a68806ffbd49644`.
+- **Specification and standards reviews:** the Important `dev`/`dev-1` branch-policy conflict and the Minor superseded WP-05L evidence link were corrected in documentation commit `1f31b88e629faec564da056fcd44e80032fec6f1`. Both reviewers confirmed those findings resolved and identified only a stray space before a comma in the same Architecture reference list; that whitespace was removed in this evidence update.
+- No Critical or Important findings remain. The reviewed implementation is unchanged by the documentation cleanup; no code tests were rerun because executable behavior and configuration did not change.
