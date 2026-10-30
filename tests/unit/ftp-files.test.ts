@@ -269,6 +269,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     uniqueStoreNameOverride: string | undefined;
     uniqueStoreHook: ((remotePath: string) => void) | undefined;
     failUniqueAfterFirstChunk = false;
+    keepControlOpenAfterUniqueFailure = false;
     failUniqueAfterComplete = false;
     uploadCount = 0;
     listing: { name: unknown; type: unknown; size: unknown; modifiedAt?: unknown }[] = [];
@@ -292,10 +293,6 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       if (!contents) throw new Error('missing source');
       this.files.delete(source);
       this.files.set(destination, contents);
-    }
-    async remove(path: string): Promise<void> {
-      if (this.closed) throw new Error('connection closed');
-      this.files.delete(path);
     }
     async uploadFrom(source: NodeJS.ReadableStream | string, remotePath: string): Promise<void> {
       this.uploadCount++;
@@ -337,7 +334,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
         if (this.uploadDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, this.uploadDelayMs));
         if (this.failUniqueAfterFirstChunk) {
           this.failUniqueAfterFirstChunk = false;
-          this.closed = true;
+          if (!this.keepControlOpenAfterUniqueFailure) this.closed = true;
           throw new Error('simulated control connection loss during upload');
         }
       }
@@ -425,6 +422,8 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       'overwrite', lateCommitAbort.signal);
     assert.equal(committed.state, 'completed', 'a cancellation after the commit point reports the committed result');
     assert.equal(clients[0]!.files.get('late-cancel.bin')?.toString(), 'commit wins');
+    assert.equal([...clients[0]!.files.entries()].find(([path]) => path.endsWith('.backup'))?.[1].toString(), 'old value',
+      'the previous FTP target remains under its generated backup name');
 
     const rollbackPath = join(transferRoot, 'rollback.bin');
     await writeFile(rollbackPath, 'replacement');
@@ -434,8 +433,8 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     await assert.rejects(provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222226', rollbackPath, '.', 'rollback.bin', 'overwrite'),
       error => (error as { code?: string }).code === 'CONFLICT');
     assert.equal(clients[0]!.files.get('rollback.bin')?.toString(), 'original', 'failed replacement restores the previous remote file');
-    assert.equal([...clients[0]!.files.keys()].some(path => path.includes('.backup') || path.includes('.partial')), false,
-      'successful rollback and cleanup leave no recovery files');
+    assert.equal([...clients[0]!.files.entries()].some(([path, contents]) => path.endsWith('.partial') && contents.toString() === 'replacement'), true,
+      'a failed replacement stage remains available for review instead of using path-only DELE');
 
     const changingPath = join(transferRoot, 'changing.bin');
     await writeFile(changingPath, Buffer.alloc(2 * 1024 * 1024, 66));
@@ -448,8 +447,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
         }
       }), error => (error as { code?: string }).code === 'CONFLICT');
     assert.equal(truncatedDuringUpload, true);
-    assert.equal(clients[0]!.files.has('changing.bin'), false, 'a changing source is never renamed into its final remote path');
-    assert.equal([...clients[0]!.files.keys()].some(path => path.includes('.partial')), false, 'the uncommitted upload stage is cleaned');
+    assert.ok(clients[0]!.files.get('changing.bin')?.byteLength, 'the server-named upload remains visible for review after a source conflict');
 
     const racedPath = join(transferRoot, 'race.txt');
     await writeFile(racedPath, 'new data');
@@ -458,11 +456,11 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       clients[0]!.files.set(target, Buffer.from('other client data'));
       clients[0]!.listing = [{ name: 'race.txt', type: 1, size: 17 }];
     };
-    const raced = await provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222225', racedPath, '.', 'race.txt', 'skip');
+    await assert.rejects(provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222225', racedPath, '.', 'race.txt', 'skip'),
+      error => (error as { code?: string }).code === 'CONFLICT');
     clients[0]!.uniqueStoreHook = undefined;
-    assert.deepEqual(raced, { direction: 'upload', fileName: 'race.txt', bytesTransferred: 0, state: 'skipped' });
     assert.equal(clients[0]!.files.get('race.txt')?.toString(), 'other client data', 'a competing remote file is not replaced');
-    assert.equal(clients[0]!.files.has('race (1).txt'), false, 'the unique collision copy is removed for skip policy');
+    assert.equal(clients[0]!.files.get('race (1).txt')?.toString(), 'new data', 'an uploaded collision copy remains visible instead of path-only DELE');
 
     for (const [policy, actualName] of [['skip', 'server-selected-skip.bin'], ['overwrite', 'server-selected-overwrite.bin']] as const) {
       const localPath = join(transferRoot, `requested-${policy}.bin`);
@@ -505,8 +503,8 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       });
     await assert.rejects(interrupted, error => (error as { code?: string }).code === 'CANCELLED');
     assert.equal(cancelledAfterProgress, true);
-    assert.equal(clients[0]!.files.has('slow.bin'), false, 'the captured STOU path is removed after a graceful cancellation');
-    assert.equal(clients[0]!.closed, false, 'an upload cancellation keeps the control channel open long enough for best-effort DELE');
+    assert.ok((clients[0]!.files.get('slow.bin')?.byteLength ?? 0) > 0, 'a cancelled STOU stage remains for user review');
+    assert.equal(clients[0]!.closed, false, 'a graceful upload cancellation keeps the control channel open');
 
     const downloadSessionId = '28f2f903-7b6f-4c8d-9c42-b63a58c4b087';
     await provider.open(downloadSessionId, { host: 'ftp.example.net', port: 21, secure: false }, credentials);
@@ -572,6 +570,27 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     assert.deepEqual(recoveryFiles.get(possiblyCompletePath), completeContents,
       'a stage whose remote size reached the expected source size is preserved as a possibly completed upload');
     await recoveryProvider.close('recovery-complete-same-user');
+
+    const liveControlPath = join(recoveryRoot, 'live-control.bin');
+    await writeFile(liveControlPath, Buffer.alloc(256 * 1024, 65));
+    await recoveryProvider.open('recovery-live-control', recoveryEndpoint, recoveryCredentials);
+    const liveControlClient = recoveryClients.at(-1)!;
+    liveControlClient.failUniqueAfterFirstChunk = true;
+    liveControlClient.keepControlOpenAfterUniqueFailure = true;
+    const pathsBeforeLiveFailure = new Set(recoveryFiles.keys());
+    const liveReplacement = Buffer.from('a concurrent FTP client replaced this stage');
+    let liveFailureStage: string | undefined;
+    await assert.rejects(recoveryProvider.uploadFile('recovery-live-control', '88888888-8888-4888-8888-888888888888', liveControlPath,
+      '.', 'live-control.bin', 'rename', undefined, event => {
+        if (event.bytesTransferred > 0 && !liveFailureStage) {
+          liveFailureStage = [...recoveryFiles.keys()].find(path => !pathsBeforeLiveFailure.has(path));
+          assert.ok(liveFailureStage);
+          recoveryFiles.set(liveFailureStage, liveReplacement);
+        }
+      }), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    assert.ok(liveFailureStage);
+    assert.deepEqual(recoveryFiles.get(liveFailureStage), liveReplacement,
+      'a same-path replacement survives a transfer error while the control connection is still open');
     await recoveryProvider.shutdown();
   } finally {
     await rm(recoveryRoot, { recursive: true, force: true });
@@ -641,7 +660,7 @@ test('FTP cancellation during preflight closes its pending control request befor
       listingStarted();
       return new Promise(resolve => { finishListing = resolve; });
     },
-    async rename() {}, async remove() {},
+    async rename() {},
     async uploadFrom() { uploadCount++; }, async downloadTo() {}, trackProgress() {},
     async uploadUniqueFrom(_source, path, onUniquePath) { uploadCount++; onUniquePath(path); return path; },
     close() { closed = true; finishListing?.([]); }

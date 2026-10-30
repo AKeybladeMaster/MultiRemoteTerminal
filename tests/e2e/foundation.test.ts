@@ -4667,9 +4667,12 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect.poll(() => ftpStouCommands.length).toBe(2);
     await expect.poll(() => uploadTransferStartedCount).toBe(2);
     await browser.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await expect(browser.getByText('Upload cancelled. The server may retain a partial file if cleanup was interrupted.')).toBeVisible({ timeout: 10_000 });
-    await expect.poll(() => ftpDeleteArguments.length, { timeout: 10_000 }).toBe(1);
-    expect(remoteFiles.has('documents/mrt-server-generated (1).txt')).toBe(false);
+    await expect(browser.getByText('Upload cancelled. The server may retain an incomplete or complete file; refresh the folder and inspect it before removing anything.'))
+      .toBeVisible({ timeout: 10_000 });
+    const cancelledUploadName = 'mrt-server-generated (1).txt';
+    await expect.poll(() => remoteFiles.has(`documents/${cancelledUploadName}`), { timeout: 10_000 }).toBe(true);
+    expect(ftpDeleteArguments).toEqual([]);
+    await expect(browser.getByText(cancelledUploadName, { exact: true })).toBeVisible();
     expect(ftpStouCommands).toEqual(['STOU', 'STOU']);
     expect(ftpCwdArguments).toEqual(['documents', '/', 'documents', '/']);
     await browser.getByRole('button', { name: 'Open parent folder', exact: true }).click();
@@ -4780,7 +4783,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     }
     failedUploadDataSocket.resetAndDestroy();
     failedUploadControlSocket.resetAndDestroy();
-    await expect(browser.getByText('FTP upload failed. Reconnect and check whether a partial remote file remains before removing it.', { exact: true }))
+    await expect(browser.getByText('FTP upload failed. Reconnect and inspect the remote folder for upload or backup files before removing anything.', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
 
     await browser.getByRole('button', { name: 'Refresh remote folder' }).click();

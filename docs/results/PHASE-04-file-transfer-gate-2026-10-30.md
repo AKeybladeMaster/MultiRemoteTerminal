@@ -2,7 +2,7 @@
 
 **Candidate implementation commit:** `886e60712f7646d3a3f5411a7a01f0af239caedf` (FTP reconnect-list scroll assertion fix; transfer safety implementation is in `f39c99046f8e0a495ab970be81e55dd40fd3648b`).
 
-**Disposition:** Verification passed for the implemented transfer flows. Phase 04 remains **PARTIAL**, and no promotion to `main` was attempted.
+**Disposition:** The earlier candidate passed the gate, but independent implementation review found a path-only FTP `DELE` race while the control connection remained live. Corrective changes remove automatic FTP `DELE` and preserve overwrite backups; final Phase 04 revalidation and review are pending. Phase 04 remains **PARTIAL**, and no promotion to `main` was attempted.
 
 ## Verification
 

@@ -2,15 +2,15 @@
 
 **Status:** Partial verification; F-005 and P-14 remain partial.
 
-**Current implementation update (2026-10-30):** Reconnect-time FTP stage deletion and the in-memory recovery registry have been removed. If best-effort `DELE` fails on the live upload connection, the remote path remains after reconnect for user review; the app does not infer object identity from `SIZE`. The renderer now tells users to reconnect and inspect the remote folder after an uncertain FTP upload. The replacement-preservation unit regression and interrupted-upload E2E passed at the Phase 04 gate; the E2E scrolls the virtualized listing before checking the retained partial file. Existing evidence below belongs to the superseded auto-delete implementation. See the [WP-05L.1 safety result](WP-05L1-ftp-upload-recovery-safety-2026-10-30.md) and [Phase 04 gate results](PHASE-04-file-transfer-gate-2026-10-30.md).
+**Current implementation update (2026-10-30):** The in-memory reconnect registry and all automatic path-only FTP `DELE` calls have been removed, including while the original control connection is live. Cancellation, failure or late conflict can leave upload artifacts; successful overwrite preserves its generated backup. The renderer asks users to refresh and inspect uncertain uploads, and warns that an overwritten file may remain under a generated backup name. Prior verification below belongs to superseded candidates; final corrective revalidation is pending. See the [WP-05L.1 safety result](WP-05L1-ftp-upload-recovery-safety-2026-10-30.md) and [Phase 04 gate results](PHASE-04-file-transfer-gate-2026-10-30.md).
 
 ## Scope
 
-WP-05L originally retained the failed stage path and source size in a bounded, in-memory registry after live cleanup failed. WP-05L.1 removes that registry and leaves a path in place when cleanup fails, so reconnect does not delete it based on size alone.
+WP-05L originally retained the failed stage path and source size in a bounded, in-memory registry after live cleanup failed. WP-05L.1 removes the registry and all path-only deletion; reconnect never deletes an upload artifact based on size or pathname alone.
 
-The previous implementation checked one pending record after reconnect and used `SIZE` to decide whether to delete an undersized path. That registry is gone. A path left by failed live cleanup is not deleted on reconnect and may remain until a user inspects and removes it with FTP client or server-side tools.
+The previous implementation checked one pending record after reconnect and used `SIZE` to decide whether to delete an undersized path. That registry is gone. An upload artifact is not deleted on reconnect and may remain until a user inspects and removes it with an FTP client or server-side tools.
 
-The preserved path appears in the remote directory listing when the server exposes it. The app does not provide a dedicated cleanup workflow for these FTP leftovers; users must inspect them and remove only confirmed partial files with an FTP client or server-side tools. This prevents deletion of a possible replacement but leaves interrupted-upload cleanup incomplete.
+Preserved upload artifacts appear in the remote directory listing when the server exposes them. The app does not provide a dedicated cleanup workflow for FTP leftovers; users must inspect artifacts and remove only confirmed leftovers with an FTP client or server-side tools. This prevents deletion of a possible replacement but leaves interrupted-upload cleanup incomplete.
 
 ## Historical evidence for the superseded auto-delete implementation
 

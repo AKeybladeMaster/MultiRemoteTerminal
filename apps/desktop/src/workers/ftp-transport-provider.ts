@@ -29,7 +29,6 @@ export interface FtpLibraryClient {
   cd(path: string): Promise<unknown>;
   list(path?: string): Promise<FtpLibraryFileInfo[]>;
   rename(source: string, destination: string): Promise<unknown>;
-  remove(path: string, ignoreErrorCodes?: boolean): Promise<unknown>;
   uploadFrom(source: Readable | string, remotePath: string): Promise<unknown>;
   uploadUniqueFrom(source: Readable, remotePath: string, onUniquePath: (remotePath: string) => void): Promise<string>;
   downloadTo(destination: Writable | string, remotePath: string, startAt?: number): Promise<unknown>;
@@ -210,8 +209,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       if (committing) return;
       cancelled = true;
       if (upload) {
-        // End the data stream cleanly so basic-ftp can receive the transfer reply and
-        // the worker can DELE the STOU path while its control connection is still open.
+        // Stop reading locally; FTP paths cannot prove which remote object a DELE would remove.
         upload.push(null);
         return;
       }
@@ -318,10 +316,6 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
           if (wasCancelled()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
           const requestedTargetAppeared = latest.some(entry => entry.name === targetName);
           if (requestedTargetAppeared) {
-            try { await session.client.remove(uniqueRemotePath, true); }
-            catch { temporaryRemotePath = undefined; throw new FtpFilesProviderError('CONFLICT'); }
-            temporaryRemotePath = undefined;
-            if (conflictPolicy === 'skip') return completed('upload', targetName, 0, 'skipped');
             throw new FtpFilesProviderError('CONFLICT');
           }
         }
@@ -333,12 +327,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       if (wasCancelled()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
       const currentTarget = latest.find(entry => entry.name === targetName);
       if (currentTarget && !(conflictPolicy === 'overwrite' && existing && targetName === fileName)) {
-        if (conflictPolicy === 'skip') {
-          await session.client.remove(temporaryRemotePath!, true).catch(() => undefined);
-          temporaryRemotePath = undefined;
-          if (wasCancelled()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
-          return completed('upload', targetName, 0, 'skipped');
-        }
+        if (conflictPolicy === 'skip') throw new FtpFilesProviderError('CONFLICT');
         if (conflictPolicy === 'rename') {
           const latestNames = new Set(latest.map(entry => entry.name));
           let renamed: string | undefined;
@@ -375,7 +364,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
           }
           throw new FtpFilesProviderError('CONFLICT');
         }
-        await session.client.remove(backupPath, true).catch(() => undefined);
+        // Preserve the previous file; FTP exposes no object identity for a safe cleanup command.
       } else if (overwriteExisting) {
         throw new FtpFilesProviderError('CONFLICT');
       } else {
@@ -385,11 +374,6 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       }
       return completed('upload', targetName, sourceStats.size);
     } catch (error) {
-      if (temporaryRemotePath) {
-        const failedStagePath = temporaryRemotePath;
-        try { await session.client.remove(failedStagePath, true); }
-        catch { /* A lost control connection can leave the stage for review after reconnect. */ }
-      }
       if (wasCancelled()) {
         const sessionUsable = session.client.closed !== true;
         if (!sessionUsable) sessions.delete(sessionId);

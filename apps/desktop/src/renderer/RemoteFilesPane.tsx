@@ -157,20 +157,23 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
     if (!reply.ok) {
       if (reply.error.code === 'CANCELLED') {
         setTransferNotice(direction === 'upload'
-          ? 'Upload cancelled. The server may retain a partial file if cleanup was interrupted.'
+          ? 'Upload cancelled. The server may retain an incomplete or complete file; refresh the folder and inspect it before removing anything.'
           : 'Download cancelled.');
         void load(direction === 'upload' ? remotePath : listing?.path ?? '.');
       } else if (reply.error.code === 'NOT_SUPPORTED') {
         setTransferNotice(transport === 'ftp'
           ? 'This FTP server does not support safe unique-name uploads. No existing remote file was replaced.'
           : 'This SSH server does not provide SFTP file transfers.');
+      } else if (reply.error.code === 'CONFLICT' && transport === 'ftp' && direction === 'upload') {
+        setTransferNotice('FTP upload could not be committed. Refresh the folder and inspect any unexpected upload or backup files before retrying or removing them.');
+        void load(remotePath);
       } else {
         setTransferNotice(reply.error.code === 'NOT_FOUND' && direction === 'upload'
           ? droppedFile ? 'The dropped local file is no longer available. Drop it again.' : 'The selected local file is no longer available. Choose it again.'
           : reply.error.code === 'NOT_FOUND' && transport === 'sftp'
             ? 'The remote file is no longer available. Refresh the folder and try again.'
             : reply.error.code === 'UNAVAILABLE' && transport === 'ftp' && direction === 'upload'
-              ? 'FTP upload failed. Reconnect and check whether a partial remote file remains before removing it.'
+              ? 'FTP upload failed. Reconnect and inspect the remote folder for upload or backup files before removing anything.'
             : reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
               : reply.error.code === 'FORBIDDEN' ? 'The local file or remote destination denied access.'
                 : 'The file transfer failed. Check the connection and server permissions.');
@@ -178,7 +181,7 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
       return false;
     }
     setTransferNotice(reply.result.state === 'skipped' ? `Skipped ${reply.result.fileName}.`
-      : `${direction === 'upload' ? 'Uploaded' : 'Downloaded'} ${reply.result.fileName} (${formatFileSize(reply.result.bytesTransferred)}).`);
+      : `${direction === 'upload' ? 'Uploaded' : 'Downloaded'} ${reply.result.fileName} (${formatFileSize(reply.result.bytesTransferred)}).${transport === 'ftp' && direction === 'upload' ? ' If you chose overwrite, the previous file may remain under a generated backup name; review the remote folder before removing it.' : ''}`);
     if (direction === 'upload') await load(remotePath);
     return true;
   }, [listing?.path, load, sessionId, transport]);

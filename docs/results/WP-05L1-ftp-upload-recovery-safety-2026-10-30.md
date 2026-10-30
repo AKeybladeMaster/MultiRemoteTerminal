@@ -1,12 +1,14 @@
 # WP-05L.1: fail-safe FTP interrupted-upload recovery
 
-**Status:** Phase 04 code checks passed; broader F-005, P-10 and P-14 acceptance remains partial.
+**Status:** Corrective candidate implemented; final Phase 04 revalidation pending. Broader F-005, P-10 and P-14 acceptance remains partial.
+
+**Review correction (2026-10-30):** Independent implementation review found that path-only FTP `DELE` could remove a concurrent replacement while the control connection remained live. The current candidate removes all automatic FTP `DELE` calls, preserves upload artifacts and overwrite backups, and reports a conflict for late STOU-name collisions. The verification results below belong to the superseded candidate until the final gate is rerun.
 
 ## Scope
 
-FTP recovery previously issued `DELE` after `SIZE` showed fewer bytes than the interrupted upload's source. That could delete a different file created later at the same pathname. The in-memory reconnect registry and automatic post-reconnect deletion are removed. If best-effort cleanup fails on the live connection, the remote path remains after reconnect for user review. The upload error notice asks users to reconnect and inspect the remote directory before removing a partial file.
+FTP recovery previously issued `DELE` after `SIZE` showed fewer bytes than the interrupted upload's source. That could delete a different file created later at the same pathname. The current candidate removes the in-memory reconnect registry and all automatic path-only FTP deletion. Cancellation, failure and late conflicts can leave upload artifacts, while a successful overwrite preserves the prior file under a generated backup name. The UI asks users to inspect uncertain artifacts before removing them.
 
-The recovery regression expects a smaller same-path replacement to remain intact. The Windows interrupted-upload E2E verifies that the partial path remains visible after reconnect, was not deleted, and can be followed by a retry under a new server-selected name. The reconnect listing is virtualized, so the test scrolls to the row before asserting it.
+The current candidate adds a live-control replacement regression, preserves cancelled stages, collision copies, failed replacement stages and successful-overwrite backups, and keeps the interrupted-upload E2E recovery path visible after reconnect. These checks await final Phase 04 revalidation. The reconnect listing is virtualized, so the test scrolls to the row before asserting it.
 
 ## Verification state
 
@@ -23,4 +25,4 @@ Generated unsigned x64 artifacts are under ignored `artifacts/windows/`: `MultiR
 
 ## Remaining limits
 
-FTP stages can remain after an interrupted upload when live cleanup fails; the user must inspect and remove them with another FTP client or server-side tool. Native Explorer drag automation, sustained throughput, forced worker termination/restart cleanup, and broader FTP/FTPS interoperability remain open. Phase 04 is still partial and Phase 02 remains blocked, so no promotion to `main` is authorized.
+FTP artifacts can remain after cancellation, failure or late conflict, and successful overwrite can leave a backup. Users must inspect artifacts before removing them with another FTP client or server-side tool. Native Explorer drag automation, sustained throughput, forced worker termination/restart cleanup, and broader FTP/FTPS interoperability remain open. Phase 04 is still partial and Phase 02 remains blocked, so no promotion to `main` is authorized.
