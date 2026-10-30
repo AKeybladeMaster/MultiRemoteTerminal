@@ -20,6 +20,13 @@ interface PreviewViewport {
   readonly width: number;
 }
 
+interface LineIndex {
+  readonly lineCount: number;
+  readonly checkpoints: readonly number[];
+}
+
+const LINE_INDEX_CHECKPOINT_INTERVAL = 128;
+
 export function TextEditorContent({ contentId, fileName, value, disabled, autoSaveEnabled, describedBy, onAutoSaveChange, onChange }: TextEditorContentProps) {
   const profileId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -29,19 +36,20 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
   const [viewport, setViewport] = useState<PreviewViewport>({ firstLine: 0, afterLastLine: 32, lineHeight: 20, width: 0 });
   const resolvedProfile = resolveTextSyntaxProfile(profile, fileName);
   const deferredValue = useDeferredValue(value);
-  const lineCount = useMemo(() => countLines(value), [value]);
+  const lineIndex = useMemo(() => indexLines(value), [value]);
+  const lineCount = lineIndex.lineCount;
   const preview = useMemo(() => deferredValue === value ? highlightTextSyntax(value, resolvedProfile) : undefined,
     [deferredValue, resolvedProfile, value]);
   const previewWindow = useMemo(() => {
-    const start = offsetForLine(value, viewport.firstLine);
-    const end = offsetForLine(value, Math.min(lineCount, viewport.afterLastLine));
+    const start = offsetForLine(value, viewport.firstLine, lineIndex);
+    const end = offsetForLine(value, Math.min(lineCount, viewport.afterLastLine), lineIndex);
     const tokens = preview?.tokens.flatMap(token => {
       const tokenStart = Math.max(token.start, start);
       const tokenEnd = Math.min(token.end, end);
       return tokenEnd > tokenStart ? [{ start: tokenStart - start, end: tokenEnd - start, kind: token.kind }] : [];
     });
     return { start, end, value: value.slice(start, end), tokens: tokens ?? [] };
-  }, [lineCount, preview?.tokens, value, viewport.afterLastLine, viewport.firstLine]);
+  }, [lineCount, lineIndex, preview?.tokens, value, viewport.afterLastLine, viewport.firstLine]);
 
   syncScrollRef.current = syncScroll;
   useLayoutEffect(() => {
@@ -79,6 +87,8 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         <option value="powershell">PowerShell</option>
         <option value="python">Python</option>
         <option value="javascript">JavaScript / TypeScript</option>
+        <option value="c-family">C / C++ / Java / C#</option>
+        <option value="css">CSS</option>
         <option value="sql">SQL (PostgreSQL style)</option>
         <option value="toml">TOML</option>
         <option value="yaml">YAML</option>
@@ -95,7 +105,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         Save automatically after 1 second of inactivity
       </label>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg, .html/.htm,
+        Auto detects .md/.markdown, .css, .c/.h/.cc/.cpp/.cxx/.hh/.hpp/.hxx/.java/.cs, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg, .html/.htm,
         .env/.env.* and *.env, .properties, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts,
         .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; content is not rendered, validated or executed.
       </p>
@@ -154,19 +164,28 @@ function renderPreview(value: string, tokens: readonly { readonly start: number;
   return content;
 }
 
-function countLines(value: string): number {
-  let count = 1;
-  for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) === 10) count++;
-  return count;
+function indexLines(value: string): LineIndex {
+  const checkpoints = [0];
+  let line = 0;
+  for (let index = 0; index < value.length; index++) {
+    if (value.charCodeAt(index) !== 10) continue;
+    line++;
+    if (line % LINE_INDEX_CHECKPOINT_INTERVAL === 0) checkpoints.push(index + 1);
+  }
+  return { lineCount: line + 1, checkpoints };
 }
 
-function offsetForLine(value: string, line: number): number {
-  let offset = 0;
-  while (line > 0) {
+function offsetForLine(value: string, line: number, lineIndex: LineIndex): number {
+  if (line <= 0) return 0;
+  if (line >= lineIndex.lineCount) return value.length;
+  const checkpointIndex = Math.floor(line / LINE_INDEX_CHECKPOINT_INTERVAL);
+  let currentLine = checkpointIndex * LINE_INDEX_CHECKPOINT_INTERVAL;
+  let offset = lineIndex.checkpoints[checkpointIndex] ?? 0;
+  while (currentLine < line) {
     const newline = value.indexOf('\n', offset);
     if (newline === -1) return value.length;
     offset = newline + 1;
-    line--;
+    currentLine++;
   }
   return offset;
 }

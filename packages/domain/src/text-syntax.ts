@@ -11,7 +11,7 @@ const MAX_XML_ENTITY_CODE_UNITS = 64;
 const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
 const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'html', 'dotenv', 'properties', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'c-family', 'css', 'sql', 'toml', 'yaml', 'ini', 'xml', 'html', 'dotenv', 'properties', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -23,6 +23,8 @@ export type TextSyntaxTokenKind =
   | 'python-function' | 'python-type'
   | 'javascript-builtin' | 'javascript-keyword' | 'javascript-string' | 'javascript-comment' | 'javascript-number'
   | 'javascript-operator' | 'javascript-function' | 'javascript-type'
+  | 'c-family-keyword' | 'c-family-literal' | 'c-family-string' | 'c-family-comment' | 'c-family-number' | 'c-family-operator' | 'c-family-type'
+  | 'css-selector' | 'css-property' | 'css-string' | 'css-comment' | 'css-number' | 'css-keyword' | 'css-operator' | 'css-value'
   | 'sql-function' | 'sql-keyword' | 'sql-literal' | 'sql-string' | 'sql-comment' | 'sql-number' | 'sql-operator'
   | 'sql-parameter' | 'sql-type' | 'sql-identifier'
   | 'toml-key' | 'toml-string' | 'toml-number' | 'toml-literal' | 'toml-datetime' | 'toml-comment' | 'toml-operator'
@@ -158,6 +160,23 @@ const javascriptOperators = [
   '<=', '>=', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**', '<<', '>>', '+', '-', '*', '/', '%', '&',
   '|', '^', '~', '!', '<', '>', '=', '?', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}', '#'
 ] as const;
+const cFamilyKeywords = new Set([
+  'abstract', 'alignas', 'alignof', 'as', 'assert', 'async', 'auto', 'base', 'break', 'case', 'catch', 'checked',
+  'class', 'const', 'constexpr', 'concept', 'continue', 'co_await', 'co_return', 'co_yield', 'decltype', 'default',
+  'delegate', 'do', 'else', 'enum', 'event', 'explicit', 'extern', 'extends', 'final', 'finally', 'fixed', 'for',
+  'foreach', 'friend', 'goto', 'if', 'implements', 'import', 'in', 'instanceof', 'interface', 'internal', 'lock',
+  'namespace', 'native', 'new', 'operator', 'out', 'override', 'package', 'params', 'partial', 'private', 'protected',
+  'public', 'readonly', 'record', 'ref', 'register', 'requires', 'return', 'sealed', 'sizeof', 'stackalloc', 'static',
+  'strictfp', 'struct', 'switch', 'synchronized', 'template', 'this', 'throw', 'throws', 'thread_local', 'transient',
+  'try', 'typedef', 'typename', 'typeof', 'unchecked', 'union', 'unsafe', 'using', 'virtual', 'volatile', 'when', 'while',
+  'yield'
+]);
+const cFamilyTypes = new Set([
+  'auto', 'bool', 'boolean', 'byte', 'char', 'char8_t', 'char16_t', 'char32_t', 'decimal', 'double', 'float', 'int',
+  'long', 'object', 'ptrdiff_t', 'sbyte', 'short', 'signed', 'size_t', 'string', 'uint', 'ulong', 'unsigned', 'ushort',
+  'var', 'void', 'wchar_t'
+]);
+const cFamilyLiterals = new Set(['false', 'null', 'NULL', 'nullptr', 'true']);
 const sqlKeywords = new Set([
   'all', 'alter', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'begin', 'between', 'by', 'case', 'cast', 'check',
   'collate', 'column', 'commit', 'conflict', 'constraint', 'copy', 'create', 'cross', 'current_date', 'current_time',
@@ -203,6 +222,8 @@ export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: s
   const name = fileName.toLowerCase();
   if (/(?:^|[\\/])(?:\.env(?:\.[^\\/]+)?|[^\\/]+\.env)$/.test(name)) return 'dotenv';
   if (/\.properties$/.test(name)) return 'properties';
+  if (/\.(?:c|h|cc|cpp|cxx|hh|hpp|hxx|java|cs)$/.test(name)) return 'c-family';
+  if (/\.css$/.test(name)) return 'css';
   if (/\.(?:md|markdown)$/.test(name)) return 'markdown';
   if (/\.(?:sql|pgsql|psql)$/.test(name)) return 'sql';
   if (/\.toml$/.test(name)) return 'toml';
@@ -223,22 +244,28 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
   if (profile === 'plain' || text.length === 0) return Object.freeze({ tokens: empty, highlightedThrough: text.length, isTruncated: false });
   if (profile === 'shell') return highlightShellInputSyntax(text);
   if (profile === 'powershell') return highlightPowerShellInputSyntax(text);
+  const scanner = profile === 'c-family' ? scanCFamily
+    : profile === 'css' ? scanCss
+      : profile === 'markdown' ? scanMarkdown
+        : profile === 'python' ? scanPython
+          : profile === 'javascript' ? scanJavaScript
+            : profile === 'sql' ? scanSql
+              : profile === 'toml' ? scanToml
+                : profile === 'yaml' ? scanYaml
+                  : profile === 'ini' ? scanIni
+                    : profile === 'xml' ? scanXml
+                      : profile === 'html' ? scanHtml
+                        : profile === 'dotenv' ? scanDotenv
+                          : profile === 'properties' ? scanProperties
+                            : scanJson;
+  return highlightBoundedText(text, scanner);
+}
 
+function highlightBoundedText(text: string, scan: (text: string, limit: number, tokens: TextSyntaxToken[]) => number): TextSyntaxPreview {
   let limit = Math.min(text.length, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
   if (limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1))) limit -= 1;
   const tokens: TextSyntaxToken[] = [];
-  const scannedThrough = profile === 'markdown' ? scanMarkdown(text, limit, tokens)
-      : profile === 'python' ? scanPython(text, limit, tokens)
-        : profile === 'javascript' ? scanJavaScript(text, limit, tokens)
-          : profile === 'sql' ? scanSql(text, limit, tokens)
-            : profile === 'toml' ? scanToml(text, limit, tokens)
-              : profile === 'yaml' ? scanYaml(text, limit, tokens)
-                : profile === 'ini' ? scanIni(text, limit, tokens)
-                  : profile === 'xml' ? scanXml(text, limit, tokens)
-                      : profile === 'html' ? scanHtml(text, limit, tokens)
-                        : profile === 'dotenv' ? scanDotenv(text, limit, tokens)
-                          : profile === 'properties' ? scanProperties(text, limit, tokens)
-                            : scanJson(text, limit, tokens);
+  const scannedThrough = scan(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1064,6 +1091,216 @@ function scanJavaScriptOperator(text: string, start: number, limit: number): num
     if (start + operator.length <= limit && text.startsWith(operator, start)) return start + operator.length;
   }
   return start;
+}
+
+// shortcut: lexical tokens do not validate C-family grammars; upgrade only if the profile acceptance criteria expand.
+function scanCFamily(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  while (index < limit) {
+    const character = text[index]!;
+    if (isWhitespace(character)) { index += 1; continue; }
+
+    if (character === '/' && text[index + 1] === '/') {
+      const end = scanLineEnd(text, index, limit);
+      if (!addToken(tokens, index, end, 'c-family-comment')) return index;
+      index = end;
+      continue;
+    }
+    if (character === '/' && text[index + 1] === '*') {
+      const terminator = findTextWithinLimit(text, '*/', index + 2, limit);
+      const end = terminator < 0 ? limit : terminator + 2;
+      if (!addToken(tokens, index, end, 'c-family-comment')) return index;
+      index = end;
+      continue;
+    }
+
+    const rawStringEnd = character === 'R' && text[index + 1] === '"' ? scanCxxRawString(text, index, limit) : undefined;
+    if (rawStringEnd !== undefined) {
+      if (!addToken(tokens, index, rawStringEnd, 'c-family-string')) return index;
+      index = rawStringEnd;
+      continue;
+    }
+    if ((character === '@' && (text[index + 1] === '"' || text.startsWith('@$"', index))) ||
+        (character === '$' && text.startsWith('$@"', index)) ||
+        (character === '"' && text.startsWith('"""', index)) || character === '\'' || character === '"') {
+      const end = scanCFamilyString(text, index, limit);
+      if (!addToken(tokens, index, end, 'c-family-string')) return index;
+      index = end;
+      continue;
+    }
+
+    if (isDigit(character)) {
+      let end = scanJavaScriptNumber(text, index, limit);
+      while (end < limit && 'uUlLfFdDmM'.includes(text[end]!)) end += 1;
+      if (end > index) {
+        if (!addToken(tokens, index, end, 'c-family-number')) return index;
+        index = end;
+        continue;
+      }
+    }
+
+    if (isJavaScriptNameStart(character)) {
+      const end = scanJavaScriptName(text, index, limit);
+      const word = text.slice(index, end);
+      const kind = cFamilyTypes.has(word) ? 'c-family-type'
+        : cFamilyKeywords.has(word) ? 'c-family-keyword'
+          : cFamilyLiterals.has(word) ? 'c-family-literal' : undefined;
+      if (kind && !addToken(tokens, index, end, kind)) return index;
+      index = end;
+      continue;
+    }
+
+    if (text.startsWith('->*', index)) {
+      if (!addToken(tokens, index, index + 3, 'c-family-operator')) return index;
+      index += 3;
+      continue;
+    }
+    const operatorEnd = scanJavaScriptOperator(text, index, limit);
+    if (operatorEnd > index) {
+      if (!addToken(tokens, index, operatorEnd, 'c-family-operator')) return index;
+      index = operatorEnd;
+      continue;
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function scanCFamilyString(text: string, start: number, limit: number): number {
+  if (text.startsWith('"""', start)) {
+    let index = start + 3;
+    while (index < limit) {
+      if (text[index] === '\\') { index += index + 1 < limit ? 2 : 1; continue; }
+      if (text.startsWith('"""', index)) return index + 3;
+      index += 1;
+    }
+    return limit;
+  }
+  if (text.startsWith('@"', start) || text.startsWith('@$"', start) || text.startsWith('$@"', start)) {
+    let index = start + (text.startsWith('@$"', start) || text.startsWith('$@"', start) ? 3 : 2);
+    while (index < limit) {
+      if (text[index] === '"') {
+        if (text[index + 1] === '"' && index + 1 < limit) { index += 2; continue; }
+        return index + 1;
+      }
+      index += 1;
+    }
+    return limit;
+  }
+  return scanJavaScriptString(text, start, limit);
+}
+
+function scanCxxRawString(text: string, start: number, limit: number): number | undefined {
+  const delimiterStart = start + 2;
+  let openParen = delimiterStart;
+  while (openParen < limit && openParen - delimiterStart <= 16 && text[openParen] !== '(') openParen += 1;
+  if (openParen >= limit || text[openParen] !== '(' || openParen - delimiterStart > 16) return undefined;
+  const delimiter = text.slice(delimiterStart, openParen);
+  if (/[\s()\\]/u.test(delimiter)) return undefined;
+  const terminator = findTextWithinLimit(text, `)${delimiter}"`, openParen + 1, limit);
+  return terminator < 0 ? limit : terminator + delimiter.length + 2;
+}
+
+// shortcut: standalone CSS tokens do not validate selector/value grammar; upgrade only if profile acceptance expands.
+function scanCss(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  let blockDepth = 0;
+  let valueExpected = false;
+  let atRulePrelude = false;
+  while (index < limit) {
+    const character = text[index]!;
+    if (isWhitespace(character)) { index += 1; continue; }
+
+    if (character === '/' && text[index + 1] === '*') {
+      const terminator = findTextWithinLimit(text, '*/', index + 2, limit);
+      const end = terminator < 0 ? limit : terminator + 2;
+      if (!addToken(tokens, index, end, 'css-comment')) return index;
+      index = end;
+      continue;
+    }
+    if (character === '\'' || character === '"') {
+      const end = scanJavaScriptString(text, index, limit);
+      if (!addToken(tokens, index, end, 'css-string')) return index;
+      index = end;
+      continue;
+    }
+
+    if (character === '@' && index + 1 < limit && isCssNameCharacter(text[index + 1]!)) {
+      const end = scanCssName(text, index + 1, limit);
+      if (!addToken(tokens, index, end, 'css-keyword')) return index;
+      index = end;
+      atRulePrelude = true;
+      continue;
+    }
+
+    if (character === '#' && valueExpected && isHexDigit(text[index + 1] ?? '')) {
+      let end = index + 1;
+      while (end < limit && isHexDigit(text[end]!)) end += 1;
+      if ([4, 5, 7, 9].includes(end - index)) {
+        if (!addToken(tokens, index, end, 'css-value')) return index;
+        index = end;
+        continue;
+      }
+    }
+
+    if ((character === '.' || character === '#') && !valueExpected && isCssNameCharacter(text[index + 1] ?? '')) {
+      const end = scanCssName(text, index + 1, limit);
+      if (!addToken(tokens, index, end, 'css-selector')) return index;
+      index = end;
+      continue;
+    }
+
+    if (isDigit(character) || (character === '.' && isDigit(text[index + 1] ?? '')) ||
+        ((character === '-' || character === '+') && (isDigit(text[index + 1] ?? '') || text[index + 1] === '.' && isDigit(text[index + 2] ?? '')))) {
+      const numberStart = character === '-' || character === '+' ? index + 1 : index;
+      let end = scanJavaScriptNumber(text, numberStart, limit);
+      while (end < limit && ((text[end]! >= 'A' && text[end]! <= 'Z') || (text[end]! >= 'a' && text[end]! <= 'z') || text[end] === '%')) end += 1;
+      if (end > index) {
+        if (!addToken(tokens, index, end, 'css-number')) return index;
+        index = end;
+        valueExpected = true;
+        continue;
+      }
+    }
+
+    if (isCssNameCharacter(character)) {
+      const end = scanCssName(text, index, limit);
+      let next = end;
+      while (next < limit && isWhitespace(text[next]!)) next += 1;
+      const word = text.slice(index, end);
+      const kind = atRulePrelude ? 'css-value'
+        : blockDepth > 0 && !valueExpected && text[next] === ':' ? 'css-property'
+        : valueExpected && word.toLowerCase() === 'important' && text[index - 1] === '!' ? 'css-keyword'
+          : valueExpected ? 'css-value'
+            : text[next] === '{' ? 'css-selector' : undefined;
+      if (kind && !addToken(tokens, index, end, kind)) return index;
+      index = end;
+      continue;
+    }
+
+    if ('{}:;,.>+~*()[]#&!|=/-'.includes(character)) {
+      if (!addToken(tokens, index, index + 1, 'css-operator')) return index;
+      if (character === '{') { blockDepth += 1; valueExpected = false; }
+      else if (character === '}') { blockDepth = Math.max(0, blockDepth - 1); valueExpected = false; }
+      else if (character === ':') valueExpected = true;
+      else if (character === ';') { valueExpected = false; atRulePrelude = false; }
+      if (character === '{') atRulePrelude = false;
+      index += 1;
+      continue;
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function scanCssName(text: string, start: number, limit: number): number {
+  let index = start;
+  while (index < limit && isCssNameCharacter(text[index]!)) index += 1;
+  return index;
+}
+
+function isCssNameCharacter(character: string): boolean {
+  return character === '_' || character === '-' || (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || isDigit(character);
 }
 
 function isJavaScriptNameStart(character: string): boolean {

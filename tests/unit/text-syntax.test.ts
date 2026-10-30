@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, HTML, dotenv, Java properties and JSON from the file name', () => {
+test('automatic syntax profiles select supported source, markup and configuration formats from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -25,6 +25,12 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
   for (const fileName of ['app.js', 'view.JSX', 'worker.mjs', 'legacy.cjs', 'main.ts', 'page.TSX', 'module.mts', 'common.cts', 'types.d.ts']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'javascript');
   }
+  for (const fileName of ['main.c', 'header.H', 'server.cc', 'client.cpp', 'module.cxx', 'shared.hh', 'api.hpp', 'base.hxx', 'App.java', 'Program.CS']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'c-family');
+  }
+  assert.equal(resolveTextSyntaxProfile('auto', 'theme.CSS'), 'css');
+  assert.equal(resolveTextSyntaxProfile('c-family', 'plain.txt'), 'c-family');
+  assert.equal(resolveTextSyntaxProfile('css', 'plain.txt'), 'css');
   for (const fileName of ['schema.sql', 'migration.PGSQL', 'script.psql']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'sql');
   }
@@ -628,6 +634,88 @@ test('JavaScript and TypeScript syntax preview colors declarations, types, built
     { text: '{', kind: 'javascript-operator' },
     { text: '}', kind: 'javascript-operator' }
   ]);
+});
+
+test('C-family syntax preview colors keywords, types, literals, strings, numbers, comments and operators', () => {
+  const source = [
+    '// source comment',
+    'public class Client {',
+    '  private static string greeting = @"Hello ""terminal""";',
+    '  string interpolated = $@"Hello ""terminal""";',
+    '  string interpolatedAlternate = @$"Hello ""terminal""";',
+    '  int count = 0x2A;',
+    '  string json = """{""ok"": true}""";',
+    '  const char *raw = R"tag(/* data */)tag";',
+    '  template <typename T> union Value { unsigned count; };',
+    '} /* trailing comment */'
+  ].join('\n');
+  const preview = highlightTextSyntax(source, 'c-family');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  for (const token of [
+    { text: 'public', kind: 'c-family-keyword' },
+    { text: 'class', kind: 'c-family-keyword' },
+    { text: 'string', kind: 'c-family-type' },
+    { text: '@"Hello ""terminal"""', kind: 'c-family-string' },
+    { text: '$@"Hello ""terminal"""', kind: 'c-family-string' },
+    { text: '@$"Hello ""terminal"""', kind: 'c-family-string' },
+    { text: '0x2A', kind: 'c-family-number' },
+    { text: '"""{""ok"": true}"""', kind: 'c-family-string' },
+    { text: 'R"tag(/* data */)tag"', kind: 'c-family-string' },
+    { text: 'template', kind: 'c-family-keyword' },
+    { text: 'typename', kind: 'c-family-keyword' },
+    { text: 'union', kind: 'c-family-keyword' },
+    { text: 'unsigned', kind: 'c-family-type' },
+    { text: '// source comment', kind: 'c-family-comment' },
+    { text: '/* trailing comment */', kind: 'c-family-comment' }
+  ]) assert.ok(tokens.some(candidate => candidate.text === token.text && candidate.kind === token.kind), token.text);
+  assert.equal(tokens.some(token => token.text === '/* data */' && token.kind === 'c-family-comment'), false);
+  assert.equal(preview.isTruncated, false);
+});
+
+test('CSS syntax preview colors selectors, properties, values, comments, strings, units and at-rules', () => {
+  const source = [
+    '/* theme */',
+    '@media screen {',
+    '  .terminal, #workbench {',
+    '    --surface: #101820;',
+    '    color: rgb(12, 34, 56);',
+    '    margin: -1.5rem;',
+    '    content: "safe" !important;',
+    '  }',
+    '}'
+  ].join('\n');
+  const tokens = highlightTextSyntax(source, 'css').tokens.map(token => ({
+    text: source.slice(token.start, token.end), kind: token.kind
+  }));
+  for (const token of [
+    { text: '/* theme */', kind: 'css-comment' },
+    { text: '@media', kind: 'css-keyword' },
+    { text: '.terminal', kind: 'css-selector' },
+    { text: '#workbench', kind: 'css-selector' },
+    { text: '--surface', kind: 'css-property' },
+    { text: '#101820', kind: 'css-value' },
+    { text: 'color', kind: 'css-property' },
+    { text: 'rgb', kind: 'css-value' },
+    { text: '-1.5rem', kind: 'css-number' },
+    { text: '"safe"', kind: 'css-string' },
+    { text: 'important', kind: 'css-keyword' }
+  ]) assert.ok(tokens.some(candidate => candidate.text === token.text && candidate.kind === token.kind), token.text);
+});
+
+test('C-family and CSS syntax previews respect shared code-unit and token bounds', () => {
+  for (const profile of ['c-family', 'css'] as const) {
+    const longText = `${' '.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS)}x`;
+    const textBound = highlightTextSyntax(longText, profile);
+    assert.equal(textBound.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+    assert.equal(textBound.isTruncated, true);
+    assert.ok(textBound.tokens.every(token => token.end <= textBound.highlightedThrough));
+
+    const source = profile === 'css' ? '.a{color:red;}'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS) : 'class A {} '.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+    const tokenBound = highlightTextSyntax(source, profile);
+    assert.equal(tokenBound.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+    assert.equal(tokenBound.isTruncated, true);
+    assert.ok(tokenBound.tokens.every(token => token.end <= tokenBound.highlightedThrough));
+  }
 });
 
 test('JavaScript syntax preview keeps tokens within the preview bound', () => {

@@ -240,7 +240,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .remote-text-editor-dialog:not([open]) { display: none; }
 .remote-text-editor-dialog[open] {
   display: flex; flex-direction: column; gap: 10px; width: min(980px, calc(100vw - 32px)); height: min(820px, calc(100vh - 32px)); max-height: calc(100vh - 32px);
-  margin: auto; padding: 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text);
+  margin: auto; padding: 20px; overflow-x: hidden; overflow-y: auto; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text);
   box-shadow: 0 12px 40px #0008; overscroll-behavior: contain;
 }
 .remote-text-editor-dialog::backdrop { background: #07111dcc; }
@@ -257,7 +257,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-editor-syntax-controls p { flex: 1 1 100%; }
 .text-editor-autosave { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .text-editor-code-surface {
-  position: relative; flex: 1 1 auto; width: 100%; min-height: 120px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px;
+  position: relative; flex: 1 1 auto; width: 100%; min-height: min(120px, 18vh); overflow: hidden; border: 1px solid var(--line); border-radius: 3px;
   background: var(--terminal-background); overscroll-behavior: contain;
 }
 .text-editor-code-surface:focus-within { border-color: var(--focus); }
@@ -293,10 +293,17 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .text-syntax-token--shell-comment, .text-syntax-token--powershell-comment, .text-syntax-token--python-comment,
 .text-syntax-token--javascript-comment, .text-syntax-token--sql-comment, .text-syntax-token--toml-comment, .text-syntax-token--yaml-comment,
 .text-syntax-token--ini-comment, .text-syntax-token--dotenv-comment, .text-syntax-token--properties-comment, .text-syntax-token--xml-comment, .text-syntax-token--html-comment { color: var(--syntax-comment); font-style: italic; }
+.text-syntax-token--c-family-keyword, .text-syntax-token--c-family-literal, .text-syntax-token--css-keyword { color: var(--syntax-keyword); font-weight: 650; }
+.text-syntax-token--c-family-type { color: var(--syntax-path); }
+.text-syntax-token--c-family-string, .text-syntax-token--css-string, .text-syntax-token--css-value { color: var(--syntax-string); }
+.text-syntax-token--c-family-comment, .text-syntax-token--css-comment { color: var(--syntax-comment); font-style: italic; }
+.text-syntax-token--c-family-number, .text-syntax-token--css-number { color: var(--syntax-option); }
+.text-syntax-token--css-property { color: var(--syntax-command); font-weight: 650; }
+.text-syntax-token--css-selector { color: var(--syntax-path); font-weight: 650; }
 .text-syntax-token--shell-operator, .text-syntax-token--powershell-operator, .text-syntax-token--python-operator,
 .text-syntax-token--javascript-operator, .text-syntax-token--sql-operator, .text-syntax-token--toml-operator, .text-syntax-token--yaml-operator,
 .text-syntax-token--ini-operator, .text-syntax-token--dotenv-operator, .text-syntax-token--properties-operator, .text-syntax-token--xml-operator, .text-syntax-token--xml-declaration, .text-syntax-token--html-operator, .text-syntax-token--html-declaration,
-.text-syntax-token--yaml-document, .text-syntax-token--yaml-directive, .text-syntax-token--json-punctuation { color: var(--syntax-operator); }
+.text-syntax-token--c-family-operator, .text-syntax-token--css-operator, .text-syntax-token--yaml-document, .text-syntax-token--yaml-directive, .text-syntax-token--json-punctuation { color: var(--syntax-operator); }
 .text-syntax-token--ini-section { color: var(--syntax-path); font-weight: 650; }
 .text-syntax-token--xml-tag, .text-syntax-token--html-tag { color: var(--syntax-path); font-weight: 650; }
 .text-syntax-token--toml-datetime, .text-syntax-token--yaml-tag { color: var(--syntax-path); }

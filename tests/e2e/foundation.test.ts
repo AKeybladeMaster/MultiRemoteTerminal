@@ -866,7 +866,7 @@ test('local text editor auto-detects Java properties and keeps the source unchan
   }
 });
 
-test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
+test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, C-family, CSS, PowerShell, Shell and JSON profiles', async () => {
   test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
@@ -975,6 +975,21 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
     await expect(preview.locator('[data-token-kind="javascript-builtin"]').first()).toHaveCSS('color', 'rgb(84, 215, 212)');
     await expect(preview.locator('[data-token-kind="javascript-string"]').first()).toHaveCSS('color', 'rgb(132, 242, 167)');
 
+    await syntax.selectOption('c-family');
+    await contents.fill('public class Client { private static string greeting = @"hello"; int count = 42; }');
+    await expect(preview.locator('[data-token-kind="c-family-keyword"]').first()).toHaveText('public');
+    await expect(preview.locator('[data-token-kind="c-family-type"]').first()).toHaveText('string');
+    await expect(preview.locator('[data-token-kind="c-family-string"]').first()).toHaveText('@"hello"');
+    await expect(preview.locator('[data-token-kind="c-family-number"]').first()).toHaveText('42');
+
+    await syntax.selectOption('css');
+    await contents.fill('/* colors */\n.terminal { --surface: #101820; color: rgb(12, 34, 56); margin: -1.5rem; }');
+    await expect(preview.locator('[data-token-kind="css-comment"]')).toHaveText('/* colors */');
+    await expect(preview.locator('[data-token-kind="css-selector"]')).toHaveText('.terminal');
+    await expect(preview.locator('[data-token-kind="css-property"]').first()).toHaveText('--surface');
+    await expect(preview.locator('[data-token-kind="css-value"]').first()).toHaveText('#101820');
+    await expect(preview.locator('[data-token-kind="css-number"]')).toHaveText(['12', '34', '56', '-1.5rem']);
+
     await syntax.selectOption('powershell');
     await contents.fill('Write-Output "$env:USERPROFILE"');
     await expect(preview.locator('[data-token-kind="powershell-command"]').first()).toHaveText('Write-Output');
@@ -991,11 +1006,10 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
     await expect(preview.locator('[data-token-kind="json-literal"]').first()).toHaveCSS('color', 'rgb(223, 143, 255)');
     const longJson = Array.from({ length: 120 }, (_, index) => `{"name":"line-${index}","enabled":true}`).join('\n');
     await contents.fill(longJson);
-    const textareaScrollTop = await contents.evaluate(element => {
-      element.scrollTop = element.scrollHeight;
-      element.dispatchEvent(new Event('scroll'));
-      return element.scrollTop;
-    });
+    await contents.focus();
+    await contents.press('Control+End');
+    const textareaScrollTop = await contents.evaluate(element => element.scrollTop);
+    expect(textareaScrollTop).toBeGreaterThan(0);
     await expect.poll(() => preview.evaluate(element => element.scrollTop)).toBe(textareaScrollTop);
     await syntax.selectOption('plain');
     await expect(preview.locator('[data-token-kind]')).toHaveCount(0);
@@ -1007,6 +1021,61 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('local C-family editor keeps a near-limit 509 KiB file editable and scrollable at 200 percent scale', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-editor-large-dpi-e2e-');
+  const path = join(profile, 'large.cpp');
+  const source = Array.from({ length: 28_000 }, (_, index) => `int value${index}=42;\n`).join('');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`,
+      '--force-device-scale-factor=2', '--mrt-e2e-local-text-editor', `--mrt-e2e-local-text-file=${path}`],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    expect(await page.evaluate(() => window.devicePixelRatio)).toBe(2);
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const contents = editor.getByRole('textbox', { name: 'File contents' });
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(editor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(preview.locator('[data-token-kind="c-family-type"]').first()).toHaveText('int');
+    await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
+    expect((await contents.inputValue()) === source).toBe(true);
+
+    await page.setViewportSize({ width: 720, height: 420 });
+    const metrics = await editor.evaluate(element => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY
+    }));
+    expect(metrics.overflowY).toBe('auto');
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    const textareaScrollTop = await contents.evaluate(element => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event('scroll'));
+      return element.scrollTop;
+    });
+    await expect.poll(() => preview.evaluate(element => element.scrollTop)).toBe(textareaScrollTop);
+    await expect(preview.locator('code > span').nth(1)).toContainText('int value27999=42;');
+    expect((await contents.inputValue()) === source).toBe(true);
+    const save = editor.getByRole('button', { name: 'Save changes' });
+    await save.scrollIntoViewIfNeeded();
+    await expect(save).toBeVisible();
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 });
 
@@ -1832,6 +1901,10 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
     const remoteHtmlSource = '<!doctype html>\n<!-- remote page -->\n<main data-mode=compact>Remote &amp; content</main>\n<script>const hidden = "<fake>";</script>\n';
     await writeFile(join(remoteRoot, 'remote.html'), remoteHtmlSource);
+    const remoteCFamilySource = 'public class RemoteClient { private static string greeting = @"hello"; int count = 42; }\n';
+    await writeFile(join(remoteRoot, 'remote.cpp'), remoteCFamilySource);
+    const remoteCssSource = '/* remote theme */\n.terminal { --surface: #101820; color: rgb(12, 34, 56); }\n';
+    await writeFile(join(remoteRoot, 'remote.css'), remoteCssSource);
     const remoteEnvSource = '# remote configuration\nexport API_URL="https://example.test/remote"\nPORT=22\n';
     await writeFile(join(remoteRoot, '.env.production'), remoteEnvSource);
     const remotePropertiesSource = '# remote messages\nwelcome = Hello from SFTP\nurl: https://example.test/#remote\n';
@@ -2100,6 +2173,29 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remotePropertiesEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remotePropertiesEditor).toHaveCount(0);
     expect(await readFile(join(remoteRoot, 'remote.properties'), 'utf8')).toBe(remotePropertiesSource);
+    const remoteCFamilyEdit = sftpPanel.getByRole('button', { name: 'Edit remote.cpp', exact: true });
+    await remoteCFamilyEdit.click();
+    const remoteCFamilyEditor = page.getByRole('dialog', { name: 'remote.cpp' });
+    await expect(remoteCFamilyEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteCFamilyEditor.locator('[data-token-kind="c-family-keyword"]').first()).toHaveText('public');
+    await expect(remoteCFamilyEditor.locator('[data-token-kind="c-family-type"]').first()).toHaveText('string');
+    await expect(remoteCFamilyEditor.locator('[data-token-kind="c-family-string"]').first()).toHaveText('@"hello"');
+    expect(await remoteCFamilyEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteCFamilySource);
+    await remoteCFamilyEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteCFamilyEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.cpp'), 'utf8')).toBe(remoteCFamilySource);
+    const remoteCssEdit = sftpPanel.getByRole('button', { name: 'Edit remote.css', exact: true });
+    await remoteCssEdit.click();
+    const remoteCssEditor = page.getByRole('dialog', { name: 'remote.css' });
+    await expect(remoteCssEditor.getByLabel('Syntax profile')).toHaveValue('auto');
+    await expect(remoteCssEditor.locator('[data-token-kind="css-comment"]')).toHaveText('/* remote theme */');
+    await expect(remoteCssEditor.locator('[data-token-kind="css-selector"]')).toHaveText('.terminal');
+    await expect(remoteCssEditor.locator('[data-token-kind="css-property"]').first()).toHaveText('--surface');
+    await expect(remoteCssEditor.locator('[data-token-kind="css-value"]').first()).toHaveText('#101820');
+    expect(await remoteCssEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteCssSource);
+    await remoteCssEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteCssEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.css'), 'utf8')).toBe(remoteCssSource);
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
