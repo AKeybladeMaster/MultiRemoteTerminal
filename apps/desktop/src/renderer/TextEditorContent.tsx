@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { highlightTextSyntax, resolveTextSyntaxProfile } from '../../../../packages/domain/src/text-syntax.ts';
 import type { TextSyntaxProfile } from '../../../../packages/domain/src/text-syntax.ts';
 
@@ -28,18 +28,20 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
   const [profile, setProfile] = useState<TextSyntaxProfile>('auto');
   const [viewport, setViewport] = useState<PreviewViewport>({ firstLine: 0, afterLastLine: 32, lineHeight: 20, width: 0 });
   const resolvedProfile = resolveTextSyntaxProfile(profile, fileName);
+  const deferredValue = useDeferredValue(value);
   const lineCount = useMemo(() => countLines(value), [value]);
-  const preview = useMemo(() => highlightTextSyntax(value, resolvedProfile), [resolvedProfile, value]);
+  const preview = useMemo(() => deferredValue === value ? highlightTextSyntax(value, resolvedProfile) : undefined,
+    [deferredValue, resolvedProfile, value]);
   const previewWindow = useMemo(() => {
     const start = offsetForLine(value, viewport.firstLine);
     const end = offsetForLine(value, Math.min(lineCount, viewport.afterLastLine));
-    const tokens = preview.tokens.flatMap(token => {
+    const tokens = preview?.tokens.flatMap(token => {
       const tokenStart = Math.max(token.start, start);
       const tokenEnd = Math.min(token.end, end);
       return tokenEnd > tokenStart ? [{ start: tokenStart - start, end: tokenEnd - start, kind: token.kind }] : [];
     });
-    return { start, end, value: value.slice(start, end), tokens };
-  }, [lineCount, preview.tokens, value, viewport.afterLastLine, viewport.firstLine]);
+    return { start, end, value: value.slice(start, end), tokens: tokens ?? [] };
+  }, [lineCount, preview?.tokens, value, viewport.afterLastLine, viewport.firstLine]);
 
   syncScrollRef.current = syncScroll;
   useLayoutEffect(() => {
@@ -82,6 +84,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         <option value="yaml">YAML</option>
         <option value="ini">INI configuration</option>
         <option value="xml">XML</option>
+        <option value="html">HTML</option>
         <option value="dotenv">Environment file</option>
         <option value="properties">Java properties</option>
         <option value="json">JSON</option>
@@ -92,9 +95,9 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         Save automatically after 1 second of inactivity
       </label>
       <p id={`${profileId}-hint`} className="remote-text-editor-hint">
-        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg,
+        Auto detects .md/.markdown, .sql/.pgsql/.psql, .toml, .yaml/.yml, .ini/.cfg, .xml/.xsd/.xsl/.xslt/.svg, .html/.htm,
         .env/.env.* and *.env, .properties, .ps1/.psm1/.psd1/.pssc, .py/.pyw/.pyi, .js/.jsx/.mjs/.cjs/.ts/.tsx/.mts/.cts,
-        .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; the file is not validated or executed.
+        .sh/.bash/.zsh/.ksh and .json. Colors are visual hints; content is not rendered, validated or executed.
       </p>
     </div>
     <label className="remote-text-editor-label" htmlFor={contentId}>File contents</label>
@@ -112,7 +115,7 @@ export function TextEditorContent({ contentId, fileName, value, disabled, autoSa
         disabled={disabled} aria-describedby={`${describedBy} ${profileId}-hint`}
         onChange={event => onChange(event.currentTarget.value)} onScroll={syncScroll} />
     </div>
-    {preview.isTruncated && resolvedProfile !== 'plain' && <p className="remote-text-editor-hint" role="note">
+    {preview?.isTruncated && resolvedProfile !== 'plain' && <p className="remote-text-editor-hint" role="note">
       Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens, whichever comes first; the full file remains editable.
       {resolvedProfile === 'markdown' && ' Markdown coloring also has a work limit for unusually complex input.'}
     </p>}

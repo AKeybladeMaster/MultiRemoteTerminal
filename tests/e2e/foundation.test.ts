@@ -742,6 +742,50 @@ test('local text editor auto-detects XML and keeps the source unchanged', async 
   }
 });
 
+test('local text editor auto-detects HTML and keeps markup inert and unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-html-editor-e2e-');
+  const path = join(profile, 'index.html');
+  const source = '<!doctype html>\n<!-- local page -->\n<div class=card data-label="safe &amp; text">Hello &amp; user</div>\n<img src=x onerror="window.__mrtHtmlExecuted = true" />\n<script/>const hidden = "<fake>";</script>\n<noscript><fake /></noscript>\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="html-declaration"]')).toHaveText('<!doctype html>');
+    await expect(editor.locator('[data-token-kind="html-comment"]')).toHaveText('<!-- local page -->');
+    await expect(editor.locator('[data-token-kind="html-tag"]').first()).toHaveText('div');
+    await expect(editor.locator('[data-token-kind="html-attribute"]').first()).toHaveText('class');
+    await expect(editor.locator('[data-token-kind="html-string"]').first()).toHaveText('card');
+    await expect(editor.locator('[data-token-kind="html-entity"]').first()).toHaveText('&amp;');
+    await expect(editor.locator('[data-token-kind="html-tag"]').filter({ hasText: 'fake' })).toHaveCount(0);
+    await expect(editor.locator('img, script')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as Window & { __mrtHtmlExecuted?: boolean }).__mrtHtmlExecuted)).toBeUndefined();
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('html');
+    await expect(editor.locator('[data-token-kind="html-tag"]').first()).toHaveText('div');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('local text editor auto-detects dotenv and keeps the source unchanged', async () => {
   test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
   test.setTimeout(60_000);
@@ -1786,6 +1830,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ini'), remoteIniSource);
     const remoteXmlSource = '<?xml version="1.0"?>\n<!-- app config -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
     await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
+    const remoteHtmlSource = '<!doctype html>\n<!-- remote page -->\n<main data-mode=compact>Remote &amp; content</main>\n<script>const hidden = "<fake>";</script>\n';
+    await writeFile(join(remoteRoot, 'remote.html'), remoteHtmlSource);
     const remoteEnvSource = '# remote configuration\nexport API_URL="https://example.test/remote"\nPORT=22\n';
     await writeFile(join(remoteRoot, '.env.production'), remoteEnvSource);
     const remotePropertiesSource = '# remote messages\nwelcome = Hello from SFTP\nurl: https://example.test/#remote\n';
@@ -1999,6 +2045,26 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remoteXmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteXmlEditor).toHaveCount(0);
     expect(await readFile(join(remoteRoot, 'remote.xml'), 'utf8')).toBe(remoteXmlSource);
+    const remoteHtmlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.html', exact: true });
+    await remoteHtmlEdit.click();
+    const remoteHtmlEditor = page.getByRole('dialog', { name: 'remote.html' });
+    const remoteHtmlSyntax = remoteHtmlEditor.getByLabel('Syntax profile');
+    await expect(remoteHtmlSyntax).toHaveValue('auto');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-declaration"]')).toHaveText('<!doctype html>');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-tag"]').first()).toHaveText('main');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-attribute"]')).toHaveText('data-mode');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-string"]')).toHaveText('compact');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-entity"]')).toHaveText('&amp;');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-tag"]').filter({ hasText: 'fake' })).toHaveCount(0);
+    expect(await remoteHtmlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteHtmlSource);
+    expect(await remoteHtmlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteHtmlSource);
+    await remoteHtmlSyntax.selectOption('plain');
+    await expect(remoteHtmlEditor.locator('[data-token-kind]')).toHaveCount(0);
+    await remoteHtmlSyntax.selectOption('html');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-tag"]').first()).toHaveText('main');
+    await remoteHtmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteHtmlEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.html'), 'utf8')).toBe(remoteHtmlSource);
     const remoteEnvEdit = sftpPanel.getByRole('button', { name: 'Edit .env.production', exact: true });
     await remoteEnvEdit.click();
     const remoteEnvEditor = page.getByRole('dialog', { name: '.env.production' });

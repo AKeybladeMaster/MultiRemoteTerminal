@@ -311,6 +311,8 @@ WP-01M implementation and Windows verification are recorded in [acceptance resul
 
 WP-01N implementation and Windows verification are recorded in [acceptance results](results/WP-01N-powershell-open-delimiters-2026-10-28.md); independent review found no remaining issues ([review record](results/WP-01N-review.md)).
 
+**WP-08R — Bounded HTML editor syntax profile (partial):** Add a pure-domain HTML lexical profile to the shared local/SFTP editor preview, auto-selected for `.html` and `.htm` and available by manual selection. Color common tags, attribute names, quoted and unquoted values, comments, declarations and text entities under the existing 64,000 UTF-16 code-unit and 4,096-token limits. Leave incomplete constructs uncolored and keep `noscript` plus script/style and other raw-text element contents opaque; `noscript` stays opaque because its browser parsing depends on scripting mode. The textarea remains the edit surface; HTML is displayed as text and is never rendered, validated or executed. Domain tests cover detection, tokens, raw-text boundaries and both limits; Windows E2E covers local and loopback SFTP preview, manual override and unchanged bytes. Add no dependency, IPC, persistence or save path. Keep F-014/P-27 PARTIAL for broader language coverage and editor acceptance; see [ADR-0057](adr/ADR-0057-html-text-syntax-profile.md) and [WP-08R results](results/WP-08R-html-syntax-profile-2026-10-30.md).
+
 ### WP-09 — Serial/FTP, legacy protocols, Mosh
 
 **Requires:** MVP/provider registry.  
