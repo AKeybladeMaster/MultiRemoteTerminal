@@ -270,7 +270,6 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     uniqueStoreHook: ((remotePath: string) => void) | undefined;
     failUniqueAfterFirstChunk = false;
     failUniqueAfterComplete = false;
-    failSize = false;
     uploadCount = 0;
     listing: { name: unknown; type: unknown; size: unknown; modifiedAt?: unknown }[] = [];
     accessOptions: unknown;
@@ -281,10 +280,6 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     list(): Promise<typeof this.listing> {
       if (!this.pendingList) return Promise.resolve(this.listing);
       return new Promise(resolve => { this.pendingList = resolve as (value: never) => void; });
-    }
-    async size(path: string): Promise<number> {
-      if (this.failSize) throw new Error('simulated unsupported SIZE command');
-      return this.files.get(path)?.length ?? 0;
     }
     async rename(source: string, destination: string): Promise<void> {
       this.renameHook?.();
@@ -534,11 +529,8 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
   try {
     const recoveryFiles = new Map<string, Buffer>();
     const recoveryClients: FakeFtpClient[] = [];
-    let failNextRecoverySize = false;
     const recoveryProvider = createFtpTransportProvider(() => {
       const client = new FakeFtpClient(recoveryFiles);
-      client.failSize = failNextRecoverySize;
-      failNextRecoverySize = false;
       recoveryClients.push(client);
       return client;
     }, () => false, { directory: 2, file: 1, symbolicLink: 3 });
@@ -558,15 +550,14 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     await recoveryProvider.open('recovery-other-user', recoveryEndpoint, { username: 'bob', password: 'different-secret' });
     assert.ok(recoveryFiles.has(orphanPath), 'an orphan stage is not cleaned for a different FTP username');
     await recoveryProvider.close('recovery-other-user');
-    failNextRecoverySize = true;
     await recoveryProvider.open('recovery-same-user', recoveryEndpoint, recoveryCredentials);
-    assert.ok(recoveryFiles.has(orphanPath), 'an unsupported SIZE check must not authorize deletion');
+    assert.ok(recoveryFiles.has(orphanPath), 'reconnect must preserve the failed upload stage');
     await recoveryProvider.close('recovery-same-user');
     const samePathReplacement = Buffer.from('a different, smaller remote file');
     recoveryFiles.set(orphanPath, samePathReplacement);
     await recoveryProvider.open('recovery-same-user-retry', recoveryEndpoint, recoveryCredentials);
-    assert.equal(recoveryFiles.has(orphanPath), false,
-      'SIZE cannot distinguish an undersized same-path replacement from the captured stage; this FTP object-identity race is documented');
+    assert.deepEqual(recoveryFiles.get(orphanPath), samePathReplacement,
+      'a same-path replacement is preserved because reconnect has no proof of remote object identity');
     await recoveryProvider.close('recovery-same-user-retry');
 
     const completePath = join(recoveryRoot, 'complete.bin');
@@ -650,7 +641,7 @@ test('FTP cancellation during preflight closes its pending control request befor
       listingStarted();
       return new Promise(resolve => { finishListing = resolve; });
     },
-    async size() { return 0; }, async rename() {}, async remove() {},
+    async rename() {}, async remove() {},
     async uploadFrom() { uploadCount++; }, async downloadTo() {}, trackProgress() {},
     async uploadUniqueFrom(_source, path, onUniquePath) { uploadCount++; onUniquePath(path); return path; },
     close() { closed = true; finishListing?.([]); }

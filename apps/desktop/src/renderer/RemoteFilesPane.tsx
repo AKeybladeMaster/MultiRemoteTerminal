@@ -169,6 +169,8 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
           ? droppedFile ? 'The dropped local file is no longer available. Drop it again.' : 'The selected local file is no longer available. Choose it again.'
           : reply.error.code === 'NOT_FOUND' && transport === 'sftp'
             ? 'The remote file is no longer available. Refresh the folder and try again.'
+            : reply.error.code === 'UNAVAILABLE' && transport === 'ftp' && direction === 'upload'
+              ? 'FTP upload failed. Reconnect and check whether a partial remote file remains before removing it.'
             : reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
               : reply.error.code === 'FORBIDDEN' ? 'The local file or remote destination denied access.'
                 : 'The file transfer failed. Check the connection and server permissions.');

@@ -4780,7 +4780,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     }
     failedUploadDataSocket.resetAndDestroy();
     failedUploadControlSocket.resetAndDestroy();
-    await expect(browser.getByText('The file transfer failed. Check the connection and server permissions.', { exact: true }))
+    await expect(browser.getByText('FTP upload failed. Reconnect and check whether a partial remote file remains before removing it.', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
 
     await browser.getByRole('button', { name: 'Refresh remote folder' }).click();
@@ -4791,8 +4791,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => connectionCount).toBe(3);
-    await expect.poll(() => remoteFiles.has(interruptedUploadName), { timeout: 10_000 }).toBe(false);
-    expect(ftpDeleteArguments).toContain(interruptedUploadName);
+    await expect(page.getByTestId('remote-file-browser').getByText(interruptedUploadName, { exact: true })).toBeVisible();
+    await expect.poll(() => remoteFiles.get(interruptedUploadName)?.byteLength, { timeout: 10_000 }).toBe(partialUploadSize);
+    expect(ftpDeleteArguments).not.toContain(interruptedUploadName);
     nextStouName = 'zz-interrupted-upload-retry.bin';
     await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
     await expect.poll(() => ftpStouCommands.length).toBe(6);

@@ -2,6 +2,8 @@
 
 **Status:** Accepted for WP-09D (2026-10-24), extended by WP-05L (2026-10-26)
 
+**History note (2026-10-30):** The interrupted-upload recovery clause below is superseded by [ADR-0058](ADR-0058-ftp-interrupted-upload-preservation.md). The STOU, overwrite and local-download decisions remain in effect.
+
 ## Context
 
 FTP `RNTO` has no standard conditional "rename only if the destination does not exist" behavior. A `LIST` followed by `RNTO` therefore leaves a race in which a competing client can create the destination and have its file replaced. RFC 959 defines `STOU` as creating a uniquely named file in the current directory. RFC 1123 requires the server to return that generated pathname in its 125/150 preliminary reply.

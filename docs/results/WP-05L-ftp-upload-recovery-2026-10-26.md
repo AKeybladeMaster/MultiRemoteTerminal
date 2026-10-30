@@ -2,22 +2,24 @@
 
 **Status:** Partial verification; F-005 and P-14 remain partial.
 
+**Current implementation update (2026-10-30):** Reconnect-time FTP stage deletion and the in-memory recovery registry have been removed. If best-effort `DELE` fails on the live upload connection, the remote path remains after reconnect for user review; the app does not infer object identity from `SIZE`. The renderer now tells users to reconnect and inspect the remote folder after an uncertain FTP upload. The replacement-preservation unit regression and interrupted-upload E2E have been updated but not run; validation is deferred to the Phase 04 gate. Existing evidence below belongs to the superseded auto-delete implementation. See the [WP-05L.1 safety result](WP-05L1-ftp-upload-recovery-safety-2026-10-30.md).
+
 ## Scope
 
-The FTP utility worker now retains a failed upload stage when immediate remote cleanup cannot use the lost control connection. Recovery is limited to a captured and validated remote stage path. The in-memory record includes the expected source byte count and is scoped by a SHA-256 digest of endpoint host, port, TLS mode and username; it does not contain the password.
+WP-05L originally retained the failed stage path and source size in a bounded, in-memory registry after live cleanup failed. WP-05L.1 removes that registry and leaves a path in place when cleanup fails, so reconnect does not delete it based on size alone.
 
-Before making an FTP session available after reconnect, the worker checks at most one pending record for that scope. It asks the server for the recorded path size and issues `DELE` only when the remote file is smaller than the original source. A file at or above the expected size is preserved because the transfer may have completed even when its final control reply was lost. Records are capped at 128, expire after seven days and are discarded after four recovery attempts. FTP `SIZE` support and server behavior vary; an unsupported or inconclusive check does not trigger deletion. The registry exists only for the lifetime of the FTP worker, so worker termination or application restart can leave residue.
+The previous implementation checked one pending record after reconnect and used `SIZE` to decide whether to delete an undersized path. That registry is gone. A path left by failed live cleanup is not deleted on reconnect and may remain until a user inspects and removes it with FTP client or server-side tools.
 
-FTP exposes no stable object identity in this recovery path. A concurrent client with access to the same account could remove and recreate the captured pathname with a smaller file before reconnect; the `SIZE` check cannot distinguish that replacement from the upload stage, and cleanup would delete it. This is an explicit limitation of the same-route recovery policy and assumes trusted concurrent writers.
+The preserved path appears in the remote directory listing when the server exposes it. The app does not provide a dedicated cleanup workflow for these FTP leftovers; users must inspect them and remove only confirmed partial files with an FTP client or server-side tools. This prevents deletion of a possible replacement but leaves interrupted-upload cleanup incomplete.
 
-## Evidence
+## Historical evidence for the superseded auto-delete implementation
 
 - First ran the expanded Windows loopback test before adding provider recovery. It failed as intended: the upload left its server-selected partial file after both FTP sockets reset and the session reconnected.
-- `node --test tests/unit/ftp-files.test.ts`: **14/14 passed**, including removal of an undersized captured stage, isolation by FTP username, preservation of a stage whose remote size reached the expected source size, and a simulated smaller same-path replacement that demonstrates the documented object-identity race.
+- `node --test tests/unit/ftp-files.test.ts`: **14/14 passed** on the prior implementation, including undersized-stage deletion, isolation by FTP username, preservation of a full-size stage, and a simulated smaller same-path replacement that demonstrated the object-identity race.
 - `corepack pnpm typecheck`: passed.
 - `corepack pnpm build`: passed on Windows x64 with the existing renderer chunk-size warning.
 - Focused Windows loopback Playwright test for FTP: **1/1 passed**. It resets both control and passive data sockets during a 100 MiB upload, reconnects, verifies the partial server file was deleted, retries, and compares exact size and SHA-256.
 
 ## Remaining limits
 
-Recovery requires the same endpoint, TLS mode, username and still-running worker. FTP does not provide the same accepted host-key identity used by SFTP, and this check scopes the record by route rather than proving server identity or remote object identity. A smaller same-path replacement can be deleted, as covered by the regression case. Full-size or larger stages are intentionally preserved. FTP/FTPS interoperability, cleanup after worker termination/restart, sustained throughput and actual Explorer drag-gesture automation remain open. F-005/P-14 are not marked verified.
+Automatic interrupted-upload cleanup is no longer attempted after reconnect. A leftover path may require external cleanup; worker termination/restart, FTP/FTPS interoperability, sustained throughput and actual Explorer drag-gesture automation remain open. F-005/P-14 are not marked verified.
