@@ -1,0 +1,51 @@
+# Phase 05 provider research — 2026-10-30
+
+**Scope:** Windows x64 X server/X11/XDMCP providers and the current TigerVNC Windows viewer, for P-09 and P-16–P-18 / WP-10. **Research only:** no provider is approved; no third-party binaries were downloaded, installed, or run. Findings use official project/vendor sources.
+
+## Findings
+
+### Cygwin/X — strongest documented open candidate
+
+- **Windows support:** Cygwin says it runs on modern released 64-bit Windows starting with 8.1, covering Windows 10/11 x64; S mode is excluded. The current stable x86_64 `xorg-server` package is 21.1.21-1 (2026-01-16), 1,005 KiB compressed. That is the server package, not the full install; Cygwin Setup selects dependencies and the footprint varies. ([Cygwin Windows support](https://cygwin.com/faq.html), [xorg-server package](https://cygwin.com/packages/summary/xorg-server.html), [installer](https://cygwin.com/cygwin/install.html))
+- **X11 and XDMCP:** XWin is an X server for Windows. Remote X clients can use SSH X11 forwarding through a separate SSH client; Cygwin recommends SSH tunneling over host-based/raw X access. XDMCP is available with `X -query host`; Cygwin/X documentation also describes indirect and broadcast modes. XDMCP needs remote display-manager configuration and uses UDP 177 plus X display TCP ports; the project calls it insecure and says it cannot be tunneled over SSH. ([remote clients](https://x.cygwin.com/docs/ug/using-remote-apps.html), [XDMCP](https://x.cygwin.com/docs/ug/using-remote-session.html), [XLaunch XDMCP modes and ports](https://x.cygwin.com/docs/xlaunch/xdmcp.html))
+- **Controls/probing:** XWin supports single-window, multiwindow, and rootless modes; its CLI inherits X server options. Those include `-query`, `-broadcast`, `-indirect`, `-terminate`, `-auth`, `-nolisten tcp`, and extension toggles `+/-extension`; `-ac` disables access control and should not be used. `xdpyinfo -queryExtensions -ext NAME` queries the live display; package 1.4.0-1 is 26 KiB compressed. `XLaunch` is a GUI wrapper, but its package is 2015-era; direct, fixed-argument XWin launch is the better app seam. ([XWin CLI](https://x.cygwin.com/docs/man1/XWin.1.html), [X server options](https://x.cygwin.com/docs/man1/Xserver.1.html), [xdpyinfo manual](https://www.x.org/docs/man/man.pdf), [Cygwin xdpyinfo package](https://cygwin.com/packages/summary/xdpyinfo.html), [XLaunch package](https://cygwin.com/cygwin/packages/summary/xlaunch.html))
+- **License/maintenance:** Cygwin DLL 2.5.2+ is LGPL, but package licenses differ; the FAQ discourages bundling for interoperability and recommends reviewing the selected packages. Use official Cygwin Setup for a user-managed installation rather than repackage a partial runtime. Per-package versions and releases are maintained separately; the current xorg-server date above is the useful maintenance signal. ([Cygwin license FAQ](https://cygwin.com/faq/index.html))
+
+### VcXsrv — simpler native install, weaker support evidence
+
+- **Capability:** Windows x64 X server; XWin source documents window modes and standard X server command options. Standard XDMCP query/broadcast options are present in the shared server interface. SSH X11 forwarding still comes from a separate SSH client. ([VcXsrv repository](https://github.com/marchaesen/vcxsrv), [VcXsrv XWin manual](https://github.com/marchaesen/vcxsrv/blob/master/xorg-server/hw/xwin/man/XWin.man), [X server options](https://x.cygwin.com/docs/man1/Xserver.1.html))
+- **Windows/release/size:** The project publishes x64 installers but does not document a Windows 10/11 support matrix. Latest published release found is 21.1.16.1 (2025-03-10); the x64 installer is 42,993,397 bytes (~41 MiB). The GitHub repo is not archived; repository API metadata records a 2025-10-20 push. An open project issue reports 21.1.16/21.1.16.1 not working for its Windows 11 23H2 setup, so the report is evidence of compatibility uncertainty, not a confirmed general failure. ([releases](https://github.com/marchaesen/vcxsrv/releases), [release metadata](https://api.github.com/repos/marchaesen/vcxsrv/releases/latest), [repo metadata](https://api.github.com/repos/marchaesen/vcxsrv), [Win 11 issue](https://github.com/marchaesen/vcxsrv/issues/47))
+- **License/security:** GPL-3.0. Preserve X access control and use an authorization file; never launch with `-ac` or expose an unrestricted listener. The upstream project does not publish a security-support commitment or Windows compatibility guarantee. ([license/source](https://github.com/marchaesen/vcxsrv/blob/master/COPYING), [X server access controls](https://x.cygwin.com/docs/man1/Xserver.1.html))
+
+### Cross-cutting X11 security
+
+For SSH-forwarded X11, the SSH client provides the proxy and authorization cookie; the remote `sshd` must permit X11 forwarding, which OpenSSH disables by default. OpenSSH `-X` uses untrusted forwarding; `-Y` gives the remote client full access to the local display and should be limited to trusted hosts. Direct XDMCP and raw host-based X access have broader exposure; keep XDMCP an explicit opt-in and retain cookie/access controls. ([OpenSSH X11 forwarding](https://man.openbsd.org/ssh.1), [`sshd_config` X11 settings](https://man.openbsd.org/sshd_config.5))
+
+### Microsoft WSLg — first-party for WSL GUI, not a general provider
+
+Microsoft documents WSLg support on fully updated Windows 10 and Windows 11. It provides Wayland/X server-related GUI support to WSL distributions, including XWayland; it is serviced with WSL and does not expose a general-purpose Windows X server/XDMCP workflow. A WSL distro plus its SSH client may be used to display forwarded X apps through WSLg (inference from WSLg’s display integration and SSH X11 forwarding), but that adds a WSL prerequisite and still does not supply XDMCP. No standalone installer artifact or app lifecycle interface is documented. ([WSLg README](https://github.com/microsoft/wslg), [Microsoft WSL version/servicing notes](https://learn.microsoft.com/en-us/windows/wsl/compare-versions/))
+
+### Commercial alternative: StarNet X-Win32
+
+Vendor documentation lists SSH, passive X display, and XDMCP, but the public compatibility page we found lists Windows only through 10, and release notes show 24.0 Build 10 (2024-04-23). Its proprietary license bars distributing licensed copies without StarNet authorization; no current Windows 11 commitment or standalone artifact size was confirmed. It is not a better-supported choice for this Windows 10/11 target without vendor confirmation and purchasing/licensing approval. ([features/docs](https://www.starnet.com/help/x-win32-documentation/), [system requirements](https://www.starnet.com/help/x-win32-system-requirements-and-installation/), [release notes](https://www.starnet.com/help/x-win32-release-notes/), [license](https://www.starnet.com/help/wp-content/uploads/2025/03/X-Win32-License-Agreement.pdf))
+
+### TigerVNC Windows viewer
+
+- **Distribution/current status:** latest stable release listed is 1.16.2 (2026-03-26). The project’s Windows directory offers `vncviewer64-1.16.2.exe`, a standalone x64 viewer, at 24.1 MB; it also offers an installer. The official sources do not state a minimum Windows version. The release note’s security fix concerns `x0vncserver`; do not interpret that as a viewer-specific vulnerability fix. ([release](https://github.com/TigerVNC/tigervnc/releases), [project binary directory and README](https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/))
+- **License/control/security:** GPL-2.0. `vncviewer [options] host[:display]` is a normal external-process interface; it supports explicit security-type selection including TLS and X.509 variants, as well as `None` and legacy types. It prompts for a password by default, while environment-variable password support also exists. A host-installed integration should pass only validated host/display and chosen security flags, never put credentials in argv/environment, and require the server to support an explicitly accepted secure type. ([license](https://github.com/TigerVNC/tigervnc/blob/master/LICENCE.TXT), [viewer manual](https://tigervnc.org/doc/vncviewer.html))
+
+## Recommendation (not approval)
+
+Proceed with a prototype contract for **explicitly user-installed Cygwin/X**, with VcXsrv as an optional separately validated provider. Cygwin/X has the clearest current Windows x64 support statement, a newer current X server package, documented XDMCP, and documented direct server controls. WSLg is a future WSL-specific route only if the product accepts the WSL prerequisite; it does not close XDMCP. Integrate TigerVNC the same way as a user-installed external viewer, but make secure VNC security types and credential handling explicit.
+
+Safe non-bundled integration is feasible in principle: ask the user to select/confirm a trusted installed binary/root, launch only after an explicit action, use `shell:false` and fixed/validated arguments, retain the process handle for shutdown, keep the X server on local transports for SSH-forwarded X11, and require an explicit warning/confirmation for XDMCP and its network exposure. Probe the live display with `xdpyinfo`/X extension queries; binary presence alone does not prove a feature. These are implementation recommendations, not evidence of tested behavior.
+
+## Remaining external blockers
+
+1. **Provider/legal decision:** approve a provider and obtain license review before any bundling or installation workflow; this report approves none.
+2. **Windows acceptance:** run the documented launch/stop, SSH-forwarded X11, XDMCP, clipboard, and required-extension checks on representative Windows 10/11 x64 systems with user-installed versions. This report could not validate runtime behavior or artifact signatures because binaries were not run or downloaded.
+3. **Install discovery:** confirm reliable user-selected path handling for custom Cygwin roots and installed VcXsrv/TigerVNC locations.
+
+### Ponytail audit note
+
+Research is deliberately bounded to provider selection and official documentation. No application code or tests were changed or run. Deferred risk: security properties, process cleanup, and extension behavior require Windows runtime acceptance before any provider can be approved.
