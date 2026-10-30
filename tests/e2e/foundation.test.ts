@@ -4791,9 +4791,11 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => connectionCount).toBe(3);
+    await page.locator('.remote-file-list').evaluate(element => { element.scrollTop = element.scrollHeight; });
+    expect(ftpDeleteArguments.filter(path => path.split('/').at(-1) === interruptedUploadName),
+      'an interrupted upload must not be deleted after the data or control connection is lost').toEqual([]);
     await expect(page.getByTestId('remote-file-browser').getByText(interruptedUploadName, { exact: true })).toBeVisible();
     await expect.poll(() => remoteFiles.get(interruptedUploadName)?.byteLength, { timeout: 10_000 }).toBe(partialUploadSize);
-    expect(ftpDeleteArguments).not.toContain(interruptedUploadName);
     nextStouName = 'zz-interrupted-upload-retry.bin';
     await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
     await expect.poll(() => ftpStouCommands.length).toBe(6);
