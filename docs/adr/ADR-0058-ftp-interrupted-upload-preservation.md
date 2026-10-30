@@ -1,6 +1,6 @@
 # ADR-0058: Preserve FTP upload artifacts without identity proof
 
-**Status:** Accepted (2026-10-30); final Phase 04 revalidation pending.
+**Status:** Accepted (2026-10-30); implementation verified by the final Phase 04 code gate.
 
 **Supersedes:** The interrupted-upload recovery clause in [ADR-0006](ADR-0006-ftp-no-clobber-uploads.md).
 

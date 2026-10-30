@@ -1,8 +1,8 @@
 # Phase 04 — file management and transfer gate (2026-10-30)
 
-**Candidate implementation commit:** `886e60712f7646d3a3f5411a7a01f0af239caedf` (FTP reconnect-list scroll assertion fix; transfer safety implementation is in `f39c99046f8e0a495ab970be81e55dd40fd3648b`).
+**Implementation candidate commit:** `8e8c2e2fb5c2a73132c0a5beebe26520fd6c1e37` (removes automatic path-only FTP `DELE` and preserves uncertain upload artifacts and overwrite backups).
 
-**Disposition:** The earlier candidate passed the gate, but independent implementation review found a path-only FTP `DELE` race while the control connection remained live. Corrective changes remove automatic FTP `DELE` and preserve overwrite backups; final Phase 04 revalidation and review are pending. Phase 04 remains **PARTIAL**, and no promotion to `main` was attempted.
+**Disposition:** Final code verification passed for the corrective candidate. Phase 04 remains **PARTIAL** because native Explorer gestures, sustained throughput, real FTP/FTPS interoperability and worker-termination cleanup remain unverified. Independent reviews are pending; no promotion to `main` was attempted.
 
 ## Verification
 
@@ -11,7 +11,7 @@ Commands ran sequentially on Windows x64 with Node 24.14.1, pnpm 12.15.0, and `T
 - `git diff --check` — passed.
 - `corepack pnpm typecheck` — passed.
 - `corepack pnpm lint` — passed, including import-boundary checks.
-- `corepack pnpm build` — passed; native x64 addon and renderer built. Vite reported the existing 1,028.79 kB minified renderer chunk advisory (282.67 kB gzip).
+- `corepack pnpm build` — passed; native x64 addon and renderer built. Vite reported the existing 1,029.22 kB minified renderer chunk advisory (282.80 kB gzip).
 - `corepack pnpm test` — 585 passed, 0 failed.
 - Focused FTP interrupted-upload recovery E2E — 1 passed. It verifies no `DELE` for the interrupted path, visible partial bytes after reconnect, and a successful retry under a new name.
 - Focused FTPS certificate/data-channel E2E — 1 passed.
@@ -23,8 +23,8 @@ Commands ran sequentially on Windows x64 with Node 24.14.1, pnpm 12.15.0, and `T
 
 Artifacts are local and ignored under `artifacts/windows/`:
 
-- `MultiRemoteTerminal Setup 0.0.0.exe` — 128,699,056 bytes.
-- `MultiRemoteTerminal 0.0.0.exe` — 114,714,133 bytes.
+- `MultiRemoteTerminal Setup 0.0.0.exe` — 128,699,760 bytes; SHA-256 `F658C5EFCE604CDBC2E07739D053AA11D09F3BBC7F8D9E83338C900DDE984D8F`.
+- `MultiRemoteTerminal 0.0.0.exe` — 114,713,420 bytes; SHA-256 `ADA22B47D74A1A682E211397F3D1B3998E9DA29A8FE009D9AEE9C7DF2E680CF6`.
 - Per-artifact `*.cdx.json` SBOMs and `SHA256SUMS.txt`.
 - Signing was skipped because no signing certificate is configured; both package signatures are `NotSigned`.
 
@@ -34,4 +34,4 @@ The corrected FTP regression and reconnect E2E use a controlled loopback fixture
 
 The full E2E suite's Git Bash resize test remains an explicit skip and is still a Phase 02 blocker. Five package-only tests skipped in `pnpm check` were covered by the separate 5/5 package-smoke run. No skip was counted as a pass.
 
-Independent specification, standards, and implementation review findings will be recorded here before any promotion. No phase promotion is authorized while Phase 02 and Phase 04 acceptance remain open.
+Independent specification, standards and implementation reviews of the verified candidate are in progress. No promotion is authorized while Phase 02 and broader Phase 04 acceptance remain open.

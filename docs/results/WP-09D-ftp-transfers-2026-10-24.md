@@ -6,7 +6,7 @@
 
 The no-clobber upload decision and its server compatibility limits are recorded in [ADR-0006](../adr/ADR-0006-ftp-no-clobber-uploads.md).
 
-**Current implementation update (2026-10-30):** This record describes the earlier implementation, which attempted DELE on cancellation. The current provider issues no path-only FTP DELE after cancellation, failure or conflict and preserves upload artifacts and overwrite backups for review. Final corrective Phase 04 revalidation is pending; see [ADR-0058](../adr/ADR-0058-ftp-interrupted-upload-preservation.md).
+**Current implementation update (2026-10-30):** This record describes the earlier implementation, which attempted DELE on cancellation. The current provider issues no path-only FTP DELE after cancellation, failure or conflict and preserves upload artifacts and overwrite backups for review. Final corrective Phase 04 revalidation passed; see [ADR-0058](../adr/ADR-0058-ftp-interrupted-upload-preservation.md).
 
 FTP sessions now support upload and download from the remote-files pane. The renderer sends only a session ID, operation ID and remote path through preload IPC. Main owns native file/save dialogs and asks for overwrite, rename, skip or cancel behavior; the approved local path travels only over the private worker protocol. A supervised FTP utility worker streams one transfer per session and sends validated progress events back through the main broker.
 
