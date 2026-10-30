@@ -1,7 +1,7 @@
 # Phase 02 — terminal and local shell blocker
 
-**Status:** BLOCKED; implementation and phase verification are not complete.  
-**Requirements:** F-002, P-01, P-02, P-21, P-30, N-001, N-006, N-008.  
+**Status:** BLOCKED; implementation and phase verification are not complete.
+**Requirements:** F-002, P-01, P-02, P-21, P-30, N-001, N-006, N-008.
 **Development head inspected:** `811701c230e4f0c953ce58dbf907afc3f3d7ecc3` on `dev-1`.
 
 ## Existing implementation and evidence
