@@ -3,7 +3,7 @@
 ## Scope and requirements
 
 - Mission phase: Phase 01, development baseline stabilization.
-- Requirements tracked: F-014/P-27 editor regression baseline, P-32 package regression baseline, N-001, N-004, N-007 and N-010. This phase does not upgrade broader feature statuses.
+- Requirements tracked: F-014/P-27 editor regression baseline, P-32 package regression baseline, N-001, N-004, N-007 and N-010. Phase 01's baseline subset is accepted; N-001 and N-010 remain PARTIAL overall because physical Windows lock/resume and restart-persistent interrupted-transfer status remain open.
 - Reconciled work: WP-08R HTML syntax profile, WP-01E resize evidence, package-smoke startup readiness stabilization, and the full-suite large-editor input timeouts.
 - Branch at start: `dev-1` at `d44c909c337807ce95d5b83e44ad48f50cf113ed`, verified equal to `origin/dev-1`; `origin/main` was `67812739ba521d57007e15faa24e0b5a09d56e06`. Protected worktree changes are excluded from the intended candidate.
 - Phase implementation commit on `dev-1`: `c8acdc196839958251f590bea24b323b453ff257`.

@@ -39,7 +39,7 @@ class MrtFtpClient extends basicFtp.Client {
     return super.access({ ...options, secureOptions: { ...options.secureOptions, ca } });
   }
 
-  async uploadUniqueFrom(source: Readable, remotePath: string, onUniquePath: (remotePath: string) => void): Promise<string> {
+  async uploadUniqueFrom(source: Readable, remotePath: string): Promise<string> {
     let generatedPath: string | undefined;
     const requestedDirectory = remoteParentPath(remotePath);
     const originalDirectory = await this.pwd();
@@ -52,7 +52,6 @@ class MrtFtpClient extends basicFtp.Client {
         return originalHandle('STOU', (response, task) => {
           if (!(response instanceof Error) && (response.code === 125 || response.code === 150)) {
             generatedPath = uniqueStorePath(response.message, currentDirectory, requestedDirectory);
-            if (generatedPath) onUniquePath(generatedPath);
           }
           responseHandler(response, task);
         });

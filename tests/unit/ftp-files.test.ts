@@ -265,7 +265,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     progress: ((info: { readonly name: string; readonly type: string; readonly bytes: number }) => void) | undefined;
     uploadDelayMs = 0;
     renameHook: (() => void) | undefined;
-    renameFailDestination: string | undefined;
+    readonly renameFailures = new Map<string, number>();
     uniqueStoreNameOverride: string | undefined;
     uniqueStoreHook: ((remotePath: string) => void) | undefined;
     failUniqueAfterFirstChunk = false;
@@ -285,8 +285,10 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     async rename(source: string, destination: string): Promise<void> {
       this.renameHook?.();
       this.renameHook = undefined;
-      if (this.renameFailDestination === destination) {
-        this.renameFailDestination = undefined;
+      const renameFailures = this.renameFailures.get(destination) ?? 0;
+      if (renameFailures > 0) {
+        if (renameFailures === 1) this.renameFailures.delete(destination);
+        else this.renameFailures.set(destination, renameFailures - 1);
         throw new Error('simulated RNTO failure');
       }
       const contents = this.files.get(source);
@@ -306,7 +308,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
         if (this.uploadDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, this.uploadDelayMs));
       }
     }
-    async uploadUniqueFrom(source: Readable, remotePath: string, onUniquePath: (path: string) => void): Promise<string> {
+    async uploadUniqueFrom(source: Readable, remotePath: string): Promise<string> {
       this.uploadCount++;
       if (this.closed) throw new Error('connection closed');
       this.uniqueStoreHook?.(remotePath);
@@ -324,7 +326,6 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       }
       const chunks: Buffer[] = [];
       this.files.set(actualPath, Buffer.alloc(0));
-      onUniquePath(actualPath);
       for await (const value of source) {
         if (this.closed) throw new Error('connection closed');
         const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -429,7 +430,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     await writeFile(rollbackPath, 'replacement');
     clients[0]!.listing = [{ name: 'rollback.bin', type: 1, size: 6 }];
     clients[0]!.files.set('rollback.bin', Buffer.from('original'));
-    clients[0]!.renameFailDestination = 'rollback.bin';
+    clients[0]!.renameFailures.set('rollback.bin', 1);
     await assert.rejects(provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222226', rollbackPath, '.', 'rollback.bin', 'overwrite'),
       error => (error as { code?: string }).code === 'CONFLICT');
     assert.equal(clients[0]!.files.get('rollback.bin')?.toString(), 'original', 'failed replacement restores the previous remote file');
@@ -505,6 +506,21 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     assert.equal(cancelledAfterProgress, true);
     assert.ok((clients[0]!.files.get('slow.bin')?.byteLength ?? 0) > 0, 'a cancelled STOU stage remains for user review');
     assert.equal(clients[0]!.closed, false, 'a graceful upload cancellation keeps the control channel open');
+
+    const lostRollbackPath = join(transferRoot, 'lost-rollback.bin');
+    await writeFile(lostRollbackPath, 'replacement');
+    clients[0]!.listing = [{ name: 'lost-rollback.bin', type: 1, size: 8 }];
+    clients[0]!.files.set('lost-rollback.bin', Buffer.from('original'));
+    clients[0]!.renameFailures.set('lost-rollback.bin', 2);
+    await assert.rejects(provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222227', lostRollbackPath, '.', 'lost-rollback.bin', 'overwrite'),
+      error => (error as { code?: string }).code === 'UNAVAILABLE');
+    assert.equal([...clients[0]!.files.entries()].some(([path, contents]) => path.endsWith('.backup') && contents.toString() === 'original'), true,
+      'a failed replacement and failed restoration preserve the original under its generated backup name');
+    assert.equal([...clients[0]!.files.entries()].some(([path, contents]) => path.endsWith('.partial') && contents.toString() === 'replacement'), true,
+      'a failed replacement and failed restoration preserve the replacement stage');
+    assert.equal(clients[0]!.files.has('lost-rollback.bin'), false, 'the failed rollback leaves the target absent for explicit user recovery');
+    assert.equal(clients[0]!.closed, true, 'the session is retired when rollback cannot restore the target');
+    await assert.rejects(provider.listDirectory(sessionId, '.'), error => (error as { code?: string }).code === 'UNAVAILABLE');
 
     const downloadSessionId = '28f2f903-7b6f-4c8d-9c42-b63a58c4b087';
     await provider.open(downloadSessionId, { host: 'ftp.example.net', port: 21, secure: false }, credentials);
@@ -662,7 +678,7 @@ test('FTP cancellation during preflight closes its pending control request befor
     },
     async rename() {},
     async uploadFrom() { uploadCount++; }, async downloadTo() {}, trackProgress() {},
-    async uploadUniqueFrom(_source, path, onUniquePath) { uploadCount++; onUniquePath(path); return path; },
+    async uploadUniqueFrom(_source, path) { uploadCount++; return path; },
     close() { closed = true; finishListing?.([]); }
   };
   const provider = createFtpTransportProvider(() => client, () => false, { directory: 2, file: 1, symbolicLink: 3 });

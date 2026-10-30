@@ -4,6 +4,7 @@ import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packag
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
 import type { RemoteFileDropContext, RemoteFileDropEvent, RemoteFileDropHandle } from '../../../../packages/contracts/src/commands.ts';
 import { RemoteTextEditorDialog } from './RemoteTextEditorDialog.tsx';
+import { transferFailureMessage } from './remote-files-errors.ts';
 import { VirtualizedList } from './VirtualizedList.tsx';
 
 interface RemoteFilesPaneProps {
@@ -168,15 +169,7 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
         setTransferNotice('FTP upload could not be committed. Refresh the folder and inspect any unexpected upload or backup files before retrying or removing them.');
         void load(remotePath);
       } else {
-        setTransferNotice(reply.error.code === 'NOT_FOUND' && direction === 'upload'
-          ? droppedFile ? 'The dropped local file is no longer available. Drop it again.' : 'The selected local file is no longer available. Choose it again.'
-          : reply.error.code === 'NOT_FOUND' && transport === 'sftp'
-            ? 'The remote file is no longer available. Refresh the folder and try again.'
-            : reply.error.code === 'UNAVAILABLE' && transport === 'ftp' && direction === 'upload'
-              ? 'FTP upload failed. Reconnect and inspect the remote folder for upload or backup files before removing anything.'
-            : reply.error.code === 'CONFLICT' ? 'The selected file or destination changed during transfer. Review it and try again.'
-              : reply.error.code === 'FORBIDDEN' ? 'The local file or remote destination denied access.'
-                : 'The file transfer failed. Check the connection and server permissions.');
+        setTransferNotice(transferFailureMessage(reply.error.code, transport, direction, droppedFile !== undefined));
       }
       return false;
     }

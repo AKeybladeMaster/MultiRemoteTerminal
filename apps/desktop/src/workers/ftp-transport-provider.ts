@@ -30,7 +30,7 @@ export interface FtpLibraryClient {
   list(path?: string): Promise<FtpLibraryFileInfo[]>;
   rename(source: string, destination: string): Promise<unknown>;
   uploadFrom(source: Readable | string, remotePath: string): Promise<unknown>;
-  uploadUniqueFrom(source: Readable, remotePath: string, onUniquePath: (remotePath: string) => void): Promise<string>;
+  uploadUniqueFrom(source: Readable, remotePath: string): Promise<string>;
   downloadTo(destination: Writable | string, remotePath: string, startAt?: number): Promise<unknown>;
   trackProgress(handler?: (info: { readonly name: string; readonly type: string; readonly bytes: number }) => void): void;
   close(): void;
@@ -291,9 +291,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       let uniqueRemotePath: string | undefined;
       try {
         if (overwriteExisting) await runFtpOperation(() => session.client.uploadFrom(upload!, temporaryRemotePath!));
-        else uniqueRemotePath = await runFtpOperation(() => session.client.uploadUniqueFrom(upload!, remoteTargetPath, path => {
-          if (uniqueStoreName(path, remoteDirectory)) temporaryRemotePath = path;
-        }));
+        else uniqueRemotePath = await runFtpOperation(() => session.client.uploadUniqueFrom(upload!, remoteTargetPath));
       } catch (error) {
         if (!overwriteExisting && isFtpCommandUnsupported(error)) throw new FtpFilesProviderError('NOT_SUPPORTED', true);
         throw error;
@@ -302,7 +300,6 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       if (uniqueRemotePath) {
         const actualName = uniqueStoreName(uniqueRemotePath, remoteDirectory);
         if (!actualName) throw new FtpFilesProviderError('UNAVAILABLE', true);
-        temporaryRemotePath = uniqueRemotePath;
       }
       const finalSourceStats = await sourceFile.stat();
       if (upload.bytesRead !== sourceStats.size || !sameSourceVersion(sourceStats, finalSourceStats)) {
@@ -319,7 +316,6 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
             throw new FtpFilesProviderError('CONFLICT');
           }
         }
-        temporaryRemotePath = undefined;
         return completed('upload', actualName, sourceStats.size);
       }
 

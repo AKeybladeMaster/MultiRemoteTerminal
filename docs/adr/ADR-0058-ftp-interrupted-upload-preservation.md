@@ -18,7 +18,7 @@ WP-05L retained an upload pathname and used `SIZE` on same-worker reconnect. It 
 
 ## Consequences
 
-The application cannot delete a different file that was later placed at the same path. Cancellation, failure and late conflicts can leave remote upload artifacts; successful overwrites can leave a backup. There is no dedicated FTP leftover-cleanup workflow, so users must inspect artifacts and remove confirmed leftovers with another FTP client or server-side tool. The previous WP-05L test results remain historical evidence for the superseded behavior; the live-control replacement regression, overwrite preservation regression and interrupted-upload E2E must pass at the Phase 04 gate before updating acceptance status.
+The application cannot delete a different file that was later placed at the same path. Cancellation, failure and late conflicts can leave remote upload artifacts; successful overwrites can leave a backup. There is no dedicated FTP leftover-cleanup workflow, so users must inspect artifacts and remove confirmed leftovers with another FTP client or server-side tool. The previous WP-05L test results remain historical evidence for the superseded behavior; corrected regressions and interrupted-upload evidence are recorded in [WP-05L.1](../results/WP-05L1-ftp-upload-recovery-safety-2026-10-30.md) and the [Phase 04 gate report](../results/PHASE-04-file-transfer-gate-2026-10-30.md).
 
 ## References
 
