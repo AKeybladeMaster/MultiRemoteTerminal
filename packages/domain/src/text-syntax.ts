@@ -11,7 +11,7 @@ const MAX_XML_ENTITY_CODE_UNITS = 64;
 const iniLiterals = new Set(['false', 'no', 'off', 'on', 'true', 'yes']);
 const iniNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u;
 
-export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'dotenv', 'properties', 'json'] as const;
+export const TEXT_SYNTAX_PROFILES = ['auto', 'plain', 'markdown', 'shell', 'powershell', 'python', 'javascript', 'sql', 'toml', 'yaml', 'ini', 'xml', 'html', 'dotenv', 'properties', 'json'] as const;
 export type TextSyntaxProfile = typeof TEXT_SYNTAX_PROFILES[number];
 export type ResolvedTextSyntaxProfile = Exclude<TextSyntaxProfile, 'auto'>;
 
@@ -30,6 +30,7 @@ export type TextSyntaxTokenKind =
   | 'dotenv-key' | 'dotenv-value' | 'dotenv-string' | 'dotenv-comment' | 'dotenv-operator' | 'dotenv-export'
   | 'properties-key' | 'properties-value' | 'properties-comment' | 'properties-operator'
   | 'xml-tag' | 'xml-attribute' | 'xml-string' | 'xml-comment' | 'xml-cdata' | 'xml-declaration' | 'xml-entity' | 'xml-operator'
+  | 'html-tag' | 'html-attribute' | 'html-string' | 'html-comment' | 'html-declaration' | 'html-entity' | 'html-operator'
   | 'yaml-key' | 'yaml-string' | 'yaml-number' | 'yaml-literal' | 'yaml-comment' | 'yaml-operator'
   | 'yaml-anchor' | 'yaml-alias' | 'yaml-tag' | 'yaml-document' | 'yaml-directive'
   | 'markdown-heading' | 'markdown-list' | 'markdown-quote' | 'markdown-rule' | 'markdown-code'
@@ -208,6 +209,7 @@ export function resolveTextSyntaxProfile(profile: TextSyntaxProfile, fileName: s
   if (/\.(?:yaml|yml)$/.test(name)) return 'yaml';
   if (/\.(?:ini|cfg)$/.test(name)) return 'ini';
   if (/\.(?:xml|xsd|xsl|xslt|svg)$/.test(name)) return 'xml';
+  if (/\.html?$/.test(name)) return 'html';
   if (/\.(?:ps1|psm1|psd1|pssc)$/.test(name)) return 'powershell';
   if (/\.(?:py|pyw|pyi)$/.test(name)) return 'python';
   if (/\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts)$/.test(name)) return 'javascript';
@@ -233,9 +235,10 @@ export function highlightTextSyntax(text: string, profile: ResolvedTextSyntaxPro
               : profile === 'yaml' ? scanYaml(text, limit, tokens)
                 : profile === 'ini' ? scanIni(text, limit, tokens)
                   : profile === 'xml' ? scanXml(text, limit, tokens)
-                    : profile === 'dotenv' ? scanDotenv(text, limit, tokens)
-                      : profile === 'properties' ? scanProperties(text, limit, tokens)
-                      : scanJson(text, limit, tokens);
+                      : profile === 'html' ? scanHtml(text, limit, tokens)
+                        : profile === 'dotenv' ? scanDotenv(text, limit, tokens)
+                          : profile === 'properties' ? scanProperties(text, limit, tokens)
+                            : scanJson(text, limit, tokens);
   return Object.freeze({ tokens: Object.freeze(tokens), highlightedThrough: scannedThrough, isTruncated: scannedThrough < text.length });
 }
 
@@ -1588,6 +1591,178 @@ function hasOddTrailingPropertiesBackslashes(text: string, start: number, end: n
   let count = 0;
   for (let index = end - 1; index >= start && text.charCodeAt(index) === 92; index -= 1) count += 1;
   return count % 2 === 1;
+}
+
+function scanHtml(text: string, limit: number, tokens: TextSyntaxToken[]): number {
+  let index = 0;
+  while (index < limit) {
+    if (text.startsWith('<!--', index)) {
+      const close = findXmlSequenceEnd(text, '-->', index + 4, limit);
+      if (close === undefined) return limit;
+      if (!addToken(tokens, index, close + 3, 'html-comment')) return index;
+      index = close + 3;
+      continue;
+    }
+
+    if (text[index] === '<' && (text.startsWith('<!', index) || text.startsWith('<?', index))) {
+      const end = findHtmlDeclarationEnd(text, index, limit);
+      if (end === undefined) return limit;
+      if (!addToken(tokens, index, end, 'html-declaration')) return index;
+      index = end;
+      continue;
+    }
+
+    if (text[index] === '<') {
+      const closing = text[index + 1] === '/';
+      const nameStart = index + (closing ? 2 : 1);
+      if (nameStart < limit && isHtmlTagNameStart(text[nameStart]!)) {
+        const tagEnd = findHtmlTagEnd(text, index, limit);
+        if (tagEnd === undefined) return limit;
+        const nameEnd = findHtmlTagNameEnd(text, nameStart, tagEnd);
+        if (nameEnd === nameStart) { index += 1; continue; }
+        const tagName = text.slice(nameStart, nameEnd).toLowerCase();
+        if (!addToken(tokens, index, nameStart, 'html-operator')) return index;
+        if (!addToken(tokens, nameStart, nameEnd, 'html-tag')) return nameStart;
+
+        if (closing) {
+          if (!addToken(tokens, tagEnd, tagEnd + 1, 'html-operator')) return tagEnd;
+          index = tagEnd + 1;
+          continue;
+        }
+
+        let cursor = nameEnd;
+        let selfClosing = false;
+        while (cursor < tagEnd) {
+          if (isHtmlWhitespace(text[cursor]!)) { cursor += 1; continue; }
+          if (text[cursor] === '/' && cursor + 1 === tagEnd) {
+            if (!addToken(tokens, cursor, tagEnd + 1, 'html-operator')) return cursor;
+            selfClosing = true;
+            cursor += 1;
+            continue;
+          }
+
+          const attributeStart = cursor;
+          while (cursor < tagEnd && !isHtmlWhitespace(text[cursor]!) && text[cursor] !== '=' &&
+            text[cursor] !== '>' && text[cursor] !== '<' && text[cursor] !== '"' && text[cursor] !== '\'' &&
+            !(text[cursor] === '/' && cursor + 1 === tagEnd)) cursor += 1;
+          if (cursor === attributeStart) { cursor += 1; continue; }
+          if (!addToken(tokens, attributeStart, cursor, 'html-attribute')) return attributeStart;
+
+          while (cursor < tagEnd && isHtmlWhitespace(text[cursor]!)) cursor += 1;
+          if (text[cursor] !== '=') continue;
+          if (!addToken(tokens, cursor, cursor + 1, 'html-operator')) return cursor;
+          cursor += 1;
+          while (cursor < tagEnd && isHtmlWhitespace(text[cursor]!)) cursor += 1;
+          if (text[cursor] === '"' || text[cursor] === '\'') {
+            const quote = text[cursor]!;
+            let valueEnd = cursor + 1;
+            while (valueEnd < tagEnd && text[valueEnd] !== quote) valueEnd += 1;
+            if (valueEnd < tagEnd) valueEnd += 1;
+            if (!addToken(tokens, cursor, valueEnd, 'html-string')) return cursor;
+            cursor = valueEnd;
+          } else {
+            const valueStart = cursor;
+            while (cursor < tagEnd && !isHtmlWhitespace(text[cursor]!)) cursor += 1;
+            if (!addToken(tokens, valueStart, cursor, 'html-string')) return valueStart;
+          }
+        }
+
+        if (!selfClosing && !addToken(tokens, tagEnd, tagEnd + 1, 'html-operator')) return tagEnd;
+        index = tagEnd + 1;
+        if (isHtmlRawTextElement(tagName)) {
+          if (tagName === 'plaintext') return limit;
+          const close = findHtmlRawTextClose(text, index, tagName, limit);
+          if (close === undefined) return limit;
+          index = close;
+        }
+        continue;
+      }
+    }
+
+    if (text[index] === '&') {
+      const end = findXmlEntityReferenceEnd(text, index, limit);
+      if (end !== undefined) {
+        if (!addToken(tokens, index, end, 'html-entity')) return index;
+        index = end;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return limit;
+}
+
+function findHtmlDeclarationEnd(text: string, start: number, limit: number): number | undefined {
+  let quote: string | undefined;
+  for (let index = start + 2; index < limit; index += 1) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+    } else if (character === '"' || character === '\'') {
+      quote = character;
+    } else if (character === '>') {
+      return index + 1;
+    }
+  }
+  return undefined;
+}
+
+function findHtmlTagEnd(text: string, start: number, limit: number): number | undefined {
+  let quote: string | undefined;
+  for (let index = start + 1; index < limit; index += 1) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+    } else if (character === '"' || character === '\'') {
+      quote = character;
+    } else if (character === '<') {
+      return undefined;
+    } else if (character === '>') {
+      return index;
+    }
+  }
+  return undefined;
+}
+
+function findHtmlTagNameEnd(text: string, start: number, limit: number): number {
+  let index = start;
+  while (index < limit && isHtmlTagNamePart(text[index]!)) index += 1;
+  return index;
+}
+
+function findHtmlRawTextClose(text: string, start: number, tagName: string, limit: number): number | undefined {
+  for (let index = start; index + tagName.length + 2 < limit; index += 1) {
+    if (text[index] !== '<' || text[index + 1] !== '/' || !matchesHtmlNameAt(text, index + 2, tagName)) continue;
+    const boundary = text[index + 2 + tagName.length];
+    if (boundary === '>' || boundary === '/' || isHtmlWhitespace(boundary ?? '')) return index;
+  }
+  return undefined;
+}
+
+function matchesHtmlNameAt(text: string, start: number, name: string): boolean {
+  for (let offset = 0; offset < name.length; offset += 1) {
+    const actual = text.charCodeAt(start + offset);
+    const expected = name.charCodeAt(offset);
+    if (actual !== expected && !(actual >= 65 && actual <= 90 && actual + 32 === expected)) return false;
+  }
+  return true;
+}
+
+function isHtmlRawTextElement(tagName: string): boolean {
+  return tagName === 'script' || tagName === 'style' || tagName === 'noscript' || tagName === 'textarea' || tagName === 'title' ||
+    tagName === 'xmp' || tagName === 'iframe' || tagName === 'noembed' || tagName === 'noframes' || tagName === 'plaintext';
+}
+
+function isHtmlTagNameStart(character: string): boolean {
+  return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
+}
+
+function isHtmlTagNamePart(character: string): boolean {
+  return isHtmlTagNameStart(character) || isDigit(character) || character === '-' || character === ':' || character === '_' || character === '.';
+}
+
+function isHtmlWhitespace(character: string): boolean {
+  return character === ' ' || character === '\t' || character === '\n' || character === '\r' || character === '\f';
 }
 
 function scanXml(text: string, limit: number, tokens: TextSyntaxToken[]): number {

@@ -11,7 +11,7 @@ import {
   type PowerShellSyntaxContinuationState
 } from '../../packages/domain/src/text-syntax.ts';
 
-test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, dotenv, Java properties and JSON from the file name', () => {
+test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, JavaScript/TypeScript, SQL, TOML, YAML, INI, XML, HTML, dotenv, Java properties and JSON from the file name', () => {
   for (const fileName of ['README.MD', 'guide.markdown']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'markdown');
   }
@@ -36,6 +36,10 @@ test('automatic syntax profiles select Markdown, Shell, PowerShell, Python, Java
   for (const fileName of ['service.xml', 'schema.XSD', 'view.xslt', 'icon.svg']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'xml');
   }
+  for (const fileName of ['index.html', 'partial.HTM', 'C:\\app\\view.Html']) {
+    assert.equal(resolveTextSyntaxProfile('auto', fileName), 'html');
+  }
+  assert.equal(resolveTextSyntaxProfile('html', 'page.txt'), 'html');
   assert.equal(resolveTextSyntaxProfile('xml', 'page.html'), 'xml');
   for (const fileName of ['.env', '.env.local', '.env.production.example', 'service.env', 'C:\\app\\.env.test']) {
     assert.equal(resolveTextSyntaxProfile('auto', fileName), 'dotenv');
@@ -1275,4 +1279,64 @@ test('XML syntax preview leaves malformed constructs uncolored and respects shar
   const manyTags = highlightTextSyntax('<x/>'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS), 'xml');
   assert.equal(manyTags.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
   assert.equal(manyTags.isTruncated, true);
+});
+
+test('HTML syntax preview colors markup and entities while leaving raw-text contents opaque', () => {
+  const source = '<!doctype html>\n<!-- page -->\n<div class=box data-label="A &amp; B">Hello &amp; world</div>\n<script>const sample = "<fake attr=\'x\'> &amp;";</script>\n';
+  const preview = highlightTextSyntax(source, 'html');
+  const tokens = preview.tokens.map(token => ({ text: source.slice(token.start, token.end), kind: token.kind }));
+  assert.deepEqual(tokens, [
+    { text: '<!doctype html>', kind: 'html-declaration' },
+    { text: '<!-- page -->', kind: 'html-comment' },
+    { text: '<', kind: 'html-operator' },
+    { text: 'div', kind: 'html-tag' },
+    { text: 'class', kind: 'html-attribute' },
+    { text: '=', kind: 'html-operator' },
+    { text: 'box', kind: 'html-string' },
+    { text: 'data-label', kind: 'html-attribute' },
+    { text: '=', kind: 'html-operator' },
+    { text: '"A &amp; B"', kind: 'html-string' },
+    { text: '>', kind: 'html-operator' },
+    { text: '&amp;', kind: 'html-entity' },
+    { text: '</', kind: 'html-operator' },
+    { text: 'div', kind: 'html-tag' },
+    { text: '>', kind: 'html-operator' },
+    { text: '<', kind: 'html-operator' },
+    { text: 'script', kind: 'html-tag' },
+    { text: '>', kind: 'html-operator' },
+    { text: '</', kind: 'html-operator' },
+    { text: 'script', kind: 'html-tag' },
+    { text: '>', kind: 'html-operator' }
+  ]);
+  assert.equal(preview.isTruncated, false);
+  assert.equal(source.slice(0, preview.highlightedThrough), source);
+});
+
+test('HTML syntax preview keeps a trailing slash in an unquoted URL value', () => {
+  const source = '<div src=https://host/app/>';
+  const preview = highlightTextSyntax(source, 'html');
+  assert.deepEqual(preview.tokens.map(token => [source.slice(token.start, token.end), token.kind]), [
+    ['<', 'html-operator'], ['div', 'html-tag'], ['src', 'html-attribute'], ['=', 'html-operator'],
+    ['https://host/app/', 'html-string'], ['>', 'html-operator']
+  ]);
+});
+
+test('HTML syntax preview stops at incomplete markup and respects shared preview bounds', () => {
+  for (const source of ['<div', '<div value="unfinished', '<!-- unfinished']) {
+    assert.equal(highlightTextSyntax(source, 'html').tokens.length, 0);
+  }
+
+  const rawText = '<script/>const sample = "</scripture><fake> &amp;";</script><noscript><fake></noscript><p>done</p>';
+  const rawPreview = highlightTextSyntax(rawText, 'html');
+  assert.equal(rawPreview.tokens.filter(token => token.kind === 'html-tag').map(token => rawText.slice(token.start, token.end)).join(','), 'script,script,noscript,noscript,p,p');
+  assert.equal(rawPreview.tokens.filter(token => token.kind === 'html-entity').length, 0);
+
+  const oversized = highlightTextSyntax(`<p>${'x'.repeat(MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS + 100)}`, 'html');
+  assert.equal(oversized.highlightedThrough, MAX_TEXT_SYNTAX_PREVIEW_CODE_UNITS);
+  assert.equal(oversized.isTruncated, true);
+  assert.ok(oversized.tokens.every(token => token.end <= oversized.highlightedThrough));
+
+  const manyComments = highlightTextSyntax('<!-- x -->'.repeat(MAX_TEXT_SYNTAX_PREVIEW_TOKENS + 10), 'html');
+  assert.equal(manyComments.tokens.length, MAX_TEXT_SYNTAX_PREVIEW_TOKENS);
+  assert.equal(manyComments.isTruncated, true);
 });

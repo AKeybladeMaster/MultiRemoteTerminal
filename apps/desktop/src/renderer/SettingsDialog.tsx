@@ -381,7 +381,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
       <header className="settings-header">
         <div>
           <h2 id="settings-heading">Workbench settings</h2>
-          <p id="settings-description">Choose which connections to remember, set your workbench logo and greeting, and control terminal tools and colors.</p>
+          <p id="settings-description">Review connection security, manage saved-password protection, and control terminal tools and workbench preferences.</p>
         </div>
         <button ref={closeButton} type="button" className="quiet-button" disabled={saving || logoPicking || profileActionBusy || settingsTemplateBusy || credentialVaultBusy} onClick={onClose}>Close</button>
       </header>
@@ -430,6 +430,12 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
               <p className="settings-highlight-help" id={descriptionId}>{tool.description}</p>
             </div>;
           })}
+        </section>
+        <section className="settings-highlights" aria-labelledby="security-policy-heading">
+          <h3 id="security-policy-heading">Security policy</h3>
+          <p className="settings-highlight-help"><strong>SSH host keys.</strong> New SSH hosts require explicit fingerprint approval. A changed key blocks the connection. Verify the new fingerprint independently before resetting saved host trust and reconnecting.</p>
+          <p className="settings-highlight-help"><strong>Local and SOCKS tunnels.</strong> Local and SOCKS tunnels bind to 127.0.0.1, so other devices cannot connect to them directly.</p>
+          <p className="settings-highlight-help"><strong>Remote forwarding.</strong> Remote forwarding requests 127.0.0.1, but the server's GatewayPorts policy may expose the listener more widely. Review the server's forwarding policy before starting.</p>
         </section>
         <div className="settings-highlights">
           <h3>Credential vault</h3>

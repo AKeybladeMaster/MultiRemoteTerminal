@@ -84,7 +84,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
   terminalHighlightEnabled, terminalHighlightRules, terminalShellSyntaxEnabled, onInput, onOutput, onReady, onError }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | undefined>(undefined);
-  const fit = useRef<FitAddon | undefined>(undefined);
+  const fit = useRef<(() => void) | undefined>(undefined);
   const activeRef = useRef(active);
   const canWriteRef = useRef(canWrite);
   const shellSyntaxEnabledRef = useRef(terminalShellSyntaxEnabled);
@@ -146,12 +146,23 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       scrollback: 3_000, screenReaderMode: true, theme: terminalThemes[theme]
     });
     const fitAddon = new FitAddon();
+    let pendingLocalResize: Promise<void> = Promise.resolve();
     instance.loadAddon(fitAddon);
+    const fitActiveTerminal = () => {
+      const columns = instance.cols;
+      const rows = instance.rows;
+      fitAddon.fit();
+      if (transport !== 'local' || !activeRef.current || (columns === instance.cols && rows === instance.rows)) return;
+      pendingLocalResize = commands.resize(sessionId, instance.cols, instance.rows).then(reply => {
+        if (!reply.ok) onError(`Terminal size could not be updated (${reply.error.code}).`);
+      }, () => onError('Terminal size could not be updated.'));
+    };
     instance.onData(data => {
       if (!canWriteRef.current) {
         clearShellInputState();
         return;
       }
+      if (transport === 'local' && activeRef.current) fitActiveTerminal();
       if (data === '\r' || data === '\n') {
         const anchor = shellInputAnchor.current;
         let continuation: TerminalContinuationState | undefined;
@@ -168,7 +179,8 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
         clearShellInputState();
       } else beginShellInputAnchor(instance);
       onInput(sessionId, data);
-      const sent = commands.write(sessionId, data);
+      const write = () => commands.write(sessionId, data);
+      const sent = transport === 'local' ? pendingLocalResize.then(write) : write();
       void sent.then(reply => {
         if (!reply.ok) {
           clearShellInputState();
@@ -184,6 +196,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
         clearShellInputState();
         return;
       }
+      if (transport === 'local' && activeRef.current) fitActiveTerminal();
       beginShellInputAnchor(instance);
       const pasted = commands.paste(sessionId);
       void pasted.then(reply => {
@@ -207,16 +220,17 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
     const onPaste = (event: ClipboardEvent) => { event.preventDefault(); pasteFromClipboard(); };
     host.current.addEventListener('paste', onPaste);
     instance.onResize(({ cols, rows }) => {
-      if (!canWriteRef.current) return;
+      if (!canWriteRef.current || transport === 'local') return;
       const resized = commands.resize(sessionId, cols, rows);
-      void resized.then(reply => {
+      const settled = resized.then(reply => {
         if (!reply.ok) onError(`Terminal size could not be updated (${reply.error.code}).`);
-      });
+      }, () => onError('Terminal size could not be updated.'));
+      void settled;
     });
     instance.open(host.current);
     terminal.current = instance;
-    fit.current = fitAddon;
-    const observer = new ResizeObserver(() => { if (activeRef.current) fitAddon.fit(); });
+    fit.current = fitActiveTerminal;
+    const observer = new ResizeObserver(() => { if (activeRef.current) fitActiveTerminal(); });
     observer.observe(host.current);
     const handle: TerminalUiHandle = Object.freeze({
       write: (data: string, onParsed: () => void) => {
@@ -241,7 +255,7 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
       }
     });
     onReady(sessionId, handle);
-    requestAnimationFrame(() => { if (activeRef.current) fitAddon.fit(); });
+    requestAnimationFrame(() => { if (activeRef.current) fitActiveTerminal(); });
     return () => {
       observer.disconnect();
       host.current?.removeEventListener('paste', onPaste);
@@ -273,11 +287,11 @@ export function TerminalPane({ sessionId, title, transport, active, canWrite, th
 
   useLayoutEffect(() => {
     const instance = terminal.current;
-    const fitAddon = fit.current;
-    if (!instance || !fitAddon) return;
+    const fitTerminal = fit.current;
+    if (!instance || !fitTerminal) return;
     instance.options.theme = terminalThemes[theme];
     instance.options.fontSize = fontSize;
-    if (active) requestAnimationFrame(() => fitAddon.fit());
+    if (active) requestAnimationFrame(fitTerminal);
   }, [active, fontSize, theme]);
 
   return <div className="terminal-host" ref={host} data-mrt-terminal-session-id={sessionId} aria-label={`${title} terminal output`} />;

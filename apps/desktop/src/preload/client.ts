@@ -91,7 +91,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
   const activeTerminalWrites = new Map<string, Set<Promise<void>>>();
+  const sentTerminalInputs = new Map<string, Set<Promise<void>>>();
   const pendingInputChars = new Map<string, number>();
+  const localTerminalResizeBarriers = new Map<string, Set<Promise<void>>>();
   const serialConfigurations = new Map<string, SerialConfiguration>();
 
   function send<T>(request: CommandRequest, timeoutMs?: number, onSettled?: () => void): Promise<CommandReply<T>> {
@@ -189,6 +191,24 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     return active ? Promise.all([...active].map(write => write.then(() => undefined, () => undefined))).then(() => undefined) : Promise.resolve();
   }
 
+  function trackSentTerminalInput(sessionId: string, invocationSettled: Promise<void>): void {
+    let sent = sentTerminalInputs.get(sessionId);
+    if (!sent) {
+      sent = new Set();
+      sentTerminalInputs.set(sessionId, sent);
+    }
+    const tracked = invocationSettled.then(() => {
+      sent?.delete(tracked);
+      if (sent?.size === 0 && sentTerminalInputs.get(sessionId) === sent) sentTerminalInputs.delete(sessionId);
+    });
+    sent.add(tracked);
+  }
+
+  function waitForSentTerminalInputs(sessionId: string): Promise<void> {
+    const sent = sentTerminalInputs.get(sessionId);
+    return sent ? Promise.all([...sent].map(write => write.then(() => undefined, () => undefined))).then(() => undefined) : Promise.resolve();
+  }
+
   function finishBarrierOperation(sessionId: string, barrier: TerminalInputBarrier): void {
     queuedInputOperations--;
     if (!barrier.pendingPaste && barrier.pendingWrites.size === 0 && !barrier.closing && terminalInputBarriers.get(sessionId) === barrier) {
@@ -198,6 +218,29 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
 
   function createInputBarrier(sessionId: string): TerminalInputBarrier {
     return { tail: waitForActiveWrites(sessionId), pendingWrites: new Set(), pendingPaste: false, closing: false };
+  }
+
+  async function waitForLocalTerminalResizes(sessionId: string): Promise<void> {
+    while (true) {
+      const pending = localTerminalResizeBarriers.get(sessionId);
+      if (!pending?.size) return;
+      await Promise.all([...pending]);
+    }
+  }
+
+  function trackLocalTerminalResize(sessionId: string, resized: Promise<TerminalActionReply>, invocationSettled: Promise<void>): Promise<TerminalActionReply> {
+    let pending = localTerminalResizeBarriers.get(sessionId);
+    if (!pending) {
+      pending = new Set();
+      localTerminalResizeBarriers.set(sessionId, pending);
+    }
+    const barrier = Promise.all([resized.then(() => undefined, () => undefined), invocationSettled]).then(() => undefined);
+    pending.add(barrier);
+    void barrier.then(() => {
+      pending?.delete(barrier);
+      if (pending?.size === 0 && localTerminalResizeBarriers.get(sessionId) === pending) localTerminalResizeBarriers.delete(sessionId);
+    });
+    return resized;
   }
 
   function writeTerminalInput(sessionId: string, data: string, command: 'terminal.write' | 'ssh.write' | 'telnet.write' | 'serial.write',
@@ -211,7 +254,15 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     const release = reserveRelease(sessionId, data.length);
     if (!barrier) {
       const invocation = createSettlementSignal();
-      const reply = sendReservedInput(request, release, timeoutMs, invocation.settle);
+      const ready = command === 'terminal.write' ? waitForLocalTerminalResizes(sessionId) : Promise.resolve();
+      const reply = ready.then(() => {
+        if (command === 'terminal.write') trackSentTerminalInput(sessionId, invocation.promise);
+        return sendReservedInput(request, release, timeoutMs, invocation.settle);
+      }).catch(() => {
+        release();
+        invocation.settle();
+        return { requestId: request.requestId, ...failure('UNAVAILABLE', 'terminal') };
+      });
       trackTerminalWrite(sessionId, invocation.promise);
       return reply;
     }
@@ -221,7 +272,11 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     }
     queuedInputOperations++;
     const invocation = createSettlementSignal();
-    const queued = barrier.tail.then(() => sendReservedInput(request, release, timeoutMs, invocation.settle))
+    const queued = barrier.tail.then(() => command === 'terminal.write' ? waitForLocalTerminalResizes(sessionId) : undefined)
+      .then(() => {
+        if (command === 'terminal.write') trackSentTerminalInput(sessionId, invocation.promise);
+        return sendReservedInput(request, release, timeoutMs, invocation.settle);
+      })
       .catch(() => {
         release();
         invocation.settle();
@@ -258,7 +313,11 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     const release = reserveRelease(sessionId, maxChars);
     const paste = barrier.tail.then(async () => {
       if (!await authorization) return { requestId: request.requestId, ...failure('FORBIDDEN') };
-      return sendReservedInput(request, release, timeoutMs);
+      if (command === 'terminal.paste') await waitForLocalTerminalResizes(sessionId);
+      if (command !== 'terminal.paste') return sendReservedInput(request, release, timeoutMs);
+      const invocation = createSettlementSignal();
+      trackSentTerminalInput(sessionId, invocation.promise);
+      return sendReservedInput(request, release, timeoutMs, invocation.settle);
     }).catch(() => {
       release();
       return { requestId: request.requestId, ...failure('UNAVAILABLE', 'terminal') };
@@ -329,7 +388,14 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return pasteTerminalInput(sessionId, 'terminal.paste');
     },
     resizeTerminal(sessionId: string, columns: number, rows: number): Promise<TerminalActionReply> {
-      return send(voidRequest('terminal.resize', { sessionId, columns, rows }), 5_000);
+      const invocation = createSettlementSignal();
+      const resized = waitForSentTerminalInputs(sessionId).then(() => {
+        const inFlightBeforeSend = inFlight;
+        const sent = send<Record<string, never>>(voidRequest('terminal.resize', { sessionId, columns, rows }), 5_000, invocation.settle);
+        if (inFlight === inFlightBeforeSend) invocation.settle();
+        return sent;
+      });
+      return trackLocalTerminalResize(sessionId, resized, invocation.promise);
     },
     acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply> {
       return send(voidRequest('terminal.ack', { sessionId, sequence }), 5_000);

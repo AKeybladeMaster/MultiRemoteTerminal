@@ -119,19 +119,30 @@ async function closePackagedApp(app: PackagedApp): Promise<void> {
   if (!exitedGracefully) await terminateProcessTree(app.process);
 }
 
+async function expectStartupTerminal(page: Page): Promise<void> {
+  await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 30_000 });
+  await expect(page.getByRole('tab')).toHaveCount(1, { timeout: 30_000 });
+  const startupTab = page.getByRole('tab').first();
+  await expect(startupTab).toHaveAttribute('aria-selected', 'true');
+  const startupPanelId = await startupTab.getAttribute('aria-controls');
+  if (!startupPanelId) throw new Error('Packaged startup terminal has no panel');
+  await expect(page.locator(`#${startupPanelId} .xterm-rows`)).toContainText(/PS .*?>/u, { timeout: 30_000 });
+}
+
 async function expectLocalPowerShellTerminal(page: Page): Promise<void> {
   const existingTabCount = await page.getByRole('tab').count();
   await page.keyboard.press('Control+Shift+P');
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await expect(palette).toBeVisible();
   await palette.getByRole('button', { name: 'New PowerShell terminal', exact: true }).click();
-  await expect.poll(() => page.getByRole('tab').count(), { timeout: 20_000 }).toBeGreaterThan(existingTabCount);
-  const tab = page.getByRole('tab').last();
+  await expect(page.getByRole('tab')).toHaveCount(existingTabCount + 1, { timeout: 20_000 });
+  const tab = page.getByRole('tab').nth(existingTabCount);
   await expect(tab).toBeVisible();
   const panelId = await tab.getAttribute('aria-controls');
   if (!panelId) throw new Error('Packaged PowerShell terminal has no panel');
   const panel = page.locator(`#${panelId}`);
   await tab.click();
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
   await expect(panel.locator('.terminal-host')).toBeVisible();
   await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
   await page.keyboard.type("Write-Output 'MRT-PACKAGED-LOCAL-SHELL'");
@@ -145,13 +156,14 @@ async function expectLocalBashTerminal(page: Page): Promise<void> {
   const palette = page.getByRole('dialog', { name: 'Command palette' });
   await expect(palette).toBeVisible();
   await palette.getByRole('button', { name: 'New Bash terminal', exact: true }).click();
-  await expect.poll(() => page.getByRole('tab').count(), { timeout: 20_000 }).toBeGreaterThan(existingTabCount);
-  const tab = page.getByRole('tab').last();
+  await expect(page.getByRole('tab')).toHaveCount(existingTabCount + 1, { timeout: 20_000 });
+  const tab = page.getByRole('tab').nth(existingTabCount);
   await expect(tab).toBeVisible();
   const panelId = await tab.getAttribute('aria-controls');
   if (!panelId) throw new Error('Packaged Bash terminal has no panel');
   const panel = page.locator(`#${panelId}`);
   await tab.click();
+  await expect(tab).toHaveAttribute('aria-selected', 'true');
   await expect(panel.locator('.terminal-host')).toBeVisible();
   await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
   await page.keyboard.type("printf 'MRT-PACKAGED-%s\\n' 'BASH-OK'");
@@ -163,7 +175,7 @@ async function expectPackagedWindow(page: Page, userData: string, resourcesPath:
   readonly deviceScaleFactor?: number;
   readonly emulateOffline?: boolean;
 } = {}): Promise<void> {
-  await expect(page.getByRole('heading', { name: 'No terminal is open' })).toBeVisible({ timeout: 30_000 });
+  await expectStartupTerminal(page);
   expect((await stat(join(resourcesPath, 'credential-prompt.ps1'))).isFile()).toBe(true);
   if (options.deviceScaleFactor !== undefined) {
     await expect.poll(() => page.evaluate(() => devicePixelRatio)).toBe(options.deviceScaleFactor);
@@ -370,6 +382,7 @@ test('portable app opens a usable terminal and keeps profile data beside the exe
     await expect.poll(async () => (await stat(join(expected, 'multiremote-terminal.sqlite')).catch(() => undefined)) !== undefined,
       { timeout: 60_000, intervals: [200, 500, 1_000] }).toBe(true);
     await expect(app.page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
+    await expectStartupTerminal(app.page);
     await expectLocalPowerShellTerminal(app.page);
     await expectLocalBashTerminal(app.page);
     expect(app.process.exitCode).toBeNull();

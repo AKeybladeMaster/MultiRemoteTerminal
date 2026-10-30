@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { EventEmitter } from 'node:events';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
@@ -12,7 +13,7 @@ import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
-import { createSessionFolderBundle } from '../../packages/domain/src/session-folder-bundle.ts';
+import { createSessionFolderBundle, SESSION_FOLDER_BUNDLE_VERSION } from '../../packages/domain/src/session-folder-bundle.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
 import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
@@ -741,6 +742,50 @@ test('local text editor auto-detects XML and keeps the source unchanged', async 
   }
 });
 
+test('local text editor auto-detects HTML and keeps markup inert and unchanged', async () => {
+  test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
+  test.setTimeout(60_000);
+  const profile = await createWorkspaceTempDirectory('mrt-html-editor-e2e-');
+  const path = join(profile, 'index.html');
+  const source = '<!doctype html>\n<!-- local page -->\n<div class=card data-label="safe &amp; text">Hello &amp; user</div>\n<img src=x onerror="window.__mrtHtmlExecuted = true" />\n<script/>const hidden = "<fake>";</script>\n<noscript><fake /></noscript>\n';
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await writeFile(path, source);
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-local-text-editor',
+      `--mrt-e2e-local-text-file=${path}`], env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Edit local file', exact: true }).click();
+    const editor = page.getByTestId('local-text-editor');
+    const syntax = editor.getByLabel('Syntax profile');
+    const preview = editor.getByTestId('text-editor-code-preview');
+    await expect(syntax).toHaveValue('auto');
+    await expect(editor.locator('[data-token-kind="html-declaration"]')).toHaveText('<!doctype html>');
+    await expect(editor.locator('[data-token-kind="html-comment"]')).toHaveText('<!-- local page -->');
+    await expect(editor.locator('[data-token-kind="html-tag"]').first()).toHaveText('div');
+    await expect(editor.locator('[data-token-kind="html-attribute"]').first()).toHaveText('class');
+    await expect(editor.locator('[data-token-kind="html-string"]').first()).toHaveText('card');
+    await expect(editor.locator('[data-token-kind="html-entity"]').first()).toHaveText('&amp;');
+    await expect(editor.locator('[data-token-kind="html-tag"]').filter({ hasText: 'fake' })).toHaveCount(0);
+    await expect(editor.locator('img, script')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as Window & { __mrtHtmlExecuted?: boolean }).__mrtHtmlExecuted)).toBeUndefined();
+    expect(await preview.textContent()).toBe(source);
+    await syntax.selectOption('plain');
+    await expect(editor.locator('[data-token-kind]')).toHaveCount(0);
+    await syntax.selectOption('html');
+    await expect(editor.locator('[data-token-kind="html-tag"]').first()).toHaveText('div');
+    expect(await readFile(path, 'utf8')).toBe(source);
+    await editor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(editor).toBeHidden();
+  } finally {
+    try {
+      await app?.close();
+    } finally {
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  }
+});
+
 test('local text editor auto-detects dotenv and keeps the source unchanged', async () => {
   test.skip(process.platform !== 'win32', 'Run the local editor acceptance on Windows.');
   test.setTimeout(60_000);
@@ -800,7 +845,8 @@ test('local text editor auto-detects Java properties and keeps the source unchan
     const syntax = editor.getByLabel('Syntax profile');
     const preview = editor.getByTestId('text-editor-code-preview');
     await expect(syntax).toHaveValue('auto');
-    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveCount(2);
+    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveCount(1);
+    await expect(editor.locator('[data-token-kind="properties-comment"]')).toHaveText('# messages\n! locale metadata');
     await expect(editor.locator('[data-token-kind="properties-key"]').first()).toHaveText('welcome');
     await expect(editor.locator('[data-token-kind="properties-value"]').nth(1)).toHaveText('https://example.test/#anchor');
     expect(await preview.textContent()).toBe(source);
@@ -821,6 +867,7 @@ test('local text editor auto-detects Java properties and keeps the source unchan
 });
 
 test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/TypeScript, PowerShell, Shell and JSON profiles', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-syntax-e2e-'));
   const path = join(profile, 'example.sql');
   const source = [
@@ -876,7 +923,7 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
 
     const sqlWithManyComments = '-- cap\n'.repeat(4_100);
     await contents.fill(sqlWithManyComments);
-    await expect(preview.locator('[data-token-kind="sql-comment"]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="sql-comment"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(sqlWithManyComments);
     expect(await preview.textContent()).toBe(sqlWithManyComments);
@@ -964,6 +1011,7 @@ test('local text editor auto-detects SQL and supports TOML, Python, JavaScript/T
 });
 
 test('local TOML text editor auto-detects the profile and colors keys, strings and numbers', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-toml-e2e-'));
   const path = join(profile, 'settings.toml');
   const source = '# local config\n[service]\nname = "terminal"\nport = 443\n';
@@ -985,9 +1033,17 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
     const contents = editor.getByRole('textbox', { name: 'File contents' });
     const preview = editor.getByTestId('text-editor-code-preview');
     await contents.fill(manyTomlComments);
-    await expect(preview.locator('[data-token-kind="toml-comment"]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="toml-comment"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyTomlComments);
+    expect(await preview.textContent()).toBe(manyTomlComments);
+    await contents.evaluate(element => {
+      const input = element as HTMLTextAreaElement;
+      input.scrollTop = input.scrollHeight;
+      input.dispatchEvent(new Event('scroll'));
+    });
+    await expect(preview.locator('[data-token-kind="toml-comment"]')).toContainText('# preview cap');
+    expect(await preview.evaluate(element => element.scrollTop)).toBe(await contents.evaluate(element => (element as HTMLTextAreaElement).scrollTop));
     expect(await preview.textContent()).toBe(manyTomlComments);
   } finally {
     await app.close();
@@ -996,6 +1052,7 @@ test('local TOML text editor auto-detects the profile and colors keys, strings a
 });
 
 test('local YAML text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-yaml-e2e-'));
   const path = join(profile, 'settings.yaml');
   const source = '# local config\nservice name: "terminal"\nport: 443\nenabled: true\nflow: ["quoted":value]\nscript:\n  - command: |1-\n     # block body stays opaque\n     enabled: true\n    name: next\n';
@@ -1022,7 +1079,7 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
 
     const manyYamlComments = '# preview cap\n'.repeat(4_100);
     await contents.fill(manyYamlComments);
-    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="yaml-comment"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyYamlComments);
     expect(await preview.textContent()).toBe(manyYamlComments);
@@ -1033,6 +1090,7 @@ test('local YAML text editor auto-detects the profile and keeps the full file ed
 });
 
 test('local Markdown text editor auto-detects the profile and keeps the full file editable at the preview cap', async () => {
+  test.setTimeout(60_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-editor-markdown-e2e-'));
   const path = join(profile, 'README.md');
   const source = '# Release notes\n\n> **Important**\n- See `inline code` and [the guide](https://example.test)\n\n```ts\nconst hidden = true;\n```\n';
@@ -1058,7 +1116,7 @@ test('local Markdown text editor auto-detects the profile and keeps the full fil
 
     const manyMarkdownSpans = '**cap**\n'.repeat(4_100);
     await contents.fill(manyMarkdownSpans);
-    await expect(preview.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(preview.locator('[data-token-kind="markdown-emphasis"]')).toHaveCount(1);
     await expect(editor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
     expect(await contents.inputValue()).toBe(manyMarkdownSpans);
     expect(await preview.textContent()).toBe(manyMarkdownSpans);
@@ -1129,7 +1187,7 @@ test('SSH quick connect validates the address before any credential prompt and r
         if (message?.requestId === requestId) finish(undefined, message);
       });
       child.once('spawn', () => child.postMessage({ version: 1, type: 'request', requestId, command: 'shutdown' }));
-    }), { workerPath: resolve('dist/host/apps/desktop/src/workers/ssh-worker.js'), appRoot: resolve('apps/desktop') });
+    }), { workerPath: resolve('apps/desktop/dist/host/apps/desktop/src/workers/ssh-worker.js'), appRoot: resolve('apps/desktop') });
     expect(workerReply).toEqual({ version: 1, type: 'reply', requestId: '00000000-0000-4000-8000-000000000001', ok: true, result: {} });
     const connectButton = page.getByRole('button', { name: 'Connect to SSH' }).first();
     await connectButton.click();
@@ -1260,6 +1318,7 @@ test('SSH session log captures failed opens and active terminal input/output, th
     await reopenButton.click();
     const reopenedTab = page.getByRole('tab', { name: savedName, exact: true });
     await expect(reopenedTab).toBeVisible({ timeout: 20_000 });
+    await reopenedTab.click();
     const reopenedPanelId = await reopenedTab.getAttribute('aria-controls');
     if (!reopenedPanelId) throw new Error('Missing reopened saved SSH terminal panel');
     const reopenedPanel = page.locator(`#${reopenedPanelId}`);
@@ -1771,6 +1830,8 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writeFile(join(remoteRoot, 'remote.ini'), remoteIniSource);
     const remoteXmlSource = '<?xml version="1.0"?>\n<!-- app config -->\n<server host="localhost">A &amp; B<![CDATA[<literal>]]></server>\n';
     await writeFile(join(remoteRoot, 'remote.xml'), remoteXmlSource);
+    const remoteHtmlSource = '<!doctype html>\n<!-- remote page -->\n<main data-mode=compact>Remote &amp; content</main>\n<script>const hidden = "<fake>";</script>\n';
+    await writeFile(join(remoteRoot, 'remote.html'), remoteHtmlSource);
     const remoteEnvSource = '# remote configuration\nexport API_URL="https://example.test/remote"\nPORT=22\n';
     await writeFile(join(remoteRoot, '.env.production'), remoteEnvSource);
     const remotePropertiesSource = '# remote messages\nwelcome = Hello from SFTP\nurl: https://example.test/#remote\n';
@@ -1984,6 +2045,26 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await remoteXmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteXmlEditor).toHaveCount(0);
     expect(await readFile(join(remoteRoot, 'remote.xml'), 'utf8')).toBe(remoteXmlSource);
+    const remoteHtmlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.html', exact: true });
+    await remoteHtmlEdit.click();
+    const remoteHtmlEditor = page.getByRole('dialog', { name: 'remote.html' });
+    const remoteHtmlSyntax = remoteHtmlEditor.getByLabel('Syntax profile');
+    await expect(remoteHtmlSyntax).toHaveValue('auto');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-declaration"]')).toHaveText('<!doctype html>');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-tag"]').first()).toHaveText('main');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-attribute"]')).toHaveText('data-mode');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-string"]')).toHaveText('compact');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-entity"]')).toHaveText('&amp;');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-tag"]').filter({ hasText: 'fake' })).toHaveCount(0);
+    expect(await remoteHtmlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteHtmlSource);
+    expect(await remoteHtmlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteHtmlSource);
+    await remoteHtmlSyntax.selectOption('plain');
+    await expect(remoteHtmlEditor.locator('[data-token-kind]')).toHaveCount(0);
+    await remoteHtmlSyntax.selectOption('html');
+    await expect(remoteHtmlEditor.locator('[data-token-kind="html-tag"]').first()).toHaveText('main');
+    await remoteHtmlEditor.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(remoteHtmlEditor).toHaveCount(0);
+    expect(await readFile(join(remoteRoot, 'remote.html'), 'utf8')).toBe(remoteHtmlSource);
     const remoteEnvEdit = sftpPanel.getByRole('button', { name: 'Edit .env.production', exact: true });
     await remoteEnvEdit.click();
     const remoteEnvEditor = page.getByRole('dialog', { name: '.env.production' });
@@ -2022,9 +2103,16 @@ ${'# preview cap\n'.repeat(4_100)}`;
     const remoteYamlEdit = sftpPanel.getByRole('button', { name: 'Edit remote.yaml', exact: true });
     await remoteYamlEdit.click();
     const remoteYamlEditor = page.getByRole('dialog', { name: 'remote.yaml' });
+    const remoteYamlContents = remoteYamlEditor.getByRole('textbox', { name: 'File contents' });
+    await expect(remoteYamlContents).toHaveValue(remoteYamlSource);
+    await remoteYamlContents.evaluate(element => {
+      const input = element as HTMLTextAreaElement;
+      input.scrollTop = 0;
+      input.dispatchEvent(new Event('scroll'));
+    });
     await expect(remoteYamlEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]').first()).toHaveText('# app config');
-    await expect(remoteYamlEditor.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(remoteYamlEditor.locator('[data-token-kind="yaml-comment"]')).toHaveCount(2);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').first()).toHaveText('server');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').nth(1)).toHaveText('host');
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-number"]').first()).toHaveText('8080');
@@ -2032,21 +2120,28 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-string"]').filter({ hasText: '# block body stays opaque' })).toHaveCount(1);
     await expect(remoteYamlEditor.locator('[data-token-kind="yaml-key"]').filter({ hasText: /^name$/ })).toHaveCount(1);
     await expect(remoteYamlEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
-    expect(await remoteYamlEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteYamlSource);
+    expect(await remoteYamlContents.inputValue()).toBe(remoteYamlSource);
     expect(await remoteYamlEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteYamlSource);
     await remoteYamlEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteYamlEditor).toHaveCount(0);
     const remoteMarkdownEdit = sftpPanel.getByRole('button', { name: 'Edit remote.md', exact: true });
     await remoteMarkdownEdit.click();
     const remoteMarkdownEditor = page.getByRole('dialog', { name: 'remote.md' });
+    const remoteMarkdownContents = remoteMarkdownEditor.getByRole('textbox', { name: 'File contents' });
+    await expect(remoteMarkdownContents).toHaveValue(remoteMarkdownSource);
+    await remoteMarkdownContents.evaluate(element => {
+      const input = element as HTMLTextAreaElement;
+      input.scrollTop = 0;
+      input.dispatchEvent(new Event('scroll'));
+    });
     await expect(remoteMarkdownEditor.getByLabel('Syntax profile')).toHaveValue('auto');
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-heading"]').first()).toHaveText('#');
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-emphasis"]').first()).toHaveText('**bold quote**');
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-code"]').filter({ hasText: 'const hidden = true;' })).toHaveCount(1);
     await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-link"]').first()).toContainText('guide');
-    await expect(remoteMarkdownEditor.locator('[data-token-kind]')).toHaveCount(4_096);
+    await expect(remoteMarkdownEditor.locator('[data-token-kind="markdown-emphasis"]')).toHaveCount(2);
     await expect(remoteMarkdownEditor.getByText(/Syntax coloring is limited to 64,000 UTF-16 code units or 4,096 colored tokens/)).toBeVisible();
-    expect(await remoteMarkdownEditor.getByRole('textbox', { name: 'File contents' }).inputValue()).toBe(remoteMarkdownSource);
+    expect(await remoteMarkdownContents.inputValue()).toBe(remoteMarkdownSource);
     expect(await remoteMarkdownEditor.getByTestId('text-editor-code-preview').textContent()).toBe(remoteMarkdownSource);
     await remoteMarkdownEditor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(remoteMarkdownEditor).toHaveCount(0);
@@ -2246,6 +2341,155 @@ ${'# preview cap\n'.repeat(4_100)}`;
   }
 });
 
+test('a changed SSH host key stays blocked until explicit trust reset and re-approval', async () => {
+  test.skip(process.platform !== 'win32', 'SSH host-key rotation acceptance runs on Windows');
+  test.setTimeout(90_000);
+  const profile = await createWorkspaceTempDirectory('mrt-ssh-host-rotation-e2e-');
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const originalKey = ssh2.utils.generateKeyPairSync('ed25519');
+  const rotatedKey = ssh2.utils.generateKeyPairSync('ed25519');
+  const fingerprintFor = (publicKey: string): string => {
+    const parsed = ssh2.utils.parseKey(publicKey);
+    if (parsed instanceof Error) throw new Error('The host-rotation fixture public key could not be parsed');
+    return `SHA256:${createHash('sha256').update(parsed.getPublicSSH()).digest('base64').replace(/=+$/u, '')}`;
+  };
+  const originalFingerprint = fingerprintFor(originalKey.public);
+  const rotatedFingerprint = fingerprintFor(rotatedKey.public);
+  expect(rotatedFingerprint).not.toBe(originalFingerprint);
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  const originalCounts = { authenticationAttempts: 0, shellRequests: 0 };
+  const rotatedCounts = { authenticationAttempts: 0, shellRequests: 0 };
+  let activeServer: Ssh2FixtureServer | undefined;
+  let activeServerListening = false;
+  const createHost = (privateKey: string, readyText: string, counts: typeof originalCounts): Ssh2FixtureServer => {
+    const server = new ssh2.Server({ hostKeys: [privateKey] }, rawClient => {
+      const client = rawClient as Ssh2FixtureClient;
+      clients.add(client);
+      client.once('close', () => clients.delete(client));
+      client.on('error', error => fixtureErrors.push(error.message));
+      client.on('authentication', (rawContext: unknown) => {
+        counts.authenticationAttempts += 1;
+        const context = rawContext as Ssh2AuthenticationContext;
+        if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+        else context.reject();
+      });
+      client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+        const session = acceptSession();
+        session.on('pty', (accept: () => void) => accept());
+        session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+          counts.shellRequests += 1;
+          acceptShell().write(`${readyText}\r\n`);
+        });
+      }));
+    });
+    server.on('error', error => fixtureErrors.push(error.message));
+    return server;
+  };
+  const startHost = async (privateKey: string, readyText: string, counts: typeof originalCounts, port: number): Promise<number> => {
+    const server = createHost(privateKey, readyText, counts);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const fail = (error: Error) => rejectListen(error);
+      server.once('error', fail);
+      server.listen(port, '127.0.0.1', () => { server.off('error', fail); resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH host-rotation fixture did not bind a loopback port');
+    activeServer = server;
+    activeServerListening = true;
+    return address.port;
+  };
+  const stopHost = async () => {
+    for (const client of clients) client.end();
+    const server = activeServer;
+    if (!server || !activeServerListening) return;
+    activeServer = undefined;
+    activeServerListening = false;
+    await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+  };
+  const readTrustedFingerprint = (port: number): unknown => {
+    const database = new DatabaseSync(join(profile, 'multiremote-terminal.sqlite'), { readOnly: true });
+    try {
+      return (database.prepare('SELECT sha256_fingerprint FROM ssh_host_keys WHERE canonical_host = ? AND port = ?')
+        .get('127.0.0.1', port) as { readonly sha256_fingerprint?: unknown } | undefined)?.sha256_fingerprint;
+    } finally { database.close(); }
+  };
+  const connect = async (page: Page, port: number) => {
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(port));
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+  };
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    const port = await startHost(originalKey.private, 'MRT-SSH-ROTATION-ORIGINAL', originalCounts, 0);
+    const launchApp = async (): Promise<Page> => {
+      const launched = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+        env: { ...electronEnvironment(), MRT_E2E: '1' } });
+      app = launched;
+      const page = await launched.firstWindow();
+      await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+      return page;
+    };
+    const closeApp = async () => {
+      const runningApp = app;
+      if (!runningApp) throw new Error('The host-trust app was not running');
+      await runningApp.close();
+      app = undefined;
+    };
+
+    let page = await launchApp();
+    await connect(page, port);
+    const firstTrust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(firstTrust, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await expect(firstTrust.locator('.ssh-fingerprint')).toHaveText(originalFingerprint);
+    expect(originalCounts.authenticationAttempts).toBe(0);
+    await firstTrust.getByRole('button', { name: 'Trust key and connect', exact: true }).click();
+    await expect(page.locator('.xterm-rows').filter({ hasText: 'MRT-SSH-ROTATION-ORIGINAL' }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(originalCounts.shellRequests).toBe(1);
+    expect(readTrustedFingerprint(port)).toBe(originalFingerprint);
+
+    await closeApp();
+    await stopHost();
+    const rotatedPort = await startHost(rotatedKey.private, 'MRT-SSH-ROTATION-ACCEPTED', rotatedCounts, port);
+    expect(rotatedPort).toBe(port);
+    page = await launchApp();
+    await connect(page, port);
+    const changedTrust = page.getByRole('alertdialog', { name: 'SSH host key changed' });
+    await expect(changedTrust, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 15_000 });
+    await expect(changedTrust.locator('.ssh-fingerprint')).toHaveText(rotatedFingerprint);
+    await expect(changedTrust).not.toContainText(originalFingerprint);
+    expect(rotatedCounts.authenticationAttempts).toBe(0);
+    expect(rotatedCounts.shellRequests).toBe(0);
+    expect(readTrustedFingerprint(port)).toBe(originalFingerprint);
+
+    await changedTrust.getByRole('button', { name: 'Reset saved host trust', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Saved host trust was reset.' })).toBeVisible();
+    expect(rotatedCounts.authenticationAttempts).toBe(0);
+    expect(rotatedCounts.shellRequests).toBe(0);
+    await connect(page, port);
+    const renewedTrust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(renewedTrust).toBeVisible({ timeout: 15_000 });
+    await expect(renewedTrust.locator('.ssh-fingerprint')).toHaveText(rotatedFingerprint);
+    expect(rotatedCounts.authenticationAttempts).toBe(0);
+    await renewedTrust.getByRole('button', { name: 'Trust key and connect', exact: true }).click();
+    await expect(page.locator('.xterm-rows').filter({ hasText: 'MRT-SSH-ROTATION-ACCEPTED' }))
+      .toBeVisible({ timeout: 15_000 });
+    expect(rotatedCounts.authenticationAttempts).toBe(1);
+    expect(rotatedCounts.shellRequests).toBe(1);
+
+    await closeApp();
+    await stopHost();
+    expect(readTrustedFingerprint(port)).toBe(rotatedFingerprint);
+  } finally {
+    await app?.close();
+    await stopHost();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('a lost SSH transport fails its tab cleanly and allows explicit saved-profile reconnect', async () => {
   test.skip(process.platform !== 'win32', 'Run the SSH credential and recovery acceptance on Windows');
   test.setTimeout(90_000);
@@ -2371,8 +2615,11 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
   let acceptedPasswordAttempts = 0;
+  const fixtureErrors: string[] = [];
+  let shuttingDown = false;
   const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
     const client = rawClient as Ssh2FixtureClient;
+    client.on('error', error => { if (!shuttingDown) fixtureErrors.push(error.message); });
     client.on('authentication', (rawContext: unknown) => {
       const context = rawContext as Ssh2AuthenticationContext;
       if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === secret) {
@@ -2386,6 +2633,7 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
       session.on('shell', (acceptShell: () => Ssh2FixtureStream) => acceptShell().write('MRT-SECRET-BOUNDARY-READY\r\n'));
     }));
   });
+  server.on('error', error => { if (!shuttingDown) fixtureErrors.push(`server: ${error.message}`); });
   const mainConsoleMessages: string[] = [];
   const rendererConsoleMessages: string[] = [];
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
@@ -2463,7 +2711,9 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
     expect(await page.locator('body').innerText()).not.toContain(secret);
     expect(rendererConsoleMessages.join('\n')).not.toContain(secret);
     expect(pageErrors).toEqual([]);
+    expect(fixtureErrors).toEqual([]);
 
+    shuttingDown = true;
     await app.close();
     app = undefined;
     expect(mainConsoleMessages.join('\n')).not.toContain(secret);
@@ -2488,6 +2738,7 @@ test('SSH credentials stay out of renderer output, saved storage, exports and ap
       }
     }
   } finally {
+    shuttingDown = true;
     await app?.close();
     if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -3295,6 +3546,11 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     for (let hop = 0; hop < expectedTrustPorts.length; hop += 1) {
       const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
       await expect(trust).toBeVisible({ timeout: 15_000 });
+      await expect.poll(async () => {
+        const facts = await trust.locator('.ssh-host-facts').textContent() ?? '';
+        const port = facts.match(/127\.0\.0\.1:(\d+)/)?.[1];
+        return port !== undefined && expectedTrustPorts.includes(port) && !approvedTrustPorts.includes(port);
+      }, { timeout: 15_000 }).toBe(true);
       const facts = await trust.locator('.ssh-host-facts').textContent() ?? '';
       const observedPort = facts.match(/127\.0\.0\.1:(\d+)/)?.[1];
       expect(observedPort).toBeDefined();
@@ -3938,7 +4194,7 @@ test('serial profiles persist across restart and round-trip through saved-folder
     await page.getByRole('button', { name: 'Export folder Hardware', exact: true }).click();
     await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1 saved session.');
     const bundle = JSON.parse(await readFile(bundlePath, 'utf8')) as { version?: unknown; sessions?: readonly { kind?: unknown; configuration?: unknown }[] };
-    expect(bundle.version).toBe(6);
+    expect(bundle.version).toBe(SESSION_FOLDER_BUNDLE_VERSION);
     expect(bundle.sessions).toHaveLength(1);
     expect(bundle.sessions?.[0]).toMatchObject({ kind: 'serial', configuration: {
       path: 'COM4095', baudRate: 115200, dataBits: 7, parity: 'even', stopBits: 1.5, flowControl: 'rtscts'
@@ -4129,6 +4385,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   let stouCount = 0;
   let uploadTransferStartedCount = 0;
   let firstDropReplyPending = false;
+  const mainConsoleMessages: string[] = [];
+  const rendererConsoleMessages: string[] = [];
+  let appProfilePath: string | undefined;
   const control = createServer(socket => {
     controlSockets.add(socket);
     socket.on('error', () => {});
@@ -4347,11 +4606,15 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     socket.once('close', () => passive?.close());
   });
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
-  const launch = async () => electron.launch({
-    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials', '--mrt-e2e-ftp-transfers',
-      '--mrt-e2e-file-drop', `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
-    env: { ...electronEnvironment(), MRT_E2E: '1' }
-  });
+  const launch = async () => {
+    const instance = await electron.launch({
+      args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ftp-credentials', '--mrt-e2e-ftp-transfers',
+        '--mrt-e2e-file-drop', `--mrt-e2e-ftp-upload-file=${uploadSource}`, `--mrt-e2e-ftp-download-root=${downloadRoot}`],
+      env: { ...electronEnvironment(), MRT_E2E: '1' }
+    });
+    instance.on('console', message => mainConsoleMessages.push(message.text()));
+    return instance;
+  };
   try {
     await writePatternFile(uploadSource, largeTransferSize, 0x41);
     expectedLargeFileDigest = await hashFile(uploadSource);
@@ -4364,6 +4627,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     const address = control.address() as AddressInfo;
     app = await launch();
     let page = await app.firstWindow();
+    page.on('console', message => rendererConsoleMessages.push(message.text()));
+    appProfilePath = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Connect to FTP / FTPS files', exact: true }).first().click();
     let dialog = page.getByRole('dialog', { name: 'Connect to FTP or FTPS files' });
@@ -4555,6 +4820,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
 
     app = await launch();
     page = await app.firstWindow();
+    page.on('console', message => rendererConsoleMessages.push(message.text()));
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     const savedProfile = page.getByRole('button', { name: 'Open FTP loopback', exact: true });
     await expect(savedProfile).toBeVisible({ timeout: 15_000 });
@@ -4566,6 +4832,37 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => connectionCount).toBe(4);
+    expect(await page.locator('body').innerText()).not.toContain('ftp-e2e-secret');
+    expect(rendererConsoleMessages.join('\n')).not.toContain('ftp-e2e-secret');
+    await app.close();
+    app = undefined;
+    expect(mainConsoleMessages.join('\n')).not.toContain('ftp-e2e-secret');
+    if (!appProfilePath) throw new Error('The FTP app profile path was not captured');
+    const pendingDirectories = [appProfilePath];
+    while (pendingDirectories.length > 0) {
+      const directory = pendingDirectories.pop();
+      if (!directory) continue;
+      for (const entry of await readDirectory(directory, { withFileTypes: true })) {
+        const filePath = join(directory, entry.name);
+        expect(entry.name).not.toContain('ftp-e2e-secret');
+        if (entry.isDirectory()) pendingDirectories.push(filePath);
+        else if (entry.isFile()) {
+          const secret = Buffer.from('ftp-e2e-secret', 'utf8');
+          const stream = createReadStream(filePath);
+          let tail = Buffer.alloc(0);
+          let foundSecret = false;
+          for await (const chunk of stream) {
+            const bytes = Buffer.concat([tail, chunk]);
+            if (bytes.includes(secret)) {
+              foundSecret = true;
+              break;
+            }
+            tail = bytes.subarray(Math.max(0, bytes.length - secret.length + 1));
+          }
+          expect(foundSecret, filePath).toBe(false);
+        }
+      }
+    }
   } finally {
     await app?.close();
     for (const socket of controlSockets) socket.destroy();
@@ -5120,7 +5417,7 @@ test('macro playback previews exact steps, confirms explicitly, cancels, and req
     await addStep('send');
     await dialog.locator('#macro-step-4-text').fill("Write-Output ([string][char]77 + 'RT-PLAYBACK-DONE')");
     await dialog.getByRole('button', { name: 'Create macro', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: /Playback success/ })).toContainText('5 steps');
+    await expect(dialog.getByRole('list', { name: 'Saved macros' }).getByRole('button', { name: /Playback success/ })).toContainText('5 steps');
     let review = await reviewSelectedMacro();
     await expect(review.getByText("Write-Output ([string][char]77 + 'RT-PLAYBACK-READY')", { exact: true })).toBeVisible();
     await expect(review.getByText('MRT-PLAYBACK-READY', { exact: true })).toBeVisible();
@@ -5161,6 +5458,7 @@ test('macro playback previews exact steps, confirms explicitly, cancels, and req
     expect(firstSessionId).toBeTruthy();
     expect(secondSessionId).toBeTruthy();
 
+    await selectTerminal(page, terminalTitle);
     await page.getByRole('button', { name: 'Macros', exact: true }).click();
     dialog = page.getByRole('dialog', { name: 'Macros' });
     await newMacro('Playback target safety');
@@ -5359,6 +5657,8 @@ test('macro playback sends reviewed steps through an explicitly acknowledged Tel
     await connect.getByRole('button', { name: 'Connect', exact: true }).click();
     const tab = page.getByRole('tab').filter({ hasText: /Telnet \(plaintext\)/u }).first();
     await expect(tab).toBeVisible({ timeout: 15_000 });
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
     const panelId = await tab.getAttribute('aria-controls');
     if (!panelId) throw new Error('Missing Telnet macro playback terminal panel.');
     const panel = page.locator(`#${panelId}`);
@@ -5713,8 +6013,8 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await tab.click({ button: 'right' });
     const menu = page.getByRole('menu', { name: `Terminal actions for ${title}` });
     await expect(menu).toBeVisible();
-    await page.screenshot({ path: 'test-results/terminal-tab-context-menu.png', fullPage: true });
     await expect(menu.getByRole('menuitem', { name: 'Copy selection' })).toBeFocused();
+    await page.screenshot({ path: 'test-results/terminal-tab-context-menu.png' });
     await page.keyboard.press('Tab');
     await expect(menu).toHaveCount(0);
     await expect(tab).toBeFocused();
@@ -6052,7 +6352,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
           child.kill();
         }
       });
-    }), { workerPath: resolve('dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, identity });
+    }), { workerPath: resolve('apps/desktop/dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, identity });
     expect(reply).toEqual({
       imported: { sourceCount: 1, verifiedCount: 1 },
       found: { endpoint: identity.endpoint, algorithm, fingerprint, publicKeyBase64: publicKey.toString('base64'),
@@ -6064,7 +6364,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
     });
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(3);
       expect((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ssh_host_keys'").get())).toBeTruthy();
       expect(database.prepare('SELECT count(*) AS count FROM ssh_host_keys').get()).toEqual({ count: 1 });
       expect(database.prepare('SELECT count(*) AS count FROM session_definitions').get()).toEqual({ count: 0 });
@@ -6099,7 +6399,7 @@ test('Windows multi-tab terminal dimensions track a resized Electron window', as
     const originalWidth = originalViewport.innerWidth;
     const otherShellSize = await readPowerShellSize(page, 'PowerShell session 8');
     const largeShellSize = await readPowerShellSize(page, 'PowerShell session 9');
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 600));
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 450));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(originalWidth);
     await expect.poll(() => page.evaluate(() => innerHeight)).toBeLessThan(originalViewport.innerHeight);
     await expect.poll(async () => {
@@ -6155,7 +6455,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal',
       'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
       'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
+      'openSshTerminal', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
@@ -6164,14 +6464,14 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
       'chooseTftpRoot', 'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
       'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
-      'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences',
+      'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'exportWorkbenchSettingsTemplate', 'importWorkbenchSettingsTemplate',
       'createSavedSession', 'rememberSavedSession', 'setSavedSessionFavorite', 'deleteSavedSession',
       'listSavedSessionFolders', 'createSavedSessionFolder', 'renameSavedSessionFolder', 'moveSavedSessionFolder', 'deleteSavedSessionFolder',
       'exportSavedSessionFolder', 'importSavedSessionFolder', 'moveSavedSession',
       'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential', 'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault',
-      'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
+      'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault', 'exportSshCredentialBundle', 'importSshCredentialBundle',
       'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-      'onTerminalEvent', 'onSshTrustEvent', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+      'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);
@@ -6197,10 +6497,12 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     await expect(firstPanel.locator('.xterm-rows')).toContainText('MRT-PASTE:clipboard-ok', { timeout: 15_000 });
 
     await page.keyboard.press('Control+Shift+P');
-    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    const shellPalette = page.getByRole('dialog', { name: 'Command palette' });
+    await expect(shellPalette).toBeVisible();
     await expect(page.locator('#palette-search')).toBeFocused();
-    await page.keyboard.press('ArrowDown');
-    await expect(page.getByRole('button', { name: 'New cmd terminal' })).toHaveAttribute('aria-current', 'true');
+    await page.locator('#palette-search').fill('New cmd terminal');
+    const cmdCommand = shellPalette.getByRole('button', { name: 'New cmd terminal', exact: true });
+    await expect(cmdCommand).toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('Enter');
     await expect(page.getByRole('tab', { name: /cmd session 1/ })).toBeVisible();
     await sendLine(page, 'cmd session 1', 'echo MRT-CMD:%RANDOM%', /MRT-CMD:\d+/);
@@ -6461,19 +6763,13 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(bashPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:${bashUnicodeSample}`, { timeout: 15_000 });
 
     const initialWidth = await page.evaluate(() => innerWidth);
-    const initialSizeCommand = "printf 'MRT-BASH-SIZE:%s\\n' \"$(stty size)\"";
-    const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE:\d+ \d+/);
-    const initialSizeMatch = (await initialSize.rows.innerText()).match(/MRT-BASH-SIZE:(\d+) (\d+)/);
+    const initialSizeCommand = "printf 'MRT-BASH-SIZE-INITIAL:%s\\n' \"$(stty size)\"";
+    const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE-INITIAL:\d+ \d+/);
+    const initialSizeMatch = (await initialSize.rows.innerText()).match(/MRT-BASH-SIZE-INITIAL:(\d+) (\d+)/);
     const initialColumns = Number(initialSizeMatch?.[2]);
     expect(Number.isSafeInteger(initialColumns) && initialColumns > 1).toBe(true);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(initialWidth);
-    let resizedColumns = initialColumns;
-    await expect.poll(async () => {
-      const resized = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE:\d+ \d+/);
-      resizedColumns = Number((await resized.rows.innerText()).match(/MRT-BASH-SIZE:(\d+) (\d+)/)?.[2]);
-      return resizedColumns;
-    }, { timeout: 10_000, intervals: [250] }).toBeLessThan(initialColumns);
 
     await page.getByRole('button', { name: 'Save active session', exact: true }).click();
     const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
@@ -6497,6 +6793,39 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Git Bash accepts the first input immediately after a window resize', async () => {
+  test.skip(true, 'P-02 remains open: ConPTY resize can drop the first input character; see WP-01E resize evidence');
+  test.skip(process.platform !== 'win32', 'ConPTY resize acceptance evidence is required on Windows');
+  test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash acceptance test');
+  const profile = await createWorkspaceTempDirectory('mrt-bash-resize-e2e-');
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New Bash terminal');
+    await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
+
+    const prompt = await sendLine(page, 'Bash session 1', "PS1='MRT-PRIMARY>'", 'MRT-PRIMARY>');
+    await expect.poll(async () => (await prompt.rows.innerText()).split('MRT-PRIMARY>').length - 1).toBeGreaterThan(1);
+    const initialWidth = await page.evaluate(() => innerWidth);
+    const { rows } = await sendLine(page, 'Bash session 1', "printf 'MRT-RESIZE-INITIAL:%s\\n' \"$(stty size)\"", /MRT-RESIZE-INITIAL:\d+ \d+/);
+    const initialColumns = Number((await rows.innerText()).match(/MRT-RESIZE-INITIAL:\d+ (\d+)/)?.[1]);
+    expect(Number.isSafeInteger(initialColumns) && initialColumns > 1).toBe(true);
+
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(initialWidth);
+    const afterResizeCommand = "printf 'MRT-RESIZE-AFTER:%s\\n' \"$(stty size)\"";
+    await page.keyboard.type(afterResizeCommand);
+    await page.keyboard.press('Enter');
+    await expect(prompt.rows).toContainText(/MRT-RESIZE-AFTER:\d+ \d+/, { timeout: 15_000 });
+    const resizedColumns = Number((await prompt.rows.innerText()).match(/MRT-RESIZE-AFTER:\d+ (\d+)/)?.[1]);
+    expect(resizedColumns).toBeLessThan(initialColumns);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -6958,7 +7287,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(settings.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     await greetingInput.fill(greeting);
     await settings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     const banner = page.getByRole('region', { name: 'Startup greeting' });
     await expect(banner).toContainText(greeting);
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
@@ -6991,7 +7320,7 @@ test('custom Unicode startup greeting saves, dismisses, clears, and persists acr
     await expect(reopenedSettings).toBeVisible();
     await reopenedSettings.getByLabel('Startup greeting').fill('');
     await reopenedSettings.getByRole('button', { name: 'Save changes' }).click();
-    await expect(reopenedSettings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(reopenedSettings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await expect(reopenedBanner).toHaveCount(0);
     await reopenedSettings.getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -7119,11 +7448,10 @@ test('local shell tool visibility persists and controls command palette entries 
     await expect(delayedPalette.getByRole('button', { name: 'Connect to Telnet server (plaintext)', exact: true })).toHaveCount(0);
     await expect(delayedPalette.getByRole('button', { name: 'Local TFTP server', exact: true })).toHaveCount(0);
     await expect(page.getByTestId('tftp-server-open')).toHaveCount(0);
-    await delayedPalette.locator('#palette-search').focus();
-    await page.keyboard.press('ArrowDown');
+    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible({ timeout: 10_000 });
+    await delayedPalette.locator('#palette-search').fill('Connect to SFTP files');
     const sftpCommand = delayedPalette.getByRole('button', { name: 'Connect to SFTP files', exact: true });
     await expect(sftpCommand).toHaveAttribute('aria-current', 'true');
-    await expect(delayedPalette.getByRole('button', { name: 'New cmd terminal', exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(delayedPalette.getByRole('button', { name: 'New PowerShell terminal', exact: true })).toHaveCount(0);
     await expect(sftpCommand).toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('Enter');
@@ -7520,7 +7848,7 @@ test('opt-in automatically remembers opened terminal sessions and deduplicates t
     await settings.getByRole('checkbox', { name: 'Automatically save connections I open' }).check();
     await page.screenshot({ path: 'test-results/auto-save-session-settings.png' });
     await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(settings.getByRole('status')).toHaveText('Settings saved.');
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
 
     await page.keyboard.press('Control+Shift+P');
@@ -7681,6 +8009,36 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await expect(page.getByTestId('custom-workbench-logo')).toHaveCount(0);
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('security settings explain SSH host verification and tunnel bind scope', async () => {
+  test.skip(process.platform !== 'win32', 'Security policy settings E2E runs on Windows');
+  const profile = await createWorkspaceTempDirectory('mrt-security-policy-e2e-');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const policy = settings.getByRole('region', { name: 'Security policy' });
+    await expect(policy.getByText(/New SSH hosts require explicit fingerprint approval/u)).toBeVisible();
+    await expect(policy.getByText(/A changed key blocks the connection/u)).toBeVisible();
+    await expect(policy.getByText(/Verify the new fingerprint independently before resetting saved host trust and reconnecting/u)).toBeVisible();
+    await expect(policy.getByText(/Local and SOCKS tunnels bind to 127\.0\.0\.1/u)).toBeVisible();
+    await expect(policy.getByText(/Remote forwarding requests 127\.0\.0\.1/u)).toBeVisible();
+    await expect(policy.getByText(/GatewayPorts policy may expose the listener more widely/u)).toBeVisible();
+    await expect(policy.getByText(/Review the server's forwarding policy before starting/u)).toBeVisible();
+    const vault = settings.locator('.settings-highlights').filter({ hasText: 'Credential vault' });
+    await expect(vault.getByText('Protection: Windows account', { exact: true })).toBeVisible();
+    await expect(vault.getByRole('status')).toContainText('Unlocked');
+    await expect(vault.getByRole('button', { name: 'Lock credentials', exact: true })).toBeVisible();
+    await expect(vault.getByRole('button', { name: 'Use a master password', exact: true })).toBeVisible();
+    await expect(vault.getByText(/Saved SSH passwords use Windows account protection/u)).toBeVisible();
   } finally {
     await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -120,24 +120,6 @@ function Send-DialogKeys([IntPtr] $dialog, [string] $keys) {
     [System.Windows.Forms.SendKeys]::SendWait($keys)
 }
 
-function ConvertTo-SendKeysLiteral([string] $text) {
-    $result = [System.Text.StringBuilder]::new()
-    foreach ($character in $text.ToCharArray()) {
-        switch ([string]$character) {
-            '+' { [void]$result.Append('{+}') }
-            '^' { [void]$result.Append('{^}') }
-            '%' { [void]$result.Append('{%}') }
-            '~' { [void]$result.Append('{~}') }
-            '(' { [void]$result.Append('{(}') }
-            ')' { [void]$result.Append('{)}') }
-            '{' { [void]$result.Append('{{}') }
-            '}' { [void]$result.Append('{}}') }
-            default { [void]$result.Append($character) }
-        }
-    }
-    return $result.ToString()
-}
-
 function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
     Focus-Dialog $dialog
     [System.Windows.Forms.SendKeys]::SendWait('%n')
@@ -146,8 +128,10 @@ function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
     if ($null -eq $field -or $field.Current.ClassName -notin @('Edit', 'ComboBox')) {
         throw 'Could not focus the native dialog filename field.'
     }
-    [System.Windows.Forms.SendKeys]::SendWait('^a')
-    [System.Windows.Forms.SendKeys]::SendWait((ConvertTo-SendKeysLiteral $filePath))
+    try { $valuePattern = [System.Windows.Automation.ValuePattern]$field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern) }
+    catch { throw 'The native dialog filename field does not support safe value selection.' }
+    $valuePattern.SetValue($filePath)
+    if ($valuePattern.Current.Value -cne $filePath) { throw 'The native dialog filename field did not retain the selected path.' }
 }
 
 if ($Action -like '*credential-*' -or $Action -eq 'export-credential' -or $Action -eq 'import-credential') {
