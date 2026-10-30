@@ -2,7 +2,7 @@
 
 **Status:** Partial verification; F-005 and P-14 remain partial.
 
-**Current implementation update (2026-10-30):** Reconnect-time FTP stage deletion and the in-memory recovery registry have been removed. If best-effort `DELE` fails on the live upload connection, the remote path remains after reconnect for user review; the app does not infer object identity from `SIZE`. The renderer now tells users to reconnect and inspect the remote folder after an uncertain FTP upload. The replacement-preservation unit regression and interrupted-upload E2E have been updated but not run; validation is deferred to the Phase 04 gate. Existing evidence below belongs to the superseded auto-delete implementation. See the [WP-05L.1 safety result](WP-05L1-ftp-upload-recovery-safety-2026-10-30.md).
+**Current implementation update (2026-10-30):** Reconnect-time FTP stage deletion and the in-memory recovery registry have been removed. If best-effort `DELE` fails on the live upload connection, the remote path remains after reconnect for user review; the app does not infer object identity from `SIZE`. The renderer now tells users to reconnect and inspect the remote folder after an uncertain FTP upload. The replacement-preservation unit regression and interrupted-upload E2E passed at the Phase 04 gate; the E2E scrolls the virtualized listing before checking the retained partial file. Existing evidence below belongs to the superseded auto-delete implementation. See the [WP-05L.1 safety result](WP-05L1-ftp-upload-recovery-safety-2026-10-30.md) and [Phase 04 gate results](PHASE-04-file-transfer-gate-2026-10-30.md).
 
 ## Scope
 

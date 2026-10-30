@@ -34,4 +34,4 @@ The corrected FTP regression and reconnect E2E use a controlled loopback fixture
 
 The full E2E suite's Git Bash resize test remains an explicit skip and is still a Phase 02 blocker. Five package-only tests skipped in `pnpm check` were covered by the separate 5/5 package-smoke run. No skip was counted as a pass.
 
-Independent specification, standards, and implementation reviews are recorded after this verification gate; no phase promotion is authorized while Phase 02 and Phase 04 acceptance remain open.
+Independent specification, standards, and implementation review findings will be recorded here before any promotion. No phase promotion is authorized while Phase 02 and Phase 04 acceptance remain open.

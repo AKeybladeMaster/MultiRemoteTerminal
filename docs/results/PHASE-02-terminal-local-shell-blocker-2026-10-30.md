@@ -21,6 +21,6 @@ Existing diagnostics tested resize suppression, WinPTY, disabling cursor inherit
 
 ## Disposition
 
-No Phase 02 code or automated checks were run on this turn. Under the mission's phase-gate rule, verification is deferred until the Phase 02 implementation is complete. No acceptance claim is made from the previous diagnostic runs.
+No Phase 02 implementation changes were made on this turn. The Phase 04 repository-wide gate did run terminal E2Es; the Git Bash first-input-after-resize case remained an explicit skip. Those suite results do not close the Phase 02 requirement, and the phase-specific verification remains deferred until its implementation work is complete.
 
 The immediate resize/input gate cannot be closed safely with the available API evidence. Keep F-002 and P-02 PARTIAL and Phase 02 BLOCKED. Revisit this work when a reliable child-redraw boundary or a separately validated platform/upstream fix is available. Continue independent work in Phase 03; do not promote an incomplete Phase 02 candidate to `main`.
