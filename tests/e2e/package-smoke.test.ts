@@ -3,15 +3,39 @@ import type { Browser, Page } from '@playwright/test';
 import { getCurrentFuseWire, FuseState, FuseV1Options, FuseVersion } from '@electron/fuses';
 import { copyFile, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
+import { createHash, randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { join, resolve, win32 } from 'node:path';
-import { runNativeSshLogDialog } from './windows-native-dialog.ts';
+import { runNativeSshCredentialPrompt, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
+
+interface PackagedSshClient extends EventEmitter { end(): void; }
+interface PackagedSshAuthenticationContext {
+  readonly method: string;
+  readonly username: string;
+  readonly password: string;
+  accept(): void;
+  reject(): void;
+}
+type PackagedSshSession = EventEmitter;
+interface PackagedSshStream extends EventEmitter { write(data: string | Buffer): boolean; }
+interface PackagedSshServer extends EventEmitter {
+  listen(port: number, host: string, callback: () => void): void;
+  address(): AddressInfo | string | null;
+  close(callback: () => void): void;
+}
+interface PackagedSshFixturePackage {
+  readonly Server: new (configuration: { readonly hostKeys: readonly string[] }, onConnect: (client: EventEmitter) => void) => PackagedSshServer;
+  readonly utils: { generateKeyPairSync(type: 'ed25519'): { readonly private: string; readonly public: string } };
+}
 
 function cleanEnvironment(): Record<string, string> {
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
-    entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE' && !entry[0].startsWith('PORTABLE_EXECUTABLE_')));
+    entry[1] !== undefined && entry[0] !== 'ELECTRON_RUN_AS_NODE' && entry[0] !== 'MRT_E2E' &&
+    !entry[0].startsWith('PORTABLE_EXECUTABLE_')));
 }
 
 interface PackagedApp {
@@ -391,6 +415,90 @@ test('portable app opens a usable terminal and keeps profile data beside the exe
   } finally {
     if (app) await closePackagedApp(app);
     await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+  }
+});
+
+test('portable package submits synthetic credentials through the shipped Windows prompt to a loopback SSH server', async () => {
+  test.skip(process.platform !== 'win32' || process.arch !== 'x64' || process.env.MRT_PACKAGE_E2E !== '1',
+    'Run on Windows x64 through package:win:smoke; signature verification is outside this smoke');
+  test.setTimeout(120_000);
+  const temporaryRoot = await createWorkspaceTempDirectory('mrt-portable-ssh-credential-');
+  const portableExecutable = join(temporaryRoot, 'MultiRemoteTerminal.exe');
+  const userData = join(temporaryRoot, 'MultiRemoteTerminal-data');
+  const username = `mrtuser${randomUUID().replaceAll('-', '')}`;
+  const password = randomUUID().replaceAll('-', '');
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as PackagedSshFixturePackage;
+  const hostKeyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<PackagedSshClient>();
+  const fixtureErrors: string[] = [];
+  const server = new ssh2.Server({ hostKeys: [hostKeyPair.private] }, rawClient => {
+    const client = rawClient as PackagedSshClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', (error: Error) => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as PackagedSshAuthenticationContext;
+      if (context.method === 'password' && context.username === username && context.password === password) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => PackagedSshSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => PackagedSshStream) => {
+        acceptShell().write('MRT-PACKAGED-NATIVE-PROMPT-SSH-OK\r\n');
+      });
+    }));
+  });
+  server.on('error', (error: Error) => fixtureErrors.push(error.message));
+  let app: PackagedApp | undefined;
+  let listening = false;
+  try {
+    await copyFile(resolve('artifacts/windows/MultiRemoteTerminal 0.0.0.exe'), portableExecutable);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => {
+        listening = true;
+        resolveListen();
+      });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The package credential fixture did not bind a loopback address');
+
+    app = await launchPackagedApp(portableExecutable);
+    await expect(app.page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
+    await app.page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const dialog = app.page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await dialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await dialog.getByLabel('Port').fill(String(address.port));
+    await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await runNativeSshCredentialPrompt(username, password);
+
+    const trust = app.page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 20_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+    const sshTab = app.page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(sshTab, `Fixture errors: ${fixtureErrors.join(', ')}`).toBeVisible({ timeout: 20_000 });
+    const panelId = await sshTab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('Packaged native-prompt SSH session has no terminal panel');
+    await expect(app.page.locator(`#${panelId} .xterm-rows`), `Fixture errors: ${fixtureErrors.join(', ')}`)
+      .toContainText('MRT-PACKAGED-NATIVE-PROMPT-SSH-OK', { timeout: 15_000 });
+    const visibleText = await app.page.locator('body').innerText();
+    expect(visibleText.includes(username)).toBe(false);
+    expect(visibleText.includes(password)).toBe(false);
+    expect(fixtureErrors).toEqual([]);
+
+    await closePackagedApp(app);
+    app = undefined;
+    const database = await readFile(join(userData, 'multiremote-terminal.sqlite'));
+    expect(database.includes(Buffer.from(password))).toBe(false);
+  } finally {
+    try {
+      if (app) await closePackagedApp(app);
+    } finally {
+      for (const client of clients) client.end();
+      if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+      await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+    }
   }
 });
 

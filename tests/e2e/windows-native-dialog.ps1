@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo', 'cancel-local-text', 'select-local-text')]
+    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'submit-ssh-credential', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo', 'cancel-local-text', 'select-local-text')]
     [string] $Action,
     [string] $FilePath = '',
     [int] $TargetProcessId = 0
@@ -132,6 +132,94 @@ function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
     catch { throw 'The native dialog filename field does not support safe value selection.' }
     $valuePattern.SetValue($filePath)
     if ($valuePattern.Current.Value -cne $filePath) { throw 'The native dialog filename field did not retain the selected path.' }
+}
+
+function Find-SshCredentialWindow {
+    $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+        [System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+    foreach ($window in $windows) {
+        try {
+            $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                [System.Windows.Automation.Condition]::TrueCondition)
+        } catch { continue }
+        foreach ($element in $elements) {
+            try {
+                $name = $element.Current.Name
+                if (-not [string]::IsNullOrEmpty($name) -and $name.Contains('Enter the SSH account credential.')) { return $window }
+            } catch { }
+        }
+    }
+    return $null
+}
+
+function Wait-SshCredentialWindow([int] $timeoutSeconds = 20) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    do {
+        $window = Find-SshCredentialWindow
+        if ($null -ne $window) { return $window }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Timed out waiting for the native SSH credential prompt.'
+}
+
+function Wait-SshCredentialWindowClosed([int] $timeoutSeconds = 10) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    do {
+        if ($null -eq (Find-SshCredentialWindow)) { return }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'The native SSH credential prompt did not close.'
+}
+
+if ($Action -eq 'submit-ssh-credential') {
+    try { $fixturePayload = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd()) }
+    catch { throw 'Could not read the native SSH credential fixture input.' }
+    $username = [string]$fixturePayload.username
+    $password = [string]$fixturePayload.password
+    $fixturePayload = $null
+    if ([string]::IsNullOrWhiteSpace($username) -or $username.Length -gt 256 -or $username -match '[\x00\r\n]' -or
+        [string]::IsNullOrEmpty($password) -or $password.Length -gt 256 -or $password -match '[\x00\r\n]') {
+        throw 'The native SSH credential fixture input is invalid.'
+    }
+
+    try {
+        $credentialWindow = Wait-SshCredentialWindow
+        $editCondition = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+        $fields = $credentialWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCondition)
+        $usernameField = $null
+        $passwordField = $null
+        foreach ($field in $fields) {
+            if ($field.Current.IsPassword) { $passwordField = $field }
+            elseif ($null -eq $usernameField) { $usernameField = $field }
+        }
+        if ($null -eq $usernameField -or $null -eq $passwordField) {
+            throw 'The native SSH credential prompt did not expose username and password fields.'
+        }
+
+        Focus-Dialog ([IntPtr]$credentialWindow.Current.NativeWindowHandle)
+        try {
+            $usernameValue = $usernameField.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            $usernameValue.SetValue($username)
+            if ($usernameValue.Current.Value -cne $username) { throw 'The native SSH credential prompt did not accept the fixture username.' }
+        } catch {
+            $usernameField.SetFocus()
+            [System.Windows.Forms.SendKeys]::SendWait('^a')
+            [System.Windows.Forms.SendKeys]::SendWait($username)
+        }
+        $passwordField.SetFocus()
+        [System.Windows.Forms.SendKeys]::SendWait($password)
+        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        Wait-SshCredentialWindowClosed
+    } finally {
+        $username = $null
+        $password = $null
+        $credentialWindow = $null
+        $fields = $null
+        $usernameField = $null
+        $passwordField = $null
+    }
+    exit 0
 }
 
 if ($Action -like '*credential-*' -or $Action -eq 'export-credential' -or $Action -eq 'import-credential') {

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
 export type NativeSshLogDialogAction = 'cancel-consent' | 'cancel-save' | 'save' | 'close-app';
+export type NativeSshCredentialPromptAction = 'submit-ssh-credential';
 export type NativeSshCredentialBundleDialogAction = 'cancel-credential-export' | 'export-credential' | 'cancel-credential-import' | 'import-credential';
 export type NativeCustomLogoDialogAction = 'cancel-logo' | 'select-logo';
 export type NativeLocalTextDialogAction = 'cancel-local-text' | 'select-local-text';
@@ -14,6 +15,14 @@ export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, fi
     throw new Error('Closing the packaged app requires its process ID.');
   }
   await runNativeDialog(action, filePath, targetProcessId, 'SSH session log');
+}
+
+export async function runNativeSshCredentialPrompt(username: string, password: string): Promise<void> {
+  if (username.length === 0 || username.length > 256 || /[\u0000\r\n]/u.test(username) ||
+      password.length === 0 || password.length > 256 || /[\u0000\r\n]/u.test(password)) {
+    throw new Error('Native SSH credential prompt automation requires bounded single-line fixture values.');
+  }
+  await runNativeDialog('submit-ssh-credential', undefined, undefined, 'Windows SSH credential prompt', JSON.stringify({ username, password }));
 }
 
 export async function runNativeSshCredentialBundleDialog(action: NativeSshCredentialBundleDialogAction, filePath?: string): Promise<void> {
@@ -38,18 +47,23 @@ export async function runNativeLocalTextDialog(action: NativeLocalTextDialogActi
   await runNativeDialog(action, filePath, undefined, 'local text file');
 }
 
-async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialBundleDialogAction | NativeCustomLogoDialogAction | NativeLocalTextDialogAction,
-  filePath: string | undefined, targetProcessId: number | undefined, description: string): Promise<void> {
+async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialPromptAction | NativeSshCredentialBundleDialogAction |
+  NativeCustomLogoDialogAction | NativeLocalTextDialogAction,
+  filePath: string | undefined, targetProcessId: number | undefined, description: string, stdinInput?: string): Promise<void> {
   if (process.platform !== 'win32') throw new Error(`Native ${description} dialog automation is Windows-only.`);
   const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
     resolve('tests/e2e/windows-native-dialog.ps1'), '-Action', action];
   if (filePath) args.push('-FilePath', filePath);
   if (targetProcessId) args.push('-TargetProcessId', String(targetProcessId));
-  const child = spawn(executable, args, { cwd: resolve('.'), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn(executable, args, { cwd: resolve('.'), windowsHide: true, stdio: [stdinInput === undefined ? 'ignore' : 'pipe', 'ignore', 'pipe'] });
   let errorText = '';
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', chunk => { errorText += String(chunk); });
+  if (stdinInput !== undefined) {
+    if (!child.stdin) throw new Error(`Could not provide fixture data to the native ${description} helper.`);
+    child.stdin.end(stdinInput);
+  }
 
   await new Promise<void>((resolveExit, rejectExit) => {
     let timedOut = false;
@@ -68,7 +82,9 @@ async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCrede
     child.once('error', error => finish(error));
     child.once('exit', (code, signal) => {
       if (timedOut) finish(new Error(`Timed out automating the native ${description} dialog.`));
-      else if (code !== 0) finish(new Error(`Native ${description} dialog automation failed (${signal ?? code}): ${errorText.trim()}`));
+      else if (code !== 0) finish(new Error(action === 'submit-ssh-credential'
+        ? 'Native Windows SSH credential prompt automation failed.'
+        : `Native ${description} dialog automation failed (${signal ?? code}): ${errorText.trim()}`));
       else finish();
     });
   });
