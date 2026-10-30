@@ -109,6 +109,8 @@ test('workbench preferences migrate schema v8 logos with an empty profile script
 });
 
 test('optional connection preferences use a fixed allowlist and migrate schema v9 with providers enabled', () => {
+  assert.equal(DEFAULT_ENABLED_OPTIONAL_CONNECTIONS.includes('x11'), false);
+  assert.equal(DEFAULT_ENABLED_OPTIONAL_CONNECTIONS.includes('xdmcp'), false);
   assert.deepEqual(normalizeEnabledOptionalConnections(['vnc', 'telnet']), ['telnet', 'vnc']);
   assert.deepEqual(normalizeEnabledOptionalConnections([]), []);
   assert.equal(normalizeEnabledOptionalConnections(['telnet', 'telnet']), undefined);

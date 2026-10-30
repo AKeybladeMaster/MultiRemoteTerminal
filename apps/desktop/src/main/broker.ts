@@ -9,6 +9,7 @@ import type { FtpFilesController } from '../../../../packages/application/src/ft
 import type { RdpViewerController } from '../../../../packages/application/src/rdp-viewer.ts';
 import type { VncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
 import type { TftpServerController } from '../../../../packages/application/src/tftp-server.ts';
+import type { XdmcpController } from '../../../../packages/application/src/xdmcp.ts';
 import type { LocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
 import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
 import type { FileTransferConflictPolicy, FileTransferDirection, FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
@@ -46,7 +47,8 @@ const OPTIONAL_CONNECTION_FOR_COMMAND: Readonly<Partial<Record<string, OptionalC
   'rdp.launch': 'rdp',
   'vnc.launch': 'vnc',
   'tftp.root.choose': 'tftp',
-  'tftp.start': 'tftp'
+  'tftp.start': 'tftp',
+  'xdmcp.launch': 'xdmcp'
 });
 
 export interface CommandSender {
@@ -88,6 +90,8 @@ export interface CommandActions {
   readonly selectSshUploadFile: () => Promise<SshUploadSelection | undefined>;
   readonly selectSshPrivateKey: () => Promise<Outcome<SshPrivateKeySelection>>;
   readonly authorizeSshSessionLog: (sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]) => boolean;
+  readonly authorizeSshX11Forwarding: (host: string, port: number, gatewayProfileIds: readonly string[]) => boolean;
+  readonly authorizeXdmcpLaunch: (host: string) => boolean;
   readonly consumeSshSessionLogAttempt: (sessionId: string, endpoints: readonly SshHostEndpoint[], required: boolean) => ErrorCode | undefined;
   readonly startSshSessionLog?: (sessionId: string, endpoints: readonly SshHostEndpoint[]) =>
     Promise<Outcome<{ readonly sessionId: string; readonly fileName: string }>>;
@@ -110,6 +114,7 @@ export interface CommandActions {
   readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
+  readonly xdmcp: Pick<XdmcpController, 'launch'>;
   readonly localTextEditor: Pick<LocalTextEditorController, 'open' | 'reload' | 'save' | 'close'>;
   readonly sessionCatalog: Pick<SessionCatalog, 'list' | 'count' | 'get' | 'create' | 'remember' | 'setFavorite' | 'remove' | 'listFolders' | 'createFolder' | 'renameFolder' | 'moveFolder' | 'removeFolder' | 'moveSession' | 'exportFolder' | 'importFolder'>;
   readonly sessionCredentials: Pick<SessionCredentialManager, 'state' | 'lock' | 'unlock' | 'enableMasterPassword' | 'disableMasterPassword' | 'resetVault' |
@@ -172,7 +177,8 @@ export async function dispatchCommand(
 
   const { requestId } = parsed.result;
   try {
-    const optionalConnection = OPTIONAL_CONNECTION_FOR_COMMAND[parsed.result.command];
+    const optionalConnection = parsed.result.command === 'ssh.open' && parsed.result.payload.forwardX11 === true
+      ? 'x11' : OPTIONAL_CONNECTION_FOR_COMMAND[parsed.result.command];
     const localShell: LocalShell | undefined = parsed.result.command === 'terminal.open' ? parsed.result.payload.launch.shell
       : parsed.result.command === 'wsl.distributions.list' ? 'wsl' : undefined;
     if (optionalConnection || localShell) {
@@ -198,7 +204,7 @@ export async function dispatchCommand(
         parsed.result.command === 'ftp.files.download' || parsed.result.command === 'ftp.files.cancel' || parsed.result.command === 'ftp.close' ||
         parsed.result.command === 'tunnel.start' || parsed.result.command === 'tunnel.stop' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
         parsed.result.command === 'tftp.root.choose' || parsed.result.command === 'tftp.start' || parsed.result.command === 'tftp.stop' ||
-        parsed.result.command === 'branding.logo.select' ||
+        parsed.result.command === 'branding.logo.select' || parsed.result.command === 'xdmcp.launch' ||
         parsed.result.command.startsWith('macro.')) actions.noteUserActivity();
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
@@ -242,7 +248,7 @@ export async function dispatchCommand(
       }
       case 'wsl.distributions.cancel': return { requestId, ...await actions.terminals.cancelWslDistributionDiscovery() };
       case 'ssh.open': {
-        const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId } = parsed.result.payload;
+        const { sessionId, host, port, columns, rows, gatewayProfileIds = [], profileId, forwardX11 } = parsed.result.payload;
         const authenticationMethod = parsed.result.payload.authenticationMethod ?? 'password';
         let authentication: SshAuthenticationSelection | undefined;
         let savedCredentials: { username: string; password: string } | undefined;
@@ -262,6 +268,7 @@ export async function dispatchCommand(
           await actions.finishSshSessionLog?.(sessionId, 'connection-failed', { phase: 'preflight', code: route.error.code });
           return { requestId, ...route };
         }
+        if (forwardX11 && !actions.authorizeSshX11Forwarding(host, port, gatewayProfileIds)) return { requestId, ...failure('FORBIDDEN') };
         const endpoints = [...route.result, { host, port }];
         const logAttemptError = actions.consumeSshSessionLogAttempt(sessionId, endpoints, parsed.result.payload.recordSessionLog === true);
         if (logAttemptError) {
@@ -302,7 +309,7 @@ export async function dispatchCommand(
         }
         if (actions.cancellation?.aborted) return cancelled();
         try {
-          const opened = await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route.result, authentication);
+          const opened = await actions.sshTerminals.open(sessionId, host, port, { columns, rows }, route.result, authentication, forwardX11 === true);
           if (!opened.ok) await actions.finishSshSessionLog?.(sessionId, 'connection-failed');
           return { requestId, ...opened };
         } finally {
@@ -516,6 +523,11 @@ export async function dispatchCommand(
         const { host, port } = parsed.result.payload;
         if (!actions.authorizeVncLaunch(host, port)) return { requestId, ...failure('FORBIDDEN') };
         return { requestId, ...await actions.vncViewer.launch(host, port, actions.cancellation) };
+      }
+      case 'xdmcp.launch': {
+        const { host } = parsed.result.payload;
+        if (!actions.authorizeXdmcpLaunch(host)) return { requestId, ...failure('FORBIDDEN') };
+        return { requestId, ...await actions.xdmcp.launch(requestId, host, actions.cancellation) };
       }
       case 'tftp.root.choose': {
         if (!actions.authorizeTftpServerAction('choose-root')) return { requestId, ...failure('FORBIDDEN') };

@@ -26,6 +26,7 @@ import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/hos
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { canonicalizeRdpEndpoint } from '../../../../packages/domain/src/rdp.ts';
 import { canonicalizeVncEndpoint } from '../../../../packages/domain/src/vnc.ts';
+import { canonicalizeXdmcpHost } from '../../../../packages/domain/src/xdmcp.ts';
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import type { LocalShell, LocalTerminalLaunch } from '../../../../packages/domain/src/local-terminal.ts';
 import { DEFAULT_ENABLED_LOCAL_SHELLS, DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL_TOOL_REGISTRY } from '../../../../packages/domain/src/local-shell-tools.ts';
@@ -117,7 +118,7 @@ interface TerminalTabContextMenu {
   readonly y: number;
 }
 
-type CommandName = `new-${LocalShell}` | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'local-tftp-server' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
+type CommandName = `new-${LocalShell}` | 'connect-ssh' | 'connect-sftp' | 'connect-telnet' | 'connect-serial' | 'connect-ftp' | 'connect-rdp' | 'connect-vnc' | 'connect-xdmcp' | 'local-tftp-server' | 'multi-exec' | 'close-active' | 'toggle-theme' | 'open-help' | 'open-settings';
 interface PaletteCommand {
   readonly id: CommandName;
   readonly label: string;
@@ -337,6 +338,7 @@ function Workbench() {
   const [sshConnectMode, setSshConnectMode] = useState<'terminal' | 'sftp'>('terminal');
   const [sshAuthenticationMethod, setSshAuthenticationMethod] = useState<SshAuthenticationMethod>('password');
   const [recordSshSessionLog, setRecordSshSessionLog] = useState(false);
+  const [forwardSshX11, setForwardSshX11] = useState(false);
   const [sshGatewayTarget, setSshGatewayTarget] = useState<Extract<SavedSessionDefinition, { kind: 'ssh' | 'sftp' }>>();
   const [sshGatewayProfiles, setSshGatewayProfiles] = useState<readonly Extract<SavedSessionDefinition, { kind: 'ssh' }>[]>([]);
   const [sshGatewayProfileIds, setSshGatewayProfileIds] = useState<readonly string[]>([]);
@@ -374,6 +376,11 @@ function Workbench() {
   const [vncHost, setVncHost] = useState('');
   const [vncPort, setVncPort] = useState(5900);
   const [vncSavedProfileName, setVncSavedProfileName] = useState<string>();
+  const [xdmcpConnectOpen, setXdmcpConnectOpen] = useState(false);
+  const [xdmcpHost, setXdmcpHost] = useState('');
+  const [xdmcpConsent, setXdmcpConsent] = useState(false);
+  const [xdmcpBusy, setXdmcpBusy] = useState(false);
+  const [xdmcpError, setXdmcpError] = useState<string>();
   const [sshTrustEvents, setSshTrustEvents] = useState<SshTrustEvent[]>([]);
   const [sshTrustBusy, setSshTrustBusy] = useState(false);
   const [savedSessions, setSavedSessions] = useState<readonly SavedSessionDefinition[]>([]);
@@ -519,6 +526,8 @@ function Workbench() {
   const rdpConnectReturnFocus = useRef<HTMLElement | null>(null);
   const vncConnectDialog = useRef<HTMLElement>(null);
   const vncConnectReturnFocus = useRef<HTMLElement | null>(null);
+  const xdmcpConnectDialog = useRef<HTMLElement>(null);
+  const xdmcpConnectReturnFocus = useRef<HTMLElement | null>(null);
   const saveSessionDialog = useRef<HTMLElement>(null);
   const saveSessionNameInput = useRef<HTMLInputElement>(null);
   const checkSavedSessionsButton = useRef<HTMLButtonElement>(null);
@@ -1274,6 +1283,7 @@ function Workbench() {
     setSshConnectMode(mode);
     setSshAuthenticationMethod('password');
     setRecordSshSessionLog(false);
+    setForwardSshX11(false);
     setSshGatewayTarget(undefined);
     setSshGatewayProfiles([]);
     setSshGatewayProfileIds([]);
@@ -1350,6 +1360,14 @@ function Workbench() {
     setVncConnectOpen(true);
   }, []);
 
+  const openXdmcpConnect = useCallback(() => {
+    xdmcpConnectReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setXdmcpHost('');
+    setXdmcpConsent(false);
+    setXdmcpError(undefined);
+    setXdmcpConnectOpen(true);
+  }, []);
+
   const launchRdpViewer = useCallback(async (host: string, port: number): Promise<string | undefined> => {
     const endpoint = canonicalizeRdpEndpoint({ host, port });
     if (!endpoint) return 'Enter a valid host name or IP address and port.';
@@ -1385,6 +1403,21 @@ function Workbench() {
       return undefined;
     } catch { return 'TigerVNC could not be started. Check that it is installed in Program Files or your per-user Programs folder.'; }
   }, []);
+
+  const launchXdmcp = useCallback(async () => {
+    const host = canonicalizeXdmcpHost(xdmcpHost);
+    if (!host) { setXdmcpError('Enter a valid host name or IP address.'); return; }
+    if (!xdmcpConsent) { setXdmcpError('Confirm the unencrypted XDMCP, clipboard, and network-listener warning before continuing.'); return; }
+    setXdmcpError(undefined);
+    setXdmcpBusy(true);
+    try {
+      const reply = await window.multiRemoteTerminal.launchXdmcp(host);
+      if (!reply.ok) { setXdmcpError(`XDMCP could not be launched (${reply.error.code}).`); return; }
+      setAlert(`XDMCP launch requested for ${host}. Check Cygwin/X for the display-manager session; connection status is not tracked here.`);
+      setXdmcpConnectOpen(false);
+    } catch { setXdmcpError('Cygwin/X could not start the XDMCP display. Check that the optional provider is installed.'); }
+    finally { setXdmcpBusy(false); }
+  }, [xdmcpConsent, xdmcpHost]);
 
   const saveVncProfile = useCallback(async (name: string, host: string, port: number): Promise<string | undefined> => {
     const draft = normalizeSavedSessionDraft({ kind: 'vnc', name, host, port });
@@ -1585,7 +1618,7 @@ function Workbench() {
   }, [enabledLocalShells, rememberOpenedSession, workbenchPreferencesLoaded]);
 
   const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [],
-    savedProfileId?: string, authenticationMethod: SshAuthenticationMethod = 'password', recordSessionLog = false) => {
+    savedProfileId?: string, authenticationMethod: SshAuthenticationMethod = 'password', recordSessionLog = false, forwardX11 = false) => {
     const host = hostInput.trim();
     const port = Number(portInput);
     if (!host) { setSshConnectError('Enter a host name or IP address.'); sshHostInput.current?.focus(); return; }
@@ -1596,6 +1629,10 @@ function Workbench() {
     }
     const validatedEndpoint = canonicalizeSshHostEndpoint({ host, port });
     if (!validatedEndpoint) { setSshConnectError('Enter a valid DNS name or IP address.'); sshHostInput.current?.focus(); return; }
+    if (forwardX11 && !await window.multiRemoteTerminal.authorizeSshX11Forwarding(validatedEndpoint.host, validatedEndpoint.port, gatewayProfileIds)) {
+      setSshConnectError('X11 consent expired. Review the warning and submit Connect again.');
+      return;
+    }
     setSshConnectError(undefined);
     sshTrustReturnFocus.current = sshConnectReturnFocus.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     setSshConnectOpen(false);
@@ -1617,7 +1654,7 @@ function Workbench() {
       setAlert(`Recording SSH session to ${log.result.fileName}. The local log includes terminal input/output and endpoint details.`);
     } else sessionId = crypto.randomUUID();
     const replyPromise = window.multiRemoteTerminal.openSshTerminal(sessionId, validatedEndpoint.host, validatedEndpoint.port, 80, 24,
-      gatewayProfileIds, savedProfileId, authenticationMethod, recordSessionLog);
+      gatewayProfileIds, savedProfileId, authenticationMethod, recordSessionLog, forwardX11);
     pendingOpenRequests.current.set(sessionId, { transport: 'ssh', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'ssh', sessionId, host: validatedEndpoint.host, port: validatedEndpoint.port, cancelling: false }]);
     const reply = await replyPromise;
@@ -1631,10 +1668,17 @@ function Workbench() {
     }
     const ordinal = ++nextSshOrdinal.current;
     const endpoint = reply.result.endpoint;
+    if (forwardX11 && reply.result.state === 'running') {
+      const extensions = reply.result.x11Extensions;
+      setAlert(extensions
+        ? `SSH X11 forwarding configured. Local X server reports GLX ${extensions.glx ? 'present' : 'absent'}, Composite ${extensions.composite ? 'present' : 'absent'}, RandR ${extensions.randr ? 'present' : 'absent'}.`
+        : 'SSH X11 forwarding configured, but the local display extension capabilities could not be queried.');
+    }
     if (reply.result.state === 'running' && gatewayProfileIds.length === 0) {
       void rememberOpenedSession({ kind: 'ssh', name: savedTitle ?? autoSavedProfileName('SSH', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
     }
-    setSessions(current => [...current, { ...reply.result, transport: 'ssh', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SSH ${ordinal}` }]);
+    setSessions(current => [...current, { sessionId: reply.result.sessionId, endpoint, state: reply.result.state,
+      transport: 'ssh', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SSH ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, [rememberOpenedSession]);
 
@@ -2103,6 +2147,18 @@ function Workbench() {
         }
         return;
       }
+      if (xdmcpConnectOpen) {
+        if (event.key === 'Escape' && !xdmcpBusy) { event.preventDefault(); setXdmcpConnectOpen(false); }
+        else if (event.key === 'Tab') {
+          const focusable = [...(xdmcpConnectDialog.current?.querySelectorAll<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? [])];
+          if (focusable.length) {
+            event.preventDefault();
+            const current = focusable.indexOf(document.activeElement as HTMLElement);
+            focusable[(current + (event.shiftKey ? focusable.length - 1 : 1)) % focusable.length]?.focus();
+          }
+        }
+        return;
+      }
       if (sshConnectOpen) {
         if (event.key === 'Escape') { event.preventDefault(); cancelSshConnect(); }
         else if (event.key === 'Tab') {
@@ -2220,7 +2276,7 @@ function Workbench() {
     decideSshTrust, folderDialog, ftpConnectOpen, ftpConnecting, macroBusy, macroManagerOpen, macroPlaybackMacroId, macroShortcutCaptureMacroId,
     macroShortcuts, multiExecOpen, multiExecView, openMacroShortcutReview, openPalette, paletteOpen, pendingCloseId, requestCloseTerminal,
     helpOpen, rdpConnectOpen, saveMacroShortcut, saveSessionOpen, sessions, settingsOpen, sshConnectOpen, sshTrustBusy, sshTrustEvents,
-    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen, wslDialogOpen]);
+    serialConnectOpen, tabContextMenu, telnetConnectOpen, tunnelManagerOpen, vncConnectOpen, xdmcpBusy, xdmcpConnectOpen, wslDialogOpen]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -2268,6 +2324,10 @@ function Workbench() {
   useLayoutEffect(() => {
     if (vncConnectOpen) requestAnimationFrame(() => vncConnectDialog.current?.querySelector<HTMLElement>('input')?.focus());
   }, [vncConnectOpen]);
+
+  useLayoutEffect(() => {
+    if (xdmcpConnectOpen) requestAnimationFrame(() => xdmcpConnectDialog.current?.querySelector<HTMLElement>('input')?.focus());
+  }, [xdmcpConnectOpen]);
 
   useLayoutEffect(() => {
     if (tunnelManagerOpen) requestAnimationFrame(() => tunnelManagerDialog.current?.querySelector<HTMLElement>('select, input, button')?.focus());
@@ -2365,6 +2425,14 @@ function Workbench() {
   }, [vncConnectOpen]);
 
   useEffect(() => {
+    if (!xdmcpConnectOpen && xdmcpConnectReturnFocus.current) {
+      const target = xdmcpConnectReturnFocus.current;
+      xdmcpConnectReturnFocus.current = null;
+      requestAnimationFrame(() => { if (target.isConnected) target.focus(); });
+    }
+  }, [xdmcpConnectOpen]);
+
+  useEffect(() => {
     if (saveSessionOpen) {
       if (!catalogBusy) requestAnimationFrame(() => {
         if (uncertainSaveDraft) checkSavedSessionsButton.current?.focus();
@@ -2439,6 +2507,8 @@ function Workbench() {
       ? [{ id: 'connect-rdp' as const, label: 'Connect to RDP desktop (external viewer)', run: () => openRdpConnect() }] : []),
     ...(isOptionalConnectionEnabled('vnc')
       ? [{ id: 'connect-vnc' as const, label: 'Connect to VNC desktop (external TigerVNC viewer)', run: () => openVncConnect() }] : []),
+    ...(isOptionalConnectionEnabled('xdmcp')
+      ? [{ id: 'connect-xdmcp' as const, label: 'Start an XDMCP remote display (unencrypted)', run: openXdmcpConnect }] : []),
     ...(canManageTftpServer
       ? [{ id: 'local-tftp-server' as const, label: tftpServerActionLabel, run: () => setTftpServerOpen(true) }] : []),
     { id: 'multi-exec', label: 'Send line to terminals (MultiExec)', run: openMultiExec },
@@ -2682,7 +2752,7 @@ function Workbench() {
     const names = selected.map(id => sshGatewayProfiles.find(profile => profile.id === id)?.name ?? 'SSH gateway');
     const routedTitle = [...names, sshGatewayTarget.name].join(' → ');
     if (sshGatewayTarget.kind === 'sftp') void openSftpFiles(sshHost, sshPort, routedTitle, sshAuthenticationMethod, selected);
-    else void openSshTerminal(sshHost, sshPort, routedTitle, selected, sshGatewayTarget.id, sshAuthenticationMethod, recordSshSessionLog);
+    else void openSshTerminal(sshHost, sshPort, routedTitle, selected, sshGatewayTarget.id, sshAuthenticationMethod, recordSshSessionLog, forwardSshX11);
   }
 
   function toggleSavedActionsMenu(event: MouseEvent<HTMLElement>, menuId: string, credentialProfileId?: string): void {
@@ -2985,6 +3055,7 @@ function Workbench() {
         {isOptionalConnectionEnabled('ftp') && <button className="connect-ssh-button" type="button" onClick={() => openFtpConnect()}><span aria-hidden="true">↗</span> Connect to FTP / FTPS files</button>}
         {isOptionalConnectionEnabled('rdp') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openRdpConnect()}><span aria-hidden="true">↗</span> Connect to RDP desktop</button>}
         {isOptionalConnectionEnabled('vnc') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={() => openVncConnect()}>Connect to VNC desktop</button>}
+        {isOptionalConnectionEnabled('xdmcp') && <button className="connect-ssh-button" type="button" aria-haspopup="dialog" onClick={openXdmcpConnect}>Start XDMCP display</button>}
         <button className="connect-ssh-button" type="button" onClick={() => openSshConnect('sftp')}>Connect to SFTP files</button>
         <button className="connect-ssh-button" type="button" aria-haspopup="dialog" data-testid="tunnel-manager-open" onClick={openTunnelManager}>Port forwarding</button>
         {canManageTftpServer && <button className="connect-ssh-button" type="button" aria-haspopup="dialog"
@@ -3311,7 +3382,7 @@ function Workbench() {
         <form onSubmit={event => { event.preventDefault();
           if (sshGatewayTarget) connectThroughSelectedGateways();
           else if (sshConnectMode === 'sftp') void openSftpFiles(sshHost, sshPort, sshSavedTitle, sshAuthenticationMethod);
-          else void openSshTerminal(sshHost, sshPort, sshSavedTitle, [], undefined, sshAuthenticationMethod, recordSshSessionLog);
+          else void openSshTerminal(sshHost, sshPort, sshSavedTitle, [], undefined, sshAuthenticationMethod, recordSshSessionLog, forwardSshX11);
         }}>
           <label htmlFor="ssh-host">Host name or IP address</label>
           <input ref={sshHostInput} id="ssh-host" name="host" type="text" autoComplete="off" spellCheck={false}
@@ -3331,13 +3402,19 @@ function Workbench() {
               onChange={event => setRecordSshSessionLog(event.target.checked)} />Record this SSH session to a local .log file</label>
             <p id="ssh-session-log-warning">The file contains endpoint details and exact terminal input/output. It may include secrets typed into the remote shell or printed by it. SSH credential prompts and key material are excluded. Store it according to company policy.</p>
           </div>}
+          {sshConnectMode === 'terminal' && <div className="ssh-session-log-option">
+            <label htmlFor="ssh-x11-forwarding"><input id="ssh-x11-forwarding" type="checkbox" checked={forwardSshX11}
+              disabled={!enabledOptionalConnections.includes('x11')}
+              onChange={event => setForwardSshX11(event.target.checked)} />I understand the trusted SSH host can inspect and control this local X11 display, including its clipboard. Enable X11 forwarding for this connection.</label>
+            {!enabledOptionalConnections.includes('x11') && <p>Allow SSH X11 forwarding in Workbench settings first. Cygwin/X must also be installed for this Windows account.</p>}
+          </div>}
           {sshGatewayTarget && <SshGatewayRoutePicker idPrefix="ssh" profiles={sshGatewayProfiles}
             targetEndpoint={canonicalizeSshHostEndpoint({ host: sshGatewayTarget.host, port: sshGatewayTarget.port })}
             selectedProfileIds={sshGatewayProfileIds} onChange={setSshGatewayProfileIds} />}
           {sshConnectError && <p className="dialog-error" role="alert">{sshConnectError}</p>}
           <div className="ssh-connect-actions">
             <button type="button" onClick={cancelSshConnect}>Cancel</button>
-            <button type="submit" className="ssh-primary" data-mrt-ssh-session-log-consent-trigger
+            <button type="submit" className="ssh-primary" data-mrt-ssh-session-log-consent-trigger data-mrt-ssh-x11-consent-trigger
               disabled={Boolean(sshGatewayTarget && sshGatewayProfileIds.length === 0)}>Connect</button>
           </div>
         </form>
@@ -3473,6 +3550,35 @@ function Workbench() {
     {vncConnectOpen && <VncConnectDialog dialogRef={vncConnectDialog} initialHost={vncHost} initialPort={vncPort}
       {...(vncSavedProfileName ? { savedProfileName: vncSavedProfileName } : {})}
       onClose={() => setVncConnectOpen(false)} onLaunch={launchVncViewer} onSaveProfile={saveVncProfile} />}
+    {xdmcpConnectOpen && <div className="ssh-backdrop" onMouseDown={event => {
+      if (event.target === event.currentTarget && !xdmcpBusy) setXdmcpConnectOpen(false);
+    }}>
+      <section ref={xdmcpConnectDialog} className="ssh-connect-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="xdmcp-connect-heading" aria-describedby="xdmcp-connect-description xdmcp-security-warning" aria-busy={xdmcpBusy}>
+        <h2 id="xdmcp-connect-heading">Start an XDMCP remote display</h2>
+        <p id="xdmcp-connect-description">Enter a host running an XDMCP display manager. Cygwin/X must be installed in one of the supported user or system locations.</p>
+        <div id="xdmcp-security-warning" className="telnet-plaintext-warning" role="note">
+          <strong>XDMCP is unencrypted.</strong> This starts an X server with a TCP display listener so the selected host can connect back. Other devices that can reach this PC may also reach that listener. Remote X clients on this display can read and change the Windows clipboard.
+        </div>
+        <form onSubmit={event => { event.preventDefault(); void launchXdmcp(); }}>
+          <label htmlFor="xdmcp-host">Display manager host</label>
+          <input id="xdmcp-host" name="xdmcpHost" type="text" autoComplete="off" maxLength={253}
+            required disabled={xdmcpBusy} value={xdmcpHost} onChange={event => { setXdmcpHost(event.target.value); setXdmcpError(undefined); }} />
+          <label className="ssh-credential-option" htmlFor="xdmcp-insecure-confirm">
+            <input id="xdmcp-insecure-confirm" type="checkbox" disabled={xdmcpBusy} checked={xdmcpConsent}
+              onChange={event => { setXdmcpConsent(event.target.checked); setXdmcpError(undefined); }} />
+            I understand XDMCP is unencrypted, remote X clients can read and change the Windows clipboard, and other devices may reach the local display listener.
+          </label>
+          {xdmcpError && <p className="dialog-error" role="alert">{xdmcpError}</p>}
+          <div className="ssh-connect-actions">
+            <button type="button" disabled={xdmcpBusy} onClick={() => setXdmcpConnectOpen(false)}>Cancel</button>
+            <button type="submit" className="ssh-primary" data-mrt-xdmcp-launch-trigger disabled={xdmcpBusy}>
+              {xdmcpBusy ? 'Starting…' : 'Launch XDMCP display'}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>}
     {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
       onDelete={id => { void deleteTunnel(id); }} onStart={(id, gatewayProfileIds) => { void startTunnel(id, gatewayProfileIds); }}

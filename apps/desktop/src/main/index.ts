@@ -25,8 +25,8 @@ import type { SshTunnelController } from '../../../../packages/application/src/s
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
 import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
-  SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseSshSessionLogConsentGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
+  SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, SSH_X11_CONSENT_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, XDMCP_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseSshSessionLogConsentGestureRequest, parseSshX11ConsentGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseXdmcpLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
@@ -47,10 +47,12 @@ import { createRdpViewerController } from '../../../../packages/application/src/
 import { createVncViewerController } from '../../../../packages/application/src/vnc-viewer.ts';
 import { createLocalTextEditorController } from '../../../../packages/application/src/local-text-editor.ts';
 import { createTftpServerController } from '../../../../packages/application/src/tftp-server.ts';
+import { createXdmcpController } from '../../../../packages/application/src/xdmcp.ts';
 import { TftpServerWorkerHost } from '../adapters/tftp-server-worker-host.ts';
 import { FtpFilesWorkerHost } from '../adapters/ftp-files-worker-host.ts';
 import { WindowsRdpViewer } from '../adapters/windows-rdp-viewer.ts';
 import { WindowsVncViewer } from '../adapters/windows-vnc-viewer.ts';
+import { WindowsCygwinX11Provider } from '../adapters/windows-cygwin-x11-provider.ts';
 import { LocalTextFilesWorkerHost } from '../adapters/local-text-files-worker-host.ts';
 import { VaultIdleLock } from '../../../../packages/application/src/vault-idle-lock.ts';
 import { RendererGestureGate } from './renderer-gesture-gate.ts';
@@ -446,7 +448,10 @@ function boot(): void {
       env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env, undefined, options.env.MRT_OPENSSH_AGENT_PIPE)
     }), opensshAgentPipePath
   );
-  const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust);
+  const sshX11Provider = new WindowsCygwinX11Provider(systemDirectory, userData);
+  const e2eXdmcp = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-xdmcp');
+  const xdmcp = createXdmcpController(e2eXdmcp ? { async launch() {} } : sshX11Provider);
+  const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust, sshX11Provider);
   const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
   const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
   const credentialBundles = createSshCredentialBundleManager(storageStore, credentialBundleDialog, credentialPrompt, credentialVault,
@@ -627,7 +632,8 @@ function boot(): void {
     const requestId = parsed.ok ? parsed.result.requestId : undefined;
     const trackedRequestId = (catalogRequest || transferRequest || sshTransferRequest || localTextRequest) && requestId !== undefined && !event.sender.isDestroyed() ? requestId : undefined;
     const sshOpenRequest = parsed.ok && parsed.result.command === 'ssh.open' && owned && mainFrame && isAppDocument(frameUrl);
-    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest || sshTransferRequest || localTextRequest || sshOpenRequest;
+    const xdmcpLaunchRequest = parsed.ok && parsed.result.command === 'xdmcp.launch' && owned && mainFrame && isAppDocument(frameUrl);
+    const observeSenderLifecycle = catalogRequest || pasteRequest || fileListRequest || transferRequest || sshTransferRequest || localTextRequest || sshOpenRequest || xdmcpLaunchRequest;
     let completePending!: () => void;
     const pending: PendingCatalogCommand = {
       cancellation,
@@ -648,6 +654,8 @@ function boot(): void {
         authorizePowerShellProfileScript: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'powershell-profile-script'),
         authorizeSshSessionLog: (sessionId, host, port, gatewayProfileIds) =>
           rendererGestures.consumeSshSessionLog(event.sender.id, sessionId, host, port, gatewayProfileIds),
+        authorizeSshX11Forwarding: (host, port, gatewayProfileIds) =>
+          rendererGestures.consumeSshX11Authorization(event.sender.id, host, port, gatewayProfileIds),
         consumeSshSessionLogAttempt(sessionId, endpoints, required) {
           const pending = pendingSshSessionLogs.get(sessionId);
           if (!pending) {
@@ -666,6 +674,7 @@ function boot(): void {
         authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
         authorizeRdpLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'rdp', host, port),
         authorizeVncLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'vnc', host, port),
+        authorizeXdmcpLaunch: host => rendererGestures.consumeXdmcpLaunch(event.sender.id, host),
         authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) =>
           rendererGestures.consumeTftpServerAction(event.sender.id, action, selectionId, port),
         selectCustomLogo: () => customLogoPreferences.select(),
@@ -893,7 +902,7 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
-        terminals, powerShellProfileScripts, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, localTextEditor, sessionCatalog, sessionCredentials, credentialBundles, macros,
+        terminals, powerShellProfileScripts, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, xdmcp, localTextEditor, sessionCatalog, sessionCredentials, credentialBundles, macros,
         preferences: customLogoPreferences.preferences, tunnels,
         tftpServer: {
           getStatus: () => tftpServer.getStatus(),
@@ -949,6 +958,26 @@ function boot(): void {
     const consent = parseSshSessionLogConsentGestureRequest(input);
     if (!consent) return false;
     rendererGestures.issueSshSessionLog(event.sender.id, consent.sessionId, consent.host, consent.port, consent.gatewayProfileIds);
+    return true;
+  });
+  ipcMain.handle(SSH_X11_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const consent = parseSshX11ConsentGestureRequest(input);
+    if (!consent) return false;
+    rendererGestures.issueSshX11Consent(event.sender.id, consent.host, consent.port, consent.gatewayProfileIds);
+    return rendererGestures.authorizeSshX11Forwarding(event.sender.id, consent.host, consent.port, consent.gatewayProfileIds);
+  });
+  ipcMain.handle(XDMCP_LAUNCH_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const consent = parseXdmcpLaunchGestureRequest(input);
+    if (!consent) return false;
+    rendererGestures.issueXdmcpLaunch(event.sender.id, consent.host);
     return true;
   });
   ipcMain.handle(TELNET_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
@@ -1027,6 +1056,8 @@ function boot(): void {
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
     ipcMain.removeHandler(POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL);
     ipcMain.removeHandler(SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL);
+    ipcMain.removeHandler(SSH_X11_CONSENT_GESTURE_CHANNEL);
+    ipcMain.removeHandler(XDMCP_LAUNCH_GESTURE_CHANNEL);
     ipcMain.removeHandler(TELNET_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(FTP_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(RDP_LAUNCH_GESTURE_CHANNEL);

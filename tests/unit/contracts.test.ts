@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
   parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
-import { parseSshSessionLogConsentGestureRequest } from '../../packages/contracts/src/commands.ts';
+import { parseSshSessionLogConsentGestureRequest, parseSshX11ConsentGestureRequest, parseXdmcpLaunchGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 
@@ -97,6 +97,8 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, authenticationMethod: 'agent' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, recordSessionLog: true } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, recordSessionLog: 'yes' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, forwardX11: true } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, forwardX11: false } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
@@ -112,6 +114,9 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.deepEqual(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, gatewayProfileIds }),
     { sessionId, host: 'server.example.com', port: 22, gatewayProfileIds });
   assert.equal(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, secret: true }), undefined);
+  assert.deepEqual(parseSshX11ConsentGestureRequest({ host: 'server.example.com', port: 22, gatewayProfileIds }),
+    { host: 'server.example.com', port: 22, gatewayProfileIds });
+  assert.equal(parseSshX11ConsentGestureRequest({ host: 'server.example.com', port: 22, secret: true }), undefined);
 
   const challenge = { kind: 'challenge', sessionId, challenge: { token: 'A'.repeat(32), host: 'server.example.com', port: 22,
     algorithm: 'ssh-ed25519', fingerprint: `SHA256:${'A'.repeat(43)}` } };
@@ -124,6 +129,14 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest(revoke).ok, true);
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, host: 'Server.example.com' } }).ok, false);
   assert.equal(parseRequest({ ...revoke, payload: { ...revoke.payload, port: 65_536 } }).ok, false);
+});
+
+test('XDMCP request and consent contracts accept only a canonical host', () => {
+  const input = { command: 'xdmcp.launch', requestId: request.requestId, contractVersion: 1, payload: { host: 'DISPLAY.EXAMPLE.COM.' } };
+  assert.equal(parseRequest(input).ok, true);
+  assert.equal(parseRequest({ ...input, payload: { host: 'display.example.com', extra: true } }).ok, false);
+  assert.deepEqual(parseXdmcpLaunchGestureRequest({ host: 'DISPLAY.EXAMPLE.COM.' }), { host: 'display.example.com' });
+  assert.equal(parseXdmcpLaunchGestureRequest({ host: 'display.example.com', confirmation: true }), undefined);
 });
 
 test('credential and vault commands accept only profile identifiers and safe state replies', () => {
@@ -176,6 +189,24 @@ test('SFTP open and close commands share SSH endpoint validation without termina
   const close = { command: 'sftp.close', requestId: request.requestId, contractVersion: 1, payload: { sessionId } };
   assert.equal(parseRequest(close).ok, true);
   assert.equal(parseRequest({ ...close, payload: { ...close.payload, force: true } }).ok, false);
+});
+
+test('SSH X11 open result reports only validated extension capabilities when forwarding was requested', () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const open = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.com', port: 22, columns: 80, rows: 24, forwardX11: true } };
+  const parsed = parseRequest(open);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  const result = { sessionId, endpoint: { host: 'server.example.com', port: 22 }, state: 'running',
+    x11Extensions: { glx: true, composite: false, randr: true } };
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result }, parsed.result), true);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
+    result: { ...result, x11Extensions: { ...result.x11Extensions, shell: true } } }, parsed.result), false);
+  const sftpOpen = { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.com', port: 22 } };
+  const parsedSftp = parseRequest(sftpOpen);
+  if (parsedSftp.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result }, parsedSftp.result), false);
 });
 
 test('SSH directory browsing accepts bounded paths and exact credential-free listing replies', () => {

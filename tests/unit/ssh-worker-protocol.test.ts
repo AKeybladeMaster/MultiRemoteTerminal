@@ -20,7 +20,12 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
     endpoint: { host: 'server.example.net', port: 22 }, credentials: { username: 'alice', password: 'one-time secret' },
     size: { columns: 80, rows: 24 }
   };
+  const x11Display = { display: 123, cookie: new Uint8Array(16), socatExecutable: String.raw`C:\cygwin64\usr\bin\socat.exe` };
   assert.equal(parseSshWorkerInput(open)?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, x11Display })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, x11Display: { ...x11Display, display: 59_536 } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...open, x11Display: { ...x11Display, cookie: new Uint8Array(15) } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...open, x11Display: { ...x11Display, socatExecutable: 'socat.exe' } }), undefined);
   const gatewayHops = [
     { endpoint: { host: 'gateway-one.example.net', port: 2201 }, credentials: { username: 'gateway-one', password: 'secret-one' } },
     { endpoint: { host: 'gateway-two.example.net', port: 2202 }, credentials: { username: 'gateway-two', password: 'secret-two' } },
@@ -30,6 +35,7 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   const secondGateway = gatewayHops[1]!;
   const thirdGateway = gatewayHops[2]!;
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops, x11Display })?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [...gatewayHops, { ...thirdGateway,
     endpoint: { host: 'gateway-four.example.net', port: 2204 } }] }), undefined, 'routes are bounded to three gateways');
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [{ ...firstGateway, endpoint: open.endpoint }] }), undefined, 'the target cannot also be a gateway');
@@ -61,6 +67,7 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops: [{ ...firstGateway, endpoint: openFiles.endpoint }] }), undefined,
     'the files-only target cannot also be a gateway');
   assert.equal(parseSshWorkerInput({ ...openFiles, size: open.size }), undefined, 'file-only requests cannot smuggle terminal configuration');
+  assert.equal(parseSshWorkerInput({ ...openFiles, x11Display }), undefined, 'file-only requests cannot enable X11');
 
   const key = hostKey();
   const evidence = {

@@ -32,6 +32,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   reportFtpTransferProgress: () => {}, selectSshUploadFile: async () => undefined,
   selectSshPrivateKey: async () => failure('CANCELLED'), selectSshDownloadPath: async () => undefined,
   authorizeSshSessionLog: () => false, consumeSshSessionLogAttempt: () => undefined,
+  authorizeSshX11Forwarding: () => false,
+  authorizeXdmcpLaunch: () => false,
   resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
   selectCustomLogo: async () => ({ ok: true, result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } }),
   discardDroppedUploadHandles: () => {}, terminals: {
@@ -65,7 +67,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     async launch(host, port) { return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } }; }
   }, vncViewer: {
     async launch(host, port) { return { ok: true, result: { provider: 'external', endpoint: { host, port }, state: 'launch-requested' } }; }
-  }, localTextEditor: {
+  }, xdmcp: { async launch() { return { ok: true, result: {} }; } }, localTextEditor: {
     async open() { return { ok: true, result: { selectionId: '22222222-2222-4222-8222-222222222222', fileName: 'local.txt', content: '', revision: 'a'.repeat(64), bytes: 0 } }; },
     async reload(selectionId) { return { ok: true, result: { selectionId, fileName: 'local.txt', content: '', revision: 'a'.repeat(64), bytes: 0 } }; },
     async save() { return { ok: true, result: { revision: 'b'.repeat(64), bytesSaved: 0 } }; },
@@ -381,6 +383,78 @@ test('SSH session logs record safe preflight failures before they finish', async
     { sessionId: 'd8f87744-bd2c-4c0d-9a18-a4a324dd71fd', reason: 'connection-failed', connectionFailure: { phase: 'preflight', code: 'CANCELLED' } },
     { sessionId: 'e8f87744-bd2c-4c0d-9a18-a4a324dd71fd', reason: 'connection-failed', connectionFailure: { phase: 'preflight', code: 'UNAVAILABLE' } }
   ]);
+});
+
+test('SSH X11 forwarding requires its disabled-by-default setting and endpoint consent', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  let enabled = false;
+  let authorized = false;
+  let authorizationChecks = 0;
+  let openedWithX11 = false;
+  const base = actions();
+  const guarded: CommandActions = {
+    ...base,
+    preferences: { ...base.preferences, async read() {
+      return { ok: true, result: { ...DEFAULT_WORKBENCH_PREFERENCES,
+        enabledOptionalConnections: enabled ? [...DEFAULT_WORKBENCH_PREFERENCES.enabledOptionalConnections, 'x11' as const] : [] } };
+    } },
+    authorizeSshX11Forwarding: () => { authorizationChecks++; return authorized; },
+    sshTerminals: { ...base.sshTerminals, async open(_sessionId, host, port, _size, _gateways, _authentication, forwardX11) {
+      openedWithX11 = forwardX11 === true;
+      return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } };
+    } }
+  };
+  const input = { command: 'ssh.open', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, host: 'server.example.net', port: 22, columns: 80, rows: 24, forwardX11: true } };
+
+  const disabled = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(disabled.ok, false);
+  if (!disabled.ok) assert.equal(disabled.error.code, 'NOT_SUPPORTED');
+  assert.equal(authorizationChecks, 0);
+  enabled = true;
+  const denied = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(openedWithX11, false);
+  authorized = true;
+  const accepted = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(accepted.ok, true);
+  assert.equal(openedWithX11, true);
+  assert.equal(authorizationChecks, 2);
+});
+
+test('XDMCP requires its disabled-by-default setting and explicit host consent', async () => {
+  let enabled = false;
+  let authorized = false;
+  let authorizationChecks = 0;
+  const launched: string[] = [];
+  const base = actions();
+  const guarded: CommandActions = {
+    ...base,
+    preferences: { ...base.preferences, async read() {
+      return { ok: true, result: { ...DEFAULT_WORKBENCH_PREFERENCES,
+        enabledOptionalConnections: enabled ? [...DEFAULT_WORKBENCH_PREFERENCES.enabledOptionalConnections, 'xdmcp' as const] : [] } };
+    } },
+    authorizeXdmcpLaunch: () => { authorizationChecks++; return authorized; },
+    xdmcp: { async launch(_requestId, host) { launched.push(host); return { ok: true, result: {} }; } }
+  };
+  const input = { command: 'xdmcp.launch', requestId: request.requestId, contractVersion: 1,
+    payload: { host: 'display.example.net' } };
+
+  const disabled = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(disabled.ok, false);
+  if (!disabled.ok) assert.equal(disabled.error.code, 'NOT_SUPPORTED');
+  assert.equal(authorizationChecks, 0);
+  enabled = true;
+  const denied = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.deepEqual(launched, []);
+  authorized = true;
+  const accepted = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(accepted.ok, true);
+  assert.deepEqual(launched, ['display.example.net']);
+  assert.equal(authorizationChecks, 2);
 });
 
 test('SSH open cancelled while the private-key picker is open never reaches the terminal controller', async () => {

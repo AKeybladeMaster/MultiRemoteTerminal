@@ -6,6 +6,7 @@ import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/hos
 import { isTerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshX11Display } from '../../../../packages/application/src/ssh-x11-display.ts';
 import { MAX_SSH_PRIVATE_KEY_BYTES } from '../../../../packages/application/src/ssh-terminals.ts';
 import { MAX_SSH_GATEWAY_HOPS, normalizeSshGatewayRoute } from '../../../../packages/domain/src/ssh-route.ts';
 import { isTerminalEvent } from '../../../../packages/contracts/src/commands.ts';
@@ -27,7 +28,7 @@ export const MAX_SSH_USERNAME_LENGTH = 512;
 
 export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open'; readonly sessionId: string; readonly endpoint: SshHostEndpoint;
-      readonly credentials: SshAuthenticationCredentials; readonly size: TerminalSize; readonly gatewayHops?: readonly SshConnectionGatewayCredentials[] }
+      readonly credentials: SshAuthenticationCredentials; readonly size: TerminalSize; readonly gatewayHops?: readonly SshConnectionGatewayCredentials[]; readonly x11Display?: SshX11Display }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'open-files'; readonly sessionId: string; readonly endpoint: SshHostEndpoint;
       readonly credentials: SshAuthenticationCredentials; readonly gatewayHops?: readonly SshConnectionGatewayCredentials[] }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'write'; readonly sessionId: string; readonly data: string }
@@ -111,14 +112,21 @@ function isGatewayHops(value: unknown, target: unknown): value is readonly SshCo
   return normalizeSshGatewayRoute(endpoints, target) !== undefined;
 }
 
+function isSshX11Display(value: unknown): value is SshX11Display {
+  return record(value) && exactKeys(value, ['display', 'cookie', 'socatExecutable']) && Number.isSafeInteger(value.display) &&
+    (value.display as number) >= 0 && (value.display as number) <= 59_535 && value.cookie instanceof Uint8Array && value.cookie.byteLength === 16 &&
+    isAbsoluteNormalizedLocalPath(value.socatExecutable);
+}
+
 export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefined {
   if (!record(value) || value.version !== SSH_WORKER_PROTOCOL_VERSION || typeof value.type !== 'string') return undefined;
   if (value.type === 'host-key-result' && exactKeys(value, ['version', 'type', 'sessionId', 'checkId', 'accepted']) &&
       isUuid(value.sessionId) && isUuid(value.checkId) && typeof value.accepted === 'boolean') return value as unknown as SshWorkerRequest;
   if (value.type !== 'request' || !isUuid(value.requestId) || typeof value.command !== 'string') return undefined;
-  if (value.command === 'open' && (exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials', 'size']) ||
-      (exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials', 'size', 'gatewayHops']) &&
-        isGatewayHops(value.gatewayHops, value.endpoint))) && isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) &&
+  if (value.command === 'open' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'endpoint', 'credentials', 'size',
+      ...(Object.hasOwn(value, 'gatewayHops') ? ['gatewayHops'] : []), ...(Object.hasOwn(value, 'x11Display') ? ['x11Display'] : [])]) &&
+      (!Object.hasOwn(value, 'gatewayHops') || isGatewayHops(value.gatewayHops, value.endpoint)) &&
+      (!Object.hasOwn(value, 'x11Display') || isSshX11Display(value.x11Display)) && isUuid(value.sessionId) && isCanonicalEndpoint(value.endpoint) &&
       isAuthenticationCredentials(value.credentials) && isTerminalSize(value.size)) {
     return value as unknown as SshWorkerRequest;
   }

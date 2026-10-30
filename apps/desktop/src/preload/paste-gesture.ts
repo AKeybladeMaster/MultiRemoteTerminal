@@ -2,6 +2,7 @@ import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remo
 import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { isSshGatewayProfileIds, MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
+import { canonicalizeXdmcpHost } from '../../../../packages/domain/src/xdmcp.ts';
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GESTURE_TTL_MS = 750;
@@ -59,6 +60,16 @@ export interface TelnetConsentGestureStore {
 
 export interface SshSessionLogConsentGestureStore {
   consume(sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]): Promise<boolean>;
+  dispose(): void;
+}
+
+export interface SshX11ConsentGestureStore {
+  consume(host: string, port: number, gatewayProfileIds: readonly string[]): Promise<boolean>;
+  dispose(): void;
+}
+
+export interface XdmcpLaunchGestureStore {
+  consume(host: string): Promise<boolean>;
   dispose(): void;
 }
 
@@ -190,6 +201,71 @@ export function installSshSessionLogConsentGestureStore(documentTarget: TelnetCo
           endpoint.port !== current.port || !isSshGatewayProfileIds(gatewayProfileIds) ||
           gatewayProfileIds.length !== current.gatewayProfileIds.length || gatewayProfileIds.some((id, index) => id !== current.gatewayProfileIds[index])) return false;
       try { return await authorize(sessionId, endpoint.host, endpoint.port, gatewayProfileIds) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('submit', observeSubmit, true);
+      gesture = undefined;
+    }
+  });
+}
+
+export function installSshX11ConsentGestureStore(documentTarget: TelnetConsentGestureDocument,
+  authorize: (host: string, port: number, gatewayProfileIds: readonly string[]) => Promise<boolean>,
+  now: () => number = () => performance.now()): SshX11ConsentGestureStore {
+  let gesture: { readonly host: string; readonly port: number; readonly gatewayProfileIds: readonly string[]; readonly expiresAt: number } | undefined;
+  const observeSubmit = (event: Event): void => {
+    const submit = event as unknown as TrustedSubmitEvent;
+    if (submit.type !== 'submit' || !submit.isTrusted) return;
+    const form = submit.target?.closest('form') as TelnetConnectForm | null | undefined;
+    if (!form?.querySelector('button[data-mrt-ssh-x11-consent-trigger]') ||
+        (form.querySelector('#ssh-x11-forwarding') as { readonly checked?: boolean } | null)?.checked !== true) { gesture = undefined; return; }
+    const endpoint = canonicalizeSshHostEndpoint({ host: form.querySelector('input[name="host"]')?.value ?? '',
+      port: Number(form.querySelector('input[name="port"]')?.value) });
+    const gatewayProfileIds = Array.from({ length: MAX_SSH_GATEWAY_HOPS }, (_, index) => form.querySelector(`select[name="sshGateway${index + 1}"]`)?.value ?? '')
+      .filter(id => id.length > 0);
+    gesture = endpoint && isSshGatewayProfileIds(gatewayProfileIds)
+      ? { host: endpoint.host, port: endpoint.port, gatewayProfileIds, expiresAt: now() + GESTURE_TTL_MS } : undefined;
+  };
+  documentTarget.addEventListener('submit', observeSubmit, true);
+  return Object.freeze({
+    async consume(host: string, port: number, gatewayProfileIds: readonly string[]): Promise<boolean> {
+      const current = gesture;
+      gesture = undefined;
+      const endpoint = canonicalizeSshHostEndpoint({ host, port });
+      if (!current || current.expiresAt < now() || !endpoint || endpoint.host !== current.host || endpoint.port !== current.port ||
+          !isSshGatewayProfileIds(gatewayProfileIds) || gatewayProfileIds.length !== current.gatewayProfileIds.length ||
+          gatewayProfileIds.some((id, index) => id !== current.gatewayProfileIds[index])) return false;
+      try { return await authorize(endpoint.host, endpoint.port, gatewayProfileIds) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('submit', observeSubmit, true);
+      gesture = undefined;
+    }
+  });
+}
+
+export function installXdmcpLaunchGestureStore(documentTarget: TelnetConsentGestureDocument,
+  authorize: (host: string) => Promise<boolean>, now: () => number = () => performance.now()): XdmcpLaunchGestureStore {
+  let gesture: { readonly host: string; readonly expiresAt: number } | undefined;
+  const observeSubmit = (event: Event): void => {
+    const submit = event as unknown as TrustedSubmitEvent;
+    if (submit.type !== 'submit' || !submit.isTrusted) return;
+    const form = submit.target?.closest('form') as TelnetConnectForm | null | undefined;
+    if (!form?.querySelector('button[data-mrt-xdmcp-launch-trigger]') ||
+        (form.querySelector('#xdmcp-insecure-confirm') as { readonly checked?: boolean } | null)?.checked !== true) { gesture = undefined; return; }
+    const host = canonicalizeXdmcpHost(form.querySelector('input[name="xdmcpHost"]')?.value ?? '');
+    gesture = host ? { host, expiresAt: now() + GESTURE_TTL_MS } : undefined;
+  };
+  documentTarget.addEventListener('submit', observeSubmit, true);
+  return Object.freeze({
+    async consume(host: string): Promise<boolean> {
+      const current = gesture;
+      gesture = undefined;
+      const requestedHost = canonicalizeXdmcpHost(host);
+      if (!current || current.expiresAt < now() || !requestedHost || requestedHost !== current.host) return false;
+      try { return await authorize(requestedHost) === true; }
       catch { return false; }
     },
     dispose(): void {

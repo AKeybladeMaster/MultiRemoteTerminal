@@ -46,6 +46,8 @@ type ConsumeVncLaunch = (host: string, port: number) => boolean | Promise<boolea
 type ConsumeTftpServerAction = (action: 'choose-root' | 'start', selectionId?: string, port?: number) => boolean | Promise<boolean>;
 type ConsumePowerShellProfileScript = (sessionId: string) => boolean | Promise<boolean>;
 type ConsumeSshSessionLogConsent = (sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]) => boolean | Promise<boolean>;
+type ConsumeSshX11Consent = (host: string, port: number, gatewayProfileIds: readonly string[]) => boolean | Promise<boolean>;
+type ConsumeXdmcpLaunch = (host: string) => boolean | Promise<boolean>;
 type ListenFtpTransfer = Listen;
 type ListenSshTransfer = Listen;
 type ListenTunnelStatus = Listen;
@@ -86,7 +88,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   consumeVncLaunch: ConsumeVncLaunch = () => false, consumeTftpServerAction: ConsumeTftpServerAction = () => false,
   listenRemoteFilesDropped: ListenRemoteFilesDropped = () => () => {}, listenTftpServerStatus: ListenTftpServerStatus = () => () => {},
   consumePowerShellProfileScript: ConsumePowerShellProfileScript = () => false, listenSshSessionLog: Listen = () => () => {},
-  consumeSshSessionLogConsent: ConsumeSshSessionLogConsent = () => false): DesktopBridge {
+  consumeSshSessionLogConsent: ConsumeSshSessionLogConsent = () => false,
+  consumeSshX11Consent: ConsumeSshX11Consent = () => false,
+  consumeXdmcpLaunch: ConsumeXdmcpLaunch = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -405,12 +409,25 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       return closeTerminalInputQueue(sessionId, () => send(request, 8_000));
     },
     openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-      gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog = false): Promise<OpenSshTerminalReply> {
+      gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog = false,
+      forwardX11 = false): Promise<OpenSshTerminalReply> {
       return send({ command: 'ssh.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
         payload: { sessionId, host, port, columns, rows, ...(gatewayProfileIds === undefined ? {} : { gatewayProfileIds }),
           ...(savedProfileId === undefined ? {} : { profileId: savedProfileId }),
-          ...(authenticationMethod === undefined ? {} : { authenticationMethod }), ...(recordSessionLog ? { recordSessionLog: true } : {}) } },
+          ...(authenticationMethod === undefined ? {} : { authenticationMethod }), ...(recordSessionLog ? { recordSessionLog: true } : {}),
+          ...(forwardX11 ? { forwardX11: true as const } : {}) } },
       sshOpenTimeout(gatewayProfileIds?.length ?? 0));
+    },
+    async authorizeSshX11Forwarding(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<boolean> {
+      try { return await consumeSshX11Consent(host, port, gatewayProfileIds ?? []) === true; }
+      catch { return false; }
+    },
+    async launchXdmcp(host: string): Promise<TerminalActionReply> {
+      const id = requestId();
+      try {
+        if (!await consumeXdmcpLaunch(host)) return { requestId: id, ...failure('FORBIDDEN') };
+      } catch { return { requestId: id, ...failure('FORBIDDEN') }; }
+      return send({ command: 'xdmcp.launch', requestId: id, contractVersion: CONTRACT_VERSION, payload: { host } });
     },
     startSshSessionLog(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<StartSshSessionLogReply> {
       const id = requestId();

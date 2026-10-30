@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
-import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installSshSessionLogConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
-  installTftpServerActionGestureStore, installPowerShellProfileGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installSshSessionLogConsentGestureStore, installSshX11ConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
+  installTftpServerActionGestureStore, installPowerShellProfileGestureStore, installXdmcpLaunchGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -363,4 +363,120 @@ test('PowerShell profile execution gesture requires a trusted click on the sessi
   assert.equal(await gestures.consume(firstSession), false, 'expired gesture cannot authorize execution');
   gestures.dispose();
   assert.equal(click, undefined);
+});
+
+test('SSH X11 consent is trusted-submit, endpoint, route, expiry, and one-shot scoped', async () => {
+  let now = 500;
+  let submit: ((event: Event) => void) | undefined;
+  const authorized: string[] = [];
+  const gatewayId = '11111111-1111-4111-8111-111111111111';
+  const form = {
+    closest(selector: string) { return selector === 'form' ? this : null; },
+    querySelector(selector: string) {
+      if (selector === 'button[data-mrt-ssh-x11-consent-trigger]') return {};
+      if (selector === '#ssh-x11-forwarding') return { checked: true };
+      if (selector === 'input[name="host"]') return { value: 'SSH.EXAMPLE.COM.' };
+      if (selector === 'input[name="port"]') return { value: '22' };
+      if (selector === 'select[name="sshGateway1"]') return { value: gatewayId };
+      return null;
+    }
+  };
+  const target = { closest(selector: string) { return selector === 'form' ? form : null; } };
+  const documentTarget = {
+    addEventListener(_type: 'submit', listener: (event: Event) => void) { submit = listener; },
+    removeEventListener(_type: 'submit', listener: (event: Event) => void) { if (submit === listener) submit = undefined; }
+  };
+  const gestures = installSshX11ConsentGestureStore(documentTarget, async (host, port, gateways) => {
+    authorized.push(`${host}:${port}/${gateways.join(',')}`);
+    return true;
+  }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'submit', isTrusted, target }) as unknown as Event;
+
+  submit?.(event(false));
+  assert.equal(await gestures.consume('ssh.example.com', 22, [gatewayId]), false, 'scripted submits cannot grant X11 access');
+  submit?.(event(true));
+  assert.equal(await gestures.consume('other.example.com', 22, [gatewayId]), false, 'consent is bound to the submitted host');
+  submit?.(event(true));
+  assert.equal(await gestures.consume('ssh.example.com', 22, []), false, 'consent is bound to the submitted gateway route');
+  submit?.(event(true));
+  assert.equal(await gestures.consume('ssh.example.com', 22, [gatewayId]), true);
+  assert.equal(await gestures.consume('ssh.example.com', 22, [gatewayId]), false, 'consent can be consumed only once');
+  assert.deepEqual(authorized, ['ssh.example.com:22/11111111-1111-4111-8111-111111111111']);
+  submit?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume('ssh.example.com', 22, [gatewayId]), false, 'expired consent cannot enable forwarding');
+  gestures.dispose();
+  assert.equal(submit, undefined);
+});
+
+test('SSH X11 main-process authorization survives one native prompt but stays one-use and route-bound', () => {
+  let now = 600;
+  const gate = new RendererGestureGate(() => now);
+  const gatewayId = '11111111-1111-4111-8111-111111111111';
+  gate.issueSshX11Consent(11, 'SSH.EXAMPLE.COM.', 22, [gatewayId]);
+  assert.equal(gate.authorizeSshX11Forwarding(12, 'ssh.example.com', 22, [gatewayId]), false);
+  assert.equal(gate.authorizeSshX11Forwarding(11, 'other.example.com', 22, [gatewayId]), false);
+  assert.equal(gate.authorizeSshX11Forwarding(11, 'ssh.example.com', 22, []), false);
+  assert.equal(gate.authorizeSshX11Forwarding(11, 'ssh.example.com', 22, [gatewayId]), true);
+  assert.equal(gate.consumeSshX11Authorization(12, 'ssh.example.com', 22, [gatewayId]), false);
+  assert.equal(gate.consumeSshX11Authorization(11, 'ssh.example.com', 22, []), false);
+  assert.equal(gate.consumeSshX11Authorization(11, 'ssh.example.com', 22, [gatewayId]), true);
+  assert.equal(gate.consumeSshX11Authorization(11, 'ssh.example.com', 22, [gatewayId]), false);
+  gate.issueSshX11Consent(11, 'ssh.example.com', 22, [gatewayId]);
+  assert.equal(gate.authorizeSshX11Forwarding(11, 'ssh.example.com', 22, [gatewayId]), true);
+  now += 5 * 60_000 + 1;
+  assert.equal(gate.consumeSshX11Authorization(11, 'ssh.example.com', 22, [gatewayId]), false);
+});
+
+test('XDMCP requires a trusted submit and the unencrypted-display acknowledgement', async () => {
+  let now = 700;
+  let submit: ((event: Event) => void) | undefined;
+  let confirmed = false;
+  const authorized: string[] = [];
+  const form = {
+    closest(selector: string) { return selector === 'form' ? this : null; },
+    querySelector(selector: string) {
+      if (selector === 'button[data-mrt-xdmcp-launch-trigger]') return {};
+      if (selector === '#xdmcp-insecure-confirm') return { checked: confirmed };
+      if (selector === 'input[name="xdmcpHost"]') return { value: 'DISPLAY.EXAMPLE.COM.' };
+      return null;
+    }
+  };
+  const target = { closest(selector: string) { return selector === 'form' ? form : null; } };
+  const documentTarget = {
+    addEventListener(_type: 'submit', listener: (event: Event) => void) { submit = listener; },
+    removeEventListener(_type: 'submit', listener: (event: Event) => void) { if (submit === listener) submit = undefined; }
+  };
+  const gestures = installXdmcpLaunchGestureStore(documentTarget, async host => { authorized.push(host); return true; }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'submit', isTrusted, target }) as unknown as Event;
+
+  submit?.(event(true));
+  assert.equal(await gestures.consume('display.example.com'), false, 'the warning must be checked');
+  confirmed = true;
+  submit?.(event(false));
+  assert.equal(await gestures.consume('display.example.com'), false, 'scripted submits cannot grant launch consent');
+  submit?.(event(true));
+  assert.equal(await gestures.consume('other.example.com'), false, 'consent is bound to the submitted host');
+  submit?.(event(true));
+  assert.equal(await gestures.consume('display.example.com'), true);
+  assert.equal(await gestures.consume('display.example.com'), false, 'consent is one-use');
+  assert.deepEqual(authorized, ['display.example.com']);
+  submit?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume('display.example.com'), false, 'expired consent cannot authorize a launch');
+  gestures.dispose();
+  assert.equal(submit, undefined);
+});
+
+test('XDMCP main-process launch authorization is one-shot and host-bound', () => {
+  let now = 800;
+  const gate = new RendererGestureGate(() => now);
+  gate.issueXdmcpLaunch(11, 'DISPLAY.EXAMPLE.COM.');
+  assert.equal(gate.consumeXdmcpLaunch(12, 'display.example.com'), false);
+  assert.equal(gate.consumeXdmcpLaunch(11, 'other.example.com'), false);
+  assert.equal(gate.consumeXdmcpLaunch(11, 'display.example.com'), true);
+  assert.equal(gate.consumeXdmcpLaunch(11, 'display.example.com'), false);
+  gate.issueXdmcpLaunch(11, 'display.example.com');
+  now += 751;
+  assert.equal(gate.consumeXdmcpLaunch(11, 'display.example.com'), false);
 });

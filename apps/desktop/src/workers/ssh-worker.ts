@@ -145,10 +145,11 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
     if (request.command === 'open') {
       try {
         await provider.open(request.sessionId, request.endpoint, request.credentials, request.size,
-          (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? []);
+          (endpoint, evidence) => requestHostVerification(request.sessionId, endpoint, evidence), request.gatewayHops ?? [], request.x11Display);
       } finally {
         clearRequestCredentials(request.credentials);
         clearGatewayCredentials(request.gatewayHops);
+        request.x11Display?.cookie.fill(0);
       }
     } else if (request.command === 'open-files') {
       try {

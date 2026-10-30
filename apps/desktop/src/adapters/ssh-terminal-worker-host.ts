@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { UtilityProcess } from 'electron';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshX11Display } from '../../../../packages/application/src/ssh-x11-display.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -116,12 +117,15 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
 
   async open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, size: TerminalSize,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
-    gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
+    gatewayHops: readonly SshConnectionGatewayCredentials[] = [], x11Display?: SshX11Display): Promise<void> {
     if (this.sessions.has(sessionId)) throw new SshTerminalProviderError('UNAVAILABLE');
     const credentialsCopy = copyAuthenticationCredentials(credentials);
     const gatewayCopies = copyGatewayCredentials(gatewayHops);
+    const x11DisplayCopy = x11Display ? { display: x11Display.display, cookie: new Uint8Array(x11Display.cookie),
+      socatExecutable: x11Display.socatExecutable } : undefined;
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open',
-      sessionId, endpoint, credentials: credentialsCopy, size, gatewayHops: gatewayCopies } as const satisfies SshWorkerRequest;
+      sessionId, endpoint, credentials: credentialsCopy, size, gatewayHops: gatewayCopies,
+      ...(x11DisplayCopy ? { x11Display: x11DisplayCopy } : {}) } as const satisfies SshWorkerRequest;
     this.sessions.set(sessionId, { endpoints: [...gatewayCopies.map(hop => hop.endpoint), { ...endpoint }], verifyHost });
     try { await this.request(request, OPEN_TIMEOUT_MS); }
     catch (error) {
@@ -130,6 +134,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     } finally {
       clearAuthenticationCredentials(credentialsCopy);
       clearGatewayCredentials(gatewayCopies);
+      x11DisplayCopy?.cookie.fill(0);
     }
   }
 

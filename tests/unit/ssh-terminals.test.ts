@@ -7,6 +7,7 @@ import { Writable } from 'node:stream';
 import { createSshSessionLogWriter, SSH_SESSION_LOG_MAX_FILE_BYTES } from '../../apps/desktop/src/adapters/ssh-session-log-writer.ts';
 import { createSshTerminalController, SshTerminalProviderError } from '../../packages/application/src/ssh-terminals.ts';
 import type { SshAuthenticationCredentials, SshPrivateKeySelection, SshTerminalProvider } from '../../packages/application/src/ssh-terminals.ts';
+import type { SshX11Display, SshX11DisplayProvider } from '../../packages/application/src/ssh-x11-display.ts';
 import type { CredentialPrompt, CredentialPromptCancellation, CredentialPromptResult } from '../../packages/application/src/credential-prompt.ts';
 import type { HostTrustManager, HostTrustDecision, HostTrustResolution } from '../../packages/application/src/host-trust.ts';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../packages/domain/src/host-trust.ts';
@@ -79,7 +80,8 @@ class FakeTrust implements HostTrustManager {
 }
 
 class FakeProvider implements SshTerminalProvider {
-  readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshAuthenticationCredentials }> = [];
+  readonly opened: Array<{ readonly sessionId: string; readonly endpoint: SshHostEndpoint; readonly credentials: SshAuthenticationCredentials;
+    readonly x11Display?: SshX11Display }> = [];
   readonly privateKeyCopies: Buffer[] = [];
   readonly privateKeyPassphrases: string[] = [];
   readonly agentMethods: string[] = [];
@@ -99,8 +101,9 @@ class FakeProvider implements SshTerminalProvider {
 
   async open(session: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, _size: { columns: number; rows: number },
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
-    gatewayHops: readonly { readonly endpoint: SshHostEndpoint; readonly credentials: { username: string; password: string } }[] = []) {
-    this.opened.push({ sessionId: session, endpoint, credentials });
+    gatewayHops: readonly { readonly endpoint: SshHostEndpoint; readonly credentials: { username: string; password: string } }[] = [],
+    x11Display?: SshX11Display) {
+    this.opened.push({ sessionId: session, endpoint, credentials, ...(x11Display ? { x11Display } : {}) });
     if ('privateKey' in credentials) {
       this.privateKeyCopies.push(Buffer.from(credentials.privateKey));
       this.privateKeyPassphrases.push(credentials.passphrase);
@@ -696,4 +699,44 @@ test('SSH log disk-full error reports stopped recording without closing or block
     await logWriter.closeAll();
     await controller.dispose();
   }
+});
+
+test('SSH X11 display is passed only to opted-in terminal sessions and wiped on close and open failure', async () => {
+  const trust = new FakeTrust();
+  trust.decision = { kind: 'trusted' };
+  const display: SshX11Display = { display: 123, cookie: new Uint8Array(16).fill(7), socatExecutable: String.raw`C:\cygwin64\usr\bin\socat.exe`,
+    extensions: { glx: true, composite: false, randr: true } };
+  const closed: string[] = [];
+  const displayProvider: SshX11DisplayProvider = {
+    async open() { return display; },
+    async close(id) { closed.push(id); },
+    async closeAll() {}
+  };
+  const provider = new FakeProvider();
+  const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }), trust, displayProvider);
+
+  const opened = await controller.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], undefined, true);
+  assert.equal(opened.ok, true);
+  if (opened.ok) assert.deepEqual(opened.result.x11Extensions, display.extensions);
+  assert.equal(provider.opened[0]?.x11Display?.display, 123);
+  assert.equal(provider.opened[0]?.x11Display?.cookie, display.cookie);
+  assert.deepEqual(await controller.close(sessionId), { ok: true, result: {} });
+  assert.deepEqual(closed, [sessionId]);
+  assert.deepEqual(display.cookie, new Uint8Array(16), 'app-owned cookie bytes are zeroed after close');
+  await controller.dispose();
+
+  const failingProvider = new FakeProvider();
+  failingProvider.openError = new Error('simulated transport failure');
+  const failingDisplay: SshX11Display = { display: 124, cookie: new Uint8Array(16).fill(9), socatExecutable: display.socatExecutable };
+  const failedDisplayProvider: SshX11DisplayProvider = {
+    async open() { return failingDisplay; },
+    async close(id) { closed.push(id); },
+    async closeAll() {}
+  };
+  const failingController = createSshTerminalController(failingProvider, promptWith({ kind: 'provided', username: 'alice', secret: 'temporary' }),
+    trust, failedDisplayProvider);
+  assert.equal((await failingController.open(sessionId, 'server.example.net', 22, { columns: 80, rows: 24 }, [], undefined, true)).ok, false);
+  assert.deepEqual(failingDisplay.cookie, new Uint8Array(16), 'failed SSH startup also clears the cookie');
+  assert.deepEqual(closed, [sessionId, sessionId]);
+  await failingController.dispose();
 });

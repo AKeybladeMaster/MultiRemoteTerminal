@@ -14,6 +14,7 @@ import type { SshTerminalSession, SshTrustEvent } from '../../application/src/ss
 import type { SshSessionLogStatus } from '../../application/src/ssh-session-activity.ts';
 import type { TelnetTerminalSession } from '../../application/src/telnet-terminals.ts';
 import type { SerialTerminalSession } from '../../application/src/serial-terminals.ts';
+import type { X11ExtensionCapabilities } from '../../domain/src/x11.ts';
 import type { FtpFilesSession } from '../../application/src/ftp-files.ts';
 import type { WorkbenchSnapshot } from '../../application/src/workbench.ts';
 import { canonicalizeSshHostEndpoint } from '../../domain/src/host-trust.ts';
@@ -52,6 +53,7 @@ import type { WorkbenchPreferences, WorkbenchStartupPreferences } from '../../do
 import { MAX_WORKBENCH_SETTINGS_TEMPLATE_BYTES } from '../../domain/src/workbench-settings-template.ts';
 import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
 import { isCustomLogoDataUrl } from '../../domain/src/custom-logo.ts';
+import { canonicalizeXdmcpHost } from '../../domain/src/xdmcp.ts';
 import type { CustomLogoSelection } from '../../domain/src/custom-logo.ts';
 
 export const CONTRACT_VERSION = 1;
@@ -67,6 +69,8 @@ export const RDP_LAUNCH_GESTURE_CHANNEL = 'mrt:rdp-launch-gesture:v1';
 export const VNC_LAUNCH_GESTURE_CHANNEL = 'mrt:vnc-launch-gesture:v1';
 export const TFTP_SERVER_ACTION_GESTURE_CHANNEL = 'mrt:tftp-server-action-gesture:v1';
 export const SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL = 'mrt:ssh-session-log-consent-gesture:v1';
+export const SSH_X11_CONSENT_GESTURE_CHANNEL = 'mrt:ssh-x11-consent-gesture:v1';
+export const XDMCP_LAUNCH_GESTURE_CHANNEL = 'mrt:xdmcp-launch-gesture:v1';
 export const TFTP_SERVER_STATUS_EVENT_CHANNEL = 'mrt:tftp-server-status:v1';
 export const FTP_TRANSFER_EVENT_CHANNEL = 'mrt:ftp-transfer-event:v1';
 export const SSH_TRANSFER_EVENT_CHANNEL = 'mrt:ssh-transfer-event:v1';
@@ -113,7 +117,8 @@ export type AcknowledgeTerminalRequest = Request<'terminal.ack', { readonly sess
 export type CloseTerminalRequest = Request<'terminal.close', { readonly sessionId: string }>;
 export type SshAuthenticationMethod = 'password' | 'private-key' | 'agent';
 export type OpenSshTerminalRequest = Request<'ssh.open', { readonly sessionId: string; readonly host: string; readonly port: number; readonly columns: number; readonly rows: number;
-  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod; readonly recordSessionLog?: boolean }>;
+  readonly gatewayProfileIds?: readonly string[]; readonly profileId?: string; readonly authenticationMethod?: SshAuthenticationMethod;
+  readonly recordSessionLog?: boolean; readonly forwardX11?: true }>;
 export type StartSshSessionLogRequest = Request<'ssh.session-log.start', { readonly sessionId: string; readonly host: string; readonly port: number;
   readonly gatewayProfileIds?: readonly string[] }>;
 export type OpenSftpFilesRequest = Request<'sftp.open', { readonly sessionId: string; readonly host: string; readonly port: number;
@@ -168,6 +173,7 @@ export type GetTftpServerStatusRequest = Request<'tftp.status', Record<string, n
 export type StopTftpServerRequest = Request<'tftp.stop', Record<string, never>>;
 export type LaunchRdpViewerRequest = Request<'rdp.launch', { readonly host: string; readonly port: number }>;
 export type LaunchVncViewerRequest = Request<'vnc.launch', { readonly host: string; readonly port: number }>;
+export type LaunchXdmcpRequest = Request<'xdmcp.launch', { readonly host: string }>;
 export type ListSessionsRequest = Request<'session.list', { readonly query: string }>;
 export type CountSessionsRequest = Request<'session.count', Record<string, never>>;
 export type CreateSessionRequest = Request<'session.create', SavedSessionDraft>;
@@ -223,7 +229,7 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
   ListSerialPortsRequest | ListWslDistributionsRequest | CancelWslDistributionDiscoveryRequest | OpenSerialTerminalRequest | WriteSerialTerminalRequest | PasteSerialTerminalRequest | ResizeSerialTerminalRequest | AcknowledgeSerialTerminalRequest | CloseSerialTerminalRequest |
   OpenFtpFilesRequest | ListFtpDirectoryRequest | UploadFtpFileRequest | UploadDroppedFtpFileRequest | DownloadFtpFileRequest | CancelFtpTransferRequest | CloseFtpFilesRequest |
   ChooseTftpRootRequest | StartTftpServerRequest | GetTftpServerStatusRequest | StopTftpServerRequest |
-  LaunchRdpViewerRequest | LaunchVncViewerRequest |
+  LaunchRdpViewerRequest | LaunchVncViewerRequest | LaunchXdmcpRequest |
   ListSessionsRequest | CountSessionsRequest | CreateSessionRequest | RememberSessionRequest | SetSessionFavoriteRequest | DeleteSessionRequest | ListSessionFoldersRequest | CreateSessionFolderRequest |
   RenameSessionFolderRequest | MoveSessionFolderRequest | DeleteSessionFolderRequest | ExportSessionFolderRequest | ImportSessionFolderRequest | MoveSessionRequest |
   HasSessionCredentialRequest | SaveSessionCredentialRequest | ForgetSessionCredentialRequest | GetCredentialVaultStateRequest | LockCredentialVaultRequest | UnlockCredentialVaultRequest |
@@ -237,7 +243,9 @@ export type CommandRequest = DescribeRequest | OpenTerminalRequest | WriteTermin
 export type CommandReply<T> = Outcome<T> & { readonly requestId: string };
 export type DescribeReply = CommandReply<WorkbenchSnapshot>;
 export type OpenTerminalResult = LocalTerminalSession;
-export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
+export type OpenSshTerminalResult = Pick<SshTerminalSession, 'sessionId' | 'endpoint' | 'state'> & {
+  readonly x11Extensions?: X11ExtensionCapabilities;
+};
 export type OpenTelnetTerminalResult = Pick<TelnetTerminalSession, 'sessionId' | 'endpoint' | 'state'>;
 export type OpenSerialTerminalResult = Pick<SerialTerminalSession, 'sessionId' | 'configuration' | 'state'>;
 export type OpenTerminalReply = CommandReply<OpenTerminalResult>;
@@ -323,7 +331,9 @@ export interface DesktopBridge {
   acknowledgeTerminalOutput(sessionId: string, sequence: number): Promise<TerminalActionReply>;
   closeTerminal(sessionId: string): Promise<TerminalActionReply>;
   openSshTerminal(sessionId: string, host: string, port: number, columns: number, rows: number,
-    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog?: boolean): Promise<OpenSshTerminalReply>;
+    gatewayProfileIds?: readonly string[], savedProfileId?: string, authenticationMethod?: SshAuthenticationMethod, recordSessionLog?: boolean,
+    forwardX11?: boolean): Promise<OpenSshTerminalReply>;
+  authorizeSshX11Forwarding(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<boolean>;
   startSshSessionLog(host: string, port: number, gatewayProfileIds?: readonly string[]): Promise<StartSshSessionLogReply>;
   openSftpFiles(sessionId: string, host: string, port: number, authenticationMethod?: SshAuthenticationMethod,
     gatewayProfileIds?: readonly string[]): Promise<OpenSftpFilesReply>;
@@ -374,6 +384,7 @@ export interface DesktopBridge {
   stopTftpServer(): Promise<TerminalActionReply>;
   launchRdpViewer(host: string, port: number): Promise<LaunchRdpViewerReply>;
   launchVncViewer(host: string, port: number): Promise<LaunchVncViewerReply>;
+  launchXdmcp(host: string): Promise<TerminalActionReply>;
   listSavedSessions(query: string): Promise<ListSessionsReply>;
   countSavedSessions(): Promise<CountSessionsReply>;
   createSavedSession(draft: SavedSessionDraft): Promise<CreateSessionReply>;
@@ -457,6 +468,22 @@ export function parseSshSessionLogConsentGestureRequest(value: unknown): { reado
       hasGateways && !isSshGatewayProfileIds(value.gatewayProfileIds)) return undefined;
   const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
   return endpoint ? { sessionId: value.sessionId, ...endpoint, gatewayProfileIds: (value.gatewayProfileIds ?? []) as readonly string[] } : undefined;
+}
+
+export function parseSshX11ConsentGestureRequest(value: unknown): { readonly host: string; readonly port: number;
+  readonly gatewayProfileIds: readonly string[] } | undefined {
+  if (!record(value)) return undefined;
+  const hasGateways = Object.hasOwn(value, 'gatewayProfileIds');
+  if (!exactKeys(value, ['host', 'port', ...(hasGateways ? ['gatewayProfileIds'] : [])]) || typeof value.host !== 'string' || !Number.isInteger(value.port) ||
+      hasGateways && !isSshGatewayProfileIds(value.gatewayProfileIds)) return undefined;
+  const endpoint = canonicalizeSshHostEndpoint({ host: value.host, port: value.port });
+  return endpoint ? { ...endpoint, gatewayProfileIds: (value.gatewayProfileIds ?? []) as readonly string[] } : undefined;
+}
+
+export function parseXdmcpLaunchGestureRequest(value: unknown): { readonly host: string } | undefined {
+  if (!record(value) || !exactKeys(value, ['host'])) return undefined;
+  const host = canonicalizeXdmcpHost(value.host);
+  return host ? { host } : undefined;
 }
 
 export function parseRdpLaunchGestureRequest(value: unknown): { readonly host: string; readonly port: number } | undefined {
@@ -551,17 +578,20 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   const sshOpenHasProfile = Object.hasOwn(payload, 'profileId');
   const sshOpenHasAuthenticationMethod = Object.hasOwn(payload, 'authenticationMethod');
   const sshOpenHasSessionLog = Object.hasOwn(payload, 'recordSessionLog');
+  const sshOpenHasX11 = Object.hasOwn(payload, 'forwardX11');
   const sshOpenOptionalKeys = [
     ...(sshOpenHasGateways ? ['gatewayProfileIds'] : []),
     ...(sshOpenHasProfile ? ['profileId'] : []),
     ...(sshOpenHasAuthenticationMethod ? ['authenticationMethod'] : []),
-    ...(sshOpenHasSessionLog ? ['recordSessionLog'] : [])
+    ...(sshOpenHasSessionLog ? ['recordSessionLog'] : []),
+    ...(sshOpenHasX11 ? ['forwardX11'] : [])
   ];
   const validSshOpenKeys = exactKeys(payload, [...sshOpenBaseKeys, ...sshOpenOptionalKeys]) &&
     (!sshOpenHasGateways || isSshGatewayProfileIds(payload.gatewayProfileIds)) &&
     (!sshOpenHasProfile || isSessionDefinitionId(payload.profileId)) &&
     (!sshOpenHasAuthenticationMethod || payload.authenticationMethod === 'password' || payload.authenticationMethod === 'private-key' ||
-      payload.authenticationMethod === 'agent') && (!sshOpenHasSessionLog || typeof payload.recordSessionLog === 'boolean');
+      payload.authenticationMethod === 'agent') && (!sshOpenHasSessionLog || typeof payload.recordSessionLog === 'boolean') &&
+    (!sshOpenHasX11 || payload.forwardX11 === true);
   if (value.command === 'ssh.open' && validSshOpenKeys &&
       typeof payload.sessionId === 'string' && UUID.test(payload.sessionId) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeSshHostEndpoint({ host: payload.host, port: payload.port }) !== undefined && validSize(payload.columns, payload.rows)) {
@@ -676,6 +706,9 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
   if (value.command === 'vnc.launch' && exactKeys(payload, ['host', 'port']) && typeof payload.host === 'string' && Number.isInteger(payload.port) &&
       canonicalizeVncEndpoint({ host: payload.host, port: payload.port }) !== undefined) {
     return { ok: true, result: value as unknown as LaunchVncViewerRequest };
+  }
+  if (value.command === 'xdmcp.launch' && exactKeys(payload, ['host']) && canonicalizeXdmcpHost(payload.host) !== undefined) {
+    return { ok: true, result: value as unknown as LaunchXdmcpRequest };
   }
   if ((value.command === 'ssh.host.approve' || value.command === 'ssh.host.reject') && exactKeys(payload, ['token']) &&
       typeof payload.token === 'string' && TRUST_TOKEN.test(payload.token)) return { ok: true, result: value as unknown as DecideSshHostRequest };
@@ -825,7 +858,7 @@ export function parseRequest(value: unknown): Outcome<CommandRequest> {
     'telnet.open', 'telnet.write', 'telnet.paste', 'telnet.resize', 'telnet.ack', 'telnet.close',
     'serial.ports.list', 'wsl.distributions.list', 'wsl.distributions.cancel', 'serial.open', 'serial.write', 'serial.paste', 'serial.resize', 'serial.ack', 'serial.close',
     'ftp.open', 'ftp.files.list', 'ftp.files.upload', 'ftp.files.upload-dropped', 'ftp.files.download', 'ftp.files.cancel', 'ftp.close',
-    'tftp.root.choose', 'tftp.start', 'tftp.status', 'tftp.stop', 'rdp.launch', 'vnc.launch',
+    'tftp.root.choose', 'tftp.start', 'tftp.status', 'tftp.stop', 'rdp.launch', 'vnc.launch', 'xdmcp.launch',
     'session.list', 'session.count', 'session.create', 'session.remember', 'session.favorite', 'session.delete', 'session.folder.list', 'session.folder.create', 'session.folder.rename',
     'session.folder.move', 'session.folder.delete', 'session.folder.export', 'session.folder.import', 'session.move',
     'session.credential.has', 'session.credential.save', 'session.credential.forget', 'vault.state', 'vault.lock', 'vault.unlock',
@@ -858,11 +891,19 @@ function validOpenResult(value: unknown, launch: LocalTerminalLaunch): value is 
 }
 
 function validSshOpenResult(value: unknown, request: OpenSshTerminalRequest | OpenSftpFilesRequest): value is OpenSshTerminalResult {
-  if (!record(value) || !exactKeys(value, ['sessionId', 'endpoint', 'state'])) return false;
+  if (!record(value)) return false;
+  const hasExtensions = Object.hasOwn(value, 'x11Extensions');
+  if ((hasExtensions && (request.command !== 'ssh.open' || request.payload.forwardX11 !== true || !isX11ExtensionCapabilities(value.x11Extensions))) ||
+      !exactKeys(value, ['sessionId', 'endpoint', 'state', ...(hasExtensions ? ['x11Extensions'] : [])])) return false;
   const endpoint = canonicalizeSshHostEndpoint(value.endpoint);
   const requested = canonicalizeSshHostEndpoint({ host: request.payload.host, port: request.payload.port });
   return value.sessionId === request.payload.sessionId && endpoint !== undefined && requested !== undefined && endpoint.host === requested.host &&
     endpoint.port === requested.port && ['running', 'exited', 'failed'].includes(value.state as string);
+}
+
+function isX11ExtensionCapabilities(value: unknown): value is X11ExtensionCapabilities {
+  return record(value) && exactKeys(value, ['glx', 'composite', 'randr']) &&
+    typeof value.glx === 'boolean' && typeof value.composite === 'boolean' && typeof value.randr === 'boolean';
 }
 
 function validTelnetOpenResult(value: unknown, request: OpenTelnetTerminalRequest): value is OpenTelnetTerminalResult {

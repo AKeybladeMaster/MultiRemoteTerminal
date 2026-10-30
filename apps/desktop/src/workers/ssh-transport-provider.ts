@@ -1,14 +1,18 @@
 import type { Client, ClientChannel, ConnectConfig, VerifyCallback } from 'ssh2';
 import type { FileEntryWithStats, SFTPWrapper } from 'ssh2';
-import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { connect as connectTcp, createServer, isIP } from 'node:net';
 import type { Server, Socket } from 'node:net';
+import { Writable } from 'node:stream';
 import { posix } from 'node:path';
 import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
 import type { SshTransportNetworkFailure } from '../../../../packages/application/src/ssh-session-activity.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials } from '../../../../packages/application/src/ssh-terminals.ts';
+import type { SshX11Display } from '../../../../packages/application/src/ssh-x11-display.ts';
 import type { TerminalSize } from '../../../../packages/domain/src/local-terminal.ts';
 import { evidenceFromSsh2HostKey } from '../adapters/host-key-evidence.ts';
 import { awaitWithCancellation } from '../../../../packages/application/src/cancellation.ts';
@@ -21,8 +25,11 @@ import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '..
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../../../packages/domain/src/remote-text-file.ts';
 import { createSftpFileTransfers } from './sftp-file-transfers.ts';
 import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
+import { SshX11CookieRewriter } from './ssh-x11-cookie-rewriter.ts';
 
 const CONNECT_TIMEOUT_MS = 130_000;
+const MAX_SSH_X11_CHANNELS = 16;
+const SSH_X11_SETUP_TIMEOUT_MS = 10_000;
 const MAX_TERMINAL_EVENT_CHARS = 16_384;
 const MAX_PENDING_REMOTE_TEXT_CHARS = 131_072;
 const PAUSE_OUTPUT_BYTES = 128 * 1024;
@@ -79,6 +86,10 @@ interface RemoteForwardRuntime {
   cancelStart?: (error: Error) => void;
 }
 
+interface SshX11RelayRuntime {
+  close(): void;
+}
+
 export type SshTransportClient = Client;
 export type SshTransportChannel = ClientChannel;
 export type SshTransportConfig = ConnectConfig;
@@ -92,7 +103,7 @@ export interface SshTransportClientFactory {
 export interface SshTransportProvider {
   open(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials, size: TerminalSize,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
-    gatewayHops?: readonly SshConnectionGatewayCredentials[]): Promise<void>;
+    gatewayHops?: readonly SshConnectionGatewayCredentials[], x11Display?: SshX11Display): Promise<void>;
   openFiles(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops?: readonly SshConnectionGatewayCredentials[]): Promise<void>;
@@ -122,6 +133,8 @@ interface RuntimeSession {
   readonly clients: Client[];
   readonly routeChannels: ClientChannel[];
   readonly mode: 'terminal' | 'files';
+  x11Display?: { readonly display: number; readonly cookie: Buffer; readonly proxyCookie: Buffer; readonly socatExecutable: string };
+  readonly x11Relays: Set<SshX11RelayRuntime>;
   channel?: ClientChannel;
   sftp: SftpChannel | undefined;
   readonly localForwards: Map<string, LocalForwardRuntime>;
@@ -424,6 +437,10 @@ export function createSshTransportProvider(
     session.sftpOpenAttempt = undefined;
     session.sftpBusy = false;
     session.clearAuthenticationSecrets();
+    for (const relay of [...session.x11Relays]) relay.close();
+    session.x11Display?.cookie.fill(0);
+    session.x11Display?.proxyCookie.fill(0);
+    delete session.x11Display;
     clearTimeout(session.openTimer);
     session.pendingText = '';
     session.outputBytesBySequence.clear();
@@ -543,11 +560,14 @@ export function createSshTransportProvider(
   function openConnection(sessionId: string, endpoint: SshHostEndpoint, credentials: SshAuthenticationCredentials,
     mode: RuntimeSession['mode'], size: TerminalSize | undefined,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
-    gatewayHops: readonly SshConnectionGatewayCredentials[] = []): Promise<void> {
+    gatewayHops: readonly SshConnectionGatewayCredentials[] = [], x11Display?: SshX11Display): Promise<void> {
     if (sessions.has(sessionId)) return Promise.reject(new SshTerminalProviderError('UNAVAILABLE'));
     const firstClient = clients.create();
     const session: RuntimeSession = {
       sessionId, client: firstClient, clients: [firstClient], routeChannels: [], mode, opening: true, closing: false, terminalEventSent: false, exitCode: 0,
+      ...(x11Display ? { x11Display: { display: x11Display.display, cookie: Buffer.from(x11Display.cookie), proxyCookie: randomBytes(16),
+        socatExecutable: x11Display.socatExecutable } } : {}),
+      x11Relays: new Set(),
       sftp: undefined, localForwards: new Map(), remoteForwards: new Map(), sftpBusy: false, sftpOpenAttempt: undefined,
       sftpRecoveryCheckedChannel: undefined, fileRecoveryScope: undefined, pendingUploadSettlement: undefined,
       nextSequence: 1, lastAcknowledged: 0, pendingOutputBytes: 0, pendingText: '',
@@ -592,8 +612,64 @@ export function createSshTransportProvider(
           terminate(session);
         }
       });
-      if (isDestination) client.on('tcp connection', (details, accept, rejectConnection) =>
-        acceptRemoteForwardConnection(session, details, accept, rejectConnection));
+      if (isDestination) {
+        client.on('tcp connection', (details, accept, rejectConnection) =>
+          acceptRemoteForwardConnection(session, details, accept, rejectConnection));
+        client.on('x11', (_details, accept, rejectConnection) => {
+          const display = session.x11Display;
+          if (!display || session.closing || session.x11Relays.size >= MAX_SSH_X11_CHANNELS) { rejectConnection(); return; }
+          let channel: ClientChannel;
+          try { channel = accept(); }
+          catch { rejectConnection(); return; }
+          let relay: ChildProcess;
+          try {
+            relay = spawn(display.socatExecutable, ['-', `UNIX-CONNECT:/tmp/.X11-unix/X${display.display}`], {
+              shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore']
+            });
+          } catch { channel.destroy(); return; }
+          if (!relay.stdin || !relay.stdout) { relay.kill(); channel.destroy(); return; }
+          const rewriter = new SshX11CookieRewriter(display.proxyCookie, display.cookie);
+          const relayInput = new Writable({
+            write(chunk, _encoding, callback) {
+              if (!relay.stdin || relay.stdin.destroyed) {
+                if (Buffer.isBuffer(chunk)) rewriter.clearCookieBuffer(chunk);
+                callback(new Error('X11 relay closed'));
+                return;
+              }
+              relay.stdin.write(chunk, error => {
+                if (Buffer.isBuffer(chunk)) rewriter.clearCookieBuffer(chunk);
+                callback(error ?? undefined);
+              });
+            }
+          });
+          let closed = false;
+          let setupTimer: ReturnType<typeof setTimeout> | undefined;
+          const relayRuntime: SshX11RelayRuntime = {
+            close: () => {
+              if (closed) return;
+              closed = true;
+              clearTimeout(setupTimer);
+              session.x11Relays.delete(relayRuntime);
+              try { channel.destroy(); } catch { /* The relay is still stopped below. */ }
+              rewriter.destroy();
+              relayInput.destroy();
+              if (relay.exitCode === null && relay.signalCode === null) relay.kill();
+            }
+          };
+          session.x11Relays.add(relayRuntime);
+          setupTimer = setTimeout(relayRuntime.close, SSH_X11_SETUP_TIMEOUT_MS);
+          channel.once('close', relayRuntime.close);
+          channel.once('error', relayRuntime.close);
+          relay.once('error', relayRuntime.close);
+          relay.once('exit', relayRuntime.close);
+          relay.stdin.once('error', relayRuntime.close);
+          rewriter.once('error', relayRuntime.close);
+          relayInput.once('error', relayRuntime.close);
+          relay.stdout.once('data', () => { clearTimeout(setupTimer); setupTimer = undefined; });
+          channel.pipe(rewriter).pipe(relayInput);
+          relay.stdout.pipe(channel);
+        });
+      }
     }
 
     function connectHop(client: Client, hopEndpoint: SshHostEndpoint, hopCredentials: SshAuthenticationCredentials,
@@ -704,7 +780,8 @@ export function createSshTransportProvider(
         return;
       }
       if (!size) { fail(session, 'UNAVAILABLE'); return; }
-      session.client.shell({ term: 'xterm-256color', cols: size.columns, rows: size.rows }, (error, channel) => {
+      session.client.shell({ term: 'xterm-256color', cols: size.columns, rows: size.rows,
+        ...(session.x11Display ? { x11: { single: false, protocol: 'MIT-MAGIC-COOKIE-1', cookie: session.x11Display.proxyCookie, screen: 0 } } : {}) }, (error, channel) => {
         if (error || !channel || session.closing) { fail(session, session.failureCode ?? 'UNAVAILABLE'); return; }
         session.channel = channel;
         channel.setEncoding('utf8');
@@ -812,8 +889,8 @@ export function createSshTransportProvider(
   }
 
   const provider: SshTransportProvider = {
-    open(sessionId, endpoint, credentials, size, verifyHost, gatewayHops = []): Promise<void> {
-      return openConnection(sessionId, endpoint, credentials, 'terminal', size, verifyHost, gatewayHops);
+    open(sessionId, endpoint, credentials, size, verifyHost, gatewayHops = [], x11Display): Promise<void> {
+      return openConnection(sessionId, endpoint, credentials, 'terminal', size, verifyHost, gatewayHops, x11Display);
     },
 
     openFiles(sessionId, endpoint, credentials, verifyHost, gatewayHops = []): Promise<void> {

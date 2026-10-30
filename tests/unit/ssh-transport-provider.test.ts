@@ -28,7 +28,7 @@ class FakeClient extends EventEmitter {
   config: ConnectConfig | undefined;
   readonly channel = new PassThrough() as ClientChannel & PassThrough;
   ended = false;
-  shellSize: { cols?: number; rows?: number; term?: string } | undefined;
+  shellSize: { cols?: number; rows?: number; term?: string; x11?: { single?: boolean; protocol?: string; cookie?: Buffer; screen?: number } } | undefined;
   windowSize: [number, number, number, number] | undefined;
   readonly sftpChannel: FakeSftp | undefined;
   readonly sftpError: Error | undefined;
@@ -39,7 +39,8 @@ class FakeClient extends EventEmitter {
   }
 
   connect(config: ConnectConfig): this { this.config = config; return this; }
-  shell(window: { cols?: number; rows?: number; term?: string }, callback: (error: Error | undefined, channel?: ClientChannel) => void): this {
+  shell(window: { cols?: number; rows?: number; term?: string; x11?: { single?: boolean; protocol?: string; cookie?: Buffer; screen?: number } },
+    callback: (error: Error | undefined, channel?: ClientChannel) => void): this {
     this.shellSize = window;
     this.channel.setWindow = (rows, cols, height, width) => { this.windowSize = [rows, cols, height, width]; };
     callback(undefined, this.channel);
@@ -244,6 +245,43 @@ test('SSH provider uses the validated agent pipe for user authentication and nev
   await opened;
   assert.equal(client.config?.agent, undefined);
   await provider.close(sessionId);
+});
+
+test('SSH provider rejects unsolicited X11 channels with the actual reject callback', async () => {
+  const client = new FakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true);
+  client.emit('ready');
+  await opened;
+
+  let accepted = 0;
+  let rejected = 0;
+  client.emit('x11', { srcIP: '127.0.0.1', srcPort: 1234 }, () => { accepted += 1; return client.channel; }, () => { rejected += 1; });
+  assert.equal(accepted, 0);
+  assert.equal(rejected, 1);
+
+  await provider.close(sessionId);
+});
+
+test('SSH X11 forwarding sends a disposable cookie and clears it when the session closes', async () => {
+  const client = new FakeClient();
+  const realCookie = Buffer.alloc(16, 0x42);
+  const expectedCookie = Buffer.from(realCookie);
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, endpoint, { username: 'alice', password: 'secret' }, size, async () => true, [], {
+    display: 123, cookie: realCookie, socatExecutable: String.raw`C:\cygwin64\usr\bin\socat.exe`
+  });
+  client.emit('ready');
+  await opened;
+
+  const proxyCookie = client.shellSize?.x11?.cookie;
+  assert.ok(proxyCookie);
+  assert.equal(proxyCookie.byteLength, 16);
+  assert.notDeepEqual(proxyCookie, expectedCookie);
+  assert.deepEqual(realCookie, expectedCookie);
+
+  await provider.close(sessionId);
+  assert.deepEqual(proxyCookie, Buffer.alloc(16));
 });
 
 test('SSH provider opens a three-gateway route over nested channels and closes the complete chain', async () => {

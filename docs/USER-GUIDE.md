@@ -28,6 +28,16 @@ an internet connection.
   the VNC server configuration. Save a credential-free VNC profile to reopen
   the same target later. TigerVNC must be installed in a standard Program Files
   location or the current user's Local AppData\\Programs\\TigerVNC folder.
+- **SSH X11 forwarding:** this is disabled by default. Enable it in Workbench
+  settings, then check the consent option in the SSH dialog. A trusted SSH host
+  can inspect or control the local X11 display and clipboard. Cygwin/X must be
+  installed in a supported location.
+- **XDMCP display:** enable XDMCP in Workbench settings, enter one display-manager
+  host, and acknowledge the warning before launch. XDMCP is unencrypted and
+  starts a TCP display listener that other reachable devices may access.
+  Remote X clients on this display can read and change the Windows clipboard.
+  The app reports only that launch was requested; it does not track the remote
+  login or session state.
 
 ## Work with tabs
 
@@ -150,9 +160,10 @@ Loading validates the entire file and updates only the current draft. Choose
 **Save changes** to apply it. Import never runs a saved script.
 
 The **Optional connection types** settings control whether new Telnet, FTP/FTPS,
-serial, RDP, VNC, or local TFTP work can start. Saved profiles stay in the local
-catalog while disabled, but cannot be reopened until you enable that type.
-Connections and file sessions already open can continue and close.
+serial, RDP, VNC, SSH X11 forwarding, XDMCP, or local TFTP work can start. SSH
+X11 and XDMCP are disabled by default. Saved profiles stay in the local catalog
+while disabled, but cannot be reopened until you enable that type. Connections
+and file sessions already open can continue and close.
 
 The same dialog can highlight selected words in visible terminal output. Turn
 on **Highlight terminal keywords**, add a rule, enter an RE2-style regular

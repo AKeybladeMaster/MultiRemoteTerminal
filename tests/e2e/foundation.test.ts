@@ -5123,6 +5123,45 @@ test('RDP profiles persist and launch through the explicitly external viewer han
   }
 });
 
+test('XDMCP launch requires opt-in and a per-launch unencrypted-session acknowledgement', async () => {
+  test.skip(process.platform !== 'win32', 'XDMCP provider workflow is Windows-only');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-xdmcp-launch-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-xdmcp'],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const xdmcp = settings.getByRole('checkbox', { name: 'Allow XDMCP sessions' });
+    await expect(xdmcp).not.toBeChecked();
+    await expect(settings).toContainText('remote X clients can read or change the integrated Windows clipboard');
+    await xdmcp.check();
+    await settings.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(settings.getByText('Settings saved.', { exact: true })).toBeVisible();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+
+    const bypass = await page.evaluate(() => window.multiRemoteTerminal.launchXdmcp('display.example.com'));
+    expect(bypass).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    await runPaletteCommand(page, 'Start an XDMCP remote display (unencrypted)');
+    const dialog = page.getByRole('dialog', { name: 'Start an XDMCP remote display' });
+    await expect(dialog).toContainText('XDMCP is unencrypted.');
+    await expect(dialog).toContainText('TCP display listener');
+    await expect(dialog).toContainText('Remote X clients on this display can read and change the Windows clipboard.');
+    await dialog.getByLabel('Display manager host').fill('display.example.com');
+    await dialog.getByRole('button', { name: 'Launch XDMCP display', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('Confirm the unencrypted XDMCP');
+    await dialog.getByLabel(/I understand XDMCP is unencrypted/u).check();
+    await dialog.getByRole('button', { name: 'Launch XDMCP display', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('.alert-strip > span')).toContainText('XDMCP launch requested for display.example.com');
+    await expect(page.locator('.alert-strip > span')).toContainText('connection status is not tracked here');
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('VNC profiles persist and launch through an explicitly trusted external TigerVNC handoff', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-vnc-profile-e2e-'));
   const launch = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-vnc-viewer'],
@@ -6461,7 +6500,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal',
       'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
       'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
-      'openSshTerminal', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
+      'openSshTerminal', 'authorizeSshX11Forwarding', 'launchXdmcp', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
       'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
@@ -7236,6 +7275,9 @@ test('offline help opens from the workbench and command palette, filters topics,
     await help.locator('#help-search').fill('Ctrl+Shift+Tab');
     await expect(help.getByRole('row', { name: /Ctrl\+Shift\+Tab/ })).toBeVisible();
     await expect(help.getByRole('heading', { name: 'Open a connection' })).toHaveCount(0);
+    await help.locator('#help-search').fill('XDMCP');
+    await expect(help.getByText(/TCP display listener that other reachable devices may access/u)).toBeVisible();
+    await expect(help.getByText(/Remote X clients on that display can read and change the Windows clipboard/u)).toBeVisible();
 
     await page.keyboard.press('Escape');
     await expect(help).toHaveCount(0);

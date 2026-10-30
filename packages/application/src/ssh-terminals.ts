@@ -16,6 +16,8 @@ import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResu
 import { isRemoteTextFile, isRemoteTextFileSaveResult, isRemoteTextRevision, remoteTextByteLength } from '../../domain/src/remote-text-file.ts';
 import type { RemoteTextFile, RemoteTextFileSaveResult } from '../../domain/src/remote-text-file.ts';
 import type { SshCredentialPromptCategory, SshSessionActivity, SshSessionLogFailurePhase, SshTransportNetworkFailure } from './ssh-session-activity.ts';
+import type { SshX11Display, SshX11DisplayProvider } from './ssh-x11-display.ts';
+import type { X11ExtensionCapabilities } from '../../domain/src/x11.ts';
 
 export interface SshTerminalCredentials {
   username: string;
@@ -75,6 +77,7 @@ export interface SshTerminalProvider {
     size: TerminalSize,
     verifyHost: (endpoint: SshHostEndpoint, evidence: HostKeyEvidence) => Promise<boolean>,
     gatewayHops?: readonly SshConnectionGatewayCredentials[],
+    x11Display?: SshX11Display,
   ): Promise<void>;
   openFiles(
     sessionId: string,
@@ -106,6 +109,7 @@ export interface SshTerminalSession {
   readonly sessionId: string;
   readonly endpoint: SshHostEndpoint;
   readonly state: 'starting' | 'running' | 'exited' | 'failed' | 'closing';
+  readonly x11Extensions?: X11ExtensionCapabilities;
 }
 
 export type SshTrustEvent =
@@ -114,7 +118,7 @@ export type SshTrustEvent =
 
 export interface SshTerminalController {
   open(sessionId: string, host: string, port: number, size: TerminalSize, gatewayEndpoints?: readonly SshHostEndpoint[],
-    authentication?: SshAuthenticationSelection): Promise<Outcome<SshTerminalSession>>;
+    authentication?: SshAuthenticationSelection, forwardX11?: boolean): Promise<Outcome<SshTerminalSession>>;
   openFiles(sessionId: string, host: string, port: number, authentication?: SshAuthenticationSelection,
     gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<SshTerminalSession>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
@@ -148,6 +152,7 @@ interface SessionState {
   readonly endpoint: SshHostEndpoint;
   readonly endpoints: readonly SshHostEndpoint[];
   readonly cancellation: CancellationSource;
+  x11Display?: SshX11Display;
   readonly mode: 'terminal' | 'files';
   state: SshTerminalSession['state'];
   pendingInputChars: number;
@@ -233,6 +238,7 @@ export function createSshTerminalController(
   provider: SshTerminalProvider,
   credentialPrompt: CredentialPrompt,
   hostTrust: HostTrustManager,
+  x11DisplayProvider?: SshX11DisplayProvider,
 ): SshTerminalController {
   const sessions = new Map<string, SessionState>();
   const trustTokensBySession = new Map<string, Set<string>>();
@@ -251,6 +257,7 @@ export function createSshTerminalController(
     if (event.kind === 'exit') publishActivity({ type: 'session-exited', sessionId: event.sessionId, exitCode: event.exitCode });
     if (event.kind === 'failure') publishActivity({ type: 'connection-failed', sessionId: event.sessionId, phase: 'transport', code: event.error.code });
     if (event.kind === 'exit' || event.kind === 'failure') {
+      void closeX11Display(session);
       for (const transfer of transfers.values()) {
         if (transfer.sessionId === event.sessionId && transfer.phase !== 'committing') transfer.cancellation.cancel();
       }
@@ -285,6 +292,13 @@ export function createSshTerminalController(
     for (const listener of activityListeners) {
       try { listener(event); } catch { /* A diagnostic writer cannot interrupt SSH transport cleanup. */ }
     }
+  }
+
+  async function closeX11Display(session: SessionState): Promise<void> {
+    const display = session.x11Display;
+    delete session.x11Display;
+    if (display) display.cookie.fill(0);
+    if (display && x11DisplayProvider) await x11DisplayProvider.close(session.sessionId).catch(() => undefined);
   }
 
   async function promptCredential(session: SessionState, purpose: 'ssh-password' | 'ssh-key-passphrase' | 'ssh-agent-username',
@@ -361,7 +375,7 @@ export function createSshTerminalController(
   }
 
   async function openConnection(sessionId: string, host: string, port: number, size?: TerminalSize,
-    gatewayEndpoints: readonly SshHostEndpoint[] = [], authenticationSelection?: SshAuthenticationSelection): Promise<Outcome<SshTerminalSession>> {
+    gatewayEndpoints: readonly SshHostEndpoint[] = [], authenticationSelection?: SshAuthenticationSelection, forwardX11 = false): Promise<Outcome<SshTerminalSession>> {
     if (disposed) { clearAuthenticationSelection(authenticationSelection); return failure('CANCELLED', 'terminal'); }
     if (shutdownPromise) { clearAuthenticationSelection(authenticationSelection); return failure('BUSY', 'terminal'); }
     const endpoint = canonicalizeSshHostEndpoint({ host, port });
@@ -373,6 +387,7 @@ export function createSshTerminalController(
     const gateways = normalizeSshGatewayRoute(gatewayEndpoints, endpoint);
     if (!gateways) { clearAuthenticationSelection(authenticationSelection); return failure('INVALID_REQUEST'); }
     const mode = size === undefined ? 'files' : 'terminal';
+    if (forwardX11 && mode !== 'terminal') { clearAuthenticationSelection(authenticationSelection); return failure('INVALID_REQUEST'); }
     const session: SessionState = { sessionId, endpoint, endpoints: [...gateways, endpoint], cancellation: createCancellationSource(), mode,
       state: 'starting', pendingInputChars: 0, pendingEvents: [], failurePhase: 'credential-prompt' };
     sessions.set(sessionId, session);
@@ -434,10 +449,19 @@ export function createSshTerminalController(
       providerCredentials ??= { username, password };
 
       const verifyEndpoint = (remoteEndpoint: SshHostEndpoint, evidence: HostKeyEvidence) => verifyHost(session, remoteEndpoint, evidence);
+      if (forwardX11) {
+        if (!x11DisplayProvider) return failOpen(session, 'NOT_SUPPORTED');
+        try { session.x11Display = await x11DisplayProvider.open(sessionId, session.cancellation.token); }
+        catch { return failOpen(session, session.cancellation.token.aborted ? 'CANCELLED' : 'UNAVAILABLE'); }
+        if (session.cancellation.token.aborted || sessions.get(sessionId) !== session) {
+          await closeX11Display(session);
+          return failOpen(session, 'CANCELLED');
+        }
+      }
       session.failurePhase = 'transport';
       publishActivity({ type: 'transport', sessionId, outcome: 'started' });
       if (size === undefined) await provider.openFiles(sessionId, endpoint, providerCredentials, verifyEndpoint, gatewayCredentials);
-      else await provider.open(sessionId, endpoint, providerCredentials, size, verifyEndpoint, gatewayCredentials);
+      else await provider.open(sessionId, endpoint, providerCredentials, size, verifyEndpoint, gatewayCredentials, session.x11Display);
       publishActivity({ type: 'transport', sessionId, outcome: 'ready' });
       if (session.cancellation.token.aborted || sessions.get(sessionId) !== session || session.state === 'closing') {
         await provider.close(sessionId).catch(() => undefined);
@@ -449,9 +473,11 @@ export function createSshTerminalController(
         if (event.kind === 'failure') session.state = 'failed';
         publishTerminal(event);
       }
-      return { ok: true, result: { sessionId, endpoint, state: session.state } };
+      return { ok: true, result: { sessionId, endpoint, state: session.state,
+        ...(session.x11Display?.extensions ? { x11Extensions: session.x11Display.extensions } : {}) } };
     } catch (error) {
       if (sessions.get(sessionId) === session) await provider.close(sessionId).catch(() => undefined);
+      await closeX11Display(session);
       for (const token of trustTokensBySession.get(sessionId) ?? []) hostTrust.reject(token);
       const providerCode = error instanceof SshTerminalProviderError ? error.code : undefined;
       const networkFailure = error instanceof SshTerminalProviderError ? error.networkFailure : undefined;
@@ -484,8 +510,8 @@ export function createSshTerminalController(
   }
 
   async function open(sessionId: string, host: string, port: number, size: TerminalSize,
-    gatewayEndpoints: readonly SshHostEndpoint[] = [], authentication?: SshAuthenticationSelection): Promise<Outcome<SshTerminalSession>> {
-    return openConnection(sessionId, host, port, size, gatewayEndpoints, authentication);
+    gatewayEndpoints: readonly SshHostEndpoint[] = [], authentication?: SshAuthenticationSelection, forwardX11 = false): Promise<Outcome<SshTerminalSession>> {
+    return openConnection(sessionId, host, port, size, gatewayEndpoints, authentication, forwardX11);
   }
 
   async function openFiles(sessionId: string, host: string, port: number,
@@ -688,6 +714,7 @@ export function createSshTerminalController(
     for (const [token, owner] of sessionByTrustToken) if (owner === sessionId) sessionByTrustToken.delete(token);
     try { await provider.close(sessionId); return { ok: true, result: EMPTY_RESULT }; }
     catch { return failure('UNAVAILABLE', 'terminal'); }
+    finally { await closeX11Display(session); }
   }
 
   return Object.freeze({
@@ -711,6 +738,7 @@ export function createSshTerminalController(
     async closeAll() {
       if (shutdownPromise) return shutdownPromise;
       const activeTransfers = [...transfers.values()];
+      const activeSessions = [...sessions.values()];
       for (const transfer of activeTransfers) transfer.cancellation.cancel();
       for (const session of sessions.values()) {
         session.state = 'closing';
@@ -721,7 +749,11 @@ export function createSshTerminalController(
       sessions.clear();
       trustTokensBySession.clear();
       sessionByTrustToken.clear();
-      const shuttingDown = Promise.all(activeTransfers.map(transfer => transfer.settled)).then(() => provider.shutdown());
+      const shuttingDown = Promise.all(activeTransfers.map(transfer => transfer.settled)).then(async () => {
+        await provider.shutdown();
+        for (const session of activeSessions) await closeX11Display(session);
+        await x11DisplayProvider?.closeAll();
+      });
       shutdownPromise = shuttingDown;
       try { await shuttingDown; } finally { if (shutdownPromise === shuttingDown) shutdownPromise = undefined; }
     },
