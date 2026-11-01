@@ -8,6 +8,7 @@ import type { Outcome } from '../../../../packages/domain/src/errors.ts';
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import type { SshSessionActivity, SshSessionLogFinishReason, SshSessionLogStatus, SshSessionLogStopReason } from '../../../../packages/application/src/ssh-session-activity.ts';
+import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
 
 export const SSH_SESSION_LOG_MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const SSH_SESSION_LOG_MAX_PENDING_BYTES = 1024 * 1024;
@@ -93,7 +94,8 @@ export function createSshSessionLogWriter(
     async start(sessionId: string, path: string, endpoints: readonly SshHostEndpoint[]): Promise<Outcome<{ readonly fileName: string }>> {
       const normalized = Array.isArray(endpoints) ? endpoints.map(canonicalizeSshHostEndpoint) : undefined;
       if (!SESSION_ID.test(sessionId) || active.has(sessionId) || !isAbsolute(path) || extname(path).toLowerCase() !== '.log' ||
-          !normalized || normalized.length < 1 || normalized.length > 4 || normalized.some(endpoint => endpoint === undefined)) {
+          !normalized || normalized.length < 1 || normalized.length > MAX_SSH_GATEWAY_HOPS + 1 ||
+          normalized.some(endpoint => endpoint === undefined)) {
         return failure(active.has(sessionId) ? 'BUSY' : 'INVALID_REQUEST');
       }
       const stream = createStream(path);

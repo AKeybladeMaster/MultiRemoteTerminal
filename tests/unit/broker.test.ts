@@ -8,6 +8,7 @@ import { bindRendererRequestCancellation } from '../../apps/desktop/src/main/ren
 import { APP_URL } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { createCancellationSource } from '../../packages/application/src/cancellation.ts';
+import { StorageOperationError } from '../../packages/application/src/storage-errors.ts';
 import type { SshAuthenticationSelection } from '../../packages/application/src/ssh-terminals.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
 import { failure } from '../../packages/domain/src/errors.ts';
@@ -24,6 +25,7 @@ const emptyMacro = { id: '7c08b18a-57cc-4b44-a8b3-2d404850e81c', schemaVersion: 
 const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUserActivity: () => void = () => {}): CommandActions => ({
   describe, noteUserActivity, readClipboardText: async () => '', authorizeClipboardPaste: () => false, authorizeTelnetConsent: () => false,
   authorizePowerShellProfileScript: () => false,
+  authorizePowerShellToolAction: () => false,
   authorizeFtpConsent: () => false, authorizeRdpLaunch: () => false,
   authorizeVncLaunch: () => false, authorizeTftpServerAction: () => false,
   chooseTftpRoot: async () => failure('UNAVAILABLE'), startTftpServer: async () => failure('UNAVAILABLE'),
@@ -34,12 +36,16 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
   authorizeSshSessionLog: () => false, consumeSshSessionLogAttempt: () => undefined,
   authorizeSshX11Forwarding: () => false,
   authorizeXdmcpLaunch: () => false,
-  resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, consumeDroppedUpload: () => undefined,
+  resolveSshTransferConflict: async () => undefined, reportSshTransferProgress: () => {}, reportTransferRecoveryChanged: () => {},
+  fileTransferRecovery: { begin: async () => {}, updateProgress: async () => {}, updateRemoteArtifactNames: async () => {}, finish: async () => {},
+    listInterrupted: async () => ({ records: [], nextCursor: null }), findInterrupted: async () => undefined, dismiss: async () => false },
+  revealLocalTransferPartial: async () => failure('CANCELLED'),
+  consumeDroppedUpload: () => undefined,
   selectCustomLogo: async () => ({ ok: true, result: { dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC' } }),
   discardDroppedUploadHandles: () => {}, terminals: {
     async open(sessionId, launch) { return { ok: true, result: { sessionId, ...launch, state: 'running' } }; },
     async listWslDistributions() { return { ok: true, result: [{ name: 'Ubuntu' }] }; }, cancelWslDistributionDiscovery: noOp,
-    write: noOp, paste: noOp, applyPowerShellProfileScript: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
+    write: noOp, paste: noOp, applyPowerShellProfileScript: noOp, managePowerShellTool: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, sshTerminals: {
     async open(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
     async openFiles(sessionId, host, port) { return { ok: true, result: { sessionId, endpoint: { host, port }, state: 'running' } }; },
@@ -59,6 +65,7 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     write: noOp, resize: noOp, acknowledgeOutput: noOp, close: noOp
   }, ftpFiles: {
     async open(sessionId, host, port, secure) { return { ok: true, result: { sessionId, endpoint: { host, port, secure }, state: 'running' } }; },
+    getTransport: () => 'ftp',
     listDirectory: async (_sessionId, path) => ({ ok: true, result: { path, entries: [], truncated: false } }),
     async uploadFile() { return { ok: true, result: { direction: 'upload', fileName: 'x', bytesTransferred: 0, state: 'completed' } }; },
     async downloadFile() { return { ok: true, result: { direction: 'download', fileName: 'x', bytesTransferred: 0, state: 'completed' } }; },
@@ -105,7 +112,8 @@ const actions = (describe: () => ReturnType<typeof snapshot> = snapshot, noteUse
     setShortcut: async macroId => ({ ok: true, result: { macroId: macroId as string, code: 'F2' } }),
     removeShortcut: noOp
   }, tunnels: {
-    list: async () => ({ ok: true, result: [] }), save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
+    list: async () => ({ ok: true, result: [] }), get: async () => failure('NOT_FOUND'),
+    save: async () => ({ ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } }),
     remove: noOp, async start(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; },
     async stop(id) { return { ok: true, result: { tunnelId: id as string, state: 'stopped' } }; }
   }, powerShellProfileScripts: {
@@ -171,6 +179,40 @@ test('PowerShell profile application requires the trusted main-process gesture b
   await dispatchCommand(owner, { command: 'powershell.profile.preview', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId: request.requestId } }, guarded, () => {});
   assert.equal(activity, 2, 'a profile preview records user activity once');
+});
+
+test('PowerShell tool lifecycle requires a trusted, action-bound gesture', async () => {
+  let authorized = false;
+  let invoked = 0;
+  let activity = 0;
+  const base = actions(snapshot, () => { activity++; });
+  const guarded: CommandActions = {
+    ...base,
+    authorizePowerShellToolAction: () => authorized,
+    terminals: { ...base.terminals, async managePowerShellTool(sessionId, action) {
+      invoked++;
+      assert.equal(sessionId, request.requestId);
+      assert.equal(action, 'remove');
+      return { ok: true, result: {} };
+    } }
+  };
+  const input = { command: 'powershell.tool.manage', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId: request.requestId, action: 'remove' } };
+
+  const denied = await dispatchCommand(owner, input, guarded, () => {});
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'FORBIDDEN');
+  assert.equal(invoked, 0);
+  assert.equal(activity, 0);
+
+  authorized = true;
+  assert.deepEqual(await dispatchCommand(owner, input, guarded, () => {}), { requestId: request.requestId, ok: true, result: {} });
+  assert.equal(invoked, 1);
+  assert.equal(activity, 1);
+  const arbitrary = await dispatchCommand(owner, { ...input, payload: { sessionId: request.requestId, action: 'remove; Stop-Computer' } }, guarded, () => {});
+  assert.equal(arbitrary.ok, false);
+  if (!arbitrary.ok) assert.equal(arbitrary.error.code, 'INVALID_REQUEST');
+  assert.equal(invoked, 1);
 });
 
 test('session auto-save requires the persisted opt-in preference at the main-process broker', async () => {
@@ -655,7 +697,7 @@ test('tunnel broker resolves saved SSH gateways against the tunnel profile befor
       return found ? { ok: true, result: found } : { ok: false, error: { code: 'NOT_FOUND', target: 'application', retryable: false } };
     } },
     tunnels: { ...base.tunnels,
-      async list() { return { ok: true, result: [{ definition, status: { tunnelId, state: 'stopped' as const } }] }; },
+      async get(id) { return id === tunnelId ? { ok: true, result: definition } : failure('NOT_FOUND'); },
       async start(id, cancellation, gateways) {
         starts.push({ id, cancellation, gateways });
         return { ok: true, result: { tunnelId: id as string, state: 'active' as const, bindHost: '127.0.0.1' as const, bindPort: 52000 } };
@@ -773,18 +815,29 @@ test('plain FTP requires a fresh consent gesture while FTPS and file operations 
 test('FTP transfers keep local paths in main, forward explicit conflict choices, progress, and cancellation', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  const downloadOperationId = 'a43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
   const cancellation = new AbortController().signal;
   const progressEvents: unknown[] = [];
   const observed: unknown[] = [];
+  const recoveryCalls: unknown[] = [];
+  let recoveryChanged = 0;
   const progress = { sessionId, operationId, direction: 'upload' as const, phase: 'transferring' as const,
-    fileName: 'archive.bin', bytesTransferred: 5, totalBytes: 10 };
+    fileName: 'archive.bin', bytesTransferred: 5, totalBytes: 10, remoteArtifactNames: ['server-assigned.bin'] };
   const base = actions();
   const withTransfers: CommandActions = { ...base, cancellation,
+    fileTransferRecovery: {
+      ...base.fileTransferRecovery,
+      async begin(input) { recoveryCalls.push(['begin', input]); },
+      async updateProgress(id, bytes, total) { recoveryCalls.push(['progress', id, bytes, total]); },
+      async updateRemoteArtifactNames(id, names) { recoveryCalls.push(['artifacts', id, names]); },
+      async finish(input) { recoveryCalls.push(['finish', input]); }
+    },
+    reportTransferRecoveryChanged: () => { recoveryChanged++; },
     selectFtpUploadFile: async () => ({ localPath: 'C:\\private\\archive.bin', fileName: 'archive.bin' }),
     selectFtpDownloadPath: async name => { observed.push(`select-download:${name}`); return 'C:\\private\\chosen-download.bin'; },
     resolveFtpTransferConflict: async (direction, name) => { observed.push(`policy:${direction}:${name}`); return direction === 'upload' ? 'rename' : 'overwrite'; },
     reportFtpTransferProgress: event => progressEvents.push(event),
-    ftpFiles: { ...base.ftpFiles,
+    ftpFiles: { ...base.ftpFiles, getTransport: () => 'ftps',
       async uploadFile(id, op, localPath, directory, fileName, policy, signal, onProgress) {
         observed.push({ kind: 'upload', id, op, localPath, directory, fileName, policy, signal });
         onProgress?.(progress);
@@ -805,18 +858,85 @@ test('FTP transfers keep local paths in main, forward explicit conflict choices,
   assert.deepEqual(observed.slice(0, 2), ['policy:upload:archive.bin',
     { kind: 'upload', id: sessionId, op: operationId, localPath: 'C:\\private\\archive.bin', directory: '/incoming',
       fileName: 'archive.bin', policy: 'rename', signal: cancellation }]);
+  assert.deepEqual(recoveryCalls, [
+    ['begin', { operationId, transport: 'ftps', direction: 'upload', fileName: 'archive.bin' }],
+    ['progress', operationId, 5, 10],
+    ['artifacts', operationId, ['server-assigned.bin']],
+    ['finish', { operationId, state: 'completed', bytesTransferred: 10, totalBytes: 10, errorCode: null }]
+  ]);
 
   const download = await dispatchCommand(owner, { command: 'ftp.files.download', requestId: request.requestId, contractVersion: 1,
-    payload: { sessionId, operationId, remotePath: '/incoming/download.bin' } }, withTransfers, () => {});
+    payload: { sessionId, operationId: downloadOperationId, remotePath: '/incoming/download.bin' } }, withTransfers, () => {});
   assert.equal(download.ok, true);
   assert.deepEqual(observed.slice(2, 5), ['select-download:download.bin', 'policy:download:chosen-download.bin',
-    { kind: 'download', id: sessionId, op: operationId, remotePath: '/incoming/download.bin', localPath: 'C:\\private\\chosen-download.bin',
+    { kind: 'download', id: sessionId, op: downloadOperationId, remotePath: '/incoming/download.bin', localPath: 'C:\\private\\chosen-download.bin',
       policy: 'overwrite', signal: cancellation }]);
   assert.ok(observed.includes('policy:download:chosen-download.bin'));
+  assert.equal(recoveryChanged, 2);
+  assert.deepEqual(recoveryCalls.slice(4), [
+    ['begin', { operationId: downloadOperationId, transport: 'ftps', direction: 'download', fileName: 'chosen-download.bin' }],
+    ['finish', { operationId: downloadOperationId, state: 'completed', bytesTransferred: 7, totalBytes: null, errorCode: null }]
+  ]);
   const cancelled = await dispatchCommand(owner, { command: 'ftp.files.cancel', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, operationId } }, withTransfers, () => {});
   assert.deepEqual(cancelled, { requestId: request.requestId, ok: true, result: {} });
   assert.equal(observed.at(-1), `cancel:${sessionId}:${operationId}`);
+});
+
+test('transfer start reports a busy recovery store before opening the transport', async () => {
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const operationId = 'f43d82ce-551e-4b4d-8f0d-8a14ae0326bd';
+  let transportStarted = false;
+  const base = actions();
+  const limited: CommandActions = { ...base,
+    selectFtpUploadFile: async () => ({ localPath: 'C:\\private\\archive.bin', fileName: 'archive.bin' }),
+    resolveFtpTransferConflict: async () => 'overwrite',
+    fileTransferRecovery: { ...base.fileTransferRecovery, async begin() { throw new StorageOperationError('busy'); } },
+    ftpFiles: { ...base.ftpFiles, async uploadFile() {
+      transportStarted = true;
+      return { ok: true, result: { direction: 'upload', fileName: 'archive.bin', bytesTransferred: 0, state: 'completed' } };
+    } }
+  };
+  const reply = await dispatchCommand(owner, { command: 'ftp.files.upload', requestId: request.requestId, contractVersion: 1,
+    payload: { sessionId, operationId, remoteDirectory: '/incoming' } }, limited, () => {});
+  assert.deepEqual(reply, { requestId: request.requestId, ...failure('BUSY') });
+  assert.equal(transportStarted, false);
+});
+
+test('interrupted transfer recovery reveals only a user-selected local download partial and dismisses explicitly', async () => {
+  const record = { operationId: '018f7b8a-6d19-4e0c-8c6a-682f1316f004', transport: 'sftp' as const, direction: 'download' as const,
+    fileName: 'archive.tar', state: 'interrupted' as const, bytesTransferred: 128, totalBytes: 256, errorCode: 'UNAVAILABLE' as const,
+    createdAt: '2026-10-31T10:00:00.000Z', updatedAt: '2026-10-31T10:00:01.000Z', remoteArtifactNames: [] };
+  let dismissed = false;
+  let revealed: string | undefined;
+  const listedCursors: unknown[] = [];
+  const page = { records: [record], nextCursor: null };
+  const base = actions();
+  const withRecovery: CommandActions = { ...base, fileTransferRecovery: { ...base.fileTransferRecovery,
+    async listInterrupted(cursor) { listedCursors.push(cursor); return dismissed ? { records: [], nextCursor: null } : page; },
+    async findInterrupted(operationId) { return !dismissed && operationId === record.operationId ? record : undefined; },
+    async dismiss(operationId) { dismissed = operationId === record.operationId; return dismissed; }
+  }, async revealLocalTransferPartial(operationId) { revealed = operationId; return { ok: true, result: {} }; } };
+  const listRequest = { command: 'transfer.recovery.list', requestId: request.requestId, contractVersion: 1, payload: { cursor: null } };
+  assert.deepEqual(await dispatchCommand(owner, listRequest, withRecovery, () => {}), { requestId: request.requestId, ok: true, result: page });
+  const olderCursor = { updatedAt: record.updatedAt, operationId: record.operationId };
+  await dispatchCommand(owner, { ...listRequest, payload: { cursor: olderCursor } }, withRecovery, () => {});
+  assert.deepEqual(listedCursors, [null, olderCursor]);
+  const revealRequest = { command: 'transfer.recovery.reveal-local-partial', requestId: request.requestId, contractVersion: 1,
+    payload: { operationId: record.operationId } };
+  assert.deepEqual(await dispatchCommand(owner, revealRequest, withRecovery, () => {}), { requestId: request.requestId, ok: true, result: {} });
+  assert.equal(revealed, record.operationId);
+  const uploadRecord = { ...record, direction: 'upload' as const };
+  const uploadRecovery: CommandActions = { ...withRecovery, fileTransferRecovery: { ...withRecovery.fileTransferRecovery,
+    async findInterrupted() { return uploadRecord; }
+  } };
+  assert.equal((await dispatchCommand(owner, revealRequest, uploadRecovery, () => {})).ok, false);
+  assert.equal(revealed, record.operationId, 'upload artifacts must never enter the local download reveal path');
+  const dismissRequest = { command: 'transfer.recovery.dismiss', requestId: request.requestId, contractVersion: 1, payload: { operationId: record.operationId } };
+  assert.deepEqual(await dispatchCommand(owner, dismissRequest, withRecovery, () => {}), { requestId: request.requestId, ok: true, result: {} });
+  assert.deepEqual(await dispatchCommand(owner, listRequest, withRecovery, () => {}), { requestId: request.requestId, ok: true, result: { records: [], nextCursor: null } });
+  assert.equal((await dispatchCommand(owner, { ...dismissRequest, payload: { operationId: '218f7b8a-6d19-4e0c-8c6a-682f1316f004' } },
+    withRecovery, () => {})).ok, false);
 });
 
 test('dropped SFTP and FTP uploads consume the bound local selection and reuse transfer conflict policy', async () => {
@@ -824,8 +944,14 @@ test('dropped SFTP and FTP uploads consume the bound local selection and reuse t
   const operationId = 'cf66fcda-f195-45f0-b8be-1873b56319e3';
   const token = 'ce2b576c-476b-4e85-86d8-96ca612fc716';
   const observed: unknown[] = [];
+  const recoveryCalls: unknown[] = [];
   const base = actions();
   const withDroppedUploads: CommandActions = { ...base,
+    fileTransferRecovery: { ...base.fileTransferRecovery,
+      async begin(input) { recoveryCalls.push(['begin', input]); },
+      async updateRemoteArtifactNames(id, names) { recoveryCalls.push(['artifacts', id, names]); },
+      async finish(input) { recoveryCalls.push(['finish', input]); }
+    },
     consumeDroppedUpload(context, receivedToken) {
       observed.push({ kind: 'consume', context, token: receivedToken });
       return receivedToken === token ? { localPath: 'C:\\private\\dropped.txt', fileName: 'dropped.txt' } : undefined;
@@ -846,6 +972,11 @@ test('dropped SFTP and FTP uploads consume the bound local selection and reuse t
     payload: { sessionId, operationId, remoteDirectory: '/incoming', token } }, withDroppedUploads, () => {});
   assert.deepEqual(ssh, { requestId: request.requestId, ok: true,
     result: { direction: 'upload', fileName: 'dropped.txt', bytesTransferred: 4, state: 'completed' } });
+  assert.deepEqual(recoveryCalls.slice(0, 3), [
+    ['begin', { operationId, transport: 'sftp', direction: 'upload', fileName: 'dropped.txt' }],
+    ['artifacts', operationId, [`.mrt-${operationId}.partial`, `.mrt-${operationId}.backup`]],
+    ['finish', { operationId, state: 'completed', bytesTransferred: 4, totalBytes: null, errorCode: null }]
+  ]);
   const ftp = await dispatchCommand(owner, { command: 'ftp.files.upload-dropped', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, operationId, remoteDirectory: '/incoming', token } }, withDroppedUploads, () => {});
   assert.deepEqual(ftp, { requestId: request.requestId, ok: true,
@@ -877,6 +1008,17 @@ test('terminal open forwards the preallocated id for close-during-startup cancel
   assert.deepEqual(await dispatchCommand(owner, input, actions(), () => {}), {
     requestId: request.requestId, ok: true, result: { sessionId, shell: 'cmd', state: 'running' }
   });
+
+  let openedPurpose: string | undefined;
+  const base = actions();
+  const withPurpose: CommandActions = { ...base, terminals: { ...base.terminals, async open(id, launch, _size, purpose) {
+    openedPurpose = purpose;
+    return { ok: true, result: { sessionId: id, ...launch, state: 'running' } };
+  } } };
+  const managementInput = { ...input, payload: { sessionId, launch: { shell: 'powershell' }, columns: 80, rows: 24,
+    purpose: 'powershell-tool-management' } };
+  assert.equal((await dispatchCommand(owner, managementInput, withPurpose, () => {})).ok, true);
+  assert.equal(openedPurpose, 'powershell-tool-management');
 });
 
 test('host-trust reset dispatches only the validated canonical endpoint', async () => {

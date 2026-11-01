@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -175,6 +176,7 @@ test('SFTP upload stages content, preserves a name collision, reports progress, 
   const sftp = new FakeSftp();
   sftp.files.set('/home/report.txt', { data: Buffer.from('keep me'), kind: 'file', mtime: 1_800_000_000 });
   const progress: string[] = [];
+  const overwriteProgress: Array<{ readonly remoteArtifactNames?: readonly string[] }> = [];
   try {
     const renamed = await transfers.upload(sessionId, operationId, sftp as never, sourcePath, '/home', 'report.txt', 'rename',
       undefined, event => progress.push(event.phase));
@@ -184,10 +186,57 @@ test('SFTP upload stages content, preserves a name collision, reports progress, 
     assert.deepEqual(progress, ['transferring', 'transferring', 'committing']);
 
     const replaced = await transfers.upload(sessionId, '33333333-3333-4333-8333-333333333333', sftp as never,
-      sourcePath, '/home', 'report.txt', 'overwrite');
+      sourcePath, '/home', 'report.txt', 'overwrite', undefined, event => overwriteProgress.push(event));
     assert.deepEqual(replaced, { direction: 'upload', fileName: 'report.txt', bytesTransferred: source.length, state: 'completed' });
     assert.deepEqual(sftp.files.get('/home/report.txt')?.data, source);
+    assert.ok(overwriteProgress.some(event => event.remoteArtifactNames?.includes('.mrt-33333333-3333-4333-8333-333333333333.backup')));
     assert.equal([...sftp.files.keys()].some(path => /\.(?:partial|backup)$/u.test(path)), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP overwrite reports its retained backup name if replacement and rollback both fail', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-overwrite-recovery-'));
+  const sourcePath = join(directory, 'report.txt');
+  await writeFile(sourcePath, Buffer.from('replacement bytes'));
+  const sftp = new FakeSftp();
+  sftp.files.set('/home/report.txt', { data: Buffer.from('original bytes'), kind: 'file', mtime: 1_800_000_000 });
+  const trackedProgress: Array<{ readonly remoteArtifactNames?: readonly string[] }> = [];
+  sftp.beforeRename = (source, destination) => {
+    if (source.endsWith('.partial') && destination === '/home/report.txt') sftp.renameFailureCode = 4;
+  };
+  try {
+    await assert.rejects(transfers.upload(sessionId, '44444444-4444-4444-8444-444444444444', sftp as never,
+      sourcePath, '/home', 'report.txt', 'overwrite', undefined, event => trackedProgress.push(event)),
+    error => (error as { code?: string }).code === 'UNAVAILABLE');
+    const backupPath = '/home/.mrt-44444444-4444-4444-8444-444444444444.backup';
+    assert.deepEqual(sftp.files.get(backupPath)?.data, Buffer.from('original bytes'));
+    assert.equal(sftp.files.has('/home/report.txt'), false);
+    assert.ok(trackedProgress.some(event => event.remoteArtifactNames?.includes(posix.basename(backupPath))));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP overwrite marks a retained unexpected backup as unavailable when rollback fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-overwrite-unexpected-backup-'));
+  const sourcePath = join(directory, 'report.txt');
+  await writeFile(sourcePath, Buffer.from('replacement bytes'));
+  const sftp = new FakeSftp();
+  sftp.files.set('/home/report.txt', { data: Buffer.from('original bytes'), kind: 'file', mtime: 1_800_000_000 });
+  const trackedProgress: Array<{ readonly remoteArtifactNames?: readonly string[] }> = [];
+  sftp.beforeRename = (source, destination) => {
+    if (source === '/home/report.txt' && destination.endsWith('.backup')) {
+      sftp.files.set(source, { data: Buffer.from('concurrent replacement'), kind: 'file', mtime: 1_800_000_001 });
+    } else if (source.endsWith('.backup') && destination === '/home/report.txt') {
+      sftp.renameFailureCode = 4;
+    }
+  };
+  try {
+    await assert.rejects(transfers.upload(sessionId, '55555555-5555-4555-8555-555555555555', sftp as never,
+      sourcePath, '/home', 'report.txt', 'overwrite', undefined, event => trackedProgress.push(event)),
+    error => (error as { code?: string }).code === 'UNAVAILABLE');
+    const backupPath = '/home/.mrt-55555555-5555-4555-8555-555555555555.backup';
+    assert.deepEqual(sftp.files.get(backupPath)?.data, Buffer.from('concurrent replacement'));
+    assert.equal(sftp.files.has('/home/report.txt'), false);
+    assert.ok(trackedProgress.some(event => event.remoteArtifactNames?.includes(posix.basename(backupPath))));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -224,6 +273,29 @@ test('SFTP download uses a staged local target, respects skip collisions, and re
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('SFTP download reports unavailable when cancellation cannot remove its local partial', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-download-cleanup-'));
+  const operation = '77777777-7777-4777-8777-777777777777';
+  const partialPath = join(directory, `.mrt-${operation}.partial`);
+  const replacementStage = join(directory, 'foreign-stage-object');
+  const targetPath = join(directory, 'remote.txt');
+  const sftp = new FakeSftp();
+  sftp.files.set('/home/remote.txt', { data: Buffer.from('download bytes'), kind: 'file', mtime: 1_800_000_000 });
+  const cancellation = new AbortController();
+  try {
+    await assert.rejects(transfers.download(sessionId, operation, sftp as never, '/home/remote.txt', targetPath, 'rename', cancellation.signal,
+      progress => {
+        if (progress.phase !== 'committing') return;
+        writeFileSync(replacementStage, 'foreign filesystem object');
+        unlinkSync(partialPath);
+        renameSync(replacementStage, partialPath);
+        cancellation.abort();
+      }), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    assert.equal(await readFile(partialPath, 'utf8'), 'foreign filesystem object',
+      'failed cleanup does not delete a replacement file at the same path');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('SFTP reconnect removes only an owned orphaned upload stage for the same trusted connection scope', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-upload-recovery-'));
   const sourcePath = join(directory, 'report.txt');
@@ -239,6 +311,8 @@ test('SFTP reconnect removes only an owned orphaned upload stage for the same tr
     error => (error as { code?: string }).code === 'UNAVAILABLE');
     const stagedPath = [...disconnected.files.keys()].find(path => path.endsWith('.partial'));
     assert.ok(stagedPath, 'the failed transfer must have created its exclusive staging path');
+    assert.equal(stagedPath, '/home/.mrt-55555555-5555-4555-8555-555555555555.partial',
+      'the durable operation ID identifies the remote staging file after worker loss');
     assert.ok((disconnected.files.get(stagedPath)?.data.length ?? 0) > 0, 'the staged upload must contain partial bytes');
 
     const reconnected = new FakeSftp();
@@ -259,7 +333,40 @@ test('SFTP reconnect removes only an owned orphaned upload stage for the same tr
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('SFTP upload cancellation settles when closing the remote write handle never answers', async () => {
+test('SFTP skip reports incomplete stage cleanup as unavailable and keeps recovery scoped', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-skip-recovery-'));
+  const sourcePath = join(directory, 'report.txt');
+  const recoveryTransfers = createSftpFileTransfers();
+  const disconnected = new FakeSftp();
+  const competitor = Buffer.from('created by another client');
+  const operation = '77777777-7777-4777-8777-777777777777';
+  const recoveryScope = 'trusted-route-skip-recovery';
+  disconnected.unlinkFailureCode = 4;
+  disconnected.beforeRename = (_source, destination) => {
+    if (destination === '/home/report.txt') {
+      disconnected.files.set(destination, { data: competitor, kind: 'file', mtime: 1_800_000_001 });
+    }
+  };
+  try {
+    await writeFile(sourcePath, 'new upload');
+    await assert.rejects(recoveryTransfers.upload(sessionId, operation, disconnected as never, sourcePath, '/home', 'report.txt', 'skip',
+      undefined, undefined, recoveryScope), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    const stagedPath = `/home/.mrt-${operation}.partial`;
+    assert.ok(disconnected.files.has(stagedPath), 'failed cleanup must leave the owned stage visible for recovery');
+    assert.deepEqual(disconnected.files.get('/home/report.txt')?.data, competitor, 'the concurrent target must remain untouched');
+
+    const reconnected = new FakeSftp();
+    reconnected.files.clear();
+    for (const [path, file] of disconnected.files) reconnected.files.set(path, file);
+    await recoveryTransfers.cleanupOrphanedUploads(reconnected as never, 'different-trusted-route');
+    assert.ok(reconnected.files.has(stagedPath), 'another route must not clean the retained stage');
+    await recoveryTransfers.cleanupOrphanedUploads(reconnected as never, recoveryScope);
+    assert.equal(reconnected.files.has(stagedPath), false);
+    assert.deepEqual(reconnected.files.get('/home/report.txt')?.data, competitor);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('SFTP cancellation with failed cleanup settles as unavailable and retains a reconnect-cleanable stage', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mrt-sftp-upload-hung-close-'));
   const sourcePath = join(directory, 'large.bin');
   await writeFile(sourcePath, Buffer.alloc(256 * 1024, 5));
@@ -280,7 +387,7 @@ test('SFTP upload cancellation settles when closing the remote write handle neve
     const deadline = new Promise<never>((_resolve, reject) => {
       deadlineTimer = setTimeout(() => reject(new Error('SFTP cancellation did not settle')), 2_000);
     });
-    try { await assert.rejects(Promise.race([upload, deadline]), error => (error as { code?: string }).code === 'CANCELLED'); }
+    try { await assert.rejects(Promise.race([upload, deadline]), error => (error as { code?: string }).code === 'UNAVAILABLE'); }
     finally { clearTimeout(deadlineTimer); }
     const stagedPath = [...disconnected.files.keys()].find(path => path.endsWith('.partial'));
     assert.ok(stagedPath, 'the interrupted upload must retain its worker-owned stage for reconnect cleanup');

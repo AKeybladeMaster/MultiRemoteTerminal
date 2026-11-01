@@ -13,6 +13,8 @@ export interface FtpEndpoint extends RemoteEndpoint {
 export type FtpTransferConflictPolicy = FileTransferConflictPolicy;
 export type FtpTransferDirection = FileTransferDirection;
 export type FtpTransferProgress = FileTransferProgress;
+/** Artifact-name observers may return a promise; the FTP provider waits before it starts the remote data transfer. */
+export type FtpTransferProgressHandler = (progress: FtpTransferProgress) => void | Promise<void>;
 export type FtpTransferResult = FileTransferResult;
 
 export function isFtpTransferConflictPolicy(value: unknown): value is FtpTransferConflictPolicy {

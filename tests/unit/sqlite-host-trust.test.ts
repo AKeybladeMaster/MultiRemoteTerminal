@@ -6,14 +6,15 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { backup, DatabaseSync } from 'node:sqlite';
 import type { UtilityProcess } from 'electron';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HostTrustStoreError } from '../../packages/application/src/host-trust.ts';
 import type { CredentialPromptCancellation } from '../../packages/application/src/credential-prompt.ts';
 import { sameHostKey } from '../../packages/domain/src/host-trust.ts';
 import type { TrustedHostKey } from '../../packages/domain/src/host-trust.ts';
-import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
+import { CURRENT_SCHEMA_VERSION, SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
+import { backupBeforeSqliteMigration, promoteVerifiedMigrationBackup } from '../../apps/desktop/src/adapters/sqlite-migration-backup.ts';
 import { SqliteTunnelRepository } from '../../apps/desktop/src/adapters/sqlite-tunnel-repository.ts';
 import { HostTrustJsonStore } from '../../apps/desktop/src/adapters/host-trust-json-store.ts';
 import { SqliteStorageStore, STORAGE_DIAGNOSTICS_CHANNEL_NAME } from '../../apps/desktop/src/adapters/sqlite-storage-store.ts';
@@ -98,7 +99,7 @@ test('SQLite host trust schema migrates once and preserves strict insert, match,
   try {
     repository.migrate();
     repository.migrate();
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, CURRENT_SCHEMA_VERSION);
     assert.equal((database.prepare('PRAGMA table_info(tunnel_definitions)').all() as Array<{ name: string }>).some(column => column.name === 'name'), true);
     const insertSession = database.prepare(`
       INSERT INTO session_definitions (id, kind, name, options_version, created_at, updated_at)
@@ -142,11 +143,11 @@ test('SQLite schema v1 upgrades existing saved profiles, tunnel definitions, and
     const trusted = hostKey('gateway.example', 22, 7);
     initial.trustIfAbsent(trusted);
 
-    database.exec('ALTER TABLE tunnel_definitions DROP COLUMN name; DROP TABLE macro_shortcuts; PRAGMA user_version = 1;');
+    database.exec('ALTER TABLE tunnel_definitions DROP COLUMN name; DROP TABLE file_transfer_recovery_jobs; DROP TABLE macro_shortcuts; PRAGMA user_version = 1;');
     const upgraded = new SqliteHostTrustRepository(database);
     upgraded.migrate();
 
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, CURRENT_SCHEMA_VERSION);
     assert.equal((database.prepare('SELECT name FROM tunnel_definitions WHERE id = ?').get(tunnelId) as { name: string }).name, 'Local forward');
     assert.equal((database.prepare('SELECT name FROM session_definitions WHERE id = ?').get(sessionId) as { name: string }).name, 'Existing gateway');
     const tunnels = new SqliteTunnelRepository(database);
@@ -190,16 +191,128 @@ test('legacy host identities are verified in SQLite before their source file is 
   }
 });
 
+test('legacy host-trust restart keeps the committed document when a staged replacement was abandoned', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-host-trust-recovery-'));
+  const path = join(directory, 'ssh-host-keys.json');
+  const identity = hostKey('recovery.example', 2222, 21);
+  try {
+    const original = new HostTrustJsonStore(path);
+    assert.equal(await original.trustIfAbsent(identity), 'inserted');
+    const committed = await readFile(path, 'utf8');
+    await writeFile(join(directory, '.11111111-1111-4111-8111-111111111111.host-trust.tmp'), '{"partial":', 'utf8');
+
+    const reopened = new HostTrustJsonStore(path);
+    const reopenedIdentity = await reopened.find(identity.endpoint);
+    assert.ok(reopenedIdentity && sameHostKey(reopenedIdentity, identity));
+    assert.equal(await readFile(path, 'utf8'), committed);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('unsupported SQLite versions fail closed without changing the database', () => {
   const database = new DatabaseSync(':memory:');
   const repository = new SqliteHostTrustRepository(database);
   try {
-    database.exec('PRAGMA user_version = 4');
+    const unsupportedVersion = CURRENT_SCHEMA_VERSION + 1;
+    database.exec(`PRAGMA user_version = ${unsupportedVersion}`);
     assert.throws(() => repository.migrate(), (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'corrupt');
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 4);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, unsupportedVersion);
   } finally {
     database.close();
   }
+});
+
+test('migration backup keeps a verified pre-upgrade SQLite snapshot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-migration-backup-'));
+  const databasePath = join(directory, 'storage.sqlite');
+  const backupPath = `${databasePath}.migration-backup.sqlite`;
+  const database = new DatabaseSync(databasePath, { timeout: 5_000, defensive: true });
+  try {
+    database.exec('PRAGMA journal_mode = WAL; CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES (\'before migration\'); PRAGMA user_version = 3;');
+    assert.equal(await backupBeforeSqliteMigration(database, databasePath, CURRENT_SCHEMA_VERSION), backupPath);
+    database.exec("UPDATE retained SET value = 'after migration'");
+    const backupDatabase = new DatabaseSync(backupPath, { readOnly: true, timeout: 5_000, defensive: true });
+    try {
+      assert.equal((backupDatabase.prepare('SELECT value FROM retained').get() as { value: string }).value, 'before migration');
+      assert.equal((backupDatabase.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 3);
+      assert.equal((backupDatabase.prepare('PRAGMA quick_check').get() as { quick_check: string }).quick_check, 'ok');
+    } finally { backupDatabase.close(); }
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('migration snapshot promotion preserves the last verified backup until its replacement passes validation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-migration-backup-promotion-'));
+  const backupPath = join(directory, 'storage.migration-backup.sqlite');
+  const stagingPath = join(directory, 'storage.migration-backup.candidate.sqlite');
+  const oldSnapshot = new DatabaseSync(backupPath);
+  oldSnapshot.exec("CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('last verified'); PRAGMA user_version = 2;");
+  oldSnapshot.close();
+
+  const invalidCandidate = new DatabaseSync(stagingPath);
+  invalidCandidate.exec("CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('invalid candidate'); PRAGMA user_version = 1;");
+  invalidCandidate.close();
+  try {
+    await assert.rejects(promoteVerifiedMigrationBackup(stagingPath, backupPath, 2), /verification failed/u);
+    let retained = new DatabaseSync(backupPath, { readOnly: true });
+    try { assert.equal((retained.prepare('SELECT value FROM retained').get() as { value: string }).value, 'last verified'); }
+    finally { retained.close(); }
+
+    await rm(stagingPath, { force: true });
+    const validCandidate = new DatabaseSync(stagingPath);
+    validCandidate.exec("CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('verified replacement'); PRAGMA user_version = 2;");
+    validCandidate.close();
+    await promoteVerifiedMigrationBackup(stagingPath, backupPath, 2);
+    retained = new DatabaseSync(backupPath, { readOnly: true });
+    try { assert.equal((retained.prepare('SELECT value FROM retained').get() as { value: string }).value, 'verified replacement'); }
+    finally { retained.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('migration backup skips a new empty database but preserves populated version-zero data', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-version-zero-migration-backup-'));
+  const emptyPath = join(directory, 'empty.sqlite');
+  const existingPath = join(directory, 'existing.sqlite');
+  const empty = new DatabaseSync(emptyPath);
+  const existing = new DatabaseSync(existingPath);
+  try {
+    assert.equal(await backupBeforeSqliteMigration(empty, emptyPath, CURRENT_SCHEMA_VERSION), undefined);
+    existing.exec("CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('legacy data');");
+    const backupPath = await backupBeforeSqliteMigration(existing, existingPath, CURRENT_SCHEMA_VERSION);
+    assert.equal(backupPath, `${existingPath}.migration-backup.sqlite`);
+    const snapshot = new DatabaseSync(backupPath!, { readOnly: true });
+    try {
+      assert.equal((snapshot.prepare('SELECT value FROM retained').get() as { readonly value: string }).value, 'legacy data');
+      assert.equal((snapshot.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 0);
+      assert.equal((snapshot.prepare('PRAGMA quick_check').get() as { quick_check: string }).quick_check, 'ok');
+    } finally { snapshot.close(); }
+  } finally {
+    empty.close();
+    existing.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SQLite schema migrations roll back completed earlier versions when a later version fails', () => {
+  const database = new DatabaseSync(':memory:');
+  try {
+    new SqliteHostTrustRepository(database).migrate();
+    database.exec(`
+      ALTER TABLE tunnel_definitions DROP COLUMN name;
+      DROP TABLE macro_shortcuts;
+      CREATE TABLE macro_shortcuts (marker TEXT);
+      INSERT INTO macro_shortcuts VALUES ('preserve preexisting data');
+      PRAGMA user_version = 1;
+    `);
+    const repository = new SqliteHostTrustRepository(database);
+    assert.throws(() => repository.migrate(), (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'unavailable');
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 1);
+    assert.equal((database.prepare('PRAGMA table_info(tunnel_definitions)').all() as Array<{ name: string }>).some(column => column.name === 'name'), false);
+    assert.equal((database.prepare('SELECT marker FROM macro_shortcuts').get() as { marker: string }).marker, 'preserve preexisting data');
+  } finally { database.close(); }
 });
 
 test('a committed host-trust migration can be backed up and restored from a WAL database', async () => {
@@ -369,14 +482,16 @@ test('caller cancellation aborts a pending worker request and the store restarts
   const legacyPath = join(directory, 'ssh-host-keys.json');
   let launches = 0;
   const workers: FakeStorageWorker[] = [];
+  const workerRunIds: string[] = [];
   let resolveStalled!: () => void;
   const stalled = new Promise<void>(resolve => { resolveStalled = resolve; });
   const diagnostics = channel(STORAGE_DIAGNOSTICS_CHANNEL_NAME);
   const diagnosticEvents: unknown[] = [];
   const onDiagnostic = (event: unknown) => diagnosticEvents.push(event);
   diagnostics.subscribe(onDiagnostic);
-  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, () => {
+  const store = new SqliteStorageStore(databasePath, legacyPath, 'storage-worker.js', directory, (_path, _args, options) => {
     launches += 1;
+      workerRunIds.push(options.env.MRT_APP_RUN_ID);
     const worker = new FakeStorageWorker(databasePath, false, launches === 1 ? 'hostTrust.find' : undefined,
       launches === 1 ? resolveStalled : undefined);
     workers.push(worker);
@@ -401,6 +516,7 @@ test('caller cancellation aborts a pending worker request and the store restarts
     assert.deepEqual(diagnosticEvents, [{ component: 'storage', event: 'request-cancelled', code: 'CANCELLED' }]);
     assert.equal(await store.find({ host: 'cancel.example', port: 22 }), undefined);
     assert.equal(launches, 2);
+    assert.equal(new Set(workerRunIds).size, 1, 'replacement storage workers keep the app recovery run id');
   } finally {
     diagnostics.unsubscribe(onDiagnostic);
     await store.shutdown();

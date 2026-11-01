@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { HostTrustStoreError } from '../../../../packages/application/src/host-trust.ts';
 import type { HostTrustInsertResult, HostTrustStore } from '../../../../packages/application/src/host-trust.ts';
@@ -158,20 +158,22 @@ export class HostTrustJsonStore implements HostTrustStore {
     throwIfCancelled(cancellation);
     let fileStat;
     try {
-      fileStat = await stat(this.filePath);
+      fileStat = await lstat(this.filePath);
     } catch (error) {
       if (hasNodeCode(error, 'ENOENT')) return undefined;
       throw error;
     }
     throwIfCancelled(cancellation);
-    if (!fileStat.isFile() || fileStat.size > MAX_FILE_BYTES) throw new HostTrustStoreError('corrupt');
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > MAX_FILE_BYTES) throw new HostTrustStoreError('corrupt');
 
     const handle = await open(this.filePath, 'r');
     let bytes: Buffer;
     try {
       const openedStat = await handle.stat();
       throwIfCancelled(cancellation);
-      if (!openedStat.isFile() || openedStat.size > MAX_FILE_BYTES) throw new HostTrustStoreError('corrupt');
+      if (!openedStat.isFile() || openedStat.size > MAX_FILE_BYTES || openedStat.dev !== fileStat.dev || openedStat.ino !== fileStat.ino) {
+        throw new HostTrustStoreError('corrupt');
+      }
       const bounded = Buffer.alloc(MAX_FILE_BYTES + 1);
       let offset = 0;
       while (offset < bounded.length) {
@@ -184,7 +186,8 @@ export class HostTrustJsonStore implements HostTrustStore {
       if (offset > MAX_FILE_BYTES || offset !== openedStat.size) throw new HostTrustStoreError('corrupt');
       const afterRead = await handle.stat();
       throwIfCancelled(cancellation);
-      if (afterRead.size !== openedStat.size || afterRead.mtimeMs !== openedStat.mtimeMs) throw new HostTrustStoreError('corrupt');
+      if (afterRead.dev !== openedStat.dev || afterRead.ino !== openedStat.ino ||
+          afterRead.size !== openedStat.size || afterRead.mtimeMs !== openedStat.mtimeMs) throw new HostTrustStoreError('corrupt');
       bytes = bounded.subarray(0, offset);
     } finally {
       await handle.close();

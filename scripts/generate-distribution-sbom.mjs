@@ -1,13 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertReleaseSigners, assertUnsignedReleaseArtifacts, expectedReleaseSigner, signedReleaseRequested } from './release-signature-policy.mjs';
+import { ensureWorkspaceOutputDirectory, productionLicensePackages, productionPackageIntegrityIndex, publicPackageDistributionUrl,
+  readBoundedLockfile, readBoundedRegularFile, readInstalledPackageManifest, sha256RegularFile, writeWorkspaceOutputFile } from './third-party-notices.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const artifactsRoot = resolve(projectRoot, 'artifacts/windows');
 const productName = 'MultiRemoteTerminal';
-const requireSignedRelease = process.env.MRT_SIGNED_RELEASE === '1';
+const requireSignedRelease = signedReleaseRequested(process.env.MRT_SIGNED_RELEASE);
+const expectedSignerThumbprint = requireSignedRelease ? expectedReleaseSigner(process.env.MRT_RELEASE_SIGNER_SHA1) : undefined;
 
 function runPnpm(args) {
   const cli = process.env.npm_execpath;
@@ -17,6 +19,7 @@ function runPnpm(args) {
     [...(isJavaScriptCli ? [cli] : []), ...args], {
       cwd: projectRoot,
       encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
       windowsHide: true
     });
   if (result.error) throw result.error;
@@ -38,10 +41,10 @@ function sha256(bytes) {
 }
 
 async function readJson(path) {
-  return JSON.parse(await readFile(path, 'utf8'));
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await readBoundedRegularFile(path, 1024 * 1024)));
 }
 
-function readSignatures(artifactNames) {
+function readSignatures(artifactsRoot, artifactNames) {
   const result = spawnSync('powershell.exe', [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
     resolve(projectRoot, 'scripts/inspect-authenticode.ps1'),
@@ -54,7 +57,7 @@ function readSignatures(artifactNames) {
 }
 
 function buildBom({ artifactName, artifactHash, appArchiveHash, signature, dependencies, components,
-  desktopPackage, toolchain }) {
+  desktopPackage, toolchain, notices }) {
   const productRef = `pkg:generic/multiremote-terminal@${desktopPackage.version}?arch=x64&platform=windows`;
   const artifactKind = artifactName.includes(' Setup ') ? 'nsis-installer' : 'portable-executable';
   const properties = [
@@ -66,7 +69,8 @@ function buildBom({ artifactName, artifactHash, appArchiveHash, signature, depen
     { name: 'mrt:payload:app-asar-sha256', value: appArchiveHash },
     { name: 'mrt:build:node', value: toolchain.node },
     { name: 'mrt:build:pnpm', value: toolchain.pnpm },
-    { name: 'mrt:build:electron-builder', value: toolchain.electronBuilder }
+    { name: 'mrt:build:electron-builder', value: toolchain.electronBuilder },
+    ...notices.map(notice => ({ name: `mrt:distribution:notice:${notice.id}:sha256`, value: notice.hash }))
   ];
   if (signature.signerThumbprint) properties.push({ name: 'mrt:authenticode:signer-thumbprint', value: signature.signerThumbprint });
   if (signature.signerSubject) properties.push({ name: 'mrt:authenticode:signer-subject', value: signature.signerSubject });
@@ -99,15 +103,13 @@ function buildBom({ artifactName, artifactHash, appArchiveHash, signature, depen
 
 function readLicenseIndex(licensesByType) {
   const index = new Map();
-  for (const entries of Object.values(licensesByType)) {
-    for (const entry of entries) {
-      for (const version of entry.versions) index.set(packageUrl(entry.name, version), entry.license);
-    }
+  for (const { name, version, license } of productionLicensePackages(licensesByType)) {
+    index.set(packageUrl(name, version), license);
   }
   return index;
 }
 
-async function collectProductionGraph(rootDependencies, licenseIndex, productRef) {
+async function collectProductionGraph(rootDependencies, licenseIndex, integrityIndex, productRef) {
   const componentsByRef = new Map();
   const graph = new Map();
 
@@ -119,15 +121,18 @@ async function collectProductionGraph(rootDependencies, licenseIndex, productRef
     const ref = packageUrl(name, dependency.version);
     const declaredLicense = licenseIndex.get(ref);
     if (!declaredLicense) throw new Error(`No declared license was found for runtime dependency ${name}@${dependency.version}.`);
+    const lockedIntegrity = integrityIndex.get(`${name}@${dependency.version}`);
+    if (!lockedIntegrity) throw new Error(`No SHA-512 integrity was found in pnpm-lock.yaml for ${name}@${dependency.version}.`);
     const packageDependencies = graph.get(ref) ?? new Set();
     graph.set(ref, packageDependencies);
     graph.get(parentRef)?.add(ref);
 
     if (!componentsByRef.has(ref)) {
-      const manifest = await readJson(join(dependency.path, 'package.json'));
+      const { manifest } = await readInstalledPackageManifest(dependency.path, join(projectRoot, 'node_modules'));
       if (manifest.name !== name || manifest.version !== dependency.version) {
         throw new Error(`Installed metadata did not match the pinned dependency ${name}@${dependency.version}.`);
       }
+      const distributionUrl = publicPackageDistributionUrl(dependency.resolved);
       const component = {
         type: 'library',
         scope: 'required',
@@ -136,11 +141,9 @@ async function collectProductionGraph(rootDependencies, licenseIndex, productRef
         version: dependency.version,
         purl: ref,
         licenses: [{ expression: declaredLicense }],
-        ...(typeof manifest.description === 'string' && manifest.description.length > 0
-          ? { description: manifest.description }
-          : {}),
-        ...(typeof dependency.resolved === 'string' && dependency.resolved.startsWith('https://')
-          ? { externalReferences: [{ type: 'distribution', url: dependency.resolved }] }
+        hashes: [lockedIntegrity],
+        ...(distributionUrl
+          ? { externalReferences: [{ type: 'distribution', url: distributionUrl }] }
           : {})
       };
       componentsByRef.set(ref, component);
@@ -158,6 +161,7 @@ async function main() {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Generate the Windows distribution SBOM on the Windows x64 packaging host.');
   }
+  const artifactsRoot = await ensureWorkspaceOutputDirectory(projectRoot, ['artifacts', 'windows']);
   const rootPackage = await readJson(join(projectRoot, 'package.json'));
   const desktopPackage = await readJson(join(projectRoot, 'apps/desktop/package.json'));
   if (process.versions.node !== rootPackage.engines.node) {
@@ -172,10 +176,11 @@ async function main() {
 
   const pnpmGraph = runPnpmJson(['ls', '--filter', '@mrt/desktop', '--prod', '--depth', 'Infinity', '--json']);
   const licenseIndex = readLicenseIndex(runPnpmJson(['licenses', 'list', '--prod', '--filter', '@mrt/desktop', '--json']));
+  const integrityIndex = productionPackageIntegrityIndex(await readBoundedLockfile(join(projectRoot, 'pnpm-lock.yaml')));
   const root = pnpmGraph.find(project => project.name === '@mrt/desktop');
   if (!root || root.version !== desktopPackage.version) throw new Error('Could not match the production graph to the desktop package.');
   const electronVersion = rootPackage.devDependencies?.electron;
-  const electronManifest = await readJson(resolve(projectRoot, 'node_modules/electron/package.json'));
+  const { manifest: electronManifest } = await readInstalledPackageManifest(resolve(projectRoot, 'node_modules/electron'), join(projectRoot, 'node_modules'));
   if (!electronVersion || electronManifest.version !== electronVersion) throw new Error('The packaged Electron runtime did not match the pinned version.');
   const electronRef = packageUrl('electron', electronVersion);
   licenseIndex.set(electronRef, electronManifest.license);
@@ -184,12 +189,23 @@ async function main() {
     `${productName} Setup ${desktopPackage.version}.exe`,
     `${productName} ${desktopPackage.version}.exe`
   ];
-  const signatures = readSignatures(artifactNames);
+  const signatures = readSignatures(artifactsRoot, artifactNames);
   if (!Array.isArray(signatures) || signatures.length !== artifactNames.length) {
     throw new Error('Windows Authenticode inspection returned an incomplete result.');
   }
-  if (requireSignedRelease && signatures.some(signature => signature.status !== 'Valid' || !signature.signerThumbprint)) {
-    throw new Error('MRT_SIGNED_RELEASE requires a valid Authenticode signature on every Windows release executable.');
+  if (expectedSignerThumbprint) assertReleaseSigners(signatures, artifactNames, expectedSignerThumbprint);
+  else assertUnsignedReleaseArtifacts(signatures, artifactNames);
+  const notices = [];
+  for (const [id, fileName] of [
+    ['electron-license', 'LICENSE.electron.txt'],
+    ['chromium-licenses', 'LICENSES.chromium.html'],
+    ['production-dependency-notices', 'resources/THIRD-PARTY-NOTICES.txt']
+  ]) {
+    const filePath = join(artifactsRoot, 'win-unpacked', fileName);
+    let hash;
+    try { hash = await sha256RegularFile(filePath); }
+    catch { throw new Error(`The packaged Windows app is missing or has an invalid ${fileName} third-party notice.`); }
+    notices.push({ id, fileName: `win-unpacked/${fileName}`, hash });
   }
 
   const electronDependencies = {};
@@ -201,29 +217,27 @@ async function main() {
   };
   const dependencyTree = { ...root.dependencies, ...electronDependencies };
   const productRef = `pkg:generic/multiremote-terminal@${desktopPackage.version}?arch=x64&platform=windows`;
-  const { graph, components } = await collectProductionGraph(dependencyTree, licenseIndex, productRef);
+  const { graph, components } = await collectProductionGraph(dependencyTree, licenseIndex, integrityIndex, productRef);
   const appArchivePath = join(artifactsRoot, 'win-unpacked/resources/app.asar');
-  const appArchiveHash = sha256(await readFile(appArchivePath));
+  const appArchiveHash = await sha256RegularFile(appArchivePath);
   const toolchain = {
     node: rootPackage.engines.node,
     pnpm: actualPnpm,
     electronBuilder: rootPackage.devDependencies['electron-builder']
   };
 
-  const checksumEntries = [];
+  const checksumEntries = notices.map(notice => `${notice.hash}  ${notice.fileName}`);
   for (const [index, artifactName] of artifactNames.entries()) {
     const artifactPath = join(artifactsRoot, artifactName);
-    const artifactBytes = await readFile(artifactPath);
-    const artifactHash = sha256(artifactBytes);
+    const artifactHash = await sha256RegularFile(artifactPath);
     const bom = buildBom({ artifactName, artifactHash, appArchiveHash, signature: signatures[index],
-      dependencies: graph, components: [...components], desktopPackage, toolchain });
+      dependencies: graph, components: [...components], desktopPackage, toolchain, notices });
     const bomName = `${artifactName}.cdx.json`;
-    const bomPath = join(artifactsRoot, bomName);
     const bomContents = `${JSON.stringify(bom, null, 2)}\n`;
-    await writeFile(bomPath, bomContents, { encoding: 'utf8' });
+    await writeWorkspaceOutputFile(projectRoot, ['artifacts', 'windows'], bomName, bomContents);
     checksumEntries.push(`${artifactHash}  ${artifactName}`, `${sha256(bomContents)}  ${bomName}`);
   }
-  await writeFile(join(artifactsRoot, 'SHA256SUMS.txt'), `${checksumEntries.sort().join('\n')}\n`, 'utf8');
+  await writeWorkspaceOutputFile(projectRoot, ['artifacts', 'windows'], 'SHA256SUMS.txt', `${checksumEntries.sort().join('\n')}\n`);
   console.log(`Generated per-artifact CycloneDX 1.6 SBOMs for ${components.length} resolved runtime components; signatures: ${signatures.map(item => item.status).join(', ')}.`);
 }
 

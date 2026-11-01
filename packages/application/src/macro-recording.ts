@@ -33,7 +33,7 @@ const isScreenRedraw = (data: string): boolean => {
   const clearedLines = data.match(/(?:\u001b\[|\u009b)[0-9;?]*K/gu)?.length ?? 0;
   return data.length >= 64 && clearedLines >= 2 && /(?:\u001b\[|\u009b)(?:H|f|1;1H)/u.test(data);
 };
-const SECRET_PROMPT = /\b(?:password|passwd|passphrase|token|secret|verification(?:\s+code)?|one[- ]time\s+code)\b[^:\r\n]{0,80}[:?]\s*$/iu;
+const SECRET_PROMPT = /\b(?:password|passwd|passphrase|passcode|pin(?:\s+code)?|token|secret|otp|totp|2fa(?:\s+code)?|two[- ]factor(?:\s+authentication)?\s+code|authenticator(?:\s+(?:code|token))?|authentication\s+(?:code|token)|verification(?:\s+code)?|one[- ]time\s+(?:code|password|token)|security\s+(?:code|token))\b[^:\r\n]{0,80}[:?]\s*$/iu;
 
 type AnsiMode = 'text' | 'escape' | 'csi' | 'osc' | 'osc-escape' | 'control-string' | 'control-string-escape';
 

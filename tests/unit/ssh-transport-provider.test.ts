@@ -90,12 +90,15 @@ class ForwardingTargetCaptureClient extends FakeClient {
 class RemoteForwardingFakeClient extends FakeClient {
   readonly forwardInCalls: Array<{ readonly address: string; readonly port: number }> = [];
   readonly unforwardInCalls: Array<{ readonly address: string; readonly port: number }> = [];
+  readonly _forwarding: Record<string, number> = Object.create(null) as Record<string, number>;
   readonly assignedPort = 47_321;
   readonly acknowledgeUnforward: boolean;
   constructor(acknowledgeUnforward = true) { super(); this.acknowledgeUnforward = acknowledgeUnforward; }
   forwardIn(address: string, port: number, callback?: (error: Error | undefined, port: number) => void): this {
     this.forwardInCalls.push({ address, port });
-    callback?.(undefined, port === 0 ? this.assignedPort : 0);
+    const assignedPort = port === 0 ? this.assignedPort : port;
+    this._forwarding[`${address}:${assignedPort}`] = assignedPort;
+    callback?.(undefined, assignedPort);
     return this;
   }
   unforwardIn(address: string, port: number, callback?: (error?: Error) => void): this {
@@ -103,17 +106,18 @@ class RemoteForwardingFakeClient extends FakeClient {
     if (this.acknowledgeUnforward) callback?.();
     return this;
   }
-  attemptRemoteConnection(port: number): { readonly channel?: PassThrough; readonly rejected: boolean } {
+  attemptRemoteConnection(port: number, destIP = '127.0.0.1'): { readonly channel?: PassThrough; readonly rejected: boolean } {
+    if (this._forwarding[`${destIP}:${port}`] === undefined) return { rejected: true };
     const channel = new PassThrough();
     let accepted = false;
     let rejected = false;
-    this.emit('tcp connection', { destIP: '127.0.0.1', destPort: port, srcIP: '127.0.0.1', srcPort: 53_222 },
+    this.emit('tcp connection', { destIP, destPort: port, srcIP: '192.0.2.10', srcPort: 53_222 },
       () => { accepted = true; return channel as unknown as ClientChannel; }, () => { rejected = true; });
     return { ...(accepted ? { channel } : {}), rejected };
   }
-  emitRemoteConnection(port: number): PassThrough {
-    const result = this.attemptRemoteConnection(port);
-    if (result.rejected || !result.channel) throw new Error('Loopback forwarded connection was rejected');
+  emitRemoteConnection(port: number, destIP = '127.0.0.1'): PassThrough {
+    const result = this.attemptRemoteConnection(port, destIP);
+    if (result.rejected || !result.channel) throw new Error('Forwarded connection was rejected');
     return result.channel;
   }
 }
@@ -284,10 +288,8 @@ test('SSH X11 forwarding sends a disposable cookie and clears it when the sessio
   assert.deepEqual(proxyCookie, Buffer.alloc(16));
 });
 
-test('SSH provider opens a three-gateway route over nested channels and closes the complete chain', async () => {
-  const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
-  const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
-  const gatewayThree = { host: 'gateway-three.example.net', port: 2203 };
+test('SSH provider opens the maximum eight-gateway route and closes the complete chain', async () => {
+  const gateways = Array.from({ length: 8 }, (_, index) => ({ host: `gateway-${index + 1}.example.net`, port: 2201 + index }));
   const destination = { host: 'target.example.net', port: 22 };
   const clients: RoutedFakeClient[] = [];
   const provider = createSshTransportProvider({ create: () => {
@@ -297,16 +299,15 @@ test('SSH provider opens a three-gateway route over nested channels and closes t
   }, parseHostKey: keyParser() }, () => {});
   const verified: string[] = [];
   const opened = provider.open(sessionId, destination, { username: 'target-user', password: 'target-secret' }, size,
-    async remote => { verified.push(remote.host); return true; }, [
-      { endpoint: gatewayOne, credentials: { username: 'gateway-one-user', password: 'gateway-one-secret' } },
-      { endpoint: gatewayTwo, credentials: { username: 'gateway-two-user', password: 'gateway-two-secret' } },
-      { endpoint: gatewayThree, credentials: { username: 'gateway-three-user', password: 'gateway-three-secret' } }
-    ]);
+    async remote => { verified.push(remote.host); return true; }, gateways.map((endpoint, index) => ({
+      endpoint, credentials: { username: `gateway-${index + 1}-user`, password: `gateway-${index + 1}-secret` }
+    })));
 
   const authorizeAndAdvance = async (index: number, expectedHost: string): Promise<void> => {
     const client = clients[index];
     assert.ok(client);
     assert.equal(client.config?.host, expectedHost);
+    assert.equal(client.config?.username, index < gateways.length ? `gateway-${index + 1}-user` : 'target-user');
     const verifier = client.config?.hostVerifier as (key: Buffer, callback: (accepted: boolean) => void) => void;
     const accepted = new Promise<boolean>(resolve => verifier(hostKey(), resolve));
     assert.equal(await accepted, true);
@@ -314,33 +315,27 @@ test('SSH provider opens a three-gateway route over nested channels and closes t
     await new Promise<void>(resolve => setImmediate(resolve));
   };
 
-  await authorizeAndAdvance(0, gatewayOne.host);
-  assert.equal(clients[1]?.config?.host, gatewayTwo.host);
-  assert.equal(clients[1]?.config?.sock, clients[0]?.routeChannels[0]);
-  await authorizeAndAdvance(1, gatewayTwo.host);
-  assert.equal(clients[2]?.config?.host, gatewayThree.host);
-  assert.equal(clients[2]?.config?.sock, clients[1]?.routeChannels[0]);
-  await authorizeAndAdvance(2, gatewayThree.host);
-  assert.equal(clients[3]?.config?.host, destination.host);
-  assert.equal(clients[3]?.config?.sock, clients[2]?.routeChannels[0]);
-  await authorizeAndAdvance(3, destination.host);
+  for (const [index, gateway] of gateways.entries()) {
+    await authorizeAndAdvance(index, gateway.host);
+    assert.equal(clients[index + 1]?.config?.host, gateways[index + 1]?.host ?? destination.host);
+    assert.equal(clients[index + 1]?.config?.sock, clients[index]?.routeChannels[0]);
+    assert.deepEqual(clients[index]?.routeRequests, [gateways[index + 1] ?? destination]);
+  }
+  await authorizeAndAdvance(gateways.length, destination.host);
   await opened;
 
-  assert.deepEqual(verified, [gatewayOne.host, gatewayTwo.host, gatewayThree.host, destination.host]);
-  assert.deepEqual(clients[0]?.routeRequests, [gatewayTwo]);
-  assert.deepEqual(clients[1]?.routeRequests, [gatewayThree]);
-  assert.deepEqual(clients[2]?.routeRequests, [destination]);
-  assert.deepEqual(clients[3]?.shellSize, { term: 'xterm-256color', cols: size.columns, rows: size.rows });
+  assert.deepEqual(verified, [...gateways.map(gateway => gateway.host), destination.host]);
+  assert.equal(clients.length, 9);
+  assert.deepEqual(clients[8]?.shellSize, { term: 'xterm-256color', cols: size.columns, rows: size.rows });
   const routeChannels = clients.flatMap(client => client.routeChannels);
+  assert.equal(routeChannels.length, 8);
   await provider.close(sessionId);
   assert.ok(clients.every(client => client.ended));
   assert.ok(routeChannels.every(channel => channel.destroyed), 'closing the session destroys every inter-hop channel');
 });
 
-test('SSH provider closes all four clients and three route channels when a three-gateway target fails', async () => {
-  const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
-  const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
-  const gatewayThree = { host: 'gateway-three.example.net', port: 2203 };
+test('SSH provider cancels an opening eight-gateway route and closes all clients and channels', async () => {
+  const gateways = Array.from({ length: 8 }, (_, index) => ({ host: `gateway-${index + 1}.example.net`, port: 2201 + index }));
   const destination = { host: 'target.example.net', port: 22 };
   const clients: RoutedFakeClient[] = [];
   const provider = createSshTransportProvider({ create: () => {
@@ -349,11 +344,43 @@ test('SSH provider closes all four clients and three route channels when a three
     return client as unknown as Client;
   }, parseHostKey: keyParser() }, () => {});
   const opened = provider.open(sessionId, destination, { username: 'target-user', password: 'target-secret' }, size,
-    async () => true, [
-      { endpoint: gatewayOne, credentials: { username: 'gateway-one-user', password: 'gateway-one-secret' } },
-      { endpoint: gatewayTwo, credentials: { username: 'gateway-two-user', password: 'gateway-two-secret' } },
-      { endpoint: gatewayThree, credentials: { username: 'gateway-three-user', password: 'gateway-three-secret' } }
-    ]);
+    async () => true, gateways.map((endpoint, index) => ({
+      endpoint, credentials: { username: `gateway-${index + 1}-user`, password: `gateway-${index + 1}-secret` }
+    })));
+
+  for (const [index, gateway] of gateways.entries()) {
+    const client = clients[index];
+    assert.ok(client);
+    assert.equal(client.config?.host, gateway.host);
+    const verifier = client.config?.hostVerifier as (key: Buffer, callback: (accepted: boolean) => void) => void;
+    const accepted = new Promise<boolean>(resolve => verifier(hostKey(), resolve));
+    assert.equal(await accepted, true);
+    client.emit('ready');
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+
+  const routeChannels = clients.flatMap(client => client.routeChannels);
+  assert.equal(clients.length, 9);
+  assert.equal(routeChannels.length, 8);
+  await provider.close(sessionId);
+  await assert.rejects(opened, error => (error as { code?: string }).code === 'CANCELLED');
+  assert.ok(clients.every(client => client.ended), 'cancellation closes every gateway and target SSH client');
+  assert.ok(routeChannels.every(channel => channel.destroyed), 'cancellation destroys every nested forward channel');
+});
+
+test('SSH provider closes nine clients and eight route channels when an eight-gateway target fails', async () => {
+  const gateways = Array.from({ length: 8 }, (_, index) => ({ host: `gateway-${index + 1}.example.net`, port: 2201 + index }));
+  const destination = { host: 'target.example.net', port: 22 };
+  const clients: RoutedFakeClient[] = [];
+  const provider = createSshTransportProvider({ create: () => {
+    const client = new RoutedFakeClient();
+    clients.push(client);
+    return client as unknown as Client;
+  }, parseHostKey: keyParser() }, () => {});
+  const opened = provider.open(sessionId, destination, { username: 'target-user', password: 'target-secret' }, size,
+    async () => true, gateways.map((endpoint, index) => ({
+      endpoint, credentials: { username: `gateway-${index + 1}-user`, password: `gateway-${index + 1}-secret` }
+    })));
 
   const authorizeAndAdvance = async (index: number, expectedHost: string): Promise<void> => {
     const client = clients[index];
@@ -366,18 +393,16 @@ test('SSH provider closes all four clients and three route channels when a three
     await new Promise<void>(resolve => setImmediate(resolve));
   };
 
-  await authorizeAndAdvance(0, gatewayOne.host);
-  await authorizeAndAdvance(1, gatewayTwo.host);
-  await authorizeAndAdvance(2, gatewayThree.host);
-  const targetClient = clients[3];
+  for (const [index, gateway] of gateways.entries()) await authorizeAndAdvance(index, gateway.host);
+  const targetClient = clients[gateways.length];
   assert.ok(targetClient);
   assert.equal(targetClient.config?.host, destination.host);
   const routeChannels = clients.flatMap(client => client.routeChannels);
-  assert.equal(routeChannels.length, 3);
+  assert.equal(routeChannels.length, 8);
 
   targetClient.emit('error', Object.assign(new Error('Target authentication failed'), { level: 'client-authentication' }));
   await assert.rejects(opened, error => (error as { code?: string }).code === 'AUTHENTICATION_FAILED');
-  assert.equal(clients.length, 4);
+  assert.equal(clients.length, 9);
   assert.ok(clients.every(client => client.ended), 'failure closes all gateway and target SSH clients');
   assert.ok(routeChannels.every(channel => channel.destroyed), 'failure destroys all nested forward channels');
 });
@@ -489,6 +514,10 @@ test('dynamic SSH forwarding handles SOCKS5 no-auth CONNECT and rejects unsuppor
     assert.deepEqual(unsupported.methodReply, Buffer.from([5, 0]));
     assert.deepEqual(unsupported.connectReply.subarray(0, 2), Buffer.from([5, 7]), 'UDP ASSOCIATE is rejected as unsupported');
 
+    const bindRequest = await socksRequest(bindPort, targetPort, 2, [0]);
+    assert.deepEqual(bindRequest.methodReply, Buffer.from([5, 0]));
+    assert.deepEqual(bindRequest.connectReply.subarray(0, 2), Buffer.from([5, 7]), 'BIND is rejected as unsupported');
+
     const noAuthentication = await socksRequest(bindPort, targetPort, 1, [2]);
     assert.deepEqual(noAuthentication.methodReply, Buffer.from([5, 0xff]), 'credentials are never requested or accepted');
     await provider.stopForward(sessionId, definition.id);
@@ -592,6 +621,7 @@ test('remote SSH forwarding requests only a loopback bind, relays to a local des
     assert.equal(bindPort, client.assignedPort);
     assert.deepEqual(client.forwardInCalls, [{ address: '127.0.0.1', port: 0 }]);
     assert.equal(client.shellSize, undefined, 'remote forwarding uses a files-only SSH connection without requesting a shell');
+    assert.equal(client.attemptRemoteConnection(bindPort, '192.0.2.20').rejected, true);
 
     const channel = client.emitRemoteConnection(bindPort);
     const echoed = new Promise<string>((resolve, reject) => {
@@ -604,6 +634,74 @@ test('remote SSH forwarding requests only a loopback bind, relays to a local des
 
     await provider.stopForward(sessionId, definition.id);
     assert.deepEqual(client.unforwardInCalls, [{ address: '127.0.0.1', port: bindPort }]);
+    assert.equal(channel.destroyed, true);
+  } finally {
+    await provider.close(sessionId);
+    await closeServer(target);
+  }
+});
+
+test('public remote forwarding requests all IPv4 interfaces, accepts an IPv4 forwarded address, and unbinds that address', async () => {
+  const target: Server = createServer(socket => socket.pipe(socket));
+  const targetPort = await listen(target);
+  const client = new RemoteForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333341', sessionId, name: 'Public reverse echo', mode: 'remote' as const,
+      bindHost: '0.0.0.0' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+    assert.deepEqual(client.forwardInCalls, [{ address: '0.0.0.0', port: 0 }]);
+    assert.equal(client.attemptRemoteConnection(bindPort + 1, '192.0.2.20').rejected, true);
+    assert.equal(client.attemptRemoteConnection(bindPort, '2001:db8::1').rejected, true);
+
+    const channel = client.emitRemoteConnection(bindPort, '192.0.2.20');
+    const echoed = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Timed out waiting for public remote-forwarded bytes')), 2_000);
+      channel.once('data', data => { clearTimeout(timer); resolve(data.toString('utf8')); });
+      channel.once('error', error => { clearTimeout(timer); reject(error); });
+    });
+    channel.write('through-public-reverse-forward');
+    assert.equal(await echoed, 'through-public-reverse-forward');
+
+    await provider.stopForward(sessionId, definition.id);
+    assert.deepEqual(client.unforwardInCalls, [{ address: '0.0.0.0', port: bindPort }]);
+    assert.equal(channel.destroyed, true);
+  } finally {
+    await provider.close(sessionId);
+    await closeServer(target);
+  }
+});
+
+test('specific remote IPv4 forwarding accepts only the requested address and unbinds the same address', async () => {
+  const target: Server = createServer(socket => socket.pipe(socket));
+  const targetPort = await listen(target);
+  const client = new RemoteForwardingFakeClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333342', sessionId, name: 'Specific reverse echo', mode: 'remote' as const,
+      bindHost: '192.0.2.1' as const, bindPort: 0, targetHost: '127.0.0.1', targetPort, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition);
+    assert.deepEqual(client.forwardInCalls, [{ address: '192.0.2.1', port: 0 }]);
+    client._forwarding[`192.0.2.2:${bindPort}`] = bindPort;
+    assert.equal(client.attemptRemoteConnection(bindPort, '192.0.2.2').rejected, true);
+    delete client._forwarding[`192.0.2.2:${bindPort}`];
+
+    const channel = client.emitRemoteConnection(bindPort, '192.0.2.1');
+    const echoed = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Timed out waiting for specific remote-forwarded bytes')), 2_000);
+      channel.once('data', data => { clearTimeout(timer); resolve(data.toString('utf8')); });
+      channel.once('error', error => { clearTimeout(timer); reject(error); });
+    });
+    channel.write('through-specific-remote-forward');
+    assert.equal(await echoed, 'through-specific-remote-forward');
+    await provider.stopForward(sessionId, definition.id);
+    assert.deepEqual(client.unforwardInCalls, [{ address: '192.0.2.1', port: bindPort }]);
     assert.equal(channel.destroyed, true);
   } finally {
     await provider.close(sessionId);
@@ -900,7 +998,7 @@ test('SSH close during handshake ends the socket and rejects a late host approva
   assert.equal(typeof releaseTrust, 'function');
 
   await provider.close(sessionId);
-  await assert.rejects(opened, error => (error as { code?: string }).code === 'UNAVAILABLE');
+  await assert.rejects(opened, error => (error as { code?: string }).code === 'CANCELLED');
   releaseTrust(true);
   assert.equal(await verification, false);
   assert.equal(client.ended, true);

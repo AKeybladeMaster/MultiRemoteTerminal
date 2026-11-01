@@ -193,13 +193,25 @@ test('SQLite migrates schema v9 preferences to the default optional provider all
   database.close();
 });
 
-test('SQLite rejects corrupted or unsupported stored preference records', () => {
+test('SQLite rejects corrupted or unsupported preferences without modifying the stored row', () => {
   const database = new DatabaseSync(':memory:');
   new SqliteHostTrustRepository(database).migrate();
   const preferences = new SqliteWorkbenchPreferencesRepository(database);
   preferences.save({ ...DEFAULT_WORKBENCH_PREFERENCES, startupGreeting: 'Welcome' });
   database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?').run('{broken', 1, 'workbench');
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);
+  const preserved = database.prepare('SELECT value_json, schema_version FROM settings WHERE key = ?').get('workbench') as
+    { readonly value_json: unknown; readonly schema_version: unknown } | undefined;
+  assert.equal(preserved?.value_json, '{broken');
+  assert.equal(preserved?.schema_version, 1, 'a rejected legacy migration must leave the original schema version intact');
+  const rejectedLegacyJson = JSON.stringify({ startupGreeting: 'safe', terminalHighlightEnabled: false,
+    terminalHighlightRules: 'invalid', autoSaveSessions: false, terminalShellSyntaxEnabled: false });
+  database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?').run(rejectedLegacyJson, 4, 'workbench');
+  assert.throws(() => preferences.read(), /Storage operation corrupt/u);
+  const rejectedLegacy = database.prepare('SELECT value_json, schema_version FROM settings WHERE key = ?').get('workbench') as
+    { readonly value_json: unknown; readonly schema_version: unknown } | undefined;
+  assert.equal(rejectedLegacy?.value_json, rejectedLegacyJson);
+  assert.equal(rejectedLegacy?.schema_version, 4, 'a rejected legacy normalization must leave the original row intact');
   database.prepare('UPDATE settings SET value_json = ?, schema_version = ? WHERE key = ?')
     .run('{"startupGreeting":"safe","terminalHighlightEnabled":false,"terminalHighlightRules":[],"extra":true}', 2, 'workbench');
   assert.throws(() => preferences.read(), /Storage operation corrupt/u);

@@ -3,6 +3,8 @@ import { canonicalizeFtpEndpoint } from '../../../../packages/domain/src/ftp.ts'
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { isSshGatewayProfileIds, MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
 import { canonicalizeXdmcpHost } from '../../../../packages/domain/src/xdmcp.ts';
+import { isPowerShellToolAction } from '../../../../packages/domain/src/powershell-tools.ts';
+import type { PowerShellToolAction } from '../../../../packages/domain/src/powershell-tools.ts';
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GESTURE_TTL_MS = 750;
@@ -107,6 +109,16 @@ export interface PowerShellProfileGestureDocument {
 
 export interface PowerShellProfileGestureStore {
   consume(sessionId: string): Promise<boolean>;
+  dispose(): void;
+}
+
+export interface PowerShellToolGestureDocument {
+  addEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+  removeEventListener(type: 'click', listener: (event: Event) => void, capture: true): void;
+}
+
+export interface PowerShellToolGestureStore {
+  consume(sessionId: string, action: PowerShellToolAction): Promise<boolean>;
   dispose(): void;
 }
 
@@ -376,6 +388,44 @@ export function installPowerShellProfileGestureStore(documentTarget: PowerShellP
       gestures.delete(sessionId);
       if (!SESSION_ID.test(sessionId) || expiresAt === undefined || expiresAt < now()) return false;
       try { return await authorize(sessionId) === true; }
+      catch { return false; }
+    },
+    dispose(): void {
+      documentTarget.removeEventListener('click', observeClick, true);
+      gestures.clear();
+    }
+  });
+}
+
+export function installPowerShellToolGestureStore(documentTarget: PowerShellToolGestureDocument,
+  authorize: (sessionId: string, action: PowerShellToolAction) => Promise<boolean>, now: () => number = () => performance.now()): PowerShellToolGestureStore {
+  const gestures = new Map<string, number>();
+  const gestureKey = (sessionId: string, action: PowerShellToolAction) => `${sessionId}/${action}`;
+  const observeClick = (event: Event): void => {
+    const click = event as unknown as { readonly type: string; readonly isTrusted: boolean; readonly target: EventTargetElement | null };
+    if (click.type !== 'click' || !click.isTrusted) return;
+    const button = click.target?.closest('button[data-mrt-powershell-tool-trigger]');
+    const sessionId = button?.getAttribute('data-mrt-powershell-tool-trigger');
+    const action = button?.getAttribute('data-mrt-powershell-tool-action');
+    if (!sessionId || !SESSION_ID.test(sessionId) || !isPowerShellToolAction(action)) return;
+    for (const [key, expiresAt] of gestures) if (expiresAt < now()) gestures.delete(key);
+    const key = gestureKey(sessionId, action);
+    if (!gestures.has(key) && gestures.size >= MAX_PENDING_GESTURES) {
+      const oldest = gestures.keys().next().value as string | undefined;
+      if (oldest !== undefined) gestures.delete(oldest);
+    }
+    gestures.delete(key);
+    gestures.set(key, now() + GESTURE_TTL_MS);
+  };
+  documentTarget.addEventListener('click', observeClick, true);
+  return Object.freeze({
+    async consume(sessionId: string, action: PowerShellToolAction): Promise<boolean> {
+      if (!SESSION_ID.test(sessionId) || !isPowerShellToolAction(action)) return false;
+      const key = gestureKey(sessionId, action);
+      const expiresAt = gestures.get(key);
+      gestures.delete(key);
+      if (expiresAt === undefined || expiresAt < now()) return false;
+      try { return await authorize(sessionId, action) === true; }
       catch { return false; }
     },
     dispose(): void {

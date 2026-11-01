@@ -2,6 +2,7 @@ import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remo
 import { canonicalizeSshHostEndpoint } from '../../../../packages/domain/src/host-trust.ts';
 import { isSshGatewayProfileIds } from '../../../../packages/domain/src/ssh-route.ts';
 import { canonicalizeXdmcpHost } from '../../../../packages/domain/src/xdmcp.ts';
+import type { PowerShellToolAction } from '../../../../packages/domain/src/powershell-tools.ts';
 
 const GESTURE_TTL_MS = 750;
 const MAX_PENDING_GESTURES = 64;
@@ -9,7 +10,7 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 
 export type TftpServerAction = 'choose-root' | 'start';
 export type RendererGesturePurpose = 'clipboard-paste' | 'telnet-plaintext-consent' | 'ftp-plaintext-consent' | 'external-viewer-launch' |
-  'tftp-server-action' | 'powershell-profile-script' | 'ssh-session-log' | 'ssh-x11-consent' | 'ssh-x11-authorized' | 'xdmcp-launch';
+  'tftp-server-action' | 'powershell-profile-script' | 'powershell-tool-lifecycle' | 'ssh-session-log' | 'ssh-x11-consent' | 'ssh-x11-authorized' | 'xdmcp-launch';
 
 export class RendererGestureGate {
   private readonly expiresAtByGesture = new Map<string, number>();
@@ -73,6 +74,17 @@ export class RendererGestureGate {
   consumeXdmcpLaunch(senderId: number, host: string): boolean {
     const canonicalHost = canonicalizeXdmcpHost(host);
     return canonicalHost !== undefined && this.consumeScope(senderId, canonicalHost, 'xdmcp-launch');
+  }
+
+  issuePowerShellToolAction(senderId: number, sessionId: string, action: PowerShellToolAction): void {
+    if (!Number.isSafeInteger(senderId) || senderId < 1 || !SESSION_ID.test(sessionId) ||
+        (action !== 'install' && action !== 'update' && action !== 'remove')) return;
+    this.issueScope(senderId, `${sessionId}\u0000${action}`, 'powershell-tool-lifecycle');
+  }
+
+  consumePowerShellToolAction(senderId: number, sessionId: string, action: PowerShellToolAction): boolean {
+    if (!SESSION_ID.test(sessionId) || (action !== 'install' && action !== 'update' && action !== 'remove')) return false;
+    return this.consumeScope(senderId, `${sessionId}\u0000${action}`, 'powershell-tool-lifecycle');
   }
 
   issueTftpServerAction(senderId: number, action: TftpServerAction, selectionId?: string, port?: number): void {

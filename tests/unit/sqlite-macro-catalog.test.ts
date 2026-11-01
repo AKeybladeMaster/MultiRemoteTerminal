@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
+import { CURRENT_SCHEMA_VERSION, SqliteHostTrustRepository } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { SqliteMacroCatalogRepository } from '../../apps/desktop/src/adapters/sqlite-macro-catalog-repository.ts';
 import { SqliteMacroShortcutRepository } from '../../apps/desktop/src/adapters/sqlite-macro-shortcut-repository.ts';
 
@@ -62,11 +62,11 @@ test('SQLite version 2 databases migrate forward without losing saved macros', (
   const migrations = new SqliteHostTrustRepository(database);
   migrations.migrate();
   const macro = new SqliteMacroCatalogRepository(database).createMacro({ name: 'Preserved', steps: [] });
-  database.exec('DROP TABLE macro_shortcuts; PRAGMA user_version = 2');
+  database.exec('DROP TABLE file_transfer_recovery_jobs; DROP TABLE macro_shortcuts; PRAGMA user_version = 2');
 
   migrations.migrate();
   const version = database.prepare('PRAGMA user_version').get() as { readonly user_version: number };
-  assert.equal(version.user_version, 3);
+  assert.equal(version.user_version, CURRENT_SCHEMA_VERSION);
   assert.equal(new SqliteMacroCatalogRepository(database).listMacros()[0]?.id, macro.id);
   const shortcut = new SqliteMacroShortcutRepository(database).set(macro.id, 'F4');
   assert.deepEqual(shortcut, { macroId: macro.id, code: 'F4' });

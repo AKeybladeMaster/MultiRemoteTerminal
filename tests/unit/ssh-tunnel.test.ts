@@ -11,18 +11,27 @@ test('local SSH tunnel definitions normalize endpoint data and allow OS-selected
   assert.deepEqual(draft, { sessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: 'db.internal', targetPort: 5432 });
   assert.equal(normalizeSshTunnelDraft({ ...draft, id: tunnelId })?.id, tunnelId);
-  assert.equal(normalizeSshTunnelDraft({ ...draft, bindHost: '0.0.0.0' }), undefined);
+  assert.deepEqual(normalizeSshTunnelDraft({ ...draft, bindHost: '0.0.0.0' }), { ...draft, bindHost: '0.0.0.0' });
   assert.equal(normalizeSshTunnelDraft({ ...draft, bindPort: 65_536 }), undefined);
   assert.equal(normalizeSshTunnelDraft({ ...draft, targetHost: 'bad host' }), undefined);
   assert.equal(normalizeSshTunnelDraft({ ...draft, password: 'must not persist' }), undefined);
 });
 
-test('remote SSH tunnel definitions allow server-selected ports while keeping the remote bind on loopback', () => {
+test('remote SSH tunnel definitions allow canonical IPv4 binds while local and dynamic binds stay restricted', () => {
   const draft = normalizeSshTunnelDraft({ sessionId, name: 'Reverse API', mode: 'remote', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: '127.0.0.1', targetPort: 3000 });
   assert.deepEqual(draft, { sessionId, name: 'Reverse API', mode: 'remote', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: '127.0.0.1', targetPort: 3000 });
-  assert.equal(normalizeSshTunnelDraft({ ...draft, bindHost: '0.0.0.0' }), undefined);
+  assert.deepEqual(normalizeSshTunnelDraft({ ...draft, bindHost: '0.0.0.0' }), { ...draft, bindHost: '0.0.0.0' });
+  assert.deepEqual(normalizeSshTunnelDraft({ ...draft, bindHost: '192.0.2.1' }), { ...draft, bindHost: '192.0.2.1' });
+  assert.deepEqual(normalizeSshTunnelDraft({ ...draft, bindHost: '127.0.0.2' }), { ...draft, bindHost: '127.0.0.2' });
+  const persisted = normalizeSshTunnelDraft({ ...draft, id: tunnelId, bindHost: '192.0.2.1' });
+  assert.equal(isSshTunnelDefinition({ ...persisted, createdAt: '2026-10-24T00:00:00.000Z' }), true);
+  for (const bindHost of ['256.0.0.1', '192.000.2.1', '192.0.2.1/24', '192.0.2.1:22']) {
+    assert.equal(normalizeSshTunnelDraft({ ...draft, bindHost }), undefined, `${bindHost} must not be accepted`);
+  }
+  const local = { ...draft, mode: 'local', bindHost: '127.0.0.1' };
+  assert.equal(normalizeSshTunnelDraft({ ...local, bindHost: '192.0.2.1' }), undefined);
 });
 
 test('dynamic SOCKS tunnel definitions are loopback-only and contain no fixed destination', () => {
@@ -39,9 +48,12 @@ test('local tunnel persisted rows and runtime status accept only exact bounded s
   const definition = { id: tunnelId, sessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0,
     targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' } as const;
   assert.equal(isSshTunnelDefinition(definition), true);
+  assert.equal(isSshTunnelDefinition({ ...definition, bindHost: '0.0.0.0' }), true);
   assert.equal(isSshTunnelDefinition({ ...definition, extra: true }), false);
   assert.equal(isTunnelRunStatus({ tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 50124 }), true);
-  assert.equal(isTunnelRunStatus({ tunnelId, state: 'active', bindHost: '0.0.0.0', bindPort: 50124 }), false);
+  assert.equal(isTunnelRunStatus({ tunnelId, state: 'active', bindHost: '0.0.0.0', bindPort: 50124 }), true);
+  assert.equal(isTunnelRunStatus({ tunnelId, state: 'active', bindHost: '192.0.2.1', bindPort: 50124 }), true);
+  assert.equal(isTunnelRunStatus({ tunnelId, state: 'active', bindHost: '192.000.2.1', bindPort: 50124 }), false);
   assert.equal(isTunnelRunStatus({ tunnelId, state: 'failed', errorCode: 'HOST_KEY_CHANGED' }), true);
   assert.equal(isTunnelRunStatus({ tunnelId, state: 'failed', errorCode: 'secret' }), false);
 });

@@ -6,7 +6,7 @@ import { canonicalizeSshHostEndpoint, isHostKeyEvidence, sameHostKey } from '../
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
 import { MACRO_SHORTCUT_CODES } from '../../../../packages/domain/src/macro-shortcut.ts';
 
-const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 5;
 const SCHEMA_V1 = `
 CREATE TABLE folders (
   id TEXT PRIMARY KEY,
@@ -139,6 +139,23 @@ CREATE TABLE macro_shortcuts (
   code TEXT NOT NULL UNIQUE CHECK(code IN (${MACRO_SHORTCUT_CODES.map(code => `'${code}'`).join(', ')}))
 );
 `;
+const SCHEMA_V4 = `
+CREATE TABLE file_transfer_recovery_jobs (
+  operation_id TEXT PRIMARY KEY CHECK(length(operation_id) = 36),
+  run_id TEXT NOT NULL CHECK(length(run_id) = 36),
+  transport TEXT NOT NULL CHECK(transport IN ('sftp', 'ftp', 'ftps')),
+  direction TEXT NOT NULL CHECK(direction IN ('upload', 'download')),
+  file_name TEXT NOT NULL CHECK(length(file_name) BETWEEN 1 AND 255),
+  state TEXT NOT NULL CHECK(state IN ('running', 'interrupted', 'completed', 'failed', 'cancelled', 'skipped')),
+  bytes_transferred INTEGER NOT NULL DEFAULT 0 CHECK(bytes_transferred >= 0),
+  total_bytes INTEGER CHECK(total_bytes IS NULL OR total_bytes >= 0),
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX file_transfer_recovery_state ON file_transfer_recovery_jobs(state, updated_at);
+`;
+const SCHEMA_V5 = `ALTER TABLE file_transfer_recovery_jobs ADD COLUMN remote_artifact_names_json TEXT NOT NULL DEFAULT '[]';`;
 
 export interface HostTrustMigrationResult {
   readonly sourceCount: number;
@@ -174,24 +191,28 @@ export class SqliteHostTrustRepository {
         throw new HostTrustStoreError('corrupt');
       }
       let currentVersion = version as number;
-      if (currentVersion === 0) {
+      if (currentVersion < CURRENT_SCHEMA_VERSION) {
         this.transaction(() => {
-          this.database.exec(SCHEMA_V1);
-          this.database.exec('PRAGMA user_version = 1');
-        });
-        currentVersion = 1;
-      }
-      if (currentVersion === 1) {
-        this.transaction(() => {
-          this.database.exec(SCHEMA_V2);
-          this.database.exec('PRAGMA user_version = 2');
-        });
-        currentVersion = 2;
-      }
-      if (currentVersion === 2) {
-        this.transaction(() => {
-          this.database.exec(SCHEMA_V3);
-          this.database.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
+          if (currentVersion === 0) {
+            this.database.exec(SCHEMA_V1);
+            this.database.exec('PRAGMA user_version = 1');
+          }
+          if (currentVersion <= 1) {
+            this.database.exec(SCHEMA_V2);
+            this.database.exec('PRAGMA user_version = 2');
+          }
+          if (currentVersion <= 2) {
+            this.database.exec(SCHEMA_V3);
+            this.database.exec('PRAGMA user_version = 3');
+          }
+          if (currentVersion <= 3) {
+            this.database.exec(SCHEMA_V4);
+            this.database.exec('PRAGMA user_version = 4');
+          }
+          if (currentVersion <= 4) {
+            this.database.exec(SCHEMA_V5);
+            this.database.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
+          }
         });
         currentVersion = CURRENT_SCHEMA_VERSION;
       }

@@ -13,6 +13,9 @@ test('shared transfer contracts validate policy, progress and results while FTP 
   assert.equal(isFileTransferConflictPolicy('rename'), true);
   assert.equal(isFileTransferConflictPolicy('replace'), false);
   assert.equal(isFileTransferProgress(progress), true);
+  assert.equal(isFileTransferProgress({ ...progress, remoteArtifactNames: ['.mrt-safe.partial'] }), true);
+  assert.equal(isFileTransferProgress({ ...progress, direction: 'download', remoteArtifactNames: ['.mrt-safe.partial'] }), false);
+  assert.equal(isFileTransferProgress({ ...progress, remoteArtifactNames: ['../unsafe'] }), false);
   assert.equal(isFileTransferProgress({ ...progress, bytesTransferred: -1 }), false);
   assert.equal(isFileTransferProgress({ ...progress, unexpected: true }), false);
   assert.equal(isFileTransferResult(result), true);

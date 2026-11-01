@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { UtilityProcess } from 'electron';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
+import { sshRoutedOpenProviderTimeoutMs } from '../../packages/application/src/ssh-route-timeout-budget.ts';
 import { SshTerminalWorkerHost } from '../../apps/desktop/src/adapters/ssh-terminal-worker-host.ts';
 
 class FakeUtilityProcess extends EventEmitter {
@@ -64,6 +65,26 @@ class UnresponsiveListUtilityProcess extends FakeUtilityProcess {
     queueMicrotask(() => this.emit('message', {
       version: 1, type: 'reply', requestId: request.requestId, ok: true, result: {}
     }));
+  }
+}
+
+class DelayedOpenUtilityProcess extends FakeUtilityProcess {
+  openRequest: Record<string, unknown> | undefined;
+
+  override postMessage(input: unknown): void {
+    const request = input as Record<string, unknown>;
+    if (request.command === 'open' || request.command === 'open-files') {
+      this.requests.push(request);
+      this.openRequest = request;
+      return;
+    }
+    super.postMessage(input);
+  }
+
+  failOpen(errorCode: string): void {
+    const request = this.openRequest;
+    if (!request) throw new Error('No SSH open request is waiting to settle');
+    this.emit('message', { version: 1, type: 'reply', requestId: request.requestId, ok: false, errorCode });
   }
 }
 
@@ -159,6 +180,29 @@ test('worker host consumes the raw message payload emitted by Electron utilityPr
   await host.shutdown();
   assert.equal(worker.requests.at(-1)?.command, 'shutdown');
   assert.equal(worker.killed, true);
+});
+
+test('worker host leaves the full eight-gateway route budget for the SSH provider', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const worker = new DelayedOpenUtilityProcess();
+  const host = new SshTerminalWorkerHost('ssh-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const gatewayHops = Array.from({ length: 8 }, (_, index) => ({
+    endpoint: { host: `gateway-${index + 1}.example.net`, port: 2201 + index },
+    credentials: { username: `gateway-${index + 1}`, password: `secret-${index + 1}` }
+  }));
+  let settled = false;
+  const opened = host.open('11111111-1111-4111-8111-111111111111', { host: 'target.example.net', port: 22 },
+    { username: 'target', password: 'target-secret' }, { columns: 80, rows: 24 }, async () => true, gatewayHops)
+    .then(() => { settled = true; }, () => { settled = true; });
+
+  await new Promise<void>(resolve => setImmediate(resolve));
+  context.mock.timers.tick(sshRoutedOpenProviderTimeoutMs(gatewayHops.length) + 1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const survivedProviderBudget = !worker.killed && !settled;
+  worker.failOpen('TIMEOUT');
+  await opened;
+  await host.shutdown();
+  assert.equal(survivedProviderBudget, true, 'worker IPC must outlast the provider route-open deadline');
 });
 
 test('worker crash reports a sanitized failure for each active SSH terminal', async () => {

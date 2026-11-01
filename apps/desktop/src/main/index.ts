@@ -1,11 +1,13 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, protocol, safeStorage, session, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, powerMonitor, protocol, safeStorage, session, shell, utilityProcess } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { failure } from '../../../../packages/domain/src/errors.ts';
+import type { Outcome } from '../../../../packages/domain/src/errors.ts';
 import { parseCredentialReference } from '../../../../packages/domain/src/credentials.ts';
+import { isLoopbackSshTunnelBindHost } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { describeWorkbench } from '../../../../packages/application/src/workbench.ts';
 import { createLocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
 import type { LocalTerminalController } from '../../../../packages/application/src/local-terminals.ts';
@@ -24,14 +26,17 @@ import { createSshTunnelController } from '../../../../packages/application/src/
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { createTelnetTerminalController } from '../../../../packages/application/src/telnet-terminals.ts';
 import { createSerialTerminalController } from '../../../../packages/application/src/serial-terminals.ts';
-import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL, POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
-  SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, SSH_X11_CONSENT_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, XDMCP_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
-  parseFtpConsentGestureRequest, parsePasteGestureRequest, parseRdpLaunchGestureRequest, parseSshSessionLogConsentGestureRequest, parseSshX11ConsentGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseXdmcpLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
+import { APP_URL, CANCEL_CATALOG_COMMAND_CHANNEL, COMMAND_CHANNEL, FTP_CONSENT_GESTURE_CHANNEL, FTP_TRANSFER_EVENT_CHANNEL, PASTE_GESTURE_CHANNEL,
+  POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL, POWERSHELL_TOOL_ACTION_GESTURE_CHANNEL, REMOTE_FILE_DROP_CHANNEL, REMOTE_FILE_DROP_TEST_CHANNEL, RDP_LAUNCH_GESTURE_CHANNEL,
+  SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, SSH_SESSION_LOG_STATUS_EVENT_CHANNEL, SSH_TRANSFER_EVENT_CHANNEL, SSH_X11_CONSENT_GESTURE_CHANNEL, TELNET_CONSENT_GESTURE_CHANNEL, TFTP_SERVER_ACTION_GESTURE_CHANNEL, TFTP_SERVER_STATUS_EVENT_CHANNEL, TRANSFER_RECOVERY_EVENT_CHANNEL, VNC_LAUNCH_GESTURE_CHANNEL, XDMCP_LAUNCH_GESTURE_CHANNEL, isAppDocument, parseCatalogCancellationRequest,
+  parseFtpConsentGestureRequest, parsePasteGestureRequest, parsePowerShellToolActionGestureRequest, parseRdpLaunchGestureRequest, parseSshSessionLogConsentGestureRequest,
+  parseSshX11ConsentGestureRequest, parseTelnetConsentGestureRequest, parseVncLaunchGestureRequest, parseXdmcpLaunchGestureRequest, parseRemoteFileDropRegistrationRequest, parseRequest, parseTftpServerActionGestureRequest,
   SSH_TRUST_EVENT_CHANNEL, TERMINAL_EVENT_CHANNEL, TUNNEL_STATUS_EVENT_CHANNEL } from '../../../../packages/contracts/src/commands.ts';
 import { dispatchCommand } from './broker.ts';
 import { TerminalWorkerHost } from './terminal-worker-host.ts';
 import { serveAsset } from './assets.ts';
 import { SafeStorageSecretVault } from '../adapters/safe-storage-secret-vault.ts';
+import { findLocalTransferPartial } from '../adapters/local-transfer-recovery.ts';
 import { isWindowsOpenSshAgentPipePath, WINDOWS_OPENSSH_AGENT_PIPE_PATH } from '../adapters/windows-openssh-agent.ts';
 import { MasterPasswordKeyDeriverAdapter } from '../adapters/master-password-key-deriver.ts';
 import { SshCredentialBundleCryptoAdapter } from '../adapters/ssh-credential-bundle-crypto.ts';
@@ -119,6 +124,11 @@ let appWindowCloseRequested = false;
 const rendererGestures = new RendererGestureGate();
 const droppedUploads = new DroppedUploadRegistry();
 const e2eRemoteFileDrop = isE2ETestHookEnabled('--mrt-e2e-file-drop', app.isPackaged, process.env, process.argv);
+const e2eTransferRecovery = isE2ETestHookEnabled('--mrt-e2e-transfer-recovery', app.isPackaged, process.env, process.argv);
+let e2eSshWorkerPid: number | undefined;
+if (e2eTransferRecovery) Object.defineProperty(globalThis, '__mrtE2ESshWorkerPid', {
+  configurable: false, enumerable: false, get: () => e2eSshWorkerPid
+});
 const ownsSingleInstance = app.requestSingleInstanceLock();
 interface PendingCatalogCommand {
   readonly cancellation: AbortController;
@@ -443,16 +453,50 @@ function boot(): void {
     });
   const sshProvider = new SshTerminalWorkerHost(
     join(dist, 'host/apps/desktop/src/workers/ssh-worker.js'), app.getAppPath(),
-    (workerPath, args, options) => utilityProcess.fork(workerPath, args, {
-      ...options,
-      env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env, undefined, options.env.MRT_OPENSSH_AGENT_PIPE)
-    }), opensshAgentPipePath
+    (workerPath, args, options) => {
+      const worker = utilityProcess.fork(workerPath, args, {
+        ...options,
+        env: createNetworkWorkerEnvironment(options.env.MRT_APP_ROOT, process.env, undefined, options.env.MRT_OPENSSH_AGENT_PIPE)
+      });
+      if (e2eTransferRecovery) {
+        e2eSshWorkerPid = worker.pid;
+        worker.once('spawn', () => { e2eSshWorkerPid = worker.pid; });
+      }
+      return worker;
+    }, opensshAgentPipePath
   );
   const sshX11Provider = new WindowsCygwinX11Provider(systemDirectory, userData);
   const e2eXdmcp = !app.isPackaged && process.env.MRT_E2E === '1' && process.argv.includes('--mrt-e2e-xdmcp');
   const xdmcp = createXdmcpController(e2eXdmcp ? { async launch() {} } : sshX11Provider);
   const sshTerminals: SshTerminalController = createSshTerminalController(sshProvider, credentialPrompt, hostTrust, sshX11Provider);
-  const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID);
+  const tunnels: SshTunnelController = createSshTunnelController(storageStore, storageStore, sshTerminals, sshProvider, randomUUID,
+    async (definition, profile) => {
+      const server = profile.host.includes(':') ? `[${profile.host}]:${profile.port}` : `${profile.host}:${profile.port}`;
+      const destination = definition.mode === 'dynamic' ? 'a destination selected by the SOCKS client'
+        : definition.targetHost.includes(':') ? `[${definition.targetHost}]:${definition.targetPort}` : `${definition.targetHost}:${definition.targetPort}`;
+      const remote = definition.mode === 'remote';
+      const remotePublic = remote && !isLoopbackSshTunnelBindHost(definition.bindHost);
+      const remoteExposureMessage = definition.bindHost === '0.0.0.0'
+        ? 'Expose this remote SSH forward on all IPv4 interfaces?'
+        : 'Expose this remote SSH forward on the requested IPv4 address?';
+      const options: Electron.MessageBoxOptions = {
+        type: 'warning', title: remote ? 'Confirm remote SSH forward exposure' : 'Confirm public SSH tunnel exposure',
+        message: remotePublic ? remoteExposureMessage : remote ? 'Start this remote SSH forward?'
+          : 'Expose this local SSH forward to all network interfaces?',
+        detail: remote
+          ? `Server: ${server}. Requested remote address: ${definition.bindHost}; port: ${definition.bindPort || 'assigned by server'}.
+The SSH server may restrict or widen this bind according to its forwarding policy. Review its policy and firewall before continuing.
+Forwarded traffic reaches ${destination}.`
+          : `Local listener: ${definition.bindHost}:${definition.bindPort || 'assigned by this computer'}. Devices that can reach this computer may connect.
+The SSH server is ${server}; forwarded traffic reaches ${destination}. Review local firewall and destination access before continuing.`,
+        buttons: [remotePublic ? 'Expose remote forward' : remote ? 'Start remote forward' : 'Expose local forward', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
+      };
+      const currentWindow = window;
+      const result = currentWindow && !currentWindow.isDestroyed()
+        ? await dialog.showMessageBox(currentWindow, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 0;
+    });
   const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
   const credentialBundles = createSshCredentialBundleManager(storageStore, credentialBundleDialog, credentialPrompt, credentialVault,
     new SshCredentialBundleCryptoAdapter(masterPasswordKeyDeriver), randomUUID);
@@ -652,6 +696,7 @@ function boot(): void {
         noteUserActivity: () => idleLock.noteUserActivity(), readClipboardText: () => clipboard.readText(),
         authorizeClipboardPaste: sessionId => rendererGestures.consume(event.sender.id, sessionId),
         authorizePowerShellProfileScript: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'powershell-profile-script'),
+        authorizePowerShellToolAction: (sessionId, action) => rendererGestures.consumePowerShellToolAction(event.sender.id, sessionId, action),
         authorizeSshSessionLog: (sessionId, host, port, gatewayProfileIds) =>
           rendererGestures.consumeSshSessionLog(event.sender.id, sessionId, host, port, gatewayProfileIds),
         authorizeSshX11Forwarding: (host, port, gatewayProfileIds) =>
@@ -884,6 +929,8 @@ function boot(): void {
           return result.canceled ? undefined : result.filePath;
         },
         async resolveSshTransferConflict(direction: FileTransferDirection, fileName: string): Promise<FileTransferConflictPolicy | undefined> {
+          const e2eOverwritePath = e2eTransferPath('--mrt-e2e-sftp-overwrite-file=', '--mrt-e2e-sftp-transfers');
+          if (direction === 'upload' && e2eOverwritePath && basename(e2eOverwritePath) === fileName) return 'overwrite';
           if (e2eTransferPath('--mrt-e2e-sftp-upload-file=', '--mrt-e2e-sftp-transfers') ||
               e2eTransferPath('--mrt-e2e-sftp-download-root=', '--mrt-e2e-sftp-transfers')) return 'rename';
           const options: Electron.MessageBoxOptions = {
@@ -902,6 +949,29 @@ function boot(): void {
           const current = window;
           if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(SSH_TRANSFER_EVENT_CHANNEL, progress);
         },
+        reportTransferRecoveryChanged() {
+          const current = window;
+          if (current && !current.isDestroyed() && !current.webContents.isDestroyed()) current.webContents.send(TRANSFER_RECOVERY_EVENT_CHANNEL, 'changed');
+        },
+        async revealLocalTransferPartial(operationId: string): Promise<Outcome<Record<string, never>>> {
+          if (quitRequested || cancellation.signal.aborted) return failure('CANCELLED');
+          const options: Electron.OpenDialogOptions = {
+            title: 'Choose the folder containing the interrupted download', properties: ['openDirectory']
+          };
+          const current = window;
+          const selected = current && !current.isDestroyed()
+            ? await dialog.showOpenDialog(current, options)
+            : await dialog.showOpenDialog(options);
+          if (selected.canceled || !selected.filePaths[0] || quitRequested || cancellation.signal.aborted) return failure('CANCELLED');
+          let path: string | undefined;
+          try { path = await findLocalTransferPartial(selected.filePaths[0], operationId); }
+          catch { return failure('UNAVAILABLE'); }
+          if (!path) return failure('NOT_FOUND');
+          try { shell.showItemInFolder(path); }
+          catch { return failure('UNAVAILABLE'); }
+          return { ok: true, result: {} };
+        },
+        fileTransferRecovery: storageStore,
         terminals, powerShellProfileScripts, sshTerminals, telnetTerminals, serialTerminals, ftpFiles, rdpViewer, vncViewer, xdmcp, localTextEditor, sessionCatalog, sessionCredentials, credentialBundles, macros,
         preferences: customLogoPreferences.preferences, tunnels,
         tftpServer: {
@@ -948,6 +1018,16 @@ function boot(): void {
     const sessionId = parsePasteGestureRequest(input);
     if (!sessionId) return false;
     rendererGestures.issue(event.sender.id, sessionId, 'powershell-profile-script');
+    return true;
+  });
+  ipcMain.handle(POWERSHELL_TOOL_ACTION_GESTURE_CHANNEL, (event, input: unknown) => {
+    const current = window;
+    const owned = current !== undefined && !current.isDestroyed() && event.sender === current.webContents;
+    const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
+    if (!mainFrame || !isAppDocument(event.senderFrame?.url ?? '')) return false;
+    const gesture = parsePowerShellToolActionGestureRequest(input);
+    if (!gesture) return false;
+    rendererGestures.issuePowerShellToolAction(event.sender.id, gesture.sessionId, gesture.action);
     return true;
   });
   ipcMain.handle(SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL, (event, input: unknown) => {
@@ -1055,6 +1135,7 @@ function boot(): void {
     ipcMain.removeHandler(CANCEL_CATALOG_COMMAND_CHANNEL);
     ipcMain.removeHandler(PASTE_GESTURE_CHANNEL);
     ipcMain.removeHandler(POWERSHELL_PROFILE_SCRIPT_GESTURE_CHANNEL);
+    ipcMain.removeHandler(POWERSHELL_TOOL_ACTION_GESTURE_CHANNEL);
     ipcMain.removeHandler(SSH_SESSION_LOG_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(SSH_X11_CONSENT_GESTURE_CHANNEL);
     ipcMain.removeHandler(XDMCP_LAUNCH_GESTURE_CHANNEL);

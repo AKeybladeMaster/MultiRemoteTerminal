@@ -1,0 +1,58 @@
+# ADR-0064: Fixed PowerShell 7 tool lifecycle through WinGet
+
+**Date:** 2026-10-31  
+**Status:** Superseded by [ADR-0065](ADR-0065-bounded-powershell-release-download.md); historical Windows acceptance remains pending
+
+The WinGet-based implementation direction described here was superseded after review found that `winget download` cannot enforce the candidate's 1 GiB transfer bound while bytes are being written. ADR-0065 records the direct, bounded official-release download direction. This ADR remains as a record of the prior decision.
+
+## Context
+
+F-009, P-21, and P-37 require users to manage optional shell tooling. WinGet can execute package installation and removal, but package identifiers, source configuration, installer type, scope, and user agreements are security boundaries. A generic package command or arbitrary package ID would delegate renderer input to a privileged package manager.
+
+Microsoft documents `Microsoft.PowerShell` as the PowerShell 7 package and recommends WinGet for Windows clients. The reviewed 7.6.9 manifest offers an MSIX bundle and separate Wix installers. The default WinGet community source is configurable, so its exported metadata is compared with Microsoft's documented default before each install/update. Before downloading, the command queries GitHub's public PowerShell latest-stable release endpoint with a ten-second timeout and a 64 KiB response bound, rejects drafts, prereleases and unsupported tags, selects the exact version's uploaded MSIX bundle metadata, then requests that version from WinGet. The downloaded x64 MSIX bundle must match the API asset's declared size and SHA-256 digest, have a valid Windows signature with the exact Microsoft publisher subject, and contain the expected bundle identity and x64 payload. It deploys the same read-locked file with `Add-AppxPackage`, which targets the current user. The device's Windows trust policy is used; no leaf certificate thumbprint is pinned. WinGet's agreement prompts and PowerShell deployment confirmation remain visible.
+
+## Decision
+
+- Expose only `install`, `update`, and `remove` for the fixed package ID `Microsoft.PowerShell`.
+- Open a fresh, app-managed local PowerShell terminal for the action; never append the package command to a previously used terminal that may contain user input. Keep Settings open while the fixed command is submitted, then close Settings after successful submission so package output and prompts are visible.
+- Before install/update, check that the user-scoped `winget.exe` alias exists and that `winget source export winget` matches the documented default URL, source identifier, data identifier, source type, `Explicit: false`, and exactly the `Trusted` and `StoreOrigin` trust levels. Make every installed-package query terminating so a query failure cannot be interpreted as an empty registration set.
+- Query the official public latest-release API before each install/update. Bound the response, require a stable `vMAJOR.MINOR.PATCH` tag, select exactly one uploaded `PowerShell-vMAJOR.MINOR.PATCH.msixbundle` asset with a valid SHA-256 digest and a size from 1 byte through 1 GiB, convert the tag to the package's four-part version, and pass that exact version to `winget download` with the fixed ID, source, x64 architecture, and MSIX installer type. Leave source/package agreement prompts enabled. Require exactly one `.msixbundle`, open it read-only without write/delete sharing, and reject an empty, wrong-size, or over-1-GiB bundle before signature or archive parsing. Hash the locked file and compare it with the release asset digest. Verify its Windows signature is `Valid` and the signer subject matches the fixed Microsoft publisher, then parse its bounded XML bundle manifest with DTD processing prohibited. Require the exact `Microsoft.PowerShell` identity and an x64 application payload whose version matches the API result. Hold the same file open through validation and deployment, deploy it with `Add-AppxPackage -Confirm`, and remove the unique temporary directory in `finally`. `Add-AppxPackage` targets the current user; verify the registered package family, publisher, and architecture after deployment. Removal uses `Get-AppxPackage` and `Remove-AppxPackage -Confirm -ErrorAction Stop` only for that current-user package family, then verifies that no matching family/publisher/x64 package remains registered.
+- Do not pass source/package agreement bypasses, silent or disabled-interactivity options, installer overrides, force, or reboot options. Do not add or modify sources.
+- Require a fresh main-process gesture bound to the fresh terminal and exact operation. Require a separate confirmation click before removal.
+- Keep the feature PARTIAL until the package operations pass interactive Windows acceptance and the package publisher, license, and provenance review is complete.
+
+## Consequences and limits
+
+- If WinGet is unavailable or its source record differs, install/update stop before downloading. A non-Microsoft signature, invalid Windows trust status, unexpected package identity/architecture, or ambiguous package set also stops before deployment. The user can inspect the PowerShell output and accept or cancel WinGet agreements and the package deployment confirmation in the dedicated terminal. Removal is available for a verified package family even if the WinGet source is unavailable.
+- The tool command does not infer whether an arbitrary interactive prompt is idle. It avoids that ambiguity by targeting only the new `-NoProfile` terminal created by the explicit Settings action; no package command is sent to an existing terminal.
+- WinGet's documented uninstall options have no installer-type selector. The removal path therefore avoids WinGet's broader installed-package matching and removes only a current-user AppX package that matches the fixed family, publisher, and x64 architecture.
+- Removal can remove a matching x64 MSIX PowerShell 7 package installed outside MultiRemoteTerminal; the Settings warning and two visible confirmations make that consequence explicit. MSI and other package formats are deliberately outside this action.
+- The preflight binds the package signer subject to the manifest publisher and exact fixed package identity, but does not pin a leaf certificate thumbprint or protect against compromise of Microsoft's trusted signing chain, GitHub's release API, or the operating-system TLS trust path. Windows validates the package again during deployment. Package provenance/license approval, interactive Windows package-operation acceptance, F-017, and N-012 remain open.
+- Install/update compare the signed bundle's four-part version to the official API's latest stable three-part tag and request that exact version from WinGet. Releases below the reviewed minimum `7.6.9.0` are rejected, and the command refuses to downgrade an existing installation. This mitigates source replay of older releases but depends on GitHub release metadata and version mapping; it is not an independent publisher/provenance review.
+- The downloaded bundle's byte length and SHA-256 are compared with the exact uploaded asset's `size` and `digest` in the same GitHub release response. This catches a mismatch between WinGet's download and that release asset, but the expected digest shares the GitHub API and TLS trust path and does not independently authenticate GitHub's release metadata.
+- The locked bundle is rejected above 1 GiB before signature or archive inspection. The reviewed v7.6.9 bundle is 336 MB, leaving headroom under this fixed processing bound. Because WinGet downloads the file before the bound can be checked, this does not cap network transfer or temporary disk use during the download itself; cancellation and cleanup remain available in the dedicated terminal. [PowerShell v7.6.9 release assets](https://github.com/PowerShell/PowerShell/releases/expanded_assets/v7.6.9)
+- The download staging traversal stops after 4,096 filesystem entries and requires exactly one package artifact, which bounds enumeration and avoids materializing an unbounded `Get-ChildItem` result. The entry cap does not bound WinGet's network transfer or filesystem writes before traversal begins.
+- No package operation or automated test has been run on the current candidate. This ADR records implementation direction, not verified acceptance.
+
+## References
+
+- [Install PowerShell 7 on Windows](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows)
+- [WinGet source command](https://learn.microsoft.com/en-us/windows/package-manager/winget/source)
+- [WinGet install command](https://learn.microsoft.com/en-us/windows/package-manager/winget/install)
+- [WinGet upgrade command](https://learn.microsoft.com/en-us/windows/package-manager/winget/upgrade)
+- [WinGet uninstall command](https://learn.microsoft.com/en-us/windows/package-manager/winget/uninstall)
+- [Remove-AppxPackage](https://learn.microsoft.com/en-us/powershell/module/appx/remove-appxpackage)
+- [Add-AppxPackage](https://learn.microsoft.com/en-us/powershell/module/appx/add-appxpackage)
+- [Get-AuthenticodeSignature](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/get-authenticodesignature)
+- [WinGet download command](https://learn.microsoft.com/en-us/windows/package-manager/winget/download)
+- [Programmatically validate an app-package signature](https://learn.microsoft.com/en-us/windows/win32/appxpkg/how-to-programmatically-sign-a-package)
+- [Microsoft PowerShell 7.6.9 MSIX package family](https://github.com/microsoft/winget-pkgs/blob/master/manifests/m/Microsoft/PowerShell/7.6.9.0/Microsoft.PowerShell.installer.yaml)
+- [PowerShell releases and asset hashes](https://github.com/PowerShell/PowerShell/releases)
+- [GitHub REST API: Get the latest release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
+- [GitHub REST API: Release asset size and digest fields](https://docs.github.com/en/rest/releases/assets?apiVersion=2026-03-10)
+
+## WP-11E bundle-signature source review - 2026-10-31
+
+- A pinned-source review followed PowerShell 7.6.9 `Get-AuthenticodeSignature` from its file-path command into `SignatureHelper`; the implementation invokes `WinVerifyTrust` with `WINTRUST_ACTION_GENERIC_VERIFY_V2`. Microsoft documents that same verification action for Windows app packages, and MSIX documentation states that a bundle's signature covers its contained packages. This supports the current preflight for `.msixbundle` by source-backed inference; PowerShell's cmdlet reference does not explicitly enumerate bundle extensions. [PowerShell command source](https://github.com/PowerShell/PowerShell/blob/v7.6.9/src/Microsoft.PowerShell.Security/security/SignatureCommands.cs#L1890-L1895), [PowerShell trust implementation](https://github.com/PowerShell/PowerShell/blob/v7.6.9/src/System.Management.Automation/security/Authenticode.cs#L2082-L2088), [Microsoft package verification API guidance](https://learn.microsoft.com/en-us/windows/win32/appxpkg/how-to-programmatically-sign-a-package#remarks), [MSIX bundle signature coverage](https://learn.microsoft.com/en-us/windows/msix/package/signing-package-overview).
+- The existing command fails closed unless `Get-AuthenticodeSignature` returns `Valid`, the signer certificate is present, and its subject matches the fixed expected publisher; the bundle identity and x64 payload are independently parsed. Keep all of these checks. This source review is not a real Windows `.msixbundle` acceptance result; no package was downloaded or operated and no automated check ran.
+- See [WP-11E signature verification research](../results/WP-11E-msix-signature-verification-2026-10-31.md).

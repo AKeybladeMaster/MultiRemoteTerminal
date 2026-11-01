@@ -428,10 +428,8 @@ test('SSH agent authentication asks only for a username and passes an agent cred
   await controller.dispose();
 });
 
-test('SSH three-gateway routes prompt and verify every gateway and destination in route order', async () => {
-  const gatewayOne = { host: 'gateway-one.example.net', port: 2201 };
-  const gatewayTwo = { host: 'gateway-two.example.net', port: 2202 };
-  const gatewayThree = { host: 'gateway-three.example.net', port: 2203 };
+test('SSH eight-gateway routes prompt and verify every gateway and destination in route order', async () => {
+  const gateways = Array.from({ length: 8 }, (_, index) => ({ host: `gateway-${index + 1}.example.net`, port: 2201 + index }));
   const destination = { host: 'target.example.net', port: 22 };
   const prompts: string[] = [];
   const provider = new FakeProvider();
@@ -440,14 +438,13 @@ test('SSH three-gateway routes prompt and verify every gateway and destination i
   const controller = createSshTerminalController(provider, promptWith({ kind: 'provided', username: 'alice', secret: 'operation-secret' }, prompts), trust);
 
   const opened = await controller.open(sessionId, destination.host, destination.port, { columns: 80, rows: 24 },
-    [gatewayOne, gatewayTwo, gatewayThree]);
+    gateways);
 
   assert.equal(opened.ok, true);
-  assert.deepEqual(prompts, ['Gateway 1: gateway-one.example.net:2201', 'Gateway 2: gateway-two.example.net:2202',
-    'Gateway 3: gateway-three.example.net:2203',
+  assert.deepEqual(prompts, [...gateways.map((gateway, index) => `Gateway ${index + 1}: ${gateway.host}:${gateway.port}`),
     'SSH destination: target.example.net:22']);
-  assert.deepEqual(provider.gatewayRoutes, [[gatewayOne, gatewayTwo, gatewayThree]]);
-  assert.deepEqual(trust.inspected, [gatewayOne, gatewayTwo, gatewayThree, destination]);
+  assert.deepEqual(provider.gatewayRoutes, [gateways]);
+  assert.deepEqual(trust.inspected, [...gateways, destination]);
   assert.ok(provider.gatewayCredentialRefs.every(credentials => credentials.username === '' && credentials.password === ''),
     'gateway credentials are cleared after the operation');
   await controller.dispose();

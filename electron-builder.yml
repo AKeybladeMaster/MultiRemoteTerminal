@@ -15,6 +15,8 @@ files:
 extraResources:
   - from: apps/desktop/resources/credential-prompt.ps1
     to: credential-prompt.ps1
+  - from: .tmp/THIRD-PARTY-NOTICES.txt
+    to: THIRD-PARTY-NOTICES.txt
 asar: true
 afterPack: ./scripts/electron-fuses.mjs
 asarUnpack:

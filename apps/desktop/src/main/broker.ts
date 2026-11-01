@@ -20,6 +20,7 @@ import type { PowerShellProfileScriptController } from '../../../../packages/app
 import type { SshTunnelController } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SessionCredentialManager } from '../../../../packages/application/src/session-credentials.ts';
 import type { SshCredentialBundleManager } from '../../../../packages/application/src/ssh-credential-bundle.ts';
+import { runTrackedFileTransfer, type FileTransferRecoveryStore } from '../../../../packages/application/src/file-transfer-recovery.ts';
 import type { WorkbenchSnapshot } from '../../../../packages/application/src/workbench.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { SshPrivateKeySelection } from '../../../../packages/application/src/ssh-terminals.ts';
@@ -36,6 +37,7 @@ import { failure } from '../../../../packages/domain/src/errors.ts';
 import type { ErrorCode, Outcome } from '../../../../packages/domain/src/errors.ts';
 import { MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
 import type { LocalShell } from '../../../../packages/domain/src/local-terminal.ts';
+import type { PowerShellToolAction } from '../../../../packages/domain/src/powershell-tools.ts';
 import { MAX_SERIAL_INPUT_CHARS } from '../../../../packages/domain/src/serial.ts';
 
 const EMPTY_RESULT: Record<string, never> = Object.freeze({});
@@ -75,6 +77,7 @@ export interface CommandActions {
   readonly readClipboardText: () => Promise<string>;
   readonly authorizeClipboardPaste: (sessionId: string) => boolean;
   readonly authorizePowerShellProfileScript: (sessionId: string) => boolean;
+  readonly authorizePowerShellToolAction: (sessionId: string, action: PowerShellToolAction) => boolean;
   readonly authorizeTelnetConsent: (sessionId: string) => boolean;
   readonly authorizeFtpConsent: (sessionId: string) => boolean;
   readonly authorizeRdpLaunch: (host: string, port: number) => boolean;
@@ -102,16 +105,19 @@ export interface CommandActions {
   readonly selectSshDownloadPath: (fileName: string) => Promise<string | undefined>;
   readonly resolveSshTransferConflict: (direction: FileTransferDirection, fileName: string) => Promise<FileTransferConflictPolicy | undefined>;
   readonly reportSshTransferProgress: (progress: FileTransferProgress) => void;
+  readonly reportTransferRecoveryChanged: () => void;
+  readonly fileTransferRecovery: FileTransferRecoveryStore;
+  readonly revealLocalTransferPartial: (operationId: string) => Promise<Outcome<Record<string, never>>>;
   readonly selectCustomLogo: () => Promise<Outcome<CustomLogoSelection>>;
   readonly cancellation?: CancellationSignal;
-  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'paste' | 'applyPowerShellProfileScript' |
+  readonly terminals: Pick<LocalTerminalController, 'open' | 'listWslDistributions' | 'cancelWslDistributionDiscovery' | 'write' | 'paste' | 'applyPowerShellProfileScript' | 'managePowerShellTool' |
     'resize' | 'acknowledgeOutput' | 'close'>;
   readonly powerShellProfileScripts: Pick<PowerShellProfileScriptController, 'preview' | 'apply'>;
   readonly sshTerminals: Pick<SshTerminalController, 'open' | 'openFiles' | 'write' | 'resize' | 'acknowledgeOutput' | 'listRemoteDirectory' | 'uploadRemoteFile' |
     'downloadRemoteFile' | 'readRemoteTextFile' | 'saveRemoteTextFile' | 'cancelTransfer' | 'close' | 'approveHostKey' | 'rejectHostKey' | 'revokeHostKey'>;
   readonly telnetTerminals: Pick<TelnetTerminalController, 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
   readonly serialTerminals: Pick<SerialTerminalController, 'listPorts' | 'open' | 'write' | 'resize' | 'acknowledgeOutput' | 'close'>;
-  readonly ftpFiles: Pick<FtpFilesController, 'open' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
+  readonly ftpFiles: Pick<FtpFilesController, 'open' | 'getTransport' | 'listDirectory' | 'uploadFile' | 'downloadFile' | 'cancelTransfer' | 'close'>;
   readonly rdpViewer: Pick<RdpViewerController, 'launch'>;
   readonly vncViewer: Pick<VncViewerController, 'launch'>;
   readonly xdmcp: Pick<XdmcpController, 'launch'>;
@@ -122,7 +128,7 @@ export interface CommandActions {
   readonly credentialBundles: Pick<SshCredentialBundleManager, 'export' | 'import'>;
   readonly macros: Pick<MacroCatalog, 'list' | 'create' | 'update' | 'remove' | 'listShortcuts' | 'setShortcut' | 'removeShortcut'>;
   readonly preferences: Pick<WorkbenchPreferencesManager, 'read' | 'readStartup' | 'save' | 'exportTemplate' | 'importTemplate'>;
-  readonly tunnels: Pick<SshTunnelController, 'list' | 'save' | 'remove' | 'start' | 'stop'>;
+  readonly tunnels: Pick<SshTunnelController, 'list' | 'get' | 'save' | 'remove' | 'start' | 'stop'>;
   readonly tftpServer: Pick<TftpServerController, 'getStatus' | 'stop'>;
 }
 
@@ -209,8 +215,8 @@ export async function dispatchCommand(
     switch (parsed.result.command) {
       case 'app.describe': return { requestId, ok: true, result: actions.describe() };
       case 'terminal.open': {
-        const { sessionId, launch, columns, rows } = parsed.result.payload;
-        return { requestId, ...await actions.terminals.open(sessionId, launch, { columns, rows }) };
+        const { sessionId, launch, columns, rows, purpose } = parsed.result.payload;
+        return { requestId, ...await actions.terminals.open(sessionId, launch, { columns, rows }, purpose) };
       }
       case 'terminal.write': {
         const { sessionId, data } = parsed.result.payload;
@@ -225,6 +231,12 @@ export async function dispatchCommand(
         if (!actions.authorizePowerShellProfileScript(sessionId)) return { requestId, ...failure('FORBIDDEN') };
         actions.noteUserActivity();
         return { requestId, ...await actions.powerShellProfileScripts.apply(sessionId, previewId) };
+      }
+      case 'powershell.tool.manage': {
+        const { sessionId, action } = parsed.result.payload;
+        if (!actions.authorizePowerShellToolAction(sessionId, action)) return { requestId, ...failure('FORBIDDEN') };
+        actions.noteUserActivity();
+        return { requestId, ...await actions.terminals.managePowerShellTool(sessionId, action) };
       }
       case 'terminal.paste': {
         if (!actions.authorizeClipboardPaste(parsed.result.payload.sessionId)) return { requestId, ...failure('FORBIDDEN') };
@@ -378,8 +390,10 @@ export async function dispatchCommand(
         if (!selection || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveSshTransferConflict('upload', selection.fileName);
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        return { requestId, ...await actions.sshTerminals.uploadRemoteFile(sessionId, operationId, selection.localPath, remoteDirectory,
-          selection.fileName, conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
+        return { requestId, ...await runTrackedFileTransfer(actions.fileTransferRecovery, { operationId, transport: 'sftp', direction: 'upload',
+          fileName: selection.fileName, plannedRemoteArtifactNames: [`.mrt-${operationId}.partial`,
+            ...(conflictPolicy === 'overwrite' ? [`.mrt-${operationId}.backup`] : [])] }, actions.reportSshTransferProgress, onProgress => actions.sshTerminals.uploadRemoteFile(sessionId,
+          operationId, selection.localPath, remoteDirectory, selection.fileName, conflictPolicy, actions.cancellation, onProgress), actions.reportTransferRecoveryChanged) };
       }
       case 'ssh.files.upload-dropped': {
         const { sessionId, operationId, remoteDirectory, token } = parsed.result.payload;
@@ -388,8 +402,10 @@ export async function dispatchCommand(
         if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveSshTransferConflict('upload', selection.fileName);
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        return { requestId, ...await actions.sshTerminals.uploadRemoteFile(sessionId, operationId, selection.localPath, remoteDirectory,
-          selection.fileName, conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
+        return { requestId, ...await runTrackedFileTransfer(actions.fileTransferRecovery, { operationId, transport: 'sftp', direction: 'upload',
+          fileName: selection.fileName, plannedRemoteArtifactNames: [`.mrt-${operationId}.partial`,
+            ...(conflictPolicy === 'overwrite' ? [`.mrt-${operationId}.backup`] : [])] }, actions.reportSshTransferProgress, onProgress => actions.sshTerminals.uploadRemoteFile(sessionId,
+          operationId, selection.localPath, remoteDirectory, selection.fileName, conflictPolicy, actions.cancellation, onProgress), actions.reportTransferRecoveryChanged) };
       }
       case 'files.drop.discard': {
         const { sessionId, transport, remoteDirectory, tokens } = parsed.result.payload;
@@ -403,8 +419,9 @@ export async function dispatchCommand(
         if (!localPath || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveSshTransferConflict('download', basename(localPath));
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        return { requestId, ...await actions.sshTerminals.downloadRemoteFile(sessionId, operationId, remotePath, localPath,
-          conflictPolicy, actions.cancellation, actions.reportSshTransferProgress) };
+        return { requestId, ...await runTrackedFileTransfer(actions.fileTransferRecovery, { operationId, transport: 'sftp', direction: 'download',
+          fileName: basename(localPath) }, actions.reportSshTransferProgress, onProgress => actions.sshTerminals.downloadRemoteFile(sessionId,
+          operationId, remotePath, localPath, conflictPolicy, actions.cancellation, onProgress), actions.reportTransferRecoveryChanged) };
       }
       case 'ssh.files.read-text': {
         const { sessionId, operationId, remotePath } = parsed.result.payload;
@@ -486,8 +503,9 @@ export async function dispatchCommand(
         if (!selection || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveFtpTransferConflict('upload', selection.fileName);
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        return { requestId, ...await actions.ftpFiles.uploadFile(sessionId, operationId, selection.localPath, remoteDirectory,
-          selection.fileName, conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };
+        return { requestId, ...await runTrackedFileTransfer(actions.fileTransferRecovery, { operationId, transport: actions.ftpFiles.getTransport(sessionId) ?? 'ftp', direction: 'upload',
+          fileName: selection.fileName }, actions.reportFtpTransferProgress, onProgress => actions.ftpFiles.uploadFile(sessionId,
+          operationId, selection.localPath, remoteDirectory, selection.fileName, conflictPolicy, actions.cancellation, onProgress), actions.reportTransferRecoveryChanged) };
       }
       case 'ftp.files.upload-dropped': {
         const { sessionId, operationId, remoteDirectory, token } = parsed.result.payload;
@@ -496,8 +514,9 @@ export async function dispatchCommand(
         if (actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveFtpTransferConflict('upload', selection.fileName);
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        return { requestId, ...await actions.ftpFiles.uploadFile(sessionId, operationId, selection.localPath, remoteDirectory,
-          selection.fileName, conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };
+        return { requestId, ...await runTrackedFileTransfer(actions.fileTransferRecovery, { operationId, transport: actions.ftpFiles.getTransport(sessionId) ?? 'ftp', direction: 'upload',
+          fileName: selection.fileName }, actions.reportFtpTransferProgress, onProgress => actions.ftpFiles.uploadFile(sessionId,
+          operationId, selection.localPath, remoteDirectory, selection.fileName, conflictPolicy, actions.cancellation, onProgress), actions.reportTransferRecoveryChanged) };
       }
       case 'ftp.files.download': {
         const { sessionId, operationId, remotePath } = parsed.result.payload;
@@ -506,14 +525,27 @@ export async function dispatchCommand(
         if (!localPath || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
         const conflictPolicy = await actions.resolveFtpTransferConflict('download', basename(localPath));
         if (!conflictPolicy || actions.cancellation?.aborted) return { requestId, ...failure('CANCELLED') };
-        return { requestId, ...await actions.ftpFiles.downloadFile(sessionId, operationId, remotePath, localPath,
-          conflictPolicy, actions.cancellation, actions.reportFtpTransferProgress) };
+        return { requestId, ...await runTrackedFileTransfer(actions.fileTransferRecovery, { operationId, transport: actions.ftpFiles.getTransport(sessionId) ?? 'ftp', direction: 'download',
+          fileName: basename(localPath) }, actions.reportFtpTransferProgress, onProgress => actions.ftpFiles.downloadFile(sessionId,
+          operationId, remotePath, localPath, conflictPolicy, actions.cancellation, onProgress), actions.reportTransferRecoveryChanged) };
       }
       case 'ftp.files.cancel': {
         const { sessionId, operationId } = parsed.result.payload;
         return { requestId, ...await actions.ftpFiles.cancelTransfer(sessionId, operationId) };
       }
       case 'ftp.close': return { requestId, ...await actions.ftpFiles.close(parsed.result.payload.sessionId) };
+      case 'transfer.recovery.list': return { requestId, ok: true, result: await actions.fileTransferRecovery.listInterrupted(parsed.result.payload.cursor) };
+      case 'transfer.recovery.dismiss': {
+        const dismissed = await actions.fileTransferRecovery.dismiss(parsed.result.payload.operationId);
+        return dismissed ? { requestId, ok: true, result: EMPTY_RESULT } : { requestId, ...failure('NOT_FOUND') };
+      }
+      case 'transfer.recovery.reveal-local-partial': {
+        const { operationId } = parsed.result.payload;
+        const record = await actions.fileTransferRecovery.findInterrupted(operationId);
+        if (!record) return { requestId, ...failure('NOT_FOUND') };
+        if (record.direction !== 'download') return { requestId, ...failure('INVALID_REQUEST') };
+        return { requestId, ...await actions.revealLocalTransferPartial(operationId) };
+      }
       case 'rdp.launch': {
         const { host, port } = parsed.result.payload;
         if (!actions.authorizeRdpLaunch(host, port)) return { requestId, ...failure('FORBIDDEN') };
@@ -594,11 +626,9 @@ export async function dispatchCommand(
       case 'tunnel.start': {
         const { id, gatewayProfileIds = [] } = parsed.result.payload;
         if (gatewayProfileIds.length === 0) return { requestId, ...await actions.tunnels.start(id, actions.cancellation) };
-        const tunnels = await actions.tunnels.list();
-        if (!tunnels.ok) return { requestId, ...tunnels };
-        const tunnel = tunnels.result.find(item => item.definition.id === id);
-        if (!tunnel) return { requestId, ...failure('NOT_FOUND') };
-        const target = await actions.sessionCatalog.get(tunnel.definition.sessionId, actions.cancellation);
+        const tunnel = await actions.tunnels.get(id);
+        if (!tunnel.ok) return { requestId, ...tunnel };
+        const target = await actions.sessionCatalog.get(tunnel.result.sessionId, actions.cancellation);
         if (!target.ok) return { requestId, ...target };
         if ((target.result.kind !== 'ssh' && target.result.kind !== 'sftp') || !target.result.host || !target.result.port) {
           return { requestId, ...failure('INVALID_REQUEST') };

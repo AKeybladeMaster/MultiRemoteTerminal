@@ -4,6 +4,8 @@
 **Requirement:** P-32/N-007 distribution and security release gate.
 **Status:** Partial inventory; legal review and publication remain open.
 
+**2026-10-31 refresh:** `pnpm dependencies:inventory` regenerated the workspace CycloneDX file with 395 installed dependency entries. The only generated diff is transitive `re2js` 2.8.6 → 2.8.7. No new direct dependency was introduced; this metadata refresh does not change the partial license, provenance, distribution-content, or publication disposition below.
+
 ## Commands and findings
 
 - `corepack pnpm licenses list --json --prod --dir apps/desktop` returned 29 production package records: 25 MIT, 2 ISC, 1 BSD-3-Clause, and 1 Unlicense. No record lacked license metadata. Each record had at least one installed package path with a top-level `LICENSE`, `LICENCE`, `COPYING`, or `NOTICE` file.
@@ -18,3 +20,7 @@
 ## Limits and next acceptance
 
 This is a package-metadata and top-level file-presence inventory, not a review of license texts, source provenance, notice obligations, or legal compatibility. The missing build/test package files and workspace license expressions still need review. The SBOM and hash manifest exist locally, but publication and signed-release verification are not complete. Keep the SECURITY.md checklist item open.
+
+## Release notice implementation update - 2026-10-31
+
+Windows packaging now collects each production package's declared license and bounded top-level license/notice text into `THIRD-PARTY-NOTICES.txt`, ships it as an application resource, and hashes it in the per-artifact SBOM and checksum manifest. The source adds fail-closed checks for path containment, missing files, UTF-8 text, and size bounds. Unit and packaged-app assertions were authored but have not been run on this current candidate. This makes notices available for review; it does not certify license classification, source provenance, legal compatibility, or completeness of non-package assets.

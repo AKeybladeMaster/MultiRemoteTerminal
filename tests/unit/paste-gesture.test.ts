@@ -3,6 +3,7 @@ import test from 'node:test';
 import { RendererGestureGate } from '../../apps/desktop/src/main/renderer-gesture-gate.ts';
 import { installExternalViewerLaunchGestureStore, installFtpConsentGestureStore, installSshSessionLogConsentGestureStore, installSshX11ConsentGestureStore, installTelnetConsentGestureStore, installTerminalPasteGestureStore,
   installTftpServerActionGestureStore, installPowerShellProfileGestureStore, installXdmcpLaunchGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
+import { installPowerShellToolGestureStore } from '../../apps/desktop/src/preload/paste-gesture.ts';
 
 const firstSession = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
 const secondSession = '5726a2ee-03cd-4f5a-a28c-bd72784f80a6';
@@ -325,6 +326,12 @@ test('main TFTP server gestures are sender, action, selection, port, and one-sho
   assert.equal(gate.consumeTftpServerAction(11, 'choose-root'), false);
   assert.equal(gate.consumeTftpServerAction(11, 'start', firstSession, 69), true);
   assert.equal(gate.consumeTftpServerAction(11, 'start', firstSession, 69), false);
+  gate.issuePowerShellToolAction(11, firstSession, 'remove');
+  assert.equal(gate.consumePowerShellToolAction(12, firstSession, 'remove'), false, 'tool action gesture is sender-scoped');
+  assert.equal(gate.consumePowerShellToolAction(11, secondSession, 'remove'), false, 'tool action gesture is session-scoped');
+  assert.equal(gate.consumePowerShellToolAction(11, firstSession, 'install'), false, 'tool action gesture is action-scoped');
+  assert.equal(gate.consumePowerShellToolAction(11, firstSession, 'remove'), true);
+  assert.equal(gate.consumePowerShellToolAction(11, firstSession, 'remove'), false, 'tool action gesture is one-shot');
   gate.issueTftpServerAction(11, 'choose-root');
   now += 751;
   assert.equal(gate.consumeTftpServerAction(11, 'choose-root'), false);
@@ -361,6 +368,45 @@ test('PowerShell profile execution gesture requires a trusted click on the sessi
   click?.(event(true));
   now += 751;
   assert.equal(await gestures.consume(firstSession), false, 'expired gesture cannot authorize execution');
+  gestures.dispose();
+  assert.equal(click, undefined);
+});
+
+test('PowerShell tool gesture requires a trusted click bound to the terminal and action', async () => {
+  let now = 700;
+  let click: ((event: Event) => void) | undefined;
+  const authorized: string[] = [];
+  const documentTarget = {
+    addEventListener(_type: 'click', listener: (event: Event) => void) { click = listener; },
+    removeEventListener(_type: 'click', listener: (event: Event) => void) { if (click === listener) click = undefined; }
+  };
+  const button = {
+    getAttribute(name: string) {
+      return name === 'data-mrt-powershell-tool-trigger' ? firstSession : name === 'data-mrt-powershell-tool-action' ? 'remove' : null;
+    }
+  };
+  const target = { closest(selector: string) {
+    return selector === 'button[data-mrt-powershell-tool-trigger]' ? button : null;
+  } };
+  const gestures = installPowerShellToolGestureStore(documentTarget, async (sessionId, action) => {
+    authorized.push(`${sessionId}:${action}`);
+    return true;
+  }, () => now);
+  const event = (isTrusted: boolean) => ({ type: 'click', isTrusted, target }) as unknown as Event;
+
+  click?.(event(false));
+  assert.equal(await gestures.consume(firstSession, 'remove'), false, 'scripted clicks cannot authorize removal');
+  click?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'install'), false, 'gesture cannot change its action');
+  click?.(event(true));
+  assert.equal(await gestures.consume(secondSession, 'remove'), false, 'gesture cannot target another terminal');
+  click?.(event(true));
+  assert.equal(await gestures.consume(firstSession, 'remove'), true);
+  assert.equal(await gestures.consume(firstSession, 'remove'), false, 'gesture is one-shot');
+  assert.deepEqual(authorized, [`${firstSession}:remove`]);
+  click?.(event(true));
+  now += 751;
+  assert.equal(await gestures.consume(firstSession, 'remove'), false, 'expired gesture cannot authorize removal');
   gestures.dispose();
   assert.equal(click, undefined);
 });

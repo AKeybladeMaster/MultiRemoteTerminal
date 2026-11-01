@@ -19,6 +19,10 @@ import { parseCredentialReference } from '../../../../packages/domain/src/creden
 import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
 import type { ImportedSshCredentialReference, SshCredentialBundleProfile } from '../../../../packages/application/src/ssh-credential-bundle.ts';
 import { MAX_SSH_CREDENTIAL_BUNDLE_BYTES, MAX_SSH_CREDENTIAL_BUNDLE_ENTRIES } from '../../../../packages/application/src/ssh-credential-bundle.ts';
+import { isFileTransferRecoveryArtifactNames, isFileTransferRecoveryCursor, isFileTransferRecoveryFileName, isFileTransferRecoveryPage,
+  isFileTransferRecoveryRecord } from '../../../../packages/domain/src/file-transfer-recovery.ts';
+import type { FileTransferRecoveryCursor, FileTransferRecoveryPage, FileTransferRecoveryRecord, FileTransferRecoveryTransport } from '../../../../packages/domain/src/file-transfer-recovery.ts';
+import type { ErrorCode } from '../../../../packages/domain/src/errors.ts';
 
 export const STORAGE_WORKER_PROTOCOL_VERSION = 1;
 const MAX_MIGRATION_ENTRIES = 100_000;
@@ -67,6 +71,18 @@ export type StorageWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.get'; readonly id: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.save'; readonly draft: SshTunnelDraft }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.remove'; readonly id: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.begin'; readonly operationId: string;
+      readonly transport: FileTransferRecoveryTransport; readonly direction: 'upload' | 'download'; readonly fileName: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.progress'; readonly operationId: string;
+      readonly bytesTransferred: number; readonly totalBytes: number | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.artifacts'; readonly operationId: string;
+      readonly remoteArtifactNames: readonly string[] }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.finish'; readonly operationId: string;
+      readonly state: 'completed' | 'failed' | 'cancelled' | 'skipped' | 'interrupted'; readonly bytesTransferred: number;
+      readonly totalBytes: number | null; readonly errorCode: ErrorCode | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.list'; readonly cursor: FileTransferRecoveryCursor | null }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.find'; readonly operationId: string }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'transferRecovery.dismiss'; readonly operationId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' };
 
 export type StorageWorkerResult =
@@ -97,6 +113,9 @@ export type StorageWorkerResult =
   | { readonly kind: 'preferencesTemplateExport'; readonly value: { readonly bytesSaved: number } }
   | { readonly kind: 'encryptedCredentialBundle'; readonly value: Uint8Array }
   | { readonly kind: 'encryptedCredentialBundleWrite'; readonly value: { readonly bytesSaved: number } }
+  | { readonly kind: 'fileTransferRecovery'; readonly value: FileTransferRecoveryRecord }
+  | { readonly kind: 'fileTransferRecoveryPage'; readonly value: FileTransferRecoveryPage }
+  | { readonly kind: 'fileTransferRecoveryLookup'; readonly value: FileTransferRecoveryRecord | null }
   | { readonly kind: 'shutdown' };
 
 export type StorageWorkerErrorCode = 'BUSY' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
@@ -238,6 +257,27 @@ export function parseStorageWorkerRequest(value: unknown): StorageWorkerRequest 
   if (value.command === 'tunnel.save' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'draft']) && normalizeSshTunnelDraft(value.draft)) {
     return value as unknown as StorageWorkerRequest;
   }
+  if (value.command === 'transferRecovery.begin' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'operationId', 'transport', 'direction', 'fileName']) &&
+      REQUEST_ID.test(String(value.operationId)) && (value.transport === 'sftp' || value.transport === 'ftp' || value.transport === 'ftps') &&
+      (value.direction === 'upload' || value.direction === 'download') && isFileTransferRecoveryFileName(value.fileName)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'transferRecovery.progress' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'operationId', 'bytesTransferred', 'totalBytes']) &&
+      REQUEST_ID.test(String(value.operationId)) && Number.isSafeInteger(value.bytesTransferred) && (value.bytesTransferred as number) >= 0 &&
+      (value.totalBytes === null || Number.isSafeInteger(value.totalBytes) && (value.totalBytes as number) >= 0)) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'transferRecovery.artifacts' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'operationId', 'remoteArtifactNames']) &&
+      REQUEST_ID.test(String(value.operationId)) && isFileTransferRecoveryArtifactNames(value.remoteArtifactNames) && value.remoteArtifactNames.length > 0) {
+    return value as unknown as StorageWorkerRequest;
+  }
+  if (value.command === 'transferRecovery.finish' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'operationId', 'state', 'bytesTransferred', 'totalBytes', 'errorCode']) &&
+      REQUEST_ID.test(String(value.operationId)) && (value.state === 'completed' || value.state === 'failed' || value.state === 'cancelled' ||
+        value.state === 'skipped' || value.state === 'interrupted') && Number.isSafeInteger(value.bytesTransferred) && (value.bytesTransferred as number) >= 0 &&
+      (value.totalBytes === null || Number.isSafeInteger(value.totalBytes) && (value.totalBytes as number) >= 0) &&
+      (value.errorCode === null || isRecoveryErrorCode(value.errorCode))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'transferRecovery.list' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'cursor']) &&
+      (value.cursor === null || isFileTransferRecoveryCursor(value.cursor))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'transferRecovery.find' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'operationId']) &&
+      REQUEST_ID.test(String(value.operationId))) return value as unknown as StorageWorkerRequest;
+  if (value.command === 'transferRecovery.dismiss' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'operationId']) &&
+      REQUEST_ID.test(String(value.operationId))) return value as unknown as StorageWorkerRequest;
   if (value.command === 'shutdown' && exactKeys(value, ['version', 'type', 'requestId', 'command'])) return value as unknown as StorageWorkerRequest;
   return undefined;
 }
@@ -293,7 +333,18 @@ function parseResult(value: unknown): value is StorageWorkerResult {
   if (value.kind === 'encryptedCredentialBundleWrite' && exactKeys(value, ['kind', 'value']) && record(value.value) &&
       exactKeys(value.value, ['bytesSaved']) && Number.isSafeInteger(value.value.bytesSaved) && (value.value.bytesSaved as number) > 0 &&
       (value.value.bytesSaved as number) <= MAX_SSH_CREDENTIAL_BUNDLE_BYTES) return true;
+  if (value.kind === 'fileTransferRecovery' && exactKeys(value, ['kind', 'value']) && isFileTransferRecoveryRecord(value.value)) return true;
+  if (value.kind === 'fileTransferRecoveryPage' && exactKeys(value, ['kind', 'value']) && isFileTransferRecoveryPage(value.value)) return true;
+  if (value.kind === 'fileTransferRecoveryLookup' && exactKeys(value, ['kind', 'value']) &&
+      (value.value === null || isFileTransferRecoveryRecord(value.value) && value.value.state === 'interrupted')) return true;
   return value.kind === 'shutdown' && exactKeys(value, ['kind']);
+}
+
+function isRecoveryErrorCode(value: unknown): value is ErrorCode {
+  return value === 'INVALID_REQUEST' || value === 'UNKNOWN_COMMAND' || value === 'FORBIDDEN' || value === 'UNAVAILABLE' ||
+    value === 'NOT_SUPPORTED' || value === 'TIMEOUT' || value === 'BUSY' || value === 'LOCKED' || value === 'NOT_FOUND' ||
+    value === 'CONFLICT' || value === 'CORRUPT' || value === 'CANCELLED' || value === 'OUTPUT_LIMIT' ||
+    value === 'AUTHENTICATION_FAILED' || value === 'HOST_KEY_REJECTED' || value === 'HOST_KEY_CHANGED';
 }
 
 function isImportedSshCredentialReference(value: unknown): value is ImportedSshCredentialReference {

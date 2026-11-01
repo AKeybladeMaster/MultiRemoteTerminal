@@ -26,18 +26,18 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   assert.equal(parseSshWorkerInput({ ...open, x11Display: { ...x11Display, display: 59_536 } }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, x11Display: { ...x11Display, cookie: new Uint8Array(15) } }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, x11Display: { ...x11Display, socatExecutable: 'socat.exe' } }), undefined);
-  const gatewayHops = [
-    { endpoint: { host: 'gateway-one.example.net', port: 2201 }, credentials: { username: 'gateway-one', password: 'secret-one' } },
-    { endpoint: { host: 'gateway-two.example.net', port: 2202 }, credentials: { username: 'gateway-two', password: 'secret-two' } },
-    { endpoint: { host: 'gateway-three.example.net', port: 2203 }, credentials: { username: 'gateway-three', password: 'secret-three' } }
-  ];
+  const gatewayHops = Array.from({ length: 8 }, (_, index) => ({
+    endpoint: { host: `gateway-${index + 1}.example.net`, port: 2201 + index },
+    credentials: { username: `gateway-${index + 1}`, password: `secret-${index + 1}` }
+  }));
   const firstGateway = gatewayHops[0]!;
   const secondGateway = gatewayHops[1]!;
-  const thirdGateway = gatewayHops[2]!;
+  const ninthGateway = { endpoint: { host: 'gateway-nine.example.net', port: 2209 },
+    credentials: { username: 'gateway-nine', password: 'secret-nine' } };
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops })?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops, x11Display })?.type, 'request');
-  assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [...gatewayHops, { ...thirdGateway,
-    endpoint: { host: 'gateway-four.example.net', port: 2204 } }] }), undefined, 'routes are bounded to three gateways');
+  assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [...gatewayHops, ninthGateway] }), undefined,
+    'routes are bounded to eight gateways');
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [{ ...firstGateway, endpoint: open.endpoint }] }), undefined, 'the target cannot also be a gateway');
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [{ ...firstGateway, credentials: { ...firstGateway.credentials, token: 'unexpected' } }] }), undefined);
   assert.equal(parseSshWorkerInput({ ...open, gatewayHops: [firstGateway, { ...secondGateway, endpoint: firstGateway.endpoint }] }), undefined,
@@ -61,9 +61,8 @@ test('SSH worker accepts only bounded, exact open requests and valid host-key re
   assert.equal(parseSshWorkerInput(openFiles)?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...openFiles, credentials: privateKeyCredentials })?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops })?.type, 'request');
-  assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops: [...gatewayHops, { ...thirdGateway,
-    endpoint: { host: 'gateway-four.example.net', port: 2204 } }] }), undefined,
-    'files-only routes are bounded to three gateways');
+  assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops: [...gatewayHops, ninthGateway] }), undefined,
+    'files-only routes are bounded to eight gateways');
   assert.equal(parseSshWorkerInput({ ...openFiles, gatewayHops: [{ ...firstGateway, endpoint: openFiles.endpoint }] }), undefined,
     'the files-only target cannot also be a gateway');
   assert.equal(parseSshWorkerInput({ ...openFiles, size: open.size }), undefined, 'file-only requests cannot smuggle terminal configuration');
@@ -132,12 +131,12 @@ test('SSH worker bounds remote text edit messages and rejects credential-bearing
   assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { ...result, password: 'secret' } }), undefined);
 });
 
-test('SSH worker accepts only loopback tunnel definitions and bounded assigned-port replies', () => {
+test('SSH worker accepts policy-approved tunnel binds and bounded assigned-port replies', () => {
   const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId, name: 'Database', mode: 'local', bindHost: '127.0.0.1',
     bindPort: 0, targetHost: 'db.internal', targetPort: 5432, createdAt: '2026-10-24T00:00:00.000Z' };
   const start = { version: 1, type: 'request', requestId, command: 'tunnel.forward.start', sessionId, definition };
   assert.equal(parseSshWorkerInput(start)?.type, 'request');
-  assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, bindHost: '0.0.0.0' } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, bindHost: '0.0.0.0' } })?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, targetPort: 0 } }), undefined);
   assert.equal(parseSshWorkerInput({ ...start, unexpected: true }), undefined);
   assert.equal(parseSshWorkerMessage({ version: 1, type: 'reply', requestId, ok: true, result: { bindPort: 49152 } })?.type, 'reply');
@@ -147,7 +146,10 @@ test('SSH worker accepts only loopback tunnel definitions and bounded assigned-p
   assert.equal(parseSshWorkerInput({ ...stop, tunnelId: 'invalid' }), undefined);
   const remoteStart = { ...start, definition: { ...definition, mode: 'remote', targetHost: '127.0.0.1', targetPort: 3000 } };
   assert.equal(parseSshWorkerInput(remoteStart)?.type, 'request');
-  assert.equal(parseSshWorkerInput({ ...remoteStart, definition: { ...remoteStart.definition, bindHost: '0.0.0.0' } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...remoteStart, definition: { ...remoteStart.definition, bindHost: '0.0.0.0' } })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...remoteStart, definition: { ...remoteStart.definition, bindHost: '192.0.2.1' } })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...remoteStart, definition: { ...remoteStart.definition, bindHost: '192.000.2.1' } }), undefined);
+  assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, bindHost: '192.0.2.1' } }), undefined, 'local forwarding remains allowlisted');
   const dynamicStart = { ...start, definition: { id: definition.id, sessionId, name: 'Proxy', mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 1080,
     createdAt: '2026-10-24T00:00:00.000Z' } };
   assert.equal(parseSshWorkerInput(dynamicStart)?.type, 'request');

@@ -1,7 +1,7 @@
 import { lstat, open as openFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { ReadStream, Stats } from 'node:fs';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { basename, isAbsolute, posix, resolve } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { FtpFilesProviderError } from '../../../../packages/application/src/ftp-files.ts';
 import type { FtpCredentials, FtpFilesProvider } from '../../../../packages/application/src/ftp-files.ts';
@@ -9,7 +9,7 @@ import type { CancellationSignal } from '../../../../packages/application/src/ca
 import { isCanonicalFtpEndpoint, isFtpCommandArgument, isFtpDirectoryListing, isFtpFileName, isFtpRemotePath,
   isFtpTransferConflictPolicy } from '../../../../packages/domain/src/ftp.ts';
 import type { FtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
-import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress, FtpTransferResult } from '../../../../packages/domain/src/ftp.ts';
+import type { FtpTransferConflictPolicy, FtpTransferDirection, FtpTransferProgress, FtpTransferProgressHandler, FtpTransferResult } from '../../../../packages/domain/src/ftp.ts';
 import { MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS, remoteChildPath, remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
 import { LocalTransferTargetError, mapLocalTransferTargetError, prepareLocalTransferTarget } from './local-transfer-target.ts';
@@ -30,7 +30,7 @@ export interface FtpLibraryClient {
   list(path?: string): Promise<FtpLibraryFileInfo[]>;
   rename(source: string, destination: string): Promise<unknown>;
   uploadFrom(source: Readable | string, remotePath: string): Promise<unknown>;
-  uploadUniqueFrom(source: Readable, remotePath: string): Promise<string>;
+  uploadUniqueFrom(source: Readable, remotePath: string, onUniqueName?: (name: string) => void | Promise<void>): Promise<string>;
   downloadTo(destination: Writable | string, remotePath: string, startAt?: number): Promise<unknown>;
   trackProgress(handler?: (info: { readonly name: string; readonly type: string; readonly bytes: number }) => void): void;
   close(): void;
@@ -183,7 +183,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
 
   async function uploadFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<FtpTransferResult> {
+    onProgress?: FtpTransferProgressHandler): Promise<FtpTransferResult> {
     const session = sessions.get(sessionId);
     if (!session) throw new FtpFilesProviderError('UNAVAILABLE');
     if (!TRANSFER_OPERATION_ID.test(operationId) || !isAbsoluteNormalizedPath(localPath) || !isFtpRemotePath(remoteDirectory) ||
@@ -194,8 +194,11 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
     if (session.busy || session.cancelled) throw new FtpFilesProviderError('BUSY');
     session.busy = true;
     let temporaryRemotePath: string | undefined;
+    let remoteArtifactNames: string[] = [];
+    let artifactNamesChanged = false;
     let sourceFile: Awaited<ReturnType<typeof openFile>> | undefined;
     let upload: ReadStream | undefined;
+    let targetName = fileName;
     let cancelled = false;
     let committing = false;
     let ftpOperationPending = false;
@@ -222,6 +225,13 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       ftpOperationPending = true;
       try { return await operation(); }
       finally { ftpOperationPending = false; }
+    };
+    const reportProgress = (phase: FtpTransferProgress['phase'], bytesTransferred: number, totalBytes: number | null): void | Promise<void> => {
+      const hasArtifactNames = artifactNamesChanged;
+      const result = onProgress?.({ sessionId, operationId, direction: 'upload', phase, fileName: targetName, bytesTransferred, totalBytes,
+        ...(hasArtifactNames ? { remoteArtifactNames } : {}) });
+      artifactNamesChanged = false;
+      return hasArtifactNames ? result : undefined;
     };
     cancellation?.addEventListener('abort', abort, { once: true });
     if (cancellation?.aborted) abort();
@@ -254,7 +264,6 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
         remoteNames.add(entry.name);
         if (entry.name === fileName) existing = entry;
       }
-      let targetName = fileName;
       if (existing) {
         if (conflictPolicy === 'skip') return completed('upload', targetName, 0, 'skipped');
         if (conflictPolicy === 'overwrite' && existing.type !== fileTypes.file) throw new FtpFilesProviderError('CONFLICT');
@@ -278,20 +287,26 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
           if (tempPath && isFtpRemotePath(tempPath) && !remoteNames.has(tempName)) { temporaryRemotePath = tempPath; break; }
         }
         if (!temporaryRemotePath) throw new FtpFilesProviderError('CONFLICT');
+        remoteArtifactNames = [posix.basename(temporaryRemotePath)];
+        artifactNamesChanged = true;
       }
       upload = sourceFile.createReadStream({ autoClose: false });
       session.activeStream = upload;
-      onProgress?.({ sessionId, operationId, direction: 'upload', phase: 'transferring', fileName: targetName, bytesTransferred: 0, totalBytes: sourceStats.size });
+      await reportProgress('transferring', 0, sourceStats.size);
       session.client.trackProgress(info => {
         if (info.type !== 'upload' || !Number.isSafeInteger(info.bytes) || info.bytes < 0) return;
-        onProgress?.({ sessionId, operationId, direction: 'upload', phase: 'transferring', fileName: targetName, bytesTransferred: info.bytes,
-          totalBytes: sourceStats.size });
+        reportProgress('transferring', info.bytes, sourceStats.size);
       });
       if (wasCancelled()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
       let uniqueRemotePath: string | undefined;
       try {
         if (overwriteExisting) await runFtpOperation(() => session.client.uploadFrom(upload!, temporaryRemotePath!));
-        else uniqueRemotePath = await runFtpOperation(() => session.client.uploadUniqueFrom(upload!, remoteTargetPath));
+        else uniqueRemotePath = await runFtpOperation(() => session.client.uploadUniqueFrom(upload!, remoteTargetPath, async name => {
+          if (!isFtpFileName(name)) return;
+          remoteArtifactNames = [name];
+          artifactNamesChanged = true;
+          await reportProgress('transferring', upload!.bytesRead, sourceStats.size);
+        }));
       } catch (error) {
         if (!overwriteExisting && isFtpCommandUnsupported(error)) throw new FtpFilesProviderError('NOT_SUPPORTED', true);
         throw error;
@@ -344,13 +359,17 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
         const backupName = `.mrt-${randomUUID()}.backup`;
         const backupPath = remoteChildPath(remoteDirectory, backupName);
         if (!backupPath || !isFtpRemotePath(backupPath)) throw new FtpFilesProviderError('CONFLICT');
-        onProgress?.({ sessionId, operationId, direction: 'upload', phase: 'committing', fileName: targetName,
-          bytesTransferred: sourceStats.size, totalBytes: sourceStats.size });
+        remoteArtifactNames = [...new Set([...remoteArtifactNames, backupName])];
+        artifactNamesChanged = true;
+        await reportProgress('committing', sourceStats.size, sourceStats.size);
         if (!beginCommit()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
         await session.client.rename(finalPath, backupPath);
         try {
           await session.client.rename(temporaryRemotePath!, finalPath);
           temporaryRemotePath = undefined;
+          remoteArtifactNames = [backupName];
+          artifactNamesChanged = true;
+          await reportProgress('committing', sourceStats.size, sourceStats.size);
         } catch {
           try { await session.client.rename(backupPath, finalPath); }
           catch {
@@ -365,6 +384,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
         throw new FtpFilesProviderError('CONFLICT');
       } else {
         if (!beginCommit()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
+        reportProgress('committing', sourceStats.size, sourceStats.size);
         await session.client.rename(temporaryRemotePath!, finalPath);
         temporaryRemotePath = undefined;
       }
@@ -390,7 +410,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
 
   async function downloadFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<FtpTransferResult> {
+    onProgress?: FtpTransferProgressHandler): Promise<FtpTransferResult> {
     const session = sessions.get(sessionId);
     if (!session) throw new FtpFilesProviderError('UNAVAILABLE');
     if (!TRANSFER_OPERATION_ID.test(operationId) || !isFtpRemotePath(remotePath) || !isAbsoluteNormalizedPath(localPath) ||
@@ -435,7 +455,7 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       const entry = listing.find(item => item.name === fileName);
       if (!entry || entry.type !== fileTypes.file) throw new FtpFilesProviderError('INVALID_REQUEST');
       const totalBytes = Number.isSafeInteger(entry.size) && (entry.size as number) > 0 ? entry.size as number : null;
-      try { target = await prepareLocalTransferTarget(localPath, conflictPolicy); }
+      try { target = await prepareLocalTransferTarget(localPath, conflictPolicy, operationId); }
       catch (error) { mapLocalTargetError(error); }
       if (wasCancelled()) throw new FtpFilesProviderError('CANCELLED', session.client.closed !== true);
       if (!target || target.state === 'skipped') return completed('download', target?.fileName ?? basename(localPath), 0, 'skipped');
@@ -459,7 +479,9 @@ export function createFtpTransportProvider(createClient: FtpLibraryClientFactory
       });
       return completed('download', result.fileName, result.bytes, result.state);
     } catch (error) {
-      await target?.cleanup().catch(() => undefined);
+      let cleanupFailed = false;
+      try { await target?.cleanup(); } catch { cleanupFailed = true; }
+      if (cleanupFailed) throw new FtpFilesProviderError('UNAVAILABLE', session.client.closed !== true);
       if (wasCancelled()) {
         const sessionUsable = session.client.closed !== true;
         if (!sessionUsable) sessions.delete(sessionId);

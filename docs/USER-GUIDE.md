@@ -89,6 +89,14 @@ The transfer view shows progress and offers cancellation and conflict actions.
 FTP/FTPS sessions provide the same basic browse and transfer actions. Remote
 permissions, server policy, and network interruption can prevent a transfer.
 
+If the app restarts after an interrupted download, the recovery notice offers
+**Locate local partial**. Choose the folder used for the download; Explorer will
+select the matching staged file if it is still there. Inspect it before retrying.
+The app does not delete or resume partial files. For interrupted SFTP uploads,
+the recovery notice shows the partial file basename to check in the original
+remote folder; it does not store or search that folder. FTP upload leftovers are
+not located automatically.
+
 For an SFTP file, choose **Edit** to open a UTF-8 text file up to 512 KB. Make
 your changes and choose **Save Changes** to write them back. The editor checks
 that the remote file still matches the version you opened; if another process
@@ -144,7 +152,12 @@ In dialogs, `Esc` closes or cancels the current step when the flow allows it;
 for an SSH host fingerprint prompt, `Esc` rejects the host and stops connecting.
 
 Open **Port forwarding** to create or manage SSH local, remote, and SOCKS TCP
-forwards. Review bind addresses and server policy before starting a forward.
+forwards. Local and remote forwards default to 127.0.0.1. You can select all
+IPv4 interfaces for either forward when other devices need access; each start
+requires a main-process confirmation. Windows Firewall controls local reachability,
+and the SSH server's forwarding policy controls remote reachability. Remote starts
+also require confirmation because `GatewayPorts` may widen a loopback request.
+SOCKS remains local-only.
 For a saved SSH connection, choose **Connect through gateways** from its action
 menu to route that connection through up to three saved SSH profiles.
 
@@ -158,7 +171,8 @@ To move these settings to another installation, choose **Export settings
 template** or **Load settings template** in Workbench settings. Export uses the
 current draft and a native Save dialog. The versioned JSON template includes
 workbench settings, the custom logo, and saved PowerShell script text, but not
-saved connections or credentials; review the script before sharing the file.
+saved connections or credentials. The template is plain text, and its script
+text can contain secrets; remove them before sharing the file.
 Loading validates the entire file and updates only the current draft. Choose
 **Save changes** to apply it. Import never runs a saved script.
 
@@ -201,7 +215,8 @@ Use the theme button or command palette to switch between light and dark themes.
 
 In **Workbench settings**, enter a script in **Saved PowerShell script** and
 choose **Save changes**. The app stores up to 8,000 UTF-16 code units as local
-plain text. Do not put passwords, tokens, or other secrets in this field.
+plain text. Do not put passwords, tokens, or other secrets in this field. A
+settings template also exports this script as plain text without encryption.
 
 The app keeps PowerShell startup at `-NoProfile`; this setting does not edit the
 normal PowerShell `$PROFILE` file and does not run when the app starts or when a

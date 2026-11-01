@@ -1,11 +1,13 @@
-import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshSessionLogStatus, isSshTransferEvent, isSshTrustEvent, isTerminalEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
+import { CONTRACT_VERSION, isCommandReply, isFtpTransferEvent, isRemoteFileDropEvent, isSshSessionLogStatus, isSshTransferEvent, isSshTrustEvent,
+  isTerminalEvent, isTransferRecoveryChangedEvent, isTunnelStatusEvent } from '../../../../packages/contracts/src/commands.ts';
 import type { CommandReply, CommandRequest, CountSessionsReply, CreateSessionFolderReply, CreateSessionReply, DesktopBridge, DescribeReply, ListSessionFoldersReply, ListSessionsReply,
   ExportSessionFolderReply, ImportSessionFolderReply, ListSshDirectoryReply, ListSshTunnelsReply, RemoteFileDropContext, RemoteFileDropEvent, SaveSshTunnelReply, TunnelStatusReply,
   OpenSshTerminalReply, StartSshSessionLogReply, OpenTelnetTerminalReply, OpenTerminalReply, OpenSerialTerminalReply, ListSerialPortsReply, ListWslDistributionsReply, TerminalActionReply,
-  ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply, SshAuthenticationMethod } from '../../../../packages/contracts/src/commands.ts';
+  ChooseTftpRootReply, TftpServerStatusReply, SelectCustomLogoReply, SshAuthenticationMethod, InterruptedFileTransfersReply } from '../../../../packages/contracts/src/commands.ts';
 import type { SshCredentialBundleReply } from '../../../../packages/contracts/src/commands.ts';
 import type { PowerShellProfileScriptPreviewReply } from '../../../../packages/contracts/src/commands.ts';
 import type { LaunchRdpViewerReply } from '../../../../packages/contracts/src/commands.ts';
+import type { FileTransferRecoveryCursor } from '../../../../packages/domain/src/file-transfer-recovery.ts';
 import type { LaunchVncViewerReply } from '../../../../packages/contracts/src/commands.ts';
 import type { FtpTransferReply, ListFtpDirectoryReply, OpenFtpFilesReply, SshTransferReply } from '../../../../packages/contracts/src/commands.ts';
 import type { SshTextFileReply, SshTextFileSaveReply } from '../../../../packages/contracts/src/commands.ts';
@@ -21,6 +23,7 @@ import type { SavedSessionFolderDraft } from '../../../../packages/domain/src/se
 import type { MacroDraft } from '../../../../packages/domain/src/macro.ts';
 import type { MacroShortcutCode } from '../../../../packages/domain/src/macro-shortcut.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
+import type { PowerShellToolAction } from '../../../../packages/domain/src/powershell-tools.ts';
 import type { SerialConfiguration } from '../../../../packages/domain/src/serial.ts';
 import { MAX_SERIAL_INPUT_CHARS, SERIAL_WRITE_TIMEOUT_MAX_MS, serialWriteTimeoutMs } from '../../../../packages/domain/src/serial.ts';
 import { MAX_QUEUED_TERMINAL_INPUT_CHARS, MAX_TERMINAL_INPUT_CHARS } from '../../../../packages/domain/src/local-terminal.ts';
@@ -33,7 +36,7 @@ import type { FileTransferProgress } from '../../../../packages/domain/src/file-
 import type { SshTunnelDraft, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
 import { isTftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
-import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
+import { sshRoutedOpenPreloadTimeoutMs } from '../../../../packages/application/src/ssh-route-timeout-budget.ts';
 
 type Invoke = (request: CommandRequest) => Promise<unknown>;
 type Listen = (listener: (value: unknown) => void) => () => void;
@@ -45,6 +48,7 @@ type ConsumeRdpLaunch = (host: string, port: number) => boolean | Promise<boolea
 type ConsumeVncLaunch = (host: string, port: number) => boolean | Promise<boolean>;
 type ConsumeTftpServerAction = (action: 'choose-root' | 'start', selectionId?: string, port?: number) => boolean | Promise<boolean>;
 type ConsumePowerShellProfileScript = (sessionId: string) => boolean | Promise<boolean>;
+type ConsumePowerShellToolAction = (sessionId: string, action: PowerShellToolAction) => boolean | Promise<boolean>;
 type ConsumeSshSessionLogConsent = (sessionId: string, host: string, port: number, gatewayProfileIds: readonly string[]) => boolean | Promise<boolean>;
 type ConsumeSshX11Consent = (host: string, port: number, gatewayProfileIds: readonly string[]) => boolean | Promise<boolean>;
 type ConsumeXdmcpLaunch = (host: string) => boolean | Promise<boolean>;
@@ -57,7 +61,6 @@ const MAX_PENDING_REQUESTS = 256;
 const SSH_OPEN_TIMEOUT_MS = 275_000;
 const SSH_CREDENTIAL_PROMPT_TIMEOUT_MS = 120_000;
 const SESSION_CREDENTIAL_TIMEOUT_MS = 130_000;
-const SSH_WORKER_OPEN_TIMEOUT_MS = 140_000;
 // Covers bounded catalog reads, worker startup, and IPC scheduling after the maximum gateway count plus target prompt.
 const SSH_ROUTE_OPEN_MARGIN_MS = 40_000;
 const SSH_DIRECTORY_TIMEOUT_MS = 35_000;
@@ -90,7 +93,8 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   consumePowerShellProfileScript: ConsumePowerShellProfileScript = () => false, listenSshSessionLog: Listen = () => () => {},
   consumeSshSessionLogConsent: ConsumeSshSessionLogConsent = () => false,
   consumeSshX11Consent: ConsumeSshX11Consent = () => false,
-  consumeXdmcpLaunch: ConsumeXdmcpLaunch = () => false): DesktopBridge {
+  consumeXdmcpLaunch: ConsumeXdmcpLaunch = () => false,
+  listenTransferRecovery: Listen = () => () => {}, consumePowerShellToolAction: ConsumePowerShellToolAction = () => false): DesktopBridge {
   let inFlight = 0;
   let queuedInputOperations = 0;
   const terminalInputBarriers = new Map<string, TerminalInputBarrier>();
@@ -135,8 +139,7 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
   function requestId(): string { return makeId(); }
   function sshOpenTimeout(gatewayCount = 0): number {
     if (gatewayCount === 0) return SSH_OPEN_TIMEOUT_MS;
-    const prompts = Math.min(gatewayCount, MAX_SSH_GATEWAY_HOPS) + 1;
-    return prompts * SSH_CREDENTIAL_PROMPT_TIMEOUT_MS + SSH_WORKER_OPEN_TIMEOUT_MS + SSH_ROUTE_OPEN_MARGIN_MS;
+    return sshRoutedOpenPreloadTimeoutMs(gatewayCount, SSH_CREDENTIAL_PROMPT_TIMEOUT_MS, SSH_ROUTE_OPEN_MARGIN_MS);
   }
 
   function reserveInputChars(sessionId: string, chars: number): boolean {
@@ -357,8 +360,9 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     'ssh.write' | 'ssh.paste' | 'ssh.resize' | 'ssh.ack' | 'ssh.close' | 'sftp.close' |
     'telnet.write' | 'telnet.paste' | 'telnet.resize' | 'telnet.ack' | 'telnet.close' |
     'serial.write' | 'serial.paste' | 'serial.resize' | 'serial.ack' | 'serial.close' |
-    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'wsl.distributions.cancel' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
-    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'tftp.stop' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
+    'ssh.host.approve' | 'ssh.host.reject' | 'ssh.host.revoke' | 'wsl.distributions.cancel' | 'powershell.tool.manage' | 'session.favorite' | 'session.delete' | 'session.folder.rename' | 'session.folder.move' |
+    'session.folder.delete' | 'session.move' | 'ssh.files.cancel' | 'ftp.files.cancel' | 'ftp.close' | 'transfer.recovery.dismiss' |
+    'transfer.recovery.reveal-local-partial' | 'tftp.stop' | 'tunnel.delete' | 'macro.delete' | 'macro.shortcut.delete',
     payload: Record<string, unknown>): CommandRequest {
     return { command, requestId: requestId(), contractVersion: CONTRACT_VERSION, payload } as CommandRequest;
   }
@@ -367,8 +371,10 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     describe(): Promise<DescribeReply> {
       return send({ command: 'app.describe', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, 3_000);
     },
-    openTerminal(sessionId: string, launch: LocalTerminalLaunch, columns: number, rows: number): Promise<OpenTerminalReply> {
-      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { sessionId, launch, columns, rows } }, 20_000);
+    openTerminal(sessionId: string, launch: LocalTerminalLaunch, columns: number, rows: number,
+      purpose?: 'powershell-tool-management'): Promise<OpenTerminalReply> {
+      return send({ command: 'terminal.open', requestId: requestId(), contractVersion: CONTRACT_VERSION,
+        payload: { sessionId, launch, columns, rows, ...(purpose ? { purpose } : {}) } }, 20_000);
     },
     listWslDistributions(): Promise<ListWslDistributionsReply> {
       return send({ command: 'wsl.distributions.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: {} }, WSL_DISCOVERY_TIMEOUT_MS);
@@ -386,6 +392,12 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
       const id = requestId();
       return Promise.resolve().then(() => consumePowerShellProfileScript(sessionId)).then(authorized => authorized
         ? send({ command: 'powershell.profile.apply', requestId: id, contractVersion: CONTRACT_VERSION, payload: { sessionId, previewId } }, 15_000)
+        : { requestId: id, ...failure('FORBIDDEN') });
+    },
+    managePowerShellTool(sessionId: string, action: PowerShellToolAction): Promise<TerminalActionReply> {
+      const id = requestId();
+      return Promise.resolve().then(() => consumePowerShellToolAction(sessionId, action)).then(authorized => authorized
+        ? send(voidRequest('powershell.tool.manage', { sessionId, action }), 5_000)
         : { requestId: id, ...failure('FORBIDDEN') });
     },
     pasteTerminal(sessionId: string): Promise<TerminalActionReply> {
@@ -601,6 +613,15 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
     },
     cancelFtpTransfer(sessionId: string, operationId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ftp.files.cancel', { sessionId, operationId }), FTP_CANCEL_TIMEOUT_MS);
+    },
+    listInterruptedFileTransfers(cursor: FileTransferRecoveryCursor | null): Promise<InterruptedFileTransfersReply> {
+      return send({ command: 'transfer.recovery.list', requestId: requestId(), contractVersion: CONTRACT_VERSION, payload: { cursor } }, 8_000);
+    },
+    dismissInterruptedFileTransfer(operationId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('transfer.recovery.dismiss', { operationId }), 8_000);
+    },
+    revealInterruptedDownloadPartial(operationId: string): Promise<TerminalActionReply> {
+      return send(voidRequest('transfer.recovery.reveal-local-partial', { operationId }), 8_000);
     },
     closeFtpFiles(sessionId: string): Promise<TerminalActionReply> {
       return send(voidRequest('ftp.close', { sessionId }), 8_000);
@@ -832,6 +853,16 @@ export function createBridge(invoke: Invoke, makeId: () => string, listen: Liste
         return listenSshTransfer(value => {
           if (isSshTransferEvent(value)) {
             try { listener(value); } catch { /* A renderer progress handler cannot interrupt IPC ownership. */ }
+          }
+        });
+      } catch { return () => {}; }
+    },
+    onTransferRecoveryChanged(listener: () => void): () => void {
+      if (typeof listener !== 'function') return () => {};
+      try {
+        return listenTransferRecovery(value => {
+          if (isTransferRecoveryChangedEvent(value)) {
+            try { listener(); } catch { /* A renderer status observer cannot interrupt recovery bookkeeping. */ }
           }
         });
       } catch { return () => {}; }

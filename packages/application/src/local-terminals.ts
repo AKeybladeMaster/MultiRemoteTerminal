@@ -5,6 +5,9 @@ import type { LocalTerminalLaunch, TerminalSize } from '../../domain/src/local-t
 import type { WslDistribution } from '../../domain/src/wsl-distributions.ts';
 import { normalizeWslDistributionList } from '../../domain/src/wsl-distributions.ts';
 import { normalizePowerShellProfileScript } from '../../domain/src/powershell-profile.ts';
+import { isPowerShellToolAction } from '../../domain/src/powershell-tools.ts';
+import type { PowerShellToolAction } from '../../domain/src/powershell-tools.ts';
+import { powerShellToolCommand } from './powershell-tool-command.ts';
 
 export type LocalTerminalEvent =
   | { readonly kind: 'data'; readonly sessionId: string; readonly sequence: number; readonly data: string }
@@ -38,12 +41,13 @@ interface SessionState {
 }
 
 export interface LocalTerminalController {
-  open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<Outcome<LocalTerminalSession>>;
+  open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize, purpose?: 'powershell-tool-management'): Promise<Outcome<LocalTerminalSession>>;
   listWslDistributions(): Promise<Outcome<readonly WslDistribution[]>>;
   cancelWslDistributionDiscovery(): Promise<Outcome<Record<string, never>>>;
   write(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   paste(sessionId: string, data: string): Promise<Outcome<Record<string, never>>>;
   applyPowerShellProfileScript(sessionId: string, script: string): Promise<Outcome<Record<string, never>>>;
+  managePowerShellTool(sessionId: string, action: PowerShellToolAction): Promise<Outcome<Record<string, never>>>;
   resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>>;
   acknowledgeOutput(sessionId: string, sequence: number): Promise<Outcome<Record<string, never>>>;
   close(sessionId: string): Promise<Outcome<Record<string, never>>>;
@@ -58,6 +62,7 @@ export function createLocalTerminalController(
   provider: LocalTerminalProvider,
 ): LocalTerminalController {
   const sessions = new Map<string, SessionState>();
+  const powerShellToolSessions = new Set<string>();
   const listeners = new Set<(event: LocalTerminalEvent) => void>();
   let shutdownPromise: Promise<void> | undefined;
   let disposed = false;
@@ -69,16 +74,17 @@ export function createLocalTerminalController(
       session.pendingEvents.push(event);
       return;
     }
-    if (event.kind === 'exit') session.state = 'exited';
-    if (event.kind === 'failure') session.state = 'failed';
+    if (event.kind === 'exit') { session.state = 'exited'; powerShellToolSessions.delete(event.sessionId); }
+    if (event.kind === 'failure') { session.state = 'failed'; powerShellToolSessions.delete(event.sessionId); }
     publish(event);
   });
 
-  async function open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize): Promise<Outcome<LocalTerminalSession>> {
+  async function open(sessionId: string, launch: LocalTerminalLaunch, size: TerminalSize,
+    purpose?: 'powershell-tool-management'): Promise<Outcome<LocalTerminalSession>> {
     if (disposed) return failure('CANCELLED', 'terminal');
     if (shutdownPromise) return failure('BUSY', 'terminal');
     if (typeof sessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId) ||
-        !isLocalTerminalLaunch(launch) || !isTerminalSize(size)) return failure('INVALID_REQUEST');
+        !isLocalTerminalLaunch(launch) || !isTerminalSize(size) || purpose !== undefined && launch.shell !== 'powershell') return failure('INVALID_REQUEST');
     if (sessions.has(sessionId)) return failure('UNAVAILABLE', 'terminal');
     const session: SessionState = { sessionId, launch, state: 'starting', pendingInputChars: 0, pendingEvents: [] };
     sessions.set(sessionId, session);
@@ -90,10 +96,11 @@ export function createLocalTerminalController(
       }
       if (session.state === 'starting') session.state = 'running';
       for (const event of session.pendingEvents.splice(0)) {
-        if (event.kind === 'exit') session.state = 'exited';
-        if (event.kind === 'failure') session.state = 'failed';
+        if (event.kind === 'exit') { session.state = 'exited'; powerShellToolSessions.delete(sessionId); }
+        if (event.kind === 'failure') { session.state = 'failed'; powerShellToolSessions.delete(sessionId); }
         publish(event);
       }
+      if (purpose === 'powershell-tool-management' && session.state === 'running') powerShellToolSessions.add(sessionId);
       return { ok: true, result: { sessionId, ...launch, state: session.state } };
     } catch {
       session.pendingEvents.length = 0;
@@ -136,6 +143,7 @@ export function createLocalTerminalController(
     if (typeof data !== 'string' || data.length > MAX_TERMINAL_INPUT_CHARS) return failure('INVALID_REQUEST');
     if (session.pendingInputChars + data.length > MAX_QUEUED_TERMINAL_INPUT_CHARS) return failure('BUSY', 'terminal');
     if (data.length === 0) return { ok: true, result: EMPTY_RESULT };
+    powerShellToolSessions.delete(sessionId);
     session.pendingInputChars += data.length;
     try {
       if (paste) await provider.paste(sessionId, data);
@@ -167,6 +175,17 @@ export function createLocalTerminalController(
     return write(sessionId, terminalInput);
   }
 
+  async function managePowerShellTool(sessionId: string, action: PowerShellToolAction): Promise<Outcome<Record<string, never>>> {
+    const session = sessions.get(sessionId);
+    if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
+    if (session.launch.shell !== 'powershell') return failure('FORBIDDEN', 'terminal');
+    if (!isPowerShellToolAction(action)) return failure('INVALID_REQUEST');
+    if (!powerShellToolSessions.delete(sessionId)) return failure('FORBIDDEN', 'terminal');
+    const terminalInput = `${powerShellToolCommand(action)}\r\n`;
+    if (terminalInput.length > MAX_TERMINAL_INPUT_CHARS) return failure('INVALID_REQUEST');
+    return write(sessionId, terminalInput);
+  }
+
   async function resize(sessionId: string, size: TerminalSize): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
     if (!session || session.state !== 'running') return failure('NOT_FOUND', 'terminal');
@@ -193,6 +212,7 @@ export function createLocalTerminalController(
   async function close(sessionId: string): Promise<Outcome<Record<string, never>>> {
     const session = sessions.get(sessionId);
     if (!session) return failure('NOT_FOUND', 'terminal');
+    powerShellToolSessions.delete(sessionId);
     if (session.state === 'closing') return { ok: true, result: EMPTY_RESULT };
     const wasRunning = session.state === 'running' || session.state === 'starting';
     session.state = 'closing';
@@ -208,6 +228,7 @@ export function createLocalTerminalController(
 
   async function closeAll(): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
+    powerShellToolSessions.clear();
     for (const session of sessions.values()) session.state = 'closing';
     sessions.clear();
     const shuttingDown = provider.shutdown();
@@ -223,7 +244,8 @@ export function createLocalTerminalController(
   }
 
   return Object.freeze({
-    open, listWslDistributions, cancelWslDistributionDiscovery, write, paste, applyPowerShellProfileScript, resize, acknowledgeOutput, close, closeAll,
+    open, listWslDistributions, cancelWslDistributionDiscovery, write, paste, applyPowerShellProfileScript, managePowerShellTool,
+    resize, acknowledgeOutput, close, closeAll,
     subscribe(listener: (event: LocalTerminalEvent) => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);

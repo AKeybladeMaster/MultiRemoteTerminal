@@ -4,6 +4,7 @@ import type { HostKeyEvidence, SshHostEndpoint } from '../../../../packages/doma
 import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, SshTerminalProvider, SshTerminalProviderErrorCode } from '../../../../packages/application/src/ssh-terminals.ts';
 import type { SshX11Display } from '../../../../packages/application/src/ssh-x11-display.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
+import { sshRoutedOpenWorkerTimeoutMs } from '../../../../packages/application/src/ssh-route-timeout-budget.ts';
 import type { SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
@@ -127,7 +128,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
       sessionId, endpoint, credentials: credentialsCopy, size, gatewayHops: gatewayCopies,
       ...(x11DisplayCopy ? { x11Display: x11DisplayCopy } : {}) } as const satisfies SshWorkerRequest;
     this.sessions.set(sessionId, { endpoints: [...gatewayCopies.map(hop => hop.endpoint), { ...endpoint }], verifyHost });
-    try { await this.request(request, OPEN_TIMEOUT_MS); }
+    try { await this.request(request, gatewayCopies.length > 0 ? sshRoutedOpenWorkerTimeoutMs(gatewayCopies.length) : OPEN_TIMEOUT_MS); }
     catch (error) {
       this.sessions.delete(sessionId);
       throw error;
@@ -147,7 +148,7 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'open-files',
       sessionId, endpoint, credentials: credentialsCopy, ...(gatewayCopies.length > 0 ? { gatewayHops: gatewayCopies } : {}) } as const satisfies SshWorkerRequest;
     this.sessions.set(sessionId, { endpoints: [...gatewayCopies.map(hop => hop.endpoint), { ...endpoint }], verifyHost });
-    try { await this.request(request, OPEN_TIMEOUT_MS); }
+    try { await this.request(request, gatewayCopies.length > 0 ? sshRoutedOpenWorkerTimeoutMs(gatewayCopies.length) : OPEN_TIMEOUT_MS); }
     catch (error) {
       this.sessions.delete(sessionId);
       throw error;

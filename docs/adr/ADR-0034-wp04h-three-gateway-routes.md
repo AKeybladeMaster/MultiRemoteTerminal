@@ -1,6 +1,6 @@
 # ADR-0034: WP-04H bounded three-gateway SSH routes
 
-**Status:** Accepted for WP-04H (2026-10-26)
+**Status:** Superseded by [ADR-0062](ADR-0062-eight-gateway-route-bound.md); historical WP-04H decision (2026-10-26)
 
 ## Context
 

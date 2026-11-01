@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
-import { join, resolve, win32 } from 'node:path';
+import { dirname, join, resolve, win32 } from 'node:path';
 import { runNativeSshCredentialPrompt, runNativeSshLogDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
@@ -92,6 +92,22 @@ async function terminateProcessTree(child: ReturnType<typeof spawn>): Promise<vo
     throw new Error(`Could not stop the packaged app process tree: ${result.stderr || result.stdout || result.status}`);
   }
   if (!await waitForProcessExit(child, 10_000)) throw new Error('The packaged app process did not exit after taskkill');
+}
+
+function windowsProcessExecutablePath(processId: number): string {
+  if (!Number.isSafeInteger(processId) || processId < 1) throw new Error('The packaged process ID is invalid.');
+  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const command = `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${processId}' -ErrorAction Stop | ` +
+    'Select-Object -ExpandProperty ExecutablePath)';
+  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
+    encoding: 'utf8', windowsHide: true, timeout: 10_000
+  });
+  if (result.error) throw result.error;
+  const executablePath = result.stdout.trim();
+  if (result.status !== 0 || !executablePath) {
+    throw new Error(`Could not resolve the packaged process path: ${result.stderr || result.status}`);
+  }
+  return executablePath;
 }
 
 async function connectToPackagedApp(debugPort: number): Promise<Browser> {
@@ -201,6 +217,9 @@ async function expectPackagedWindow(page: Page, userData: string, resourcesPath:
 } = {}): Promise<void> {
   await expectStartupTerminal(page);
   expect((await stat(join(resourcesPath, 'credential-prompt.ps1'))).isFile()).toBe(true);
+  const thirdPartyNotices = await readFile(join(resourcesPath, 'THIRD-PARTY-NOTICES.txt'), 'utf8');
+  expect(thirdPartyNotices).toContain('node-pty@1.1.0');
+  expect(thirdPartyNotices).toContain('MIT License');
   if (options.deviceScaleFactor !== undefined) {
     await expect.poll(() => page.evaluate(() => devicePixelRatio)).toBe(options.deviceScaleFactor);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -283,6 +302,18 @@ test('Windows x64 artifacts have per-artifact CycloneDX SBOMs and verified SHA-2
     { artifact: 'MultiRemoteTerminal 0.0.0.exe', kind: 'portable-executable' }
   ];
   const checksums = (await readFile(join(artifacts, 'SHA256SUMS.txt'), 'utf8')).split(/\r?\n/u);
+  const notices = [
+    { id: 'electron-license', fileName: 'LICENSE.electron.txt' },
+    { id: 'chromium-licenses', fileName: 'LICENSES.chromium.html' },
+    { id: 'production-dependency-notices', fileName: 'resources/THIRD-PARTY-NOTICES.txt' }
+  ];
+  const noticeHashes = new Map<string, string>();
+  for (const notice of notices) {
+    const contents = await readFile(join(artifacts, 'win-unpacked', notice.fileName));
+    expect(contents.length).toBeGreaterThan(0);
+    noticeHashes.set(notice.id, sha256(contents));
+    expect(checksums).toContain(`${sha256(contents)}  win-unpacked/${notice.fileName}`);
+  }
 
   for (const output of outputs) {
     const artifactBytes = await readFile(join(artifacts, output.artifact));
@@ -291,7 +322,8 @@ test('Windows x64 artifacts have per-artifact CycloneDX SBOMs and verified SHA-2
     const bom = JSON.parse(bomContents) as {
       readonly bomFormat: string;
       readonly specVersion: string;
-      readonly components: readonly { readonly name: string; readonly version: string; readonly 'bom-ref': string }[];
+      readonly components: readonly { readonly name: string; readonly version: string; readonly 'bom-ref': string;
+        readonly hashes: readonly { readonly alg: string; readonly content: string }[] }[];
       readonly dependencies: readonly { readonly ref: string; readonly dependsOn: readonly string[] }[];
       readonly metadata: { readonly component: {
         readonly name: string;
@@ -305,10 +337,18 @@ test('Windows x64 artifacts have per-artifact CycloneDX SBOMs and verified SHA-2
     expect(bom.metadata.component.hashes).toContainEqual({ alg: 'SHA-256', content: sha256(artifactBytes) });
     expect(bom.components.some(component => component.name === 'electron' && component.version === '45.0.0')).toBe(true);
     expect(bom.components.some(component => component.name === '@playwright/test' || component.name === 'electron-builder')).toBe(false);
+    for (const component of bom.components) {
+      expect(component.hashes).toHaveLength(1);
+      expect(component.hashes[0]).toMatchObject({ alg: 'SHA-512' });
+      expect(component.hashes[0]?.content).toMatch(/^[0-9a-f]{128}$/u);
+    }
     expect(bom.metadata.component.properties.find(property => property.name === 'mrt:distribution:kind')?.value).toBe(output.kind);
+    for (const notice of notices) {
+      expect(bom.metadata.component.properties.find(property => property.name === `mrt:distribution:notice:${notice.id}:sha256`)?.value)
+        .toBe(noticeHashes.get(notice.id));
+    }
     const signatureStatus = bom.metadata.component.properties.find(property => property.name === 'mrt:authenticode:status')?.value;
-    expect(['Valid', 'NotSigned']).toContain(signatureStatus);
-    if (process.env.MRT_SIGNED_RELEASE === '1') expect(signatureStatus).toBe('Valid');
+    expect(signatureStatus).toBe(process.env.MRT_SIGNED_RELEASE === '1' ? 'Valid' : 'NotSigned');
 
     const knownReferences = new Set([
       ...bom.components.map(component => component['bom-ref']),
@@ -403,6 +443,9 @@ test('portable app opens a usable terminal and keeps profile data beside the exe
   try {
     const expected = win32.join(temporaryRoot, 'MultiRemoteTerminal-data');
     app = await launchPackagedApp(portableExecutable);
+    const resourcesPath = join(dirname(windowsProcessExecutablePath(app.windowProcessId)), 'resources');
+    const thirdPartyNotices = await readFile(join(resourcesPath, 'THIRD-PARTY-NOTICES.txt'), 'utf8');
+    expect(thirdPartyNotices).toContain('node-pty@1.1.0');
     await expect.poll(async () => (await stat(join(expected, 'multiremote-terminal.sqlite')).catch(() => undefined)) !== undefined,
       { timeout: 60_000, intervals: [200, 500, 1_000] }).toBe(true);
     await expect(app.page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
@@ -521,7 +564,7 @@ test('portable app finalizes an active SSH session log on shutdown', async () =>
     await sshDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
     await sshDialog.getByLabel('Port').fill(String(await reserveLoopbackPort()));
     await sshDialog.getByRole('button', { name: 'Connect', exact: true }).click();
-    await runNativeSshLogDialog('save', sshLogPath);
+    await runNativeSshLogDialog('save', sshLogPath, app.windowProcessId);
     await expect.poll(async () => await readFile(sshLogPath, 'utf8').catch(() => ''), { timeout: 15_000 })
       .toContain('"type":"attempt-started"');
     await expect.poll(async () => await readFile(sshLogPath, 'utf8').catch(() => ''), { timeout: 15_000 })

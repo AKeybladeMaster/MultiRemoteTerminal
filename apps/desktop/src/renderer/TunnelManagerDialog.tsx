@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react';
 import type { FormEvent, ReactElement, Ref } from 'react';
 import type { SshTunnelSnapshot } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SavedSessionDefinition } from '../../../../packages/domain/src/session-definition.ts';
-import type { SshTunnelDraft, SshTunnelMode, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isLoopbackSshTunnelBindHost } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import type { SshRemoteTunnelBindHost, SshTunnelBindHost, SshTunnelDraft, SshTunnelMode, TunnelRunStatus } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import { canonicalizeSshHostEndpoint, hostEndpointKey } from '../../../../packages/domain/src/host-trust.ts';
 import { MAX_SSH_GATEWAY_HOPS } from '../../../../packages/domain/src/ssh-route.ts';
 import { formatSshGatewayProfileLabel, SshGatewayRoutePicker } from './SshGatewayRoutePicker.tsx';
+
+const CANONICAL_IPV4_PATTERN = /(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}/u.source;
 
 export interface TunnelManagerDialogProps {
   readonly dialogRef: Ref<HTMLElement>;
@@ -48,7 +51,7 @@ function tunnelRouteLabel(definition: SshTunnelSnapshot['definition']): string {
   if (definition.mode === 'dynamic') return `SOCKS5 127.0.0.1:${definition.bindPort || 'Auto'}`;
   return definition.mode === 'local'
     ? `Local ${definition.bindHost}:${definition.bindPort || 'Auto'} → Remote ${definition.targetHost}:${definition.targetPort}`
-    : `SSH server ${definition.bindHost}:${definition.bindPort || 'Auto'} → Local ${definition.targetHost}:${definition.targetPort}`;
+    : `Requested SSH server ${definition.bindHost}:${definition.bindPort || 'Auto'} → Local ${definition.targetHost}:${definition.targetPort}`;
 }
 
 export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, busyId, error, onClose, onSave, onDelete, onStart, onStop }: TunnelManagerDialogProps): ReactElement {
@@ -58,6 +61,8 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   const [sessionId, setSessionId] = useState('');
   const [name, setName] = useState('');
   const [mode, setMode] = useState<SshTunnelMode>('local');
+  const [localBindHost, setLocalBindHost] = useState<SshTunnelBindHost>('127.0.0.1');
+  const [remoteBindHost, setRemoteBindHost] = useState<SshRemoteTunnelBindHost>('127.0.0.1');
   const [bindPort, setBindPort] = useState('0');
   const [targetHost, setTargetHost] = useState('');
   const [targetPort, setTargetPort] = useState('');
@@ -85,6 +90,8 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
     setSessionId(selected.definition.sessionId);
     setName(selected.definition.name);
     setMode(selected.definition.mode);
+    setLocalBindHost(selected.definition.mode === 'local' ? selected.definition.bindHost : '127.0.0.1');
+    setRemoteBindHost(selected.definition.mode === 'remote' ? selected.definition.bindHost : '127.0.0.1');
     setBindPort(String(selected.definition.bindPort));
     setTargetHost(selected.definition.mode === 'dynamic' ? '' : selected.definition.targetHost);
     setTargetPort(selected.definition.mode === 'dynamic' ? '' : String(selected.definition.targetPort));
@@ -103,6 +110,8 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
     setSessionId(eligibleProfiles[0]?.id ?? '');
     setName('');
     setMode('local');
+    setLocalBindHost('127.0.0.1');
+    setRemoteBindHost('127.0.0.1');
     setBindPort('0');
     setTargetHost('');
     setTargetPort('');
@@ -111,9 +120,10 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (locked || busy) return;
-    const common = { ...(selectedId ? { id: selectedId } : {}), sessionId, name, bindHost: '127.0.0.1' as const, bindPort: Number(bindPort) };
-    const draft: SshTunnelDraft = mode === 'dynamic' ? { ...common, mode }
-      : { ...common, mode, targetHost, targetPort: Number(targetPort) };
+    const common = { ...(selectedId ? { id: selectedId } : {}), sessionId, name, bindPort: Number(bindPort) };
+    const draft: SshTunnelDraft = mode === 'dynamic' ? { ...common, mode, bindHost: '127.0.0.1' }
+      : mode === 'remote' ? { ...common, mode, bindHost: remoteBindHost, targetHost, targetPort: Number(targetPort) }
+        : { ...common, mode, bindHost: localBindHost, targetHost, targetPort: Number(targetPort) };
     const id = await onSave(draft);
     if (id) { setCreating(false); setSelectedId(id); }
   }
@@ -135,7 +145,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
         <button className="tunnel-close" type="button" aria-label="Close port forwarding" onClick={onClose}>×</button>
       </header>
       <p className="tunnel-manager-description" id="tunnel-manager-description">
-        Local forwards send one saved destination through SSH. Remote forwards request a loopback listener on the SSH server. A dynamic SOCKS5 proxy lets each client choose its destination and listens on this computer only.
+        Local and remote forwards default to loopback. All-interface binds require confirmation each time they start. A dynamic SOCKS5 proxy listens on this computer only.
       </p>
       <div className="tunnel-manager-body">
         <section className="tunnel-list-column" aria-label="Saved tunnels">
@@ -173,7 +183,15 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
             </select>
             {mode === 'remote' && <div className="tunnel-exposure-warning" role="note" aria-label="Remote forwarding exposure warning">
               <strong>The SSH server may expose this listener beyond loopback.</strong>
-              MultiRemoteTerminal requests 127.0.0.1, but the server's GatewayPorts policy may override that request. Confirm the server's forwarding policy before starting.
+              The server may restrict or widen the requested bind; OpenSSH uses GatewayPorts for remote binds. Review its forwarding and firewall policy; every start also requires confirmation in the main process.
+            </div>}
+            {mode === 'remote' && !isLoopbackSshTunnelBindHost(remoteBindHost) && <div className="tunnel-exposure-warning" role="note" aria-label="Public remote forwarding exposure warning">
+              <strong>Devices that can reach the SSH server may connect to this listener.</strong>
+              It requests {remoteBindHost === '0.0.0.0' ? 'all server IPv4 interfaces' : `server address ${remoteBindHost}`}. Server policy may still restrict or widen it; each start requires main-process confirmation.
+            </div>}
+            {mode === 'local' && localBindHost === '0.0.0.0' && <div className="tunnel-exposure-warning" role="note" aria-label="Public local forwarding exposure warning">
+              <strong>Devices that can reach this computer may connect to this listener.</strong>
+              It listens on every IPv4 interface and each start requires confirmation in the main process. Check the Windows firewall and destination service.
             </div>}
 
             <label htmlFor="tunnel-profile">SSH profile</label>
@@ -189,11 +207,24 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
                 <input id="tunnel-bind-port" name="bindPort" type="number" required min="0" max="65535" step="1" disabled={locked || busy}
                   value={bindPort} onChange={event => setBindPort(event.target.value)} />
               </div>
-              <div className="tunnel-bind-host"><span className="tunnel-field-label">{mode === 'remote' ? 'SSH server address' : 'Local address'}</span><code>127.0.0.1</code></div>
+              <div className="tunnel-bind-host">{mode === 'local' ? <>
+                <label htmlFor="tunnel-bind-host">Local address</label>
+                <select id="tunnel-bind-host" name="bindHost" disabled={locked || busy} value={localBindHost}
+                  onChange={event => setLocalBindHost(event.target.value as SshTunnelBindHost)}>
+                  <option value="127.0.0.1">This computer only</option>
+                  <option value="0.0.0.0">All network interfaces</option>
+                </select>
+              </> : mode === 'remote' ? <>
+                <label htmlFor="tunnel-bind-host">SSH server address</label>
+                <input id="tunnel-bind-host" name="bindHost" type="text" inputMode="decimal" required maxLength={15} autoComplete="off" spellCheck={false}
+                  pattern={CANONICAL_IPV4_PATTERN} title="Enter a canonical IPv4 address, such as 192.0.2.10."
+                  disabled={locked || busy} value={remoteBindHost} onChange={event => setRemoteBindHost(event.target.value as SshRemoteTunnelBindHost)} />
+              </> : <><span className="tunnel-field-label">Local address</span><code>127.0.0.1</code></>}</div>
             </div>
-            <p className="tunnel-hint">{mode === 'remote' ? 'Use port 0 to let the SSH server choose an available port. The app requests a loopback bind.'
+            <p className="tunnel-hint">{mode === 'remote' ? `Enter a canonical IPv4 address (0.0.0.0 requests all interfaces). Use port 0 to let the SSH server choose an available port. The app requests ${remoteBindHost}.`
               : mode === 'dynamic' ? 'No authentication is required. This proxy listens on this computer only; use port 0 for an available port.'
-                : 'Use port 0 to let this computer choose an available port.'}</p>
+                : localBindHost === '0.0.0.0' ? 'Use port 0 to let this computer choose an available port. All IPv4 interfaces will listen.'
+                  : 'Use port 0 to let this computer choose an available port.'}</p>
 
             {mode !== 'dynamic' && <>
               <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
@@ -207,7 +238,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
             {selected && <div className={`tunnel-status-card ${selected.status.state}`} role="status" aria-live="polite">
               <span className={`tunnel-state-dot ${selected.status.state}`} aria-hidden="true" />
               <div><strong>{statusLabel(selected.status)}</strong><small>{tunnelModeLabel(selected.definition.mode)}</small>
-                {selected.status.state === 'active' ? <code>{selected.definition.mode === 'dynamic' ? 'SOCKS5 proxy' : `${selected.definition.mode === 'local' ? 'Local' : 'SSH server'} ${selected.status.bindHost}:${selected.status.bindPort}`}
+                {selected.status.state === 'active' ? <code>{selected.definition.mode === 'dynamic' ? 'SOCKS5 proxy' : `${selected.definition.mode === 'local' ? 'Local' : 'Requested SSH server'} ${selected.status.bindHost}:${selected.status.bindPort}`}
                   {selected.definition.mode === 'dynamic' ? ` 127.0.0.1:${selected.status.bindPort}`
                     : ` → ${selected.definition.mode === 'local' ? 'Remote' : 'Local'} ${selected.definition.targetHost}:${selected.definition.targetPort}`}</code>
                   : selected.status.state === 'failed' ? <small>The saved definition remains available to retry.</small>

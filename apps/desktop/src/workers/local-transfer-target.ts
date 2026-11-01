@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto';
 import type { BigIntStats, Stats } from 'node:fs';
 import { link, lstat, open, rename, rm, unlink } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { finished } from 'node:stream/promises';
 import type { WriteStream } from 'node:fs';
 import type { FileTransferConflictPolicy } from '../../../../packages/domain/src/file-transfer.ts';
+import { localTransferPartialName } from '../adapters/local-transfer-recovery.ts';
 
 const MAX_TRANSFER_PATH_CHARS = 32_768;
 const MAX_COPY_NAME_CHARS = 240;
@@ -30,6 +30,7 @@ export class LocalTransferTargetError extends Error {
 export function mapLocalTransferTargetError(error: unknown): LocalTransferTargetError {
   const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
   if (code === 'EACCES' || code === 'EPERM') return new LocalTransferTargetError('FORBIDDEN');
+  if (code === 'EEXIST') return new LocalTransferTargetError('CONFLICT');
   if (code === 'ENOENT') return new LocalTransferTargetError('NOT_FOUND');
   if (code === 'EISDIR' || code === 'ENOTDIR') return new LocalTransferTargetError('INVALID_REQUEST');
   return new LocalTransferTargetError('UNAVAILABLE');
@@ -60,6 +61,10 @@ function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
     left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
 
+function sameObject(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 async function inspect(path: string): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
   try { return await lstat(path); }
   catch (error) {
@@ -87,10 +92,10 @@ async function nextAvailablePath(selectedPath: string, initialName: string): Pro
 }
 
 /** Creates a sibling temp file and commits it without replacing an unapproved local file. */
-export async function prepareLocalTransferTarget(selectedPath: string, policy: FileTransferConflictPolicy): Promise<LocalTransferTarget> {
+export async function prepareLocalTransferTarget(selectedPath: string, policy: FileTransferConflictPolicy, operationId: string): Promise<LocalTransferTarget> {
   if (typeof selectedPath !== 'string' || selectedPath.length === 0 || selectedPath.length > MAX_TRANSFER_PATH_CHARS ||
       selectedPath.includes('\0') || !isAbsolute(selectedPath) || resolve(selectedPath) !== selectedPath ||
-      !['overwrite', 'rename', 'skip'].includes(policy)) throw new LocalTransferTargetError('INVALID_REQUEST');
+      !localTransferPartialName(operationId) || !['overwrite', 'rename', 'skip'].includes(policy)) throw new LocalTransferTargetError('INVALID_REQUEST');
   const originalName = basename(selectedPath);
   if (!originalName || originalName === '.' || originalName === '..') throw new LocalTransferTargetError('INVALID_REQUEST');
 
@@ -110,11 +115,18 @@ export async function prepareLocalTransferTarget(selectedPath: string, policy: F
     }
   }
 
-  const temporaryPath = join(dirname(finalPath), `.mrt-${randomUUID()}.partial`);
+  const temporaryPath = join(dirname(finalPath), localTransferPartialName(operationId)!);
   let stream: WriteStream;
+  let stageIdentity: FileIdentity;
   try {
     const handle = await open(temporaryPath, 'wx');
-    stream = handle.createWriteStream({ autoClose: true });
+    try {
+      stageIdentity = identity(await handle.stat());
+      stream = handle.createWriteStream({ autoClose: true });
+    } catch {
+      await handle.close().catch(() => undefined);
+      throw new LocalTransferTargetError('UNAVAILABLE');
+    }
   } catch (error) { throw mapLocalTransferTargetError(error); }
 
   let completed = false;
@@ -126,7 +138,8 @@ export async function prepareLocalTransferTarget(selectedPath: string, policy: F
       try {
         await finished(stream);
         const temporaryStats = await lstat(temporaryPath);
-        if (!temporaryStats.isFile() || temporaryStats.isSymbolicLink() || !Number.isSafeInteger(temporaryStats.size)) {
+        if (!temporaryStats.isFile() || temporaryStats.isSymbolicLink() || !sameObject(stageIdentity, identity(temporaryStats)) ||
+            !Number.isSafeInteger(temporaryStats.size)) {
           throw new LocalTransferTargetError('UNAVAILABLE');
         }
         if (originalIdentity) {
@@ -182,7 +195,17 @@ export async function prepareLocalTransferTarget(selectedPath: string, policy: F
       cleaned = true;
       stream.destroy();
       await finished(stream).catch(() => undefined);
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      let current: Awaited<ReturnType<typeof lstat>> | undefined;
+      try { current = await lstat(temporaryPath); }
+      catch (error) {
+        if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return;
+        throw new LocalTransferTargetError('UNAVAILABLE');
+      }
+      if (!current.isFile() || current.isSymbolicLink() || !sameObject(stageIdentity, identity(current))) {
+        throw new LocalTransferTargetError('UNAVAILABLE');
+      }
+      try { await rm(temporaryPath); }
+      catch { throw new LocalTransferTargetError('UNAVAILABLE'); }
     }
   };
 }

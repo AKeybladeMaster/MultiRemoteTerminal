@@ -1,6 +1,6 @@
 # ADR-0010: WP-04B loopback-requested remote SSH forwarding
 
-**Status:** Accepted for WP-04B (2026-10-24)
+**Status:** Accepted for WP-04B (2026-10-24); loopback-only bind decision superseded in part by [ADR-0061](ADR-0061-wp04k-public-remote-ssh-forwarding.md)
 
 ## Context
 
@@ -24,7 +24,8 @@ documents that `GatewayPorts yes` forces wildcard binding.
   request a shell, PTY or SFTP subsystem.
 - Request the remote bind with `forwardIn('127.0.0.1', port)`. When port `0` is
   selected, publish the assigned server port only after the server confirms the
-  bind. Warn in the manager before start that server `GatewayPorts` policy may
+  bind. Warn in the manager before start and require a main-process confirmation
+  on every direct or gateway-routed start that server `GatewayPorts` policy may
   expose the listener on other interfaces. The SSH worker accepts each matching
   forwarded channel, connects to the configured local destination and relays
   data between the two streams.
@@ -43,19 +44,24 @@ documents that `GatewayPorts yes` forces wildcard binding.
 ## Consequences
 
 The tunnel model, storage, typed IPC and manager now share local and remote
-definitions without widening renderer capabilities. The app requests loopback
-and warns that server policy can widen the actual bind; the fixture verifies
-the requested address and visible warning, not behavior on every server
-configuration. P-24 remains partial until broader server behavior and protected
-nonlocal-listener consent are implemented and verified.
+definitions without widening renderer capabilities. The app requests loopback,
+warns in the manager and obtains per-start main-process consent because server
+policy can widen the actual bind. The fixture verifies the requested address and
+visible warning, not behavior on every server configuration. P-24 remains
+partial until configurable non-loopback binds, broader server behavior and
+interoperability are implemented and verified.
 
 ## Acceptance evidence
 
 WP-04B requires domain and protocol validation for the remote mode, SQLite
 round-trip, worker-level channel-to-local-socket forwarding and cleanup, plus a
 Windows E2E from the tunnel manager through the utility worker to a loopback
-destination. The E2E must verify the visible server-policy exposure warning,
+destination. The E2E verifies the visible server-policy exposure warning,
 requested `127.0.0.1` bind, server-assigned port reporting, explicit stop,
 app-shutdown cleanup, no shell request and stopped restoration after restart.
-Broader SSH server interoperability and actual bind behavior under non-loopback
-server policy are not claimed.
+WP-04B.1 acceptance requires the tunnel controller to request a main-process
+confirmation on every direct or gateway-routed start while holding the saved
+definition against edits and deletion. The dialog identifies the SSH server,
+requested port and destination. Tests must verify cancellation does not open SSH
+and approval allows the request. Broader SSH server interoperability and actual
+bind behavior under non-loopback server policy are not claimed.

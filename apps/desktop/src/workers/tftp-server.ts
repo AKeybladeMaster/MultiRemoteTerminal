@@ -69,9 +69,10 @@ async function openRootFile(rootDirectory: string, fileName: string): Promise<Op
     const before = await lstat(filePath);
     if (!before.isFile() || before.isSymbolicLink()) throw new TftpServerFailure('FORBIDDEN');
     handle = await open(filePath, 'r');
-    const [opened, canonicalPath] = await Promise.all([handle.stat(), realpath(filePath)]);
+    const [opened, pathAfterOpen, canonicalPath] = await Promise.all([handle.stat(), lstat(filePath), realpath(filePath)]);
     const current = await stat(canonicalPath);
-    if (!opened.isFile() || !current.isFile() || !isSameFile(opened, current) || !isSameFile(before, opened) ||
+    if (!opened.isFile() || !pathAfterOpen.isFile() || pathAfterOpen.isSymbolicLink() || !isSameFile(pathAfterOpen, opened) ||
+        !current.isFile() || !isSameFile(opened, current) || !isSameFile(before, opened) ||
         dirname(canonicalPath) !== rootDirectory || !isSingleChild(rootDirectory, canonicalPath)) {
       throw new TftpServerFailure('FORBIDDEN');
     }

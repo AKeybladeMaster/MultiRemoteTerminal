@@ -1,4 +1,5 @@
 export function transferFailureMessage(code: string, transport: 'sftp' | 'ftp', direction: 'upload' | 'download', droppedFile = false): string {
+  if (code === 'BUSY') return 'The transfer could not start because a resource is busy or the interrupted-transfer list is full. Try again shortly; if interrupted transfers are listed, dismiss one before retrying.';
   if (code === 'TIMEOUT' && direction === 'upload') {
     return `${transport.toUpperCase()} upload timed out. The server may retain an incomplete or complete file; reconnect and inspect the remote folder before removing anything.`;
   }

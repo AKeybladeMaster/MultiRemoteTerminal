@@ -21,6 +21,7 @@ class FakeFtpWorker extends EventEmitter {
   postMessage(value: unknown): void {
     const request = value as Record<string, unknown>;
     this.requests.push(request);
+    if (request.type === 'progress-ack') return;
     if (request.command === 'files.cancel') {
       const pendingList = this.requests.find(item => item.command === 'files.list' && item.sessionId === request.sessionId);
       if (pendingList) queueMicrotask(() => this.replyError(pendingList.requestId as string, 'CANCELLED', false));
@@ -44,8 +45,8 @@ class FakeFtpWorker extends EventEmitter {
       ...(sessionUsable === undefined ? {} : { sessionUsable }) });
   }
 
-  progress(requestId: string, progress: Record<string, unknown>): void {
-    this.emit('message', { version: 1, type: 'progress', requestId, progress });
+  progress(requestId: string, progress: Record<string, unknown>, progressId?: string): void {
+    this.emit('message', { version: 1, type: 'progress', requestId, progress, ...(progressId ? { progressId } : {}) });
   }
 
   kill(): boolean {
@@ -178,4 +179,57 @@ test('FTP worker host lets an active commit settle before enforcing its bounded 
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal((await upload).code, 'TIMEOUT');
   assert.equal(worker.killed, true, 'a non-settling commit remains bounded');
+});
+
+test('FTP worker host acknowledges artifact metadata only after the progress handler settles', async () => {
+  const worker = new FakeFtpWorker(false, false, true);
+  const host = new FtpFilesWorkerHost('ftp-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  await host.open(sessionId, { host: 'files.example.net', port: 21, secure: true }, { username: 'alice', password: 'secret' });
+
+  let persist!: () => void;
+  const persistence = new Promise<void>(resolve => { persist = resolve; });
+  const upload = host.uploadFile(sessionId, operationId, 'C:\\upload.bin', '/', 'upload.bin', 'rename', undefined,
+    async progress => { assert.deepEqual(progress.remoteArtifactNames, ['server-selected.bin']); await persistence; });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const request = worker.requests.find(item => item.command === 'files.upload');
+  assert.ok(request);
+  const progressId = '33333333-3333-4333-8333-333333333333';
+  worker.progress(request.requestId as string, { sessionId, operationId, direction: 'upload', phase: 'transferring', fileName: 'upload.bin',
+    bytesTransferred: 0, totalBytes: 8, remoteArtifactNames: ['server-selected.bin'] }, progressId);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(worker.requests.some(item => item.type === 'progress-ack'), false);
+
+  persist();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(worker.requests.find(item => item.type === 'progress-ack'), {
+    version: 1, type: 'progress-ack', requestId: request.requestId, progressId, persisted: true
+  });
+  worker.reply(request.requestId as string, { direction: 'upload', fileName: 'server-selected.bin', bytesTransferred: 8, state: 'completed' });
+  await upload;
+  await host.shutdown();
+});
+
+test('FTP worker host denies artifact persistence when its recovery callback fails', async () => {
+  const worker = new FakeFtpWorker(false, false, true);
+  const host = new FtpFilesWorkerHost('ftp-worker.js', 'desktop-app', () => worker as unknown as UtilityProcess);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const operationId = '22222222-2222-4222-8222-222222222222';
+  await host.open(sessionId, { host: 'files.example.net', port: 21, secure: true }, { username: 'alice', password: 'secret' });
+  const upload = host.uploadFile(sessionId, operationId, 'C:\\upload.bin', '/', 'upload.bin', 'rename', undefined,
+    async () => { throw new Error('storage unavailable'); });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const request = worker.requests.find(item => item.command === 'files.upload');
+  assert.ok(request);
+  const progressId = '33333333-3333-4333-8333-333333333333';
+  worker.progress(request.requestId as string, { sessionId, operationId, direction: 'upload', phase: 'transferring', fileName: 'upload.bin',
+    bytesTransferred: 0, totalBytes: 8, remoteArtifactNames: ['server-selected.bin'] }, progressId);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(worker.requests.find(item => item.type === 'progress-ack'), {
+    version: 1, type: 'progress-ack', requestId: request.requestId, progressId, persisted: false
+  });
+  worker.replyError(request.requestId as string, 'UNAVAILABLE');
+  await assert.rejects(upload, { code: 'UNAVAILABLE' });
+  await host.shutdown();
 });

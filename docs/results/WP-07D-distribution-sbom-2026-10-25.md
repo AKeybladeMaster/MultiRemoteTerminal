@@ -34,6 +34,16 @@ On Windows 11 x64 with Node.js 24.14.1 and pnpm 12.15.0:
 
 The package build still reports Vite's existing non-blocking 907.46 kB minified chunk advisory.
 
+## Current candidate filename guard - 2026-10-31
+
+The notice builder now rejects dependency-provided top-level license filenames containing Unicode control or format characters, including bidi controls, before copying the filename into the generated notice bundle. A regression assertion was authored in `tests/unit/package-release.test.ts`; this latest source/test change has not been run and does not supersede the historical results above.
+
+## Nested production notices - 2026-10-31
+
+The current source candidate adds the reviewed nested license files for `cpu-features@0.0.10` and `node-pty@1.1.0` to the bounded notice bundle. It rejects a changed version for either package until its nested license layout is reviewed, and rejects missing, non-regular, or out-of-package nested files. Regression fixtures were authored for both files and their missing-file paths. No test, build, notice generation, or package smoke has run on this candidate. This addresses the two omissions identified in [WP-07AB](WP-07AB-production-license-notice-review-2026-10-31.md); package-source provenance and legal compatibility remain open.
+
+The current source also adds each production runtime package's exact pnpm-lockfile SHA-512 integrity as a CycloneDX component hash and fails when a matching record is absent. Lock-parser and package-smoke assertions are authored but unrun. This records the lockfile's package integrity; installed package bytes and resulting artifacts have not yet been compared or regenerated.
+
 ## Remaining acceptance
 
 N-007 and M4 remain open pending a publisher certificate, a signed release build with independently verified Authenticode signatures, and selection of the intended release version. Windows 10, 200% DPI, offline operation, permissions, broader crash/recovery/shutdown checks, and the independent security/release review remain outstanding. This phase does not claim a signed release or MVP completion.

@@ -33,6 +33,9 @@ import { DEFAULT_ENABLED_LOCAL_SHELLS, DEFAULT_VISIBLE_LOCAL_SHELLS, LOCAL_SHELL
 import { DEFAULT_ENABLED_OPTIONAL_CONNECTIONS } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { OptionalConnectionId } from '../../../../packages/domain/src/optional-connection-tools.ts';
 import type { TftpServerStatus } from '../../../../packages/domain/src/tftp.ts';
+import { interruptedUploadArtifactNames } from '../../../../packages/domain/src/file-transfer-recovery.ts';
+import type { FileTransferRecoveryCursor, FileTransferRecoveryRecord } from '../../../../packages/domain/src/file-transfer-recovery.ts';
+import { escapeRecoveryFileNameForDisplay } from './transfer-recovery-display.ts';
 import { normalizeSerialConfiguration, serialConfigurationsEqual } from '../../../../packages/domain/src/serial.ts';
 import type { SerialConfiguration, SerialPortInfo } from '../../../../packages/domain/src/serial.ts';
 import type { TerminalHighlightRule } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -321,9 +324,15 @@ function Workbench() {
   const [localTextFile, setLocalTextFile] = useState<LocalTextFile>();
   const [startupGreeting, setStartupGreeting] = useState('');
   const [startupGreetingVisible, setStartupGreetingVisible] = useState(false);
+  const [interruptedTransfers, setInterruptedTransfers] = useState<readonly FileTransferRecoveryRecord[]>([]);
+  const [nextTransferRecoveryCursor, setNextTransferRecoveryCursor] = useState<FileTransferRecoveryCursor | null>(null);
+  const [loadingOlderTransfers, setLoadingOlderTransfers] = useState(false);
+  const [transferRecoveryError, setTransferRecoveryError] = useState<string>();
+  const [transferRecoveryActionError, setTransferRecoveryActionError] = useState<string>();
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
+  const transferRecoveryGeneration = useRef(0);
   const [showSftpBrowserBesideSsh, setShowSftpBrowserBesideSsh] = useState(true);
   const [visibleLocalShells, setVisibleLocalShells] = useState<readonly LocalShell[]>(DEFAULT_VISIBLE_LOCAL_SHELLS);
   const [enabledLocalShells, setEnabledLocalShells] = useState<readonly LocalShell[]>(DEFAULT_ENABLED_LOCAL_SHELLS);
@@ -1575,12 +1584,12 @@ function Workbench() {
   }), []);
 
   const openTerminal = useCallback(async (launch: LocalTerminalLaunch, savedTitle?: string, rememberWhenOpened = true,
-    dismissPalette = true) => {
+    dismissPalette = true, purpose?: 'powershell-tool-management'): Promise<string | undefined> => {
     if (!workbenchPreferencesLoaded || !enabledLocalShells.includes(launch.shell)) {
       setAlert(workbenchPreferencesLoaded
         ? `${shellName(launch.shell)} terminals are disabled in Workbench settings. Enable this shell to start or reopen a session.`
         : 'Local shell availability could not be confirmed. Check Workbench settings and try again.');
-      return;
+      return undefined;
     }
     if (dismissPalette) {
       setPaletteOpen(false);
@@ -1588,11 +1597,11 @@ function Workbench() {
       setAlert(undefined);
     }
     const sessionId = crypto.randomUUID();
-    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, launch, 80, 24);
+    const replyPromise = window.multiRemoteTerminal.openTerminal(sessionId, launch, 80, 24, purpose);
     pendingOpenRequests.current.set(sessionId, { transport: 'local', cancelled: false, reply: replyPromise });
     setOpeningSessions(current => [...current, { transport: 'local', sessionId, launch, cancelling: false }]);
     const reply = await replyPromise;
-    if (pendingOpenRequests.current.get(sessionId)?.cancelled) return;
+    if (pendingOpenRequests.current.get(sessionId)?.cancelled) return undefined;
     pendingOpenRequests.current.delete(sessionId);
     setOpeningSessions(current => current.filter(opening => opening.sessionId !== sessionId));
     if (!reply.ok) {
@@ -1603,7 +1612,7 @@ function Workbench() {
         : launch.shell === 'wsl'
           ? `Could not open ${launch.distribution}. It may have been removed from WSL; choose an installed distribution and try again.`
           : `Could not start ${shellName(launch.shell)} (${reply.error.code}).`);
-      return;
+      return undefined;
     }
     const ordinal = ++nextOrdinal.current[launch.shell];
     const title = launch.shell === 'wsl' ? `${launch.distribution} · WSL` : shellName(launch.shell);
@@ -1615,6 +1624,7 @@ function Workbench() {
     }
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
+    return reply.result.state === 'running' ? reply.result.sessionId : undefined;
   }, [enabledLocalShells, rememberOpenedSession, workbenchPreferencesLoaded]);
 
   const openSshTerminal = useCallback(async (hostInput: string, portInput: string, savedTitle?: string, gatewayProfileIds: readonly string[] = [],
@@ -1954,6 +1964,58 @@ function Workbench() {
   }, [closeTerminal, openSshConnect]);
 
   const toggleTheme = useCallback(() => setTheme(current => current === 'dark' ? 'light' : 'dark'), []);
+
+  const refreshInterruptedTransfers = useCallback(async () => {
+    const generation = ++transferRecoveryGeneration.current;
+    setLoadingOlderTransfers(false);
+    try {
+      const reply = await window.multiRemoteTerminal.listInterruptedFileTransfers(null);
+      if (generation !== transferRecoveryGeneration.current) return;
+      if (reply.ok) {
+        setInterruptedTransfers(reply.result.records);
+        setNextTransferRecoveryCursor(reply.result.nextCursor);
+        setTransferRecoveryError(undefined);
+      } else setTransferRecoveryError(reply.error.code);
+    } catch { if (generation === transferRecoveryGeneration.current) setTransferRecoveryError('UNAVAILABLE'); }
+  }, []);
+
+  const loadOlderInterruptedTransfers = useCallback(async () => {
+    const cursor = nextTransferRecoveryCursor;
+    if (!cursor || loadingOlderTransfers) return;
+    const generation = transferRecoveryGeneration.current;
+    setLoadingOlderTransfers(true);
+    try {
+      const reply = await window.multiRemoteTerminal.listInterruptedFileTransfers(cursor);
+      if (generation !== transferRecoveryGeneration.current) return;
+      if (reply.ok) {
+        setInterruptedTransfers(current => {
+          const known = new Set(current.map(record => record.operationId));
+          return [...current, ...reply.result.records.filter(record => !known.has(record.operationId))];
+        });
+        setNextTransferRecoveryCursor(reply.result.nextCursor);
+        setTransferRecoveryError(undefined);
+      } else setTransferRecoveryError(reply.error.code);
+    } catch { if (generation === transferRecoveryGeneration.current) setTransferRecoveryError('UNAVAILABLE'); }
+    finally { if (generation === transferRecoveryGeneration.current) setLoadingOlderTransfers(false); }
+  }, [loadingOlderTransfers, nextTransferRecoveryCursor]);
+
+  const dismissInterruptedTransfer = useCallback(async (operationId: string) => {
+    const reply = await window.multiRemoteTerminal.dismissInterruptedFileTransfer(operationId);
+    if (!reply.ok) { setTransferRecoveryError(reply.error.code); return; }
+    setInterruptedTransfers(current => current.filter(record => record.operationId !== operationId));
+  }, []);
+
+  const revealInterruptedDownloadPartial = useCallback(async (operationId: string) => {
+    const reply = await window.multiRemoteTerminal.revealInterruptedDownloadPartial(operationId);
+    setTransferRecoveryActionError(!reply.ok && reply.error.code !== 'CANCELLED'
+      ? reply.error.code === 'NOT_FOUND' ? 'No matching staged download was found in that folder.' : `Could not locate the staged download (${reply.error.code}).`
+      : undefined);
+  }, []);
+
+  useEffect(() => {
+    void refreshInterruptedTransfers();
+    return window.multiRemoteTerminal.onTransferRecoveryChanged(() => { void refreshInterruptedTransfers(); });
+  }, [refreshInterruptedTransfers]);
 
   useEffect(() => {
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#142231' : '#f3f6fa');
@@ -3114,8 +3176,7 @@ function Workbench() {
           <span>Command palette</span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>
         </button>
       </aside>
-      <main className="terminal-workspace" id="workspace" tabIndex={-1} data-opening={openingSessions.length > 0} data-recording={macroRecording !== undefined}
-        style={{ gridTemplateRows: ['48px', ...Array.from({ length: Number(openingSessions.length > 0) + Number(startupGreetingVisible && startupGreeting.length > 0) + Number(macroRecording !== undefined) }, () => 'auto'), 'minmax(0, 1fr)'].join(' ') }}>
+      <main className="terminal-workspace" id="workspace" tabIndex={-1}>
         <div className="tab-strip">
           <div className="tab-list" role="tablist" aria-label="Sessions">
             {sessions.map((session, index) => <button className={`tab-item ${session.sessionId === activeId ? 'selected' : ''}`} key={session.sessionId}
@@ -3168,6 +3229,32 @@ function Workbench() {
           <div><h2>Welcome</h2><p>{startupGreeting}</p></div>
           <button className="quiet-button" type="button" onClick={() => setStartupGreetingVisible(false)}>Dismiss greeting</button>
         </section>}
+        {transferRecoveryError && <section className="startup-greeting-banner interrupted-transfer-banner" role="alert" aria-label="Transfer recovery status">
+          <div><h2>Transfer recovery status unavailable</h2><p>Interrupted transfer records could not be loaded ({transferRecoveryError}).</p></div>
+          <button className="quiet-button" type="button" onClick={() => { void refreshInterruptedTransfers(); }}>Retry</button>
+        </section>}
+        {interruptedTransfers.length > 0 && <section className="startup-greeting-banner interrupted-transfer-banner" aria-label="Interrupted file transfers" aria-live="polite">
+          <div>
+            <h2>Interrupted file transfers</h2>
+            <p>These transfers were interrupted. They do not resume automatically. Check for partial files before retrying manually. Dismiss clears only this status; it does not delete staged files.</p>
+            {transferRecoveryActionError && <p role="alert">{transferRecoveryActionError}</p>}
+            <ul className="interrupted-transfer-list">
+              {interruptedTransfers.map(record => <li key={record.operationId}>
+                <span><strong>{record.direction === 'upload' ? 'Upload' : 'Download'} {escapeRecoveryFileNameForDisplay(record.fileName)}</strong> · {record.transport.toUpperCase()} · Recorded progress: {record.bytesTransferred.toLocaleString()} bytes
+                  {record.totalBytes === null ? '' : ` of ${record.totalBytes.toLocaleString()}`}</span>
+                {record.direction === 'upload' && <small>
+                  {interruptedUploadArtifactNames(record).length > 0 ? 'Possible remote upload artifacts: ' : 'No remote artifact name was recorded. '}
+                  {interruptedUploadArtifactNames(record).map((name, index) => <span key={name}>{index > 0 ? ', ' : ''}<code>{escapeRecoveryFileNameForDisplay(name)}</code></span>)}
+                  {interruptedUploadArtifactNames(record).length > 0 ? '. ' : ''}Reconnect and inspect the remote folder manually. Nothing is resumed automatically. A same-run reconnect may remove a worker-owned SFTP .partial stage; SFTP overwrite backups and FTP/FTPS artifacts remain for manual review.</small>}
+                {record.direction === 'download' && <button className="quiet-button" type="button"
+                  onClick={() => { void revealInterruptedDownloadPartial(record.operationId); }}>Locate local partial</button>}
+                <button className="quiet-button" type="button" onClick={() => { void dismissInterruptedTransfer(record.operationId); }}>Dismiss status</button>
+              </li>)}
+            </ul>
+            {nextTransferRecoveryCursor && <button className="quiet-button" type="button" disabled={loadingOlderTransfers}
+              onClick={() => { void loadOlderInterruptedTransfers(); }}>{loadingOlderTransfers ? 'Loading older transfers…' : 'Show older interrupted transfers'}</button>}
+          </div>
+        </section>}
         {macroRecording && <section className="macro-recording-banner" aria-label="Macro recording controls">
           <div className="macro-recording-copy">
             <strong>{macroRecording.status === 'saving' ? 'Saving recording' : macroRecording.status === 'stopped' ? `Recording stopped: ${macroRecording.name}` : `${macroRecording.status === 'paused' ? 'Recording paused' : 'Recording'}: ${macroRecording.name}`}</strong>
@@ -3191,6 +3278,7 @@ function Workbench() {
               aria-labelledby={`tab-${session.sessionId}`} hidden={session.sessionId !== activeId}>
               {session.transport === 'ftp' || session.transport === 'sftp'
                 ? <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId} transport={session.transport}
+                  interruptedTransfers={interruptedTransfers}
                   onReconnect={() => session.transport === 'ftp' ? reconnectFtp(session) : reconnectSftp(session)} />
                 : <div className={`terminal-panel-layout ${showSftpFilePane ? 'with-remote-files' : ''}`}>
                   <div className="terminal-pane-stage">
@@ -3204,7 +3292,7 @@ function Workbench() {
                   </div>
                   {session.transport === 'ssh' && session.state === 'running' &&
                     <RemoteFilesPane sessionId={session.sessionId} active={session.sessionId === activeId && showSftpFilePane}
-                      hidden={!showSftpFilePane} transport="sftp" />}
+                      interruptedTransfers={interruptedTransfers} hidden={!showSftpFilePane} transport="sftp" />}
                 </div>}
             </section>;
           })}
@@ -3231,6 +3319,7 @@ function Workbench() {
     {alert && <div className="alert-strip" role="alert"><span>{alert}</span><button type="button" aria-label="Dismiss message" onClick={() => setAlert(undefined)}>Dismiss</button></div>}
     {helpOpen && <HelpDialog onClose={closeHelp} />}
     {settingsOpen && <SettingsDialog onClose={closeSettings} onPreferencesSaved={applyWorkbenchPreferences}
+      onOpenPowerShellToolTerminal={() => openTerminal({ shell: 'powershell' }, 'PowerShell tool management', false, false, 'powershell-tool-management')}
       activePowerShellSessionId={active?.transport === 'local' && active.shell === 'powershell' && active.state === 'running' ? active.sessionId : undefined} />}
     <TftpServerDialog open={tftpServerOpen} enabled={tftpProviderEnabled} onStatusChange={setTftpServerStatus}
       onClose={() => setTftpServerOpen(false)} />

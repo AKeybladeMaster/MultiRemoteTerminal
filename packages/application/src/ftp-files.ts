@@ -6,7 +6,7 @@ import type { CancellationSignal, CancellationSource } from './cancellation.ts';
 import { canonicalizeFtpEndpoint, isFtpCommandArgument, isFtpDirectoryListing, isFtpFileName, isFtpRemotePath,
   isFtpTransferConflictPolicy, isFtpTransferProgress, isFtpTransferResult } from '../../domain/src/ftp.ts';
 import type { FtpEndpoint } from '../../domain/src/ftp.ts';
-import type { FtpTransferConflictPolicy, FtpTransferProgress, FtpTransferResult } from '../../domain/src/ftp.ts';
+import type { FtpTransferConflictPolicy, FtpTransferProgress, FtpTransferProgressHandler, FtpTransferResult } from '../../domain/src/ftp.ts';
 import type { RemoteDirectoryListing } from '../../domain/src/remote-files.ts';
 
 export interface FtpCredentials {
@@ -34,10 +34,10 @@ export interface FtpFilesProvider {
   listDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<RemoteDirectoryListing>;
   uploadFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<FtpTransferResult>;
+    onProgress?: FtpTransferProgressHandler): Promise<FtpTransferResult>;
   downloadFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<FtpTransferResult>;
+    onProgress?: FtpTransferProgressHandler): Promise<FtpTransferResult>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -50,13 +50,14 @@ export interface FtpFilesSession {
 
 export interface FtpFilesController {
   open(sessionId: string, host: string, port: number, secure: boolean, cancellation?: CredentialPromptCancellation): Promise<Outcome<FtpFilesSession>>;
+  getTransport(sessionId: string): 'ftp' | 'ftps' | undefined;
   listDirectory(sessionId: string, path: string, cancellation?: CancellationSignal): Promise<Outcome<RemoteDirectoryListing>>;
   uploadFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<Outcome<FtpTransferResult>>;
+    onProgress?: FtpTransferProgressHandler): Promise<Outcome<FtpTransferResult>>;
   downloadFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<Outcome<FtpTransferResult>>;
+    onProgress?: FtpTransferProgressHandler): Promise<Outcome<FtpTransferResult>>;
   cancelTransfer(sessionId: string, operationId: string): Promise<Outcome<Record<string, never>>>;
   close(sessionId: string): Promise<Outcome<Record<string, never>>>;
   closeAll(): Promise<void>;
@@ -179,7 +180,7 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
   } | {
     readonly direction: 'download'; readonly remotePath: string; readonly localPath: string;
     readonly conflictPolicy: FtpTransferConflictPolicy;
-  }, cancellation?: CancellationSignal, onProgress?: (progress: FtpTransferProgress) => void): Promise<Outcome<FtpTransferResult>> {
+  }, cancellation?: CancellationSignal, onProgress?: FtpTransferProgressHandler): Promise<Outcome<FtpTransferResult>> {
     if (!sessions.has(sessionId)) return failure('NOT_FOUND', 'terminal');
     if (!SESSION_ID.test(operationId) || transfers.has(operationId)) return failure('INVALID_REQUEST');
     if (cancellation?.aborted) return failure('CANCELLED');
@@ -200,10 +201,18 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
     const cancelForCaller = () => operationCancellation.abort();
     cancellation?.addEventListener('abort', cancelForCaller, { once: true });
     try {
-      const progress = (event: FtpTransferProgress) => {
-        if (transfers.get(operationId) !== transfer || event.operationId !== operationId || event.sessionId !== sessionId || !isFtpTransferProgress(event)) return;
+      const progress = (event: FtpTransferProgress): void | Promise<void> => {
+        if (transfers.get(operationId) !== transfer || event.operationId !== operationId || event.sessionId !== sessionId || !isFtpTransferProgress(event)) {
+          if (event.remoteArtifactNames !== undefined) throw new FtpFilesProviderError('UNAVAILABLE');
+          return;
+        }
         if (event.phase === 'committing') transfer.phase = 'committing';
-        try { onProgress?.(event); } catch { /* A UI progress listener cannot interrupt the transfer owner. */ }
+        if (event.remoteArtifactNames !== undefined) {
+          if (!onProgress) throw new FtpFilesProviderError('UNAVAILABLE');
+          return onProgress(event);
+        }
+        try { void Promise.resolve(onProgress?.(event)).catch(() => undefined); }
+        catch { /* A UI progress listener cannot interrupt the transfer owner. */ }
       };
       const result = args.direction === 'upload'
         ? await provider.uploadFile(sessionId, operationId, args.localPath, args.remoteDirectory, args.fileName, args.conflictPolicy,
@@ -227,13 +236,13 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
 
   async function uploadFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<Outcome<FtpTransferResult>> {
+    onProgress?: FtpTransferProgressHandler): Promise<Outcome<FtpTransferResult>> {
     return transferFile(sessionId, operationId, { direction: 'upload', localPath, remoteDirectory, fileName, conflictPolicy }, cancellation, onProgress);
   }
 
   async function downloadFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<Outcome<FtpTransferResult>> {
+    onProgress?: FtpTransferProgressHandler): Promise<Outcome<FtpTransferResult>> {
     return transferFile(sessionId, operationId, { direction: 'download', remotePath, localPath, conflictPolicy }, cancellation, onProgress);
   }
 
@@ -265,6 +274,10 @@ export function createFtpFilesController(provider: FtpFilesProvider, credentialP
 
   return Object.freeze({
     open,
+    getTransport(sessionId: string) {
+      const session = sessions.get(sessionId);
+      return session ? session.endpoint.secure ? 'ftps' : 'ftp' : undefined;
+    },
     listDirectory,
     uploadFile,
     downloadFile,

@@ -154,3 +154,50 @@ test('PowerShell profile application targets only a running local PowerShell ses
   assert.equal(provider.writes.length, 1);
   await controller.dispose();
 });
+
+test('PowerShell tool lifecycle is one-use and revoked by manual input on its marked session', async () => {
+  const provider = new FakeTerminalProvider();
+  const controller = createLocalTerminalController(provider);
+  const shellSessionId = 'c1f3ace8-9464-449b-9459-a41b642dc2a7';
+  const managementSessionId = '9c7dddc8-dc76-4b89-bd8e-403bc8170130';
+  const editedManagementSessionId = '9b4537b6-c0ef-42d4-a36e-4a0d12706a41';
+  const commandSessionId = '18f2f903-7b6f-4c8d-9c42-b63a58c4b087';
+  const invalidManagementSession = await controller.open('dfc673ed-f00a-49e8-a779-e6472e1682ee', { shell: 'cmd' }, size, 'powershell-tool-management');
+  assert.equal(invalidManagementSession.ok, false);
+  if (!invalidManagementSession.ok) assert.equal(invalidManagementSession.error.code, 'INVALID_REQUEST');
+  await controller.open(shellSessionId, { shell: 'powershell' }, size);
+  await controller.open(managementSessionId, { shell: 'powershell' }, size, 'powershell-tool-management');
+  await controller.open(editedManagementSessionId, { shell: 'powershell' }, size, 'powershell-tool-management');
+  await controller.open(commandSessionId, { shell: 'cmd' }, size);
+
+  const ordinarySession = await controller.managePowerShellTool(shellSessionId, 'install');
+  assert.equal(ordinarySession.ok, false);
+  if (!ordinarySession.ok) assert.equal(ordinarySession.error.code, 'FORBIDDEN');
+  assert.equal((await controller.write(editedManagementSessionId, 'Write-Output "manual"')).ok, true);
+  const editedSessionAction = await controller.managePowerShellTool(editedManagementSessionId, 'install');
+  assert.equal(editedSessionAction.ok, false);
+  if (!editedSessionAction.ok) assert.equal(editedSessionAction.error.code, 'FORBIDDEN');
+  assert.deepEqual(provider.writes, [{ sessionId: editedManagementSessionId, data: 'Write-Output "manual"' }]);
+  assert.deepEqual(await controller.managePowerShellTool(managementSessionId, 'install'), { ok: true, result: {} });
+  assert.equal(provider.writes.length, 2);
+  assert.equal(provider.writes[1]?.sessionId, managementSessionId);
+  assert.match(provider.writes[1]?.data ?? '', /Microsoft\.PowerShell/);
+  assert.match(provider.writes[1]?.data ?? '', /downloadedBytes \+ \$downloadCount -gt \$upstreamBundleBytes/);
+  assert.doesNotMatch(provider.writes[1]?.data ?? '', /winget/u);
+  assert.match(provider.writes[1]?.data ?? '', /Add-AppxPackage -Path \$bundle\.FullName -Confirm/);
+  const repeatedAction = await controller.managePowerShellTool(managementSessionId, 'update');
+  assert.equal(repeatedAction.ok, false);
+  if (!repeatedAction.ok) assert.equal(repeatedAction.error.code, 'FORBIDDEN');
+
+  const wrongShell = await controller.managePowerShellTool(commandSessionId, 'remove');
+  assert.equal(wrongShell.ok, false);
+  if (!wrongShell.ok) assert.equal(wrongShell.error.code, 'FORBIDDEN');
+  assert.equal((await controller.managePowerShellTool('c8f87744-bd2c-4c0d-9a18-a4a324dd71fd', 'install')).ok, false);
+  assert.equal(provider.writes.length, 2, 'rejected tool actions must not reach a terminal');
+  await controller.close(managementSessionId);
+  const closed = await controller.managePowerShellTool(managementSessionId, 'update');
+  assert.equal(closed.ok, false);
+  if (!closed.ok) assert.equal(closed.error.code, 'NOT_FOUND');
+  assert.equal(provider.writes.length, 2);
+  await controller.dispose();
+});

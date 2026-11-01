@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import type { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { truncateSync, writeFileSync } from 'node:fs';
+import { renameSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createFtpFilesController, FtpFilesProviderError } from '../../packages/application/src/ftp-files.ts';
@@ -14,8 +14,8 @@ import { canonicalizeFtpEndpoint, isCanonicalFtpEndpoint, isFtpCommandArgument, 
 import { isRemotePath } from '../../packages/domain/src/remote-files.ts';
 import { createFtpTransportProvider } from '../../apps/desktop/src/workers/ftp-transport-provider.ts';
 import type { FtpLibraryClient, FtpLibraryFileInfo } from '../../apps/desktop/src/workers/ftp-transport-provider.ts';
-import { mapLocalTransferTargetError, prepareLocalTransferTarget } from '../../apps/desktop/src/workers/local-transfer-target.ts';
-import { parseFtpWorkerInput, parseFtpWorkerMessage } from '../../apps/desktop/src/workers/ftp-worker-protocol.ts';
+import { LocalTransferTargetError, mapLocalTransferTargetError, prepareLocalTransferTarget } from '../../apps/desktop/src/workers/local-transfer-target.ts';
+import { parseFtpWorkerInput, parseFtpWorkerMessage, parseFtpWorkerProgressAck } from '../../apps/desktop/src/workers/ftp-worker-protocol.ts';
 
 const sessionId = '18f2f903-7b6f-4c8d-9c42-b63a58c4b087';
 const requestId = '11111111-1111-4111-8111-111111111111';
@@ -48,10 +48,12 @@ test('FTP controller validates endpoints, prompts separately, wipes credential r
   assert.equal(isCanonicalFtpEndpoint({ host: 'Files.Example.net.', port: 2121, secure: true }), false);
   const opened = await controller.open(sessionId, 'Files.Example.net.', 2121, true);
   assert.deepEqual(opened, { ok: true, result: { sessionId, endpoint: { host: 'files.example.net', port: 2121, secure: true }, state: 'running' } });
+  assert.equal(controller.getTransport(sessionId), 'ftps');
   assert.equal(purpose, 'ftp-account');
   assert.deepEqual(providerCredentials, { username: '', password: '' }, 'controller clears the provider credential object after login');
   assert.deepEqual(await controller.listDirectory(sessionId, '/home'), { ok: true, result: { path: '/home', entries: [], truncated: false } });
   assert.deepEqual(await controller.close(sessionId), { ok: true, result: {} });
+  assert.equal(controller.getTransport(sessionId), undefined);
   await controller.dispose();
   assert.deepEqual(calls, [
     `open:${sessionId}:files.example.net:2121:true`, `list:${sessionId}:/home`, `close:${sessionId}`, 'shutdown'
@@ -94,7 +96,7 @@ test('local FTP skip policy preserves a destination created during the staged do
   const transferRoot = await mkdtemp(join(tmpdir(), 'mrt-ftp-skip-race-'));
   const destination = join(transferRoot, 'raced.txt');
   try {
-    const target = await prepareLocalTransferTarget(destination, 'skip');
+    const target = await prepareLocalTransferTarget(destination, 'skip', '018f7b8a-6d19-4e0c-8c6a-682f1316f004');
     await pipeline(Readable.from(['incoming']), target.stream!);
     const result = await target.complete(() => {
       writeFileSync(destination, 'another process won');
@@ -108,10 +110,49 @@ test('local FTP skip policy preserves a destination created during the staged do
   }
 });
 
+test('local staged downloads use the durable transfer operation ID', async () => {
+  const transferRoot = await mkdtemp(join(tmpdir(), 'mrt-ftp-partial-recovery-'));
+  const destination = join(transferRoot, 'interrupted.txt');
+  const operationId = '018f7b8a-6d19-4e0c-8c6a-682f1316f004';
+  try {
+    const target = await prepareLocalTransferTarget(destination, 'overwrite', operationId);
+    assert.deepEqual(await readdir(transferRoot), [`.mrt-${operationId}.partial`]);
+    await target.cleanup();
+    await writeFile(join(transferRoot, `.mrt-${operationId}.partial`), 'stale');
+    await assert.rejects(prepareLocalTransferTarget(destination, 'overwrite', operationId),
+      (error: unknown) => error instanceof LocalTransferTargetError && error.code === 'CONFLICT');
+  } finally {
+    await rm(transferRoot, { recursive: true, force: true });
+  }
+});
+
+test('local staged download will not commit or delete a replacement file at its partial path', async () => {
+  const transferRoot = await mkdtemp(join(tmpdir(), 'mrt-local-partial-identity-'));
+  const destination = join(transferRoot, 'download.txt');
+  const operationId = '018f7b8a-6d19-4e0c-8c6a-682f1316f005';
+  const partialPath = join(transferRoot, `.mrt-${operationId}.partial`);
+  const replacementStage = join(transferRoot, 'foreign-stage-object');
+  try {
+    const target = await prepareLocalTransferTarget(destination, 'rename', operationId);
+    await pipeline(Readable.from(['incoming']), target.stream!);
+    writeFileSync(replacementStage, 'foreign filesystem object');
+    unlinkSync(partialPath);
+    renameSync(replacementStage, partialPath);
+    await assert.rejects(target.complete(() => true),
+      error => error instanceof LocalTransferTargetError && error.code === 'UNAVAILABLE');
+    await assert.rejects(target.cleanup(), error => error instanceof LocalTransferTargetError && error.code === 'UNAVAILABLE');
+    assert.equal(await readFile(partialPath, 'utf8'), 'foreign filesystem object');
+    await assert.rejects(readFile(destination), (error: unknown) => typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT');
+  } finally {
+    await rm(transferRoot, { recursive: true, force: true });
+  }
+});
+
 test('local download filesystem errors retain actionable categories without retiring the FTP session', () => {
   assert.equal(mapLocalTransferTargetError(Object.assign(new Error('denied'), { code: 'EACCES' })).code, 'FORBIDDEN');
   assert.equal(mapLocalTransferTargetError(Object.assign(new Error('denied'), { code: 'EPERM' })).code, 'FORBIDDEN');
   assert.equal(mapLocalTransferTargetError(Object.assign(new Error('missing parent'), { code: 'ENOENT' })).code, 'NOT_FOUND');
+  assert.equal(mapLocalTransferTargetError(Object.assign(new Error('stale stage'), { code: 'EEXIST' })).code, 'CONFLICT');
   assert.equal(mapLocalTransferTargetError(Object.assign(new Error('disk error'), { code: 'EIO' })).code, 'UNAVAILABLE');
 });
 
@@ -308,7 +349,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
         if (this.uploadDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, this.uploadDelayMs));
       }
     }
-    async uploadUniqueFrom(source: Readable, remotePath: string): Promise<string> {
+    async uploadUniqueFrom(source: Readable, remotePath: string, onUniqueName?: (name: string) => void | Promise<void>): Promise<string> {
       this.uploadCount++;
       if (this.closed) throw new Error('connection closed');
       this.uniqueStoreHook?.(remotePath);
@@ -326,6 +367,7 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       }
       const chunks: Buffer[] = [];
       this.files.set(actualPath, Buffer.alloc(0));
+      await onUniqueName?.(basename(actualPath));
       for await (const value of source) {
         if (this.closed) throw new Error('connection closed');
         const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -406,25 +448,33 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     clients[0]!.listing = [{ name: 'report.bin', type: 1, size: 3 }];
     clients[0]!.files.set('report.bin', Buffer.from('old'));
     const uploadProgress: number[] = [];
+    const uploadArtifactNames: string[][] = [];
     const uploaded = await provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222222', uploadPath, '.', 'report.bin', 'rename', undefined,
-      event => uploadProgress.push(event.bytesTransferred));
+      event => {
+        uploadProgress.push(event.bytesTransferred);
+        if (event.remoteArtifactNames) uploadArtifactNames.push([...event.remoteArtifactNames]);
+      });
     assert.deepEqual(uploaded, { direction: 'upload', fileName: 'report (1).bin', bytesTransferred: 10, state: 'completed' });
     assert.equal(clients[0]!.files.get('report.bin')?.toString(), 'old');
     assert.equal(clients[0]!.files.get('report (1).bin')?.toString(), 'new upload');
-    assert.deepEqual(uploadProgress, [0, 10]);
+    assert.deepEqual(uploadProgress, [0, 0, 10]);
+    assert.deepEqual(uploadArtifactNames, [['report (1).bin']]);
 
     const committedDespiteLateCancelPath = join(transferRoot, 'late-cancel.bin');
     await writeFile(committedDespiteLateCancelPath, 'commit wins');
     clients[0]!.listing = [{ name: 'late-cancel.bin', type: 1, size: 9 }];
     clients[0]!.files.set('late-cancel.bin', Buffer.from('old value'));
     const lateCommitAbort = new AbortController();
+    const overwriteArtifactNames: string[][] = [];
     clients[0]!.renameHook = () => lateCommitAbort.abort();
     const committed = await provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222224', committedDespiteLateCancelPath, '.', 'late-cancel.bin',
-      'overwrite', lateCommitAbort.signal);
+      'overwrite', lateCommitAbort.signal, event => { if (event.remoteArtifactNames) overwriteArtifactNames.push([...event.remoteArtifactNames]); });
     assert.equal(committed.state, 'completed', 'a cancellation after the commit point reports the committed result');
     assert.equal(clients[0]!.files.get('late-cancel.bin')?.toString(), 'commit wins');
     assert.equal([...clients[0]!.files.entries()].find(([path]) => path.endsWith('.backup'))?.[1].toString(), 'old value',
       'the previous FTP target remains under its generated backup name');
+    assert.ok(overwriteArtifactNames.some(names => names.length === 2 && names.some(name => name.endsWith('.partial')) && names.some(name => name.endsWith('.backup'))),
+      'an interrupted overwrite records both possible remote artifact basenames');
 
     const rollbackPath = join(transferRoot, 'rollback.bin');
     await writeFile(rollbackPath, 'replacement');
@@ -468,26 +518,58 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
       await writeFile(localPath, `server name under ${policy}`);
       clients[0]!.listing = [];
       clients[0]!.uniqueStoreNameOverride = actualName;
+      const progressEvents: unknown[] = [];
       const result = await provider.uploadFile(sessionId,
         policy === 'skip' ? '22222222-2222-4222-8222-222222222227' : '22222222-2222-4222-8222-222222222228',
-        localPath, '.', basename(localPath), policy);
+        localPath, '.', basename(localPath), policy, undefined, event => { progressEvents.push(event); });
       assert.deepEqual(result, { direction: 'upload', fileName: actualName, bytesTransferred: Buffer.byteLength(`server name under ${policy}`), state: 'completed' },
         `a server-assigned STOU name is accepted for ${policy} when no competing requested name appeared`);
       assert.equal(clients[0]!.files.get(actualName)?.toString(), `server name under ${policy}`);
+      assert.equal(progressEvents.some(event => typeof event === 'object' && event !== null &&
+        'remoteArtifactNames' in event && Array.isArray(event.remoteArtifactNames) && event.remoteArtifactNames.includes(actualName)), true,
+      'the RFC-reported STOU basename is surfaced before file data starts');
     }
 
-    clients[0]!.listing = [{ name: 'server.txt', type: 1, size: 12 }];
-    clients[0]!.files.set('server.txt', Buffer.from('remote data'));
+    const durabilityPath = join(transferRoot, 'durability.bin');
+    await writeFile(durabilityPath, 'persist first');
+    let releasePersistence!: () => void;
+    let reportArtifact!: () => void;
+    const persistence = new Promise<void>(resolve => { releasePersistence = resolve; });
+    const artifactReported = new Promise<void>(resolve => { reportArtifact = resolve; });
+    const durabilityUpload = provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222229', durabilityPath, '.', 'durability.bin', 'rename', undefined,
+      async event => {
+        if (event.remoteArtifactNames?.includes('durability.bin')) { reportArtifact(); await persistence; }
+      });
+    await artifactReported;
+    assert.equal(clients[0]!.files.get('durability.bin')?.byteLength, 0,
+      'FTP payload bytes do not begin before the server-selected name is durably acknowledged');
+    releasePersistence();
+    await durabilityUpload;
+    assert.equal(clients[0]!.files.get('durability.bin')?.toString(), 'persist first');
+
+    const rejectedPersistencePath = join(transferRoot, 'rejected-persistence.bin');
+    await writeFile(rejectedPersistencePath, 'must not be sent');
+    await assert.rejects(provider.uploadFile(sessionId, '22222222-2222-4222-8222-222222222230', rejectedPersistencePath, '.', 'rejected-persistence.bin',
+      'rename', undefined, async event => {
+        if (event.remoteArtifactNames?.includes('rejected-persistence.bin')) throw new FtpFilesProviderError('UNAVAILABLE');
+      }), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    assert.equal(clients[0]!.files.get('rejected-persistence.bin')?.byteLength, 0,
+      'an upload fails closed when recovery metadata cannot be stored');
+
+    const downloadSessionId = '28f2f903-7b6f-4c8d-9c42-b63a58c4b087';
+    await provider.open(downloadSessionId, { host: 'ftp.example.net', port: 21, secure: false }, credentials);
+    clients[1]!.listing = [{ name: 'server.txt', type: 1, size: 12 }];
+    clients[1]!.files.set('server.txt', Buffer.from('remote data'));
     const downloadPath = join(transferRoot, 'download.txt');
     await writeFile(downloadPath, 'keep existing');
-    const downloaded = await provider.downloadFile(sessionId, '33333333-3333-4333-8333-333333333333', 'server.txt', downloadPath, 'rename');
+    const downloaded = await provider.downloadFile(downloadSessionId, '33333333-3333-4333-8333-333333333333', 'server.txt', downloadPath, 'rename');
     assert.deepEqual(downloaded, { direction: 'download', fileName: 'download (1).txt', bytesTransferred: 11, state: 'completed' });
     assert.equal((await readFile(downloadPath)).toString(), 'keep existing');
     assert.equal((await readFile(join(transferRoot, 'download (1).txt'))).toString(), 'remote data');
-    const overwritten = await provider.downloadFile(sessionId, '33333333-3333-4333-8333-333333333334', 'server.txt', downloadPath, 'overwrite');
+    const overwritten = await provider.downloadFile(downloadSessionId, '33333333-3333-4333-8333-333333333334', 'server.txt', downloadPath, 'overwrite');
     assert.deepEqual(overwritten, { direction: 'download', fileName: 'download.txt', bytesTransferred: 11, state: 'completed' });
     assert.equal((await readFile(downloadPath)).toString(), 'remote data');
-    const skipped = await provider.downloadFile(sessionId, '44444444-4444-4444-8444-444444444444', 'server.txt', downloadPath, 'skip');
+    const skipped = await provider.downloadFile(downloadSessionId, '44444444-4444-4444-8444-444444444444', 'server.txt', downloadPath, 'skip');
     assert.deepEqual(skipped, { direction: 'download', fileName: 'download.txt', bytesTransferred: 0, state: 'skipped' });
 
     const slowUploadPath = join(transferRoot, 'slow.bin');
@@ -522,10 +604,6 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     assert.equal(clients[0]!.closed, true, 'the session is retired when rollback cannot restore the target');
     await assert.rejects(provider.listDirectory(sessionId, '.'), error => (error as { code?: string }).code === 'UNAVAILABLE');
 
-    const downloadSessionId = '28f2f903-7b6f-4c8d-9c42-b63a58c4b087';
-    await provider.open(downloadSessionId, { host: 'ftp.example.net', port: 21, secure: false }, credentials);
-    clients[1]!.listing = [{ name: 'server.txt', type: 1, size: 12 }];
-    clients[1]!.files.set('server.txt', Buffer.from('remote data'));
     const interruptedDownloadPath = join(transferRoot, 'cancelled-download.txt');
     const downloadAbort = new AbortController();
     const interruptedDownload = provider.downloadFile(downloadSessionId, '44444444-4444-4444-8444-444444444445', 'server.txt', interruptedDownloadPath, 'rename',
@@ -533,6 +611,25 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     await assert.rejects(interruptedDownload, error => (error as { code?: string }).code === 'CANCELLED');
     assert.equal(await readdir(transferRoot).then(names => names.some(name => name.endsWith('.partial'))), false, 'cancel removes the local partial download');
     assert.equal(clients[1]!.closed, true, 'cancelling an active RETR closes the FTP control connection');
+
+    const cleanupFailureSessionId = '28f2f903-7b6f-4c8d-9c42-b63a58c4b088';
+    const cleanupFailureOperationId = '44444444-4444-4444-8444-444444444446';
+    await provider.open(cleanupFailureSessionId, { host: 'ftp.example.net', port: 21, secure: false }, credentials);
+    clients[2]!.listing = [{ name: 'server.txt', type: 1, size: 12 }];
+    clients[2]!.files.set('server.txt', Buffer.from('remote data'));
+    const cleanupFailurePath = join(transferRoot, 'cleanup-failure.txt');
+    const cleanupFailurePartial = join(transferRoot, `.mrt-${cleanupFailureOperationId}.partial`);
+    const replacementStage = join(transferRoot, 'foreign-stage-object');
+    await assert.rejects(provider.downloadFile(cleanupFailureSessionId, cleanupFailureOperationId, 'server.txt', cleanupFailurePath, 'rename',
+      undefined, event => {
+        if (event.phase !== 'committing') return;
+        writeFileSync(replacementStage, 'foreign filesystem object');
+        unlinkSync(cleanupFailurePartial);
+        renameSync(replacementStage, cleanupFailurePartial);
+        throw new LocalTransferTargetError('UNAVAILABLE');
+      }), error => (error as { code?: string }).code === 'UNAVAILABLE');
+    assert.equal(await readFile(cleanupFailurePartial, 'utf8'), 'foreign filesystem object',
+      'a failed partial cleanup does not delete a replacement file at the same path');
   } finally {
     await rm(transferRoot, { recursive: true, force: true });
   }
@@ -555,10 +652,15 @@ test('FTP transport bounds directory listings, maps metadata, and closes a cance
     await writeFile(interruptedPath, interruptedContents);
     await recoveryProvider.open('recovery-first', recoveryEndpoint, recoveryCredentials);
     recoveryClients[0]!.failUniqueAfterFirstChunk = true;
+    let interruptedArtifactNames: readonly string[] = [];
     await assert.rejects(recoveryProvider.uploadFile('recovery-first', '66666666-6666-4666-8666-666666666666', interruptedPath,
-      '.', 'interrupted.bin', 'rename'), error => (error as { code?: string }).code === 'UNAVAILABLE');
+      '.', 'interrupted.bin', 'rename', undefined, event => {
+        if (event.remoteArtifactNames) interruptedArtifactNames = event.remoteArtifactNames;
+      }),
+    error => (error as { code?: string }).code === 'UNAVAILABLE');
     const orphanPath = [...recoveryFiles.keys()][0];
     assert.ok(orphanPath);
+    assert.deepEqual(interruptedArtifactNames, [basename(orphanPath)], 'a transfer failure retains its server-selected artifact basename');
     assert.ok(recoveryFiles.get(orphanPath)!.byteLength < interruptedContents.byteLength);
 
     await recoveryProvider.open('recovery-other-user', recoveryEndpoint, { username: 'bob', password: 'different-secret' });
@@ -656,6 +758,18 @@ test('FTP worker IPC rejects noncanonical, secret-bearing, and malformed message
   assert.equal(parseFtpWorkerMessage({ version: 1, type: 'progress', requestId, progress: {
     sessionId, operationId: requestId, direction: 'upload', phase: 'committing', fileName: 'archive.bin', bytesTransferred: 1, totalBytes: 1
   } })?.type, 'progress');
+  const artifactProgress = { sessionId, operationId: requestId, direction: 'upload', phase: 'transferring', fileName: 'archive.bin',
+    bytesTransferred: 0, totalBytes: 1, remoteArtifactNames: ['server-name.bin'] };
+  assert.equal(parseFtpWorkerMessage({ version: 1, type: 'progress', requestId, progress: artifactProgress }), undefined,
+    'artifact progress must have a correlation ID so persistence can be acknowledged');
+  const progressId = '22222222-2222-4222-8222-222222222222';
+  assert.equal(parseFtpWorkerMessage({ version: 1, type: 'progress', requestId, progress: artifactProgress, progressId })?.type, 'progress');
+  assert.equal(parseFtpWorkerMessage({ version: 1, type: 'progress', requestId, progress: artifactProgress, progressId, secret: 'unexpected' }), undefined);
+  const ack = { version: 1, type: 'progress-ack', requestId, progressId, persisted: true };
+  assert.deepEqual(parseFtpWorkerProgressAck(ack), ack);
+  assert.equal(parseFtpWorkerProgressAck({ ...ack, persisted: 'yes' }), undefined);
+  assert.equal(parseFtpWorkerProgressAck({ ...ack, progressId: 'bad-id' }), undefined);
+  assert.equal(parseFtpWorkerProgressAck({ ...ack, unexpected: true }), undefined);
 });
 
 test('FTP cancellation during preflight closes its pending control request before STOR starts', async () => {

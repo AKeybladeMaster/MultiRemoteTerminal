@@ -1,22 +1,34 @@
 import { test, expect, _electron as electron } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import assert from 'node:assert/strict';
 import type { EventEmitter } from 'node:events';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { lstat as lstatFile, mkdir, mkdtemp, open as openFile, readFile, readdir as readDirectory, rename as renameFile, rm, stat as statFile, unlink as unlinkFile, writeFile } from 'node:fs/promises';
-import { connect as connectTcp, createServer } from 'node:net';
+import { connect as connectTcp, createServer, isIP } from 'node:net';
 import type { AddressInfo, Server, Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { tmpdir } from 'node:os';
+import { cpus, tmpdir, totalmem, version as osVersion } from 'node:os';
 import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle, SESSION_FOLDER_BUNDLE_VERSION } from '../../packages/domain/src/session-folder-bundle.ts';
+import { CURRENT_SCHEMA_VERSION } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
-import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativeSshCredentialBundleDialog, runNativeSshLogDialog } from './windows-native-dialog.ts';
+import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativePublicTunnelConfirmation, runNativeRemoteForwardConfirmation, runNativeSshCredentialBundleDialog, runNativeSshLogDialog, runNativeTransferRecoveryFolderDialog } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
+
+type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
+
+function nativeDialogProcessId(app: ElectronApplication): number {
+  const processId = app.process().pid;
+  if (processId === undefined || !Number.isSafeInteger(processId) || processId < 1) {
+    throw new Error('Native dialog automation requires a live Electron process.');
+  }
+  return processId;
+}
 
 interface Ssh2FixtureClient extends EventEmitter {
   end(): void;
@@ -71,6 +83,7 @@ interface Ssh2FixturePackage {
   readonly AgentProtocol: new (isClient: boolean) => Ssh2AgentProtocol;
   readonly utils: {
     generateKeyPairSync(type: 'ed25519', options?: { readonly passphrase?: string; readonly cipher?: string }): { readonly private: string; readonly public: string };
+    generateKeyPairSync(type: 'ecdsa', options: { readonly bits: 256 }): { readonly private: string; readonly public: string };
     parseKey(key: string | Buffer): Ssh2ParsedKey | Error;
     readonly sftp: {
       readonly OPEN_MODE: { readonly READ: number; readonly WRITE: number; readonly APPEND: number; readonly CREAT: number; readonly TRUNC: number; readonly EXCL: number };
@@ -86,6 +99,7 @@ interface SftpFixtureOptions {
   readonly writeDelayMs?: number;
   readonly writeDelayForPath?: (path: string) => number;
   readonly renameDelayMs?: number;
+  readonly afterRename?: (path: string) => Promise<void>;
   readonly onUploadStart?: (path: string) => void;
   readonly onRename?: (path: string) => void;
 }
@@ -246,6 +260,8 @@ function startSftpFixture(sftp: Ssh2FixtureSftp, remoteRoot: string, api: Ssh2Fi
         if (code !== 'ENOENT') throw error;
         await renameFile(from, to);
         options.onRename?.(remoteLocation(destination).remote);
+        await options.afterRename?.(remoteLocation(destination).remote);
+        if (closed) return;
         sftp.status(requestId, api.STATUS_CODE.OK);
       }
     })().catch(error => { if (!closed) sftp.status(requestId, statusForError(error)); });
@@ -343,8 +359,21 @@ async function waitForVaultE2EProbe(app: Awaited<ReturnType<typeof electron.laun
 
 async function focusVirtualizedListBoundary(list: Locator, edge: 'first' | 'last') {
   return list.evaluate((element, direction) => {
-    const controls = Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]'))
-      .filter(control => control.getClientRects().length > 0);
+    const findVisibleControls = () => {
+      const viewport = element.getBoundingClientRect();
+      return Array.from(element.querySelectorAll<HTMLElement>('button:not(:disabled), summary[role="button"]')).filter(control => {
+        if (control.getClientRects().length === 0) return false;
+        const bounds = control.getBoundingClientRect();
+        return bounds.top < viewport.bottom && bounds.bottom > viewport.top &&
+          bounds.left < viewport.right && bounds.right > viewport.left;
+      });
+    };
+    let controls = findVisibleControls();
+    if (controls.length === 0) {
+      element.querySelector<HTMLElement>('button:not(:disabled), summary[role="button"]')
+        ?.scrollIntoView({ block: direction === 'first' ? 'start' : 'end', inline: 'nearest' });
+      controls = findVisibleControls();
+    }
     const boundary = direction === 'first' ? controls[0] : controls.at(-1);
     const row = boundary?.closest<HTMLElement>('[data-virtual-index]');
     if (!boundary || !row) throw new Error('The virtualized list boundary had no keyboard control.');
@@ -398,6 +427,11 @@ async function sendLine(page: Page, title: string, line: string, marker: string 
   const rows = panel.locator('.xterm-rows');
   await expect(rows).toContainText(marker, { timeout: 15_000 });
   return { panel, rows };
+}
+
+async function writeClipboardAndVerify(app: Awaited<ReturnType<typeof electron.launch>>, value: string): Promise<void> {
+  await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), value);
+  await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText()), { timeout: 5_000, intervals: [50, 100, 250] }).toBe(value);
 }
 
 type ShellPromptDecorationState = { rendered: string; glyphs: { text: string; color: string }[] };
@@ -599,16 +633,30 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ app: electronApp }, downloadsPath) => electronApp.setPath('downloads', downloadsPath), profile);
     const openLocalFile = page.getByRole('button', { name: 'Edit local file', exact: true });
     await openLocalFile.click();
-    await runNativeLocalTextDialog('cancel-local-text');
+    await runNativeLocalTextDialog('cancel-local-text', undefined, nativeDialogProcessId(app!));
     const editor = page.getByTestId('local-text-editor');
     await expect(editor).toBeHidden();
     await expect(page.locator('body')).not.toContainText(path);
     expect(await readFile(path, 'utf8')).toBe('name=old\r\nlegacy=1\n');
 
+    await app.evaluate(({ dialog: nativeDialog }) => {
+      const original = Reflect.get(nativeDialog, 'showOpenDialog');
+      if (typeof original !== 'function') throw new Error('The native open-dialog API is unavailable.');
+      Object.defineProperty(nativeDialog, 'showOpenDialog', {
+        configurable: true,
+        value: async (...args: unknown[]) => {
+          const selection = await Reflect.apply(original, nativeDialog, args) as { readonly canceled: boolean; readonly filePaths: string[] };
+          Reflect.set(globalThis, '__mrtE2ESelectedOpenDialogPaths', selection.filePaths);
+          return selection;
+        }
+      });
+    });
     await openLocalFile.click();
-    await runNativeLocalTextDialog('select-local-text', path);
+    await runNativeLocalTextDialog('select-local-text', path, nativeDialogProcessId(app!));
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESelectedOpenDialogPaths'))).toEqual([path]);
     const contents = editor.getByRole('textbox', { name: 'File contents' });
     const autoSave = editor.getByRole('checkbox', { name: 'Save automatically after 1 second of inactivity', exact: true });
     await expect(editor.getByRole('heading', { name: 'settings.txt', exact: true })).toBeVisible();
@@ -644,7 +692,7 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(editor).toBeHidden();
     await openLocalFile.click();
-    await runNativeLocalTextDialog('select-local-text', path);
+    await runNativeLocalTextDialog('select-local-text', path, nativeDialogProcessId(app!));
     await expect(autoSave).not.toBeChecked();
     await editor.getByRole('button', { name: 'Close', exact: true }).click();
   } finally {
@@ -1498,15 +1546,15 @@ test('SSH session log native consent and Save dialogs support cancellation and l
     };
 
     await requestLoggedConnection();
-    await runNativeSshLogDialog('cancel-consent');
+    await runNativeSshLogDialog('cancel-consent', undefined, nativeDialogProcessId(app!));
     await expectAttemptCancelled();
 
     await requestLoggedConnection();
-    await runNativeSshLogDialog('cancel-save');
+    await runNativeSshLogDialog('cancel-save', undefined, nativeDialogProcessId(app!));
     await expectAttemptCancelled();
 
     await requestLoggedConnection();
-    await runNativeSshLogDialog('save', selectedLogPath);
+    await runNativeSshLogDialog('save', selectedLogPath, nativeDialogProcessId(app!));
     await expect.poll(credentialPromptCount, { timeout: 15_000 }).toBe(1);
     await expect.poll(async () => {
       const text = await readFile(selectedLogPath, 'utf8').catch(() => '');
@@ -1784,8 +1832,8 @@ test('SSH agent mode signs through a Windows named pipe and authenticates a trus
   }
 });
 
-test('SFTP sessions verify trust and transfers, render hostile SSH output as text, and avoid unrequested shells', async () => {
-  test.setTimeout(180_000);
+test('SFTP sessions verify trust, transfer safety, inert output, and no-replay recovery after crashes', async () => {
+  test.setTimeout(240_000);
   const profile = await createWorkspaceTempDirectory('mrt-sftp-e2e-profile-');
   const remoteRoot = join(profile, 'remote-files');
   const hostileOutputPath = join(profile, 'hostile-output-owned.txt');
@@ -1796,6 +1844,13 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   const largeTransferSize = 100 * 1024 * 1024;
   const interruptedRemoteFile = join(remoteRoot, 'interrupted.bin');
   const interruptedTransferSize = 4 * 1024 * 1024;
+  const workerCrashRemoteFile = join(remoteRoot, 'worker-crash.bin');
+  const workerCrashTransferSize = 4 * 1024 * 1024;
+  const appCrashRemoteFile = join(remoteRoot, 'app-crash.bin');
+  const appCrashTransferSize = 4 * 1024 * 1024;
+  const appCrashUploadSource = join(profile, 'app-crash-upload.txt');
+  const appCrashUploadSize = 512 * 1024;
+  const appCrashUploadPreviousContents = Buffer.from('preserve this original remote file');
   const interruptedUploadSource = join(profile, 'interrupted-upload.txt');
   const interruptedUploadTarget = join(remoteRoot, 'interrupted-upload.txt');
   const interruptedUploadContents = Buffer.alloc(512 * 1024, 0x5a);
@@ -1807,6 +1862,10 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   let sftpDropUploadStartCount = 0;
   let largeDropUploadStarted = false;
   let stallInterruptedDownload = true;
+  let stallWorkerCrashDownload = false;
+  let stallAppCrashDownload = false;
+  let stallAppCrashUpload = false;
+  let stallAppCrashOverwriteRename = false;
   let stallInterruptedUpload = false;
   let activeFilesOnlyClient: Ssh2FixtureClient | undefined;
   const terminalClients = new Set<Ssh2FixtureClient>();
@@ -1850,9 +1909,11 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
         startSftpFixture(acceptSftp(), remoteRoot, ssh2.utils.sftp, { readDelayMs: 700, writeDelayMs: 700, renameDelayMs: 500,
           readDelayForRequest: (path, offset) => path === '/home/mrt/interrupted.bin'
             ? stallInterruptedDownload && offset >= 1024 * 1024 ? 10_000 : 0
-            : undefined,
+            : path === '/home/mrt/worker-crash.bin' && stallWorkerCrashDownload && offset >= 64 * 1024 ? 30_000
+              : path === '/home/mrt/app-crash.bin' && stallAppCrashDownload && offset >= 64 * 1024 ? 30_000 : undefined,
           readDelayForPath: path => path === '/home/mrt/large.bin' ? 0 : 700,
-          writeDelayForPath: path => path.endsWith('.partial') && stallInterruptedUpload ? 30_000 : largeDropUploadStarted ? 0 : 700,
+          writeDelayForPath: path => path.endsWith('.partial') && stallAppCrashUpload ? 1_000
+            : path.endsWith('.partial') && stallInterruptedUpload ? 30_000 : largeDropUploadStarted ? 0 : 700,
           onUploadStart: path => {
             if (path.endsWith('.partial')) {
               sftpDropUploadStartCount++;
@@ -1861,10 +1922,14 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
             }
           },
           onRename: path => {
+            if (path.endsWith('.backup')) fixtureEvents.push(`renamed:${path}`);
             const fileName = posix.basename(path);
             if (fileName === 'dragged-upload.txt' || fileName === 'dragged-upload-second.txt' || fileName === 'large-upload.bin') {
               dropFixtureEvents.push(`complete:${fileName}`);
             }
+          },
+          afterRename: async path => {
+            if (path.endsWith('.backup') && stallAppCrashOverwriteRename) await new Promise<void>(resolveDelay => setTimeout(resolveDelay, 30_000));
           }
         });
       });
@@ -1875,6 +1940,11 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
   server.on('error', error => fixtureEvents.push(`server-error:${error.message}`));
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   let listening = false;
+  const launchApp = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
+    '--mrt-e2e-sftp-transfers', '--mrt-e2e-file-drop', '--mrt-e2e-transfer-recovery',
+    `--mrt-e2e-sftp-upload-file=${uploadSource}`, `--mrt-e2e-sftp-overwrite-file=${appCrashUploadSource}`,
+    `--mrt-e2e-sftp-download-root=${downloadRoot}`],
+    env: { ...electronEnvironment(), MRT_E2E: '1' } });
   try {
     await mkdir(remoteRoot);
     await mkdir(downloadRoot);
@@ -1883,6 +1953,10 @@ test('SFTP sessions verify trust and transfers, render hostile SSH output as tex
     await writePatternFile(largeRemoteFile, largeTransferSize, 0x5a);
     expectedLargeFileDigest = await hashFile(largeRemoteFile);
     await writePatternFile(interruptedRemoteFile, interruptedTransferSize, 0x28);
+    await writePatternFile(workerCrashRemoteFile, workerCrashTransferSize, 0x29);
+    await writePatternFile(appCrashRemoteFile, appCrashTransferSize, 0x2a);
+    await writeFile(appCrashUploadSource, Buffer.alloc(appCrashUploadSize, 0x6b));
+    await writeFile(join(remoteRoot, 'app-crash-upload.txt'), appCrashUploadPreviousContents);
     await writePatternFile(largeDropUploadSource, largeTransferSize, 0x36);
     expectedLargeUploadDigest = await hashFile(largeDropUploadSource);
     await writeFile(uploadSource, 'private local upload payload');
@@ -1927,9 +2001,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
       server.once('error', rejectListen);
       server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
     });
-    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
-      '--mrt-e2e-sftp-transfers', '--mrt-e2e-file-drop', `--mrt-e2e-sftp-upload-file=${uploadSource}`, `--mrt-e2e-sftp-download-root=${downloadRoot}`],
-      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    app = await launchApp();
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('The loopback SSH fixture did not bind a TCP address');
     const page = await app.firstWindow();
@@ -2312,6 +2384,7 @@ ${'# preview cap\n'.repeat(4_100)}`;
     expect(interruptedRemoteStages).toHaveLength(1);
     expect(interruptedRemoteStages[0]?.size).toBeGreaterThan(0);
     expect(interruptedRemoteStages[0]?.size).toBeLessThan(interruptedUploadContents.length);
+    expect(interruptedRemoteStages[0]?.name).toMatch(/^\.mrt-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.partial$/iu);
     const interruptedUploadClient = activeFilesOnlyClient;
     const interruptedUploadSocket = (interruptedUploadClient as unknown as { readonly _sock?: Socket } | undefined)?._sock;
     if (!interruptedUploadSocket || interruptedUploadSocket.destroyed) throw new Error('The SFTP upload fixture has no live socket to reset');
@@ -2426,6 +2499,217 @@ ${'# preview cap\n'.repeat(4_100)}`;
     await contextualFiles.getByRole('button', { name: 'Download upload.txt', exact: true }).click();
     await expect(contextualFiles.getByText(/Downloaded upload.txt/u)).toBeVisible({ timeout: 15_000 });
     expect(await readFile(join(downloadRoot, 'upload.txt'), 'utf8')).toBe('private local upload payload');
+
+    if (process.platform === 'win32') {
+      stallWorkerCrashDownload = true;
+      await contextualFiles.getByRole('button', { name: 'Download worker-crash.bin', exact: true }).click();
+      const userDataPath = await app!.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+      const recoveryDatabasePath = join(userDataPath, 'multiremote-terminal.sqlite');
+      const readRunningTransfer = () => {
+        const database = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+        try {
+          return database.prepare(`SELECT operation_id, state, bytes_transferred, total_bytes FROM file_transfer_recovery_jobs
+            WHERE file_name = 'worker-crash.bin' AND state = 'running'`).get() as
+            { readonly operation_id: string; readonly state: string; readonly bytes_transferred: number; readonly total_bytes: number | null } | undefined;
+        } finally { database.close(); }
+      };
+      await expect.poll(() => readRunningTransfer()?.bytes_transferred ?? 0, { timeout: 20_000 }).toBeGreaterThan(0);
+      const activeTransfer = readRunningTransfer();
+      if (!activeTransfer) throw new Error('The active SFTP transfer recovery row is missing');
+      await expect.poll(() => app!.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshWorkerPid')),
+        { timeout: 10_000 }).toBeGreaterThan(0);
+      const workerPid = await app!.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshWorkerPid'));
+      if (typeof workerPid !== 'number' || !Number.isSafeInteger(workerPid) || workerPid < 1) throw new Error('The guarded SSH worker probe returned no process ID');
+      execFileSync(systemExecutable('taskkill.exe'), ['/F', '/PID', String(workerPid)], { encoding: 'utf8', windowsHide: true });
+      await expect.poll(() => processIsRunning(workerPid), { timeout: 10_000 }).toBe(false);
+      const recoveryPage = await app!.firstWindow();
+      const recovery = recoveryPage.getByRole('region', { name: 'Interrupted file transfers' });
+      await expect(recovery).toContainText('Download worker-crash.bin', { timeout: 15_000 });
+      const interrupted = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+      let interruptedTransfer: { readonly state: string; readonly bytes_transferred: number; readonly total_bytes: number | null } | undefined;
+      try {
+        interruptedTransfer = interrupted.prepare(`SELECT state, bytes_transferred, total_bytes FROM file_transfer_recovery_jobs
+          WHERE operation_id = ?`).get(activeTransfer.operation_id) as typeof interruptedTransfer;
+      } finally { interrupted.close(); }
+      expect(interruptedTransfer).toMatchObject({ state: 'interrupted', total_bytes: workerCrashTransferSize });
+      expect(interruptedTransfer?.bytes_transferred).toBeGreaterThan(0);
+      expect(interruptedTransfer?.bytes_transferred).toBeGreaterThanOrEqual(activeTransfer.bytes_transferred);
+      expect(interruptedTransfer?.bytes_transferred).toBeLessThan(workerCrashTransferSize);
+      expect(await statFile(join(downloadRoot, 'worker-crash.bin')).then(() => true, () => false)).toBe(false);
+      await expect(recovery).toContainText(`Recorded progress: ${interruptedTransfer!.bytes_transferred.toLocaleString()} bytes of ${workerCrashTransferSize.toLocaleString()}`);
+      const sftpRequestsBeforeRestart = fixtureEvents.filter(event => event === 'sftp').length;
+
+      await app!.close();
+      app = undefined;
+      app = await launchApp();
+      const restartedPage = await app!.firstWindow();
+      await expect(restartedPage.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+      const restartedRecovery = restartedPage.getByRole('region', { name: 'Interrupted file transfers' });
+      await expect(restartedRecovery).toContainText('Download worker-crash.bin');
+      await expect(restartedRecovery).toContainText('do not resume automatically');
+      expect(fixtureEvents.filter(event => event === 'sftp')).toHaveLength(sftpRequestsBeforeRestart);
+      const afterRestart = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+      try {
+        assert.deepEqual(afterRestart.prepare(`SELECT state, bytes_transferred, total_bytes FROM file_transfer_recovery_jobs
+          WHERE operation_id = ?`).get(activeTransfer.operation_id), interruptedTransfer);
+      } finally { afterRestart.close(); }
+
+      const appCrashPage = await app!.firstWindow();
+      await appCrashPage.getByRole('button', { name: 'Connect to SFTP files', exact: true }).first().click();
+      const appCrashDialog = appCrashPage.getByRole('dialog', { name: 'Connect to SFTP files' });
+      await appCrashDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+      const appCrashPort = appCrashDialog.getByLabel('Port');
+      await appCrashPort.fill(String(address.port));
+      await appCrashDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+      const appCrashTab = appCrashPage.getByRole('tab').filter({ hasText: /SFTP/u }).last();
+      await expect(appCrashTab).toBeVisible({ timeout: 20_000 });
+      const appCrashPanelId = await appCrashTab.getAttribute('aria-controls');
+      if (!appCrashPanelId) throw new Error('Missing SFTP panel for app-crash recovery acceptance');
+      const appCrashFiles = appCrashPage.locator(`#${appCrashPanelId}`).getByTestId('remote-file-browser');
+      await expect(appCrashFiles.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+      stallAppCrashDownload = true;
+      await appCrashFiles.getByRole('button', { name: 'Download app-crash.bin', exact: true }).click();
+
+      type AppCrashTransferRow = { readonly operation_id: string; readonly run_id: string; readonly state: string;
+        readonly bytes_transferred: number; readonly total_bytes: number | null };
+      const readAppCrashTransfer = (): AppCrashTransferRow | undefined => {
+        const database = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+        try {
+          return database.prepare(`SELECT operation_id, run_id, state, bytes_transferred, total_bytes FROM file_transfer_recovery_jobs
+            WHERE file_name = 'app-crash.bin' ORDER BY created_at DESC LIMIT 1`).get() as AppCrashTransferRow | undefined;
+        } finally { database.close(); }
+      };
+      await expect.poll(() => readAppCrashTransfer()?.bytes_transferred ?? 0, { timeout: 20_000 }).toBeGreaterThan(0);
+      const runningAppCrashTransfer = readAppCrashTransfer();
+      if (!runningAppCrashTransfer || runningAppCrashTransfer.state !== 'running') {
+        throw new Error('The app-crash transfer did not remain durably running before forced termination');
+      }
+      expect(runningAppCrashTransfer.total_bytes).toBe(appCrashTransferSize);
+      const appProcessId = app!.process().pid;
+      if (appProcessId === undefined || !Number.isSafeInteger(appProcessId) || appProcessId < 1) {
+        throw new Error('The running Electron process ID is unavailable for restart acceptance');
+      }
+      const sftpRequestsBeforeAppCrash = fixtureEvents.filter(event => event === 'sftp').length;
+      execFileSync(systemExecutable('taskkill.exe'), ['/F', '/T', '/PID', String(appProcessId)], { encoding: 'utf8', windowsHide: true });
+      await expect.poll(() => processIsRunning(appProcessId), { timeout: 15_000 }).toBe(false);
+      app = undefined;
+
+      const beforeRecovery = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+      let crashedTransfer: AppCrashTransferRow | undefined;
+      try {
+        crashedTransfer = beforeRecovery.prepare(`SELECT operation_id, run_id, state, bytes_transferred, total_bytes FROM file_transfer_recovery_jobs
+          WHERE operation_id = ?`).get(runningAppCrashTransfer.operation_id) as AppCrashTransferRow | undefined;
+      } finally { beforeRecovery.close(); }
+      if (!crashedTransfer) throw new Error('The app-crash transfer row was not retained after forced termination');
+      expect(crashedTransfer).toMatchObject({ operation_id: runningAppCrashTransfer.operation_id,
+        run_id: runningAppCrashTransfer.run_id, state: 'running', total_bytes: appCrashTransferSize });
+      expect(crashedTransfer?.bytes_transferred).toBeGreaterThanOrEqual(runningAppCrashTransfer.bytes_transferred);
+      expect(crashedTransfer?.bytes_transferred).toBeLessThan(appCrashTransferSize);
+
+      app = await launchApp();
+      const recoveredPage = await app.firstWindow();
+      await expect(recoveredPage.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 20_000 });
+      const recoveredAppCrash = recoveredPage.getByRole('region', { name: 'Interrupted file transfers' });
+      await expect(recoveredAppCrash).toContainText('Download app-crash.bin');
+      await expect(recoveredAppCrash).toContainText('do not resume automatically');
+      const recoveredTransfer = readAppCrashTransfer();
+      if (!recoveredTransfer) throw new Error('The app-crash transfer row is missing after application restart');
+      expect(recoveredTransfer).toMatchObject({ operation_id: crashedTransfer.operation_id, state: 'interrupted',
+        total_bytes: appCrashTransferSize });
+      expect(recoveredTransfer?.bytes_transferred).toBeGreaterThanOrEqual(crashedTransfer.bytes_transferred);
+      expect(fixtureEvents.filter(event => event === 'sftp')).toHaveLength(sftpRequestsBeforeAppCrash);
+      const partial = await lstatFile(join(downloadRoot, `.mrt-${runningAppCrashTransfer.operation_id}.partial`)).catch(() => undefined);
+      expect(partial?.isFile()).toBe(true);
+      expect(await statFile(join(downloadRoot, 'app-crash.bin')).then(() => true, () => false)).toBe(false);
+      stallAppCrashDownload = false;
+
+      await expect(recoveredPage.getByRole('button', { name: 'Open SFTP loopback', exact: true })).toBeVisible();
+      await recoveredPage.getByRole('button', { name: 'Open SFTP loopback', exact: true }).click();
+      const crashUploadTab = recoveredPage.getByRole('tab').filter({ hasText: 'SFTP loopback' }).last();
+      await expect(crashUploadTab).toBeVisible({ timeout: 20_000 });
+      const crashUploadPanelId = await crashUploadTab.getAttribute('aria-controls');
+      if (!crashUploadPanelId) throw new Error('Missing SFTP panel for upload-crash recovery acceptance');
+      const crashUploadBrowser = recoveredPage.locator(`#${crashUploadPanelId} [data-testid="remote-file-browser"]`);
+      await expect(crashUploadBrowser.getByText('remote.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
+      stallAppCrashUpload = true;
+      await dispatchFileDrop(recoveredPage, [appCrashUploadSource], `#${crashUploadPanelId} [data-testid="remote-file-browser"]`);
+      type AppCrashUploadRow = { readonly operation_id: string; readonly run_id: string; readonly state: string;
+        readonly bytes_transferred: number; readonly total_bytes: number | null; readonly remote_artifact_names_json: string };
+      const readAppCrashUpload = (): AppCrashUploadRow | undefined => {
+        const database = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+        try {
+          return database.prepare(`SELECT operation_id, run_id, state, bytes_transferred, total_bytes, remote_artifact_names_json FROM file_transfer_recovery_jobs
+            WHERE direction = 'upload' AND file_name = 'app-crash-upload.txt' ORDER BY created_at DESC LIMIT 1`).get() as AppCrashUploadRow | undefined;
+        } finally { database.close(); }
+      };
+      await expect.poll(() => readAppCrashUpload()?.bytes_transferred ?? 0, { timeout: 20_000 }).toBeGreaterThan(0);
+      const runningAppCrashUpload = readAppCrashUpload();
+      if (!runningAppCrashUpload || runningAppCrashUpload.state !== 'running') {
+        throw new Error('The app-crash upload did not remain durably running before forced termination');
+      }
+      expect(runningAppCrashUpload.total_bytes).toBe(appCrashUploadSize);
+      const remoteUploadStage = `.mrt-${runningAppCrashUpload.operation_id}.partial`;
+      const remoteUploadBackup = `.mrt-${runningAppCrashUpload.operation_id}.backup`;
+      expect(JSON.parse(runningAppCrashUpload.remote_artifact_names_json)).toContain(remoteUploadBackup);
+      await expect.poll(() => statFile(join(remoteRoot, remoteUploadStage)).then(value => value.size, () => 0), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+      stallAppCrashUpload = false;
+      stallAppCrashOverwriteRename = true;
+      await expect.poll(() => fixtureEvents.includes(`renamed:/home/mrt/${remoteUploadBackup}`), { timeout: 20_000 }).toBe(true);
+      expect(await readFile(join(remoteRoot, remoteUploadBackup))).toEqual(appCrashUploadPreviousContents);
+      expect(await statFile(join(remoteRoot, 'app-crash-upload.txt')).then(() => true, () => false)).toBe(false);
+      const uploadCrashAppProcessId = app!.process().pid;
+      if (uploadCrashAppProcessId === undefined || !Number.isSafeInteger(uploadCrashAppProcessId) || uploadCrashAppProcessId < 1) {
+        throw new Error('The upload-crash Electron process ID is unavailable for restart acceptance');
+      }
+      const sftpRequestsBeforeUploadAppCrash = fixtureEvents.filter(event => event === 'sftp').length;
+      execFileSync(systemExecutable('taskkill.exe'), ['/F', '/T', '/PID', String(uploadCrashAppProcessId)], { encoding: 'utf8', windowsHide: true });
+      await expect.poll(() => processIsRunning(uploadCrashAppProcessId), { timeout: 15_000 }).toBe(false);
+      app = undefined;
+      stallAppCrashOverwriteRename = false;
+
+      const uploadBeforeRecovery = new DatabaseSync(recoveryDatabasePath, { readOnly: true });
+      let crashedUpload: AppCrashUploadRow | undefined;
+      try {
+        crashedUpload = uploadBeforeRecovery.prepare(`SELECT operation_id, run_id, state, bytes_transferred, total_bytes, remote_artifact_names_json FROM file_transfer_recovery_jobs
+          WHERE operation_id = ?`).get(runningAppCrashUpload.operation_id) as AppCrashUploadRow | undefined;
+      } finally { uploadBeforeRecovery.close(); }
+      expect(crashedUpload).toMatchObject({ operation_id: runningAppCrashUpload.operation_id,
+        run_id: runningAppCrashUpload.run_id, state: 'running', total_bytes: appCrashUploadSize });
+      expect(crashedUpload?.bytes_transferred).toBeGreaterThanOrEqual(runningAppCrashUpload.bytes_transferred);
+      expect(JSON.parse(crashedUpload!.remote_artifact_names_json)).toContain(remoteUploadBackup);
+      expect(await statFile(join(remoteRoot, remoteUploadStage)).then(() => true, () => false)).toBe(true);
+
+      app = await launchApp();
+      const uploadRecoveredPage = await app.firstWindow();
+      await expect(uploadRecoveredPage.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 20_000 });
+      const uploadRecovery = uploadRecoveredPage.getByRole('region', { name: 'Interrupted file transfers' });
+      await expect(uploadRecovery).toContainText('Upload app-crash-upload.txt');
+      await expect(uploadRecovery).toContainText(remoteUploadStage);
+      await expect(uploadRecovery).toContainText(remoteUploadBackup);
+      const recoveredUpload = readAppCrashUpload();
+      expect(recoveredUpload).toMatchObject({ operation_id: runningAppCrashUpload.operation_id, state: 'interrupted',
+        total_bytes: appCrashUploadSize });
+      expect(recoveredUpload?.bytes_transferred).toBeGreaterThanOrEqual(crashedUpload!.bytes_transferred);
+      expect(JSON.parse(recoveredUpload!.remote_artifact_names_json)).toContain(remoteUploadBackup);
+      expect(fixtureEvents.filter(event => event === 'sftp')).toHaveLength(sftpRequestsBeforeUploadAppCrash);
+
+      await uploadRecoveredPage.getByRole('button', { name: 'Open SFTP loopback', exact: true }).click();
+      const reopenedCrashUploadTab = uploadRecoveredPage.getByRole('tab').filter({ hasText: 'SFTP loopback' }).last();
+      await expect(reopenedCrashUploadTab).toBeVisible({ timeout: 20_000 });
+      const reopenedCrashUploadPanel = await reopenedCrashUploadTab.getAttribute('aria-controls');
+      if (!reopenedCrashUploadPanel) throw new Error('Missing reopened SFTP panel for remote artifact acceptance');
+      const reopenedCrashUploadBrowser = uploadRecoveredPage.locator(`#${reopenedCrashUploadPanel} [data-testid="remote-file-browser"]`);
+      await expect(reopenedCrashUploadBrowser.getByText(remoteUploadStage, { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(reopenedCrashUploadBrowser.getByText(remoteUploadBackup, { exact: true })).toBeVisible();
+      await expect(reopenedCrashUploadBrowser.locator('li').filter({ hasText: remoteUploadBackup })
+        .getByText('Possible interrupted upload', { exact: true })).toBeVisible();
+      await expect(reopenedCrashUploadBrowser.locator('li').filter({ hasText: remoteUploadStage })
+        .getByText('Possible interrupted upload', { exact: true })).toBeVisible();
+      expect(await statFile(join(remoteRoot, remoteUploadStage)).then(value => value.size, () => 0)).toBeGreaterThan(0);
+      expect(await readFile(join(remoteRoot, remoteUploadBackup))).toEqual(appCrashUploadPreviousContents);
+      expect(await statFile(join(remoteRoot, 'app-crash-upload.txt')).then(() => true, () => false)).toBe(false);
+    }
   } finally {
     try {
       for (const client of clients) client.end();
@@ -2582,6 +2866,150 @@ test('a changed SSH host key stays blocked until explicit trust reset and re-app
   } finally {
     await app?.close();
     await stopHost();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('records app memory with 20 active SSH sessions on Windows', async () => {
+  test.skip(process.platform !== 'win32', 'N-009 live SSH memory profile runs on Windows');
+  test.setTimeout(180_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-memory-profile-'));
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const clients = new Set<Ssh2FixtureClient>();
+  const fixtureErrors: string[] = [];
+  let shellCount = 0;
+  let listening = false;
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', error => fixtureErrors.push(error.message));
+    client.on('authentication', (rawContext: unknown) => {
+      const context = rawContext as Ssh2AuthenticationContext;
+      if (context.method === 'password' && context.username === 'mrt-e2e-user' && context.password === 'sftp-e2e-secret') context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => client.on('session', (acceptSession: () => Ssh2FixtureSession) => {
+      const session = acceptSession();
+      session.on('pty', (accept: () => void) => accept());
+      session.on('shell', (acceptShell: () => Ssh2FixtureStream) => {
+        shellCount += 1;
+        acceptShell().write(`MRT-SSH-MEMORY-${shellCount}\r\n`);
+      });
+    }));
+  });
+  server.on('error', error => fixtureErrors.push(`server: ${error.message}`));
+
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The SSH memory fixture did not bind a TCP address');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials'],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const readMemory = () => app!.evaluate(({ app: electronApp }) => ({
+      appVersion: electronApp.getVersion(),
+      electronVersion: process.versions.electron,
+      processes: electronApp.getAppMetrics().map(metric => ({
+        type: metric.type,
+        privateKiB: metric.memory.privateBytes ?? null,
+        workingSetKiB: metric.memory.workingSetSize,
+      })),
+    }));
+    const summarize = (processes: Awaited<ReturnType<typeof readMemory>>['processes']) => {
+      const byType: Record<string, { count: number; privateKiB: number; workingSetKiB: number }> = {};
+      for (const processMetric of processes) {
+        const group = byType[processMetric.type] ??= { count: 0, privateKiB: 0, workingSetKiB: 0 };
+        group.count += 1;
+        group.privateKiB += processMetric.privateKiB ?? 0;
+        group.workingSetKiB += processMetric.workingSetKiB;
+      }
+      return {
+        processCount: processes.length,
+        privateKiB: processes.reduce((sum, metric) => sum + (metric.privateKiB ?? 0), 0),
+        privateBytesAvailable: processes.every(metric => metric.privateKiB !== null),
+        privateProcessCount: processes.filter(metric => metric.privateKiB !== null).length,
+        workingSetKiB: processes.reduce((sum, metric) => sum + metric.workingSetKiB, 0),
+        byType,
+      };
+    };
+    const baselineRaw = await readMemory();
+    const baseline = summarize(baselineRaw.processes);
+
+    await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
+    const connectDialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
+    await connectDialog.getByLabel('Host name or IP address').fill('127.0.0.1');
+    await connectDialog.getByLabel('Port').fill(String(address.port));
+    await connectDialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    const trustDialog = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trustDialog).toBeVisible({ timeout: 15_000 });
+    await trustDialog.getByRole('button', { name: 'Trust key and connect' }).click();
+    const initialTab = page.getByRole('tab').filter({ hasText: /SSH/ }).first();
+    await expect(initialTab).toBeVisible({ timeout: 20_000 });
+    const initialPanelId = await initialTab.getAttribute('aria-controls');
+    if (!initialPanelId) throw new Error('The initial SSH memory profile tab has no terminal panel');
+    await expect(page.locator(`#${initialPanelId} .xterm-rows`)).toContainText('MRT-SSH-MEMORY-1', { timeout: 15_000 });
+
+    const savedName = 'N-009 memory profile';
+    await page.getByRole('button', { name: 'Save active session', exact: true }).click();
+    const saveDialog = page.getByRole('dialog', { name: 'Save active session' });
+    await saveDialog.getByLabel('Session name').fill(savedName);
+    await saveDialog.getByRole('button', { name: 'Save session', exact: true }).click();
+    const openSavedSession = page.getByRole('button', { name: `Open ${savedName}`, exact: true });
+    await expect(openSavedSession).toBeVisible();
+    await page.getByRole('button', { name: `Actions for saved session ${savedName}` }).click();
+    await page.getByRole('button', { name: 'Save password…', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'A password is saved with Windows account protection' }))
+      .toContainText('A password is saved with Windows account protection');
+
+    const savedTabs = page.getByRole('tab', { name: savedName, exact: true });
+    for (let index = 0; index < 19; index += 1) {
+      await openSavedSession.click();
+      const tab = savedTabs.nth(index);
+      await expect(tab).toBeVisible({ timeout: 20_000 });
+      const panelId = await tab.getAttribute('aria-controls');
+      if (!panelId) throw new Error(`Active SSH profile ${index + 1} has no terminal panel`);
+      await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText(`MRT-SSH-MEMORY-${index + 2}`, { timeout: 15_000 });
+    }
+    expect(shellCount).toBe(20);
+    expect(clients.size).toBe(20);
+    expect(fixtureErrors).toEqual([]);
+
+    const active = summarize((await readMemory()).processes);
+    expect(active.processCount).toBeGreaterThan(0);
+    const artifact = {
+      requirement: 'N-009',
+      activeSshSessions: 20,
+      capturedAt: new Date().toISOString(),
+      environment: {
+        platform: process.platform,
+        architecture: process.arch,
+        osVersion: osVersion(),
+        logicalProcessors: cpus().length,
+        physicalMemoryMiB: Math.round(totalmem() / (1024 * 1024)),
+        appVersion: baselineRaw.appVersion,
+        electronVersion: baselineRaw.electronVersion,
+      },
+      measurement: 'Per-process working sets in KiB; private-byte totals include only processes where Electron reports that optional Windows value. Working-set sums can include shared pages.',
+      baseline,
+      active,
+      privateKiBDelta: active.privateKiB - baseline.privateKiB,
+    };
+    const outputDirectory = join(process.cwd(), 'test-results');
+    await mkdir(outputDirectory, { recursive: true });
+    const outputPath = join(outputDirectory, 'phase-07-ssh-memory-profile.json');
+    await writeFile(outputPath, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
+    console.log(`N-009 memory profile artifact: ${outputPath}`);
+  } finally {
+    for (const client of clients) client.end();
+    await app?.close();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
@@ -2936,6 +3364,173 @@ test('Windows safeStorage vault credentials survive an application restart witho
   }
 });
 
+test('Windows restart surfaces a durable interrupted transfer record and lets the user dismiss its status', async () => {
+  test.skip(process.platform !== 'win32', 'transfer recovery restart acceptance is required on Windows');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-transfer-recovery-restart-e2e-'));
+  const operationId = randomUUID();
+  const uploadOperationId = randomUUID();
+  const olderOperationIds = Array.from({ length: 105 }, (_, index) => `00000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, '0')}`);
+  const partialDirectory = join(profile, 'partials');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const launchApp = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    await mkdir(partialDirectory);
+    await writeFile(join(partialDirectory, `.mrt-${operationId}.partial`), Buffer.from('incomplete-download'));
+    await writeFile(join(partialDirectory, `.mrt-${olderOperationIds[0]}.partial`), Buffer.from('older-incomplete-download'));
+    app = await launchApp();
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const userDataPath = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+    await app.close();
+    app = undefined;
+
+    const database = new DatabaseSync(join(userDataPath, 'multiremote-terminal.sqlite'));
+    try {
+      const at = new Date().toISOString();
+      database.prepare(`INSERT INTO file_transfer_recovery_jobs
+        (operation_id, run_id, transport, direction, file_name, state, bytes_transferred, total_bytes, error_code, created_at, updated_at)
+        VALUES (?, ?, 'sftp', 'download', 'archive.tar', 'running', 128, 256, NULL, ?, ?)`)
+        .run(operationId, randomUUID(), at, at);
+      database.prepare(`INSERT INTO file_transfer_recovery_jobs
+        (operation_id, run_id, transport, direction, file_name, state, bytes_transferred, total_bytes, error_code, created_at, updated_at)
+        VALUES (?, ?, 'sftp', 'upload', 'backup.tar', 'running', 64, 256, NULL, ?, ?)`)
+        .run(uploadOperationId, randomUUID(), at, at);
+      const insertOlder = database.prepare(`INSERT INTO file_transfer_recovery_jobs
+        (operation_id, run_id, transport, direction, file_name, state, bytes_transferred, total_bytes, error_code, created_at, updated_at,
+          remote_artifact_names_json)
+        VALUES (?, ?, 'sftp', 'download', ?, 'interrupted', 8, 16, 'UNAVAILABLE', ?, ?, '[]')`);
+      const old = '2026-10-30T10:00:00.000Z';
+      for (const [index, olderId] of olderOperationIds.entries()) {
+        insertOlder.run(olderId, randomUUID(), `older-${String(index + 1).padStart(3, '0')}.tar`, old, old);
+      }
+    } finally { database.close(); }
+
+    app = await launchApp();
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const recovery = page.getByRole('region', { name: 'Interrupted file transfers' });
+    await expect(recovery).toContainText('Download archive.tar');
+    await expect(recovery).toContainText('SFTP');
+    await expect(recovery).toContainText('Recorded progress: 128 bytes of 256');
+    await expect(recovery).toContainText(`.mrt-${uploadOperationId}.partial`);
+    await expect(recovery).toContainText('do not resume automatically');
+    await expect(recovery).toContainText('A same-run reconnect may remove a worker-owned SFTP .partial stage');
+    await app.evaluate(({ app: electronApp }, downloadsPath) => electronApp.setPath('downloads', downloadsPath), partialDirectory);
+    await app.evaluate(({ dialog: nativeDialog }) => {
+      const original = Reflect.get(nativeDialog, 'showOpenDialog');
+      if (typeof original !== 'function') throw new Error('The native open-dialog API is unavailable.');
+      Object.defineProperty(nativeDialog, 'showOpenDialog', {
+        configurable: true,
+        value: async (...args: unknown[]) => {
+          const selection = await Reflect.apply(original, nativeDialog, args) as { readonly canceled: boolean; readonly filePaths: string[] };
+          Reflect.set(globalThis, '__mrtE2ESelectedOpenDialogPaths', selection.filePaths);
+          return selection;
+        }
+      });
+    });
+    const currentDownload = recovery.locator('li').filter({ hasText: 'Download archive.tar' });
+    await currentDownload.getByRole('button', { name: 'Locate local partial', exact: true }).click();
+    await runNativeTransferRecoveryFolderDialog('select-transfer-folder', partialDirectory, nativeDialogProcessId(app!));
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESelectedOpenDialogPaths'))).toEqual([partialDirectory]);
+    await expect(recovery.getByRole('alert'), 'The current recovery record should match its own operation-ID stage.')
+      .toHaveCount(0);
+    await recovery.getByRole('button', { name: 'Show older interrupted transfers', exact: true }).click();
+    const olderDownload = recovery.locator('li').filter({ hasText: 'Download older-001.tar' });
+    await olderDownload.scrollIntoViewIfNeeded();
+    await expect(olderDownload).toBeVisible();
+    const pagedOlderOperationId = await page.evaluate(async () => {
+      const first = await window.multiRemoteTerminal.listInterruptedFileTransfers(null);
+      if (!first.ok || !first.result.nextCursor) throw new Error('The first recovery page has no continuation cursor.');
+      const next = await window.multiRemoteTerminal.listInterruptedFileTransfers(first.result.nextCursor);
+      if (!next.ok) throw new Error(`The older recovery page failed (${next.error.code}).`);
+      return next.result.records.find(record => record.fileName === 'older-001.tar')?.operationId;
+    });
+    expect(pagedOlderOperationId).toBe(olderOperationIds[0]);
+    await olderDownload.getByRole('button', { name: 'Locate local partial', exact: true }).click();
+    await runNativeTransferRecoveryFolderDialog('select-transfer-folder', partialDirectory, nativeDialogProcessId(app!));
+    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESelectedOpenDialogPaths'))).toEqual([partialDirectory]);
+    expect(await readDirectory(partialDirectory)).toContain(`.mrt-${olderOperationIds[0]}.partial`);
+    const recoveryLookupAlert = recovery.getByRole('alert');
+    await expect(recoveryLookupAlert).toHaveCount(0);
+    await olderDownload.getByRole('button', { name: 'Locate local partial', exact: true }).click();
+    await runNativeTransferRecoveryFolderDialog('cancel-transfer-folder', undefined, nativeDialogProcessId(app!));
+    await expect(recovery.getByRole('alert')).toHaveCount(0);
+    await olderDownload.getByRole('button', { name: 'Locate local partial', exact: true }).click();
+    await runNativeTransferRecoveryFolderDialog('select-transfer-folder', partialDirectory, nativeDialogProcessId(app!));
+    await expect(recovery.getByRole('alert')).toHaveCount(0);
+    await recovery.locator('li').filter({ hasText: 'Download archive.tar' }).getByRole('button', { name: 'Dismiss status' }).click();
+    await recovery.locator('li').filter({ hasText: 'Upload backup.tar' }).getByRole('button', { name: 'Dismiss status' }).click();
+    await expect(recovery.getByText('Download archive.tar')).toHaveCount(0);
+    await expect(recovery.getByText('Upload backup.tar')).toHaveCount(0);
+
+    await app.close();
+    app = undefined;
+    const verify = new DatabaseSync(join(userDataPath, 'multiremote-terminal.sqlite'), { readOnly: true });
+    try {
+      assert.equal((verify.prepare('SELECT count(*) AS count FROM file_transfer_recovery_jobs WHERE operation_id = ?')
+        .get(operationId) as { readonly count: number }).count, 0);
+      assert.equal((verify.prepare('SELECT count(*) AS count FROM file_transfer_recovery_jobs WHERE operation_id = ?')
+        .get(uploadOperationId) as { readonly count: number }).count, 0);
+      assert.equal((verify.prepare("SELECT count(*) AS count FROM file_transfer_recovery_jobs WHERE state = 'interrupted' AND file_name LIKE 'older-%'")
+        .get() as { readonly count: number }).count, olderOperationIds.length);
+    } finally { verify.close(); }
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Windows restart keeps interrupted transfer status durable and dismissal explicit', async () => {
+  test.skip(process.platform !== 'win32', 'transfer recovery restart acceptance is required on Windows');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-transfer-status-restart-e2e-'));
+  const operationId = randomUUID();
+  const partialDirectory = join(profile, 'partials');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const launchApp = () => electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    await mkdir(partialDirectory);
+    await writeFile(join(partialDirectory, `.mrt-${operationId}.partial`), Buffer.from('incomplete-download'));
+    app = await launchApp();
+    const initialPage = await app.firstWindow();
+    await expect(initialPage.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const userDataPath = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+    await app.close();
+
+    const database = new DatabaseSync(join(userDataPath, 'multiremote-terminal.sqlite'));
+    try {
+      const at = new Date().toISOString();
+      database.prepare(`INSERT INTO file_transfer_recovery_jobs
+        (operation_id, run_id, transport, direction, file_name, state, bytes_transferred, total_bytes, error_code, created_at, updated_at)
+        VALUES (?, ?, 'sftp', 'download', 'archive.tar', 'running', 128, 256, NULL, ?, ?)`)
+        .run(operationId, randomUUID(), at, at);
+    } finally { database.close(); }
+
+    app = await launchApp();
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const recovery = page.getByRole('region', { name: 'Interrupted file transfers' });
+    const record = recovery.locator('li').filter({ hasText: 'Download archive.tar' });
+    await expect(record).toContainText('SFTP');
+    await expect(record).toContainText('Recorded progress: 128 bytes of 256');
+    await expect(recovery).toContainText('do not resume automatically');
+    await expect(page.locator('body')).not.toContainText(profile);
+    await record.getByRole('button', { name: 'Dismiss status' }).click();
+    await expect(record).toHaveCount(0);
+    await app.close();
+    app = undefined;
+
+    const verify = new DatabaseSync(join(userDataPath, 'multiremote-terminal.sqlite'), { readOnly: true });
+    try {
+      assert.equal((verify.prepare('SELECT count(*) AS count FROM file_transfer_recovery_jobs WHERE operation_id = ?')
+        .get(operationId) as { readonly count: number }).count, 0);
+    } finally { verify.close(); }
+  } finally {
+    await app?.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('Windows master-password vault converts, locks after restart, unlocks through its KDF worker, and supports explicit reset', async () => {
   test.skip(process.platform !== 'win32', 'Exercise the master-password vault and Electron utility process on Windows');
   test.setTimeout(180_000);
@@ -3077,8 +3672,8 @@ test('Windows master-password vault restores into a different app profile after 
   }
 });
 
-test('SSH saved-profile jump routes verify every hop and clean up one-, two-, and three-gateway chains', async () => {
-  test.setTimeout(120_000);
+test('SSH saved-profile jump routes verify every hop and clean up one- through eight-gateway chains', async () => {
+  test.setTimeout(240_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-ssh-route-e2e-'));
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
   const agentPipePath = String.raw`\\.\pipe\mrt-ssh-route-agent-${randomUUID()}`;
@@ -3130,6 +3725,22 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       tunneledRequestBytes += data.length;
       if (responseSent) return;
       request = Buffer.concat([request, data]);
+      if (request.length > 16 * 1024) {
+        responseSent = true;
+        socket.end('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      if (request.subarray(0, 4).toString('ascii') === 'GET ') {
+        const headerEnd = request.indexOf('\r\n\r\n');
+        if (headerEnd < 0) return;
+        const body = Buffer.from('MRT-CURL-SOCKS5-OK', 'ascii');
+        responseSent = true;
+        socket.end(Buffer.concat([
+          Buffer.from(`HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`, 'ascii'),
+          body,
+        ]));
+        return;
+      }
       if (request.length < 4) return;
       const payloadLength = request.readUInt32BE(0);
       if (request.length < 4 + payloadLength) return;
@@ -3141,7 +3752,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
   });
   const servers: Array<{ readonly name: string; readonly server: Ssh2FixtureServer; address?: AddressInfo }> = [];
   const createFixture = (name: string, role: 'gateway' | 'terminal' | 'sftp'): Ssh2FixtureServer => {
-    const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+    const keyPair = ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256 });
     const server = new ssh2.Server({ hostKeys: [keyPair.private] }, rawClient => {
       const client = rawClient as Ssh2FixtureClient;
       clients.add(client);
@@ -3291,7 +3902,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
   let targetEchoListening = false;
   try {
     await mkdir(sftpRoot);
-    await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through three SSH gateways');
+    await writeFile(join(sftpRoot, 'gateway-sftp.txt'), 'SFTP reached through eight SSH gateways');
     await new Promise<void>((resolveListen, rejectListen) => {
       agentServer.once('error', rejectListen);
       agentServer.listen(agentPipePath, () => { agentListening = true; resolveListen(); });
@@ -3315,6 +3926,11 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     createFixture('tunnel-target', 'terminal');
     createFixture('gateway-three', 'gateway');
     createFixture('tunnel-gateway-three', 'gateway');
+    createFixture('gateway-four', 'gateway');
+    createFixture('gateway-five', 'gateway');
+    createFixture('gateway-six', 'gateway');
+    createFixture('gateway-seven', 'gateway');
+    createFixture('gateway-eight', 'gateway');
     for (const fixture of servers) {
       await new Promise<void>((resolveListen, rejectListen) => {
         fixture.server.once('error', rejectListen);
@@ -3335,11 +3951,21 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     const tunnelTargetPort = servers[6]?.address?.port;
     const gatewayThreePort = servers[7]?.address?.port;
     const tunnelGatewayThreePort = servers[8]?.address?.port;
+    const gatewayFourPort = servers[9]?.address?.port;
+    const gatewayFivePort = servers[10]?.address?.port;
+    const gatewaySixPort = servers[11]?.address?.port;
+    const gatewaySevenPort = servers[12]?.address?.port;
+    const gatewayEightPort = servers[13]?.address?.port;
     if (!gatewayOnePort || !gatewayTwoPort || !targetPort || !sftpTargetPort || !tunnelGatewayOnePort || !tunnelGatewayTwoPort ||
-        !tunnelTargetPort || !gatewayThreePort || !tunnelGatewayThreePort) {
+        !tunnelTargetPort || !gatewayThreePort || !tunnelGatewayThreePort || !gatewayFourPort || !gatewayFivePort ||
+        !gatewaySixPort || !gatewaySevenPort || !gatewayEightPort) {
       throw new Error('The SSH route fixture did not expose all ports');
     }
-
+    const routeGatewayPorts = [gatewayOnePort, gatewayTwoPort, gatewayThreePort, gatewayFourPort, gatewayFivePort, gatewaySixPort,
+      gatewaySevenPort, gatewayEightPort];
+    const routeGatewayNames = ['Gateway one', 'Gateway two', 'Gateway three', 'Gateway four', 'Gateway five', 'Gateway six',
+      'Gateway seven', 'Gateway eight'];
+    const routeGatewayFixtureNames = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
     app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-ssh-credentials',
       '--mrt-e2e-ssh-agent-auth', `--mrt-e2e-ssh-agent-pipe=${agentPipePath}`],
       env: { ...electronEnvironment(), MRT_E2E: '1' } });
@@ -3355,7 +3981,12 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway two', host: '127.0.0.1', port: ports.tunnelGatewayTwo }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel target', host: '127.0.0.1', port: ports.tunnelTarget }),
         window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway three', host: '127.0.0.1', port: ports.gatewayThree }),
-        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway three', host: '127.0.0.1', port: ports.tunnelGatewayThree })
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Tunnel gateway three', host: '127.0.0.1', port: ports.tunnelGatewayThree }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway four', host: '127.0.0.1', port: ports.gatewayFour }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway five', host: '127.0.0.1', port: ports.gatewayFive }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway six', host: '127.0.0.1', port: ports.gatewaySix }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway seven', host: '127.0.0.1', port: ports.gatewaySeven }),
+        window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Gateway eight', host: '127.0.0.1', port: ports.gatewayEight })
       ]);
       const ids: string[] = [];
       for (const reply of replies) {
@@ -3365,12 +3996,15 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       return ids;
     }, { gatewayOne: gatewayOnePort, gatewayTwo: gatewayTwoPort, target: targetPort, sftpTarget: sftpTargetPort,
       tunnelGatewayOne: tunnelGatewayOnePort, tunnelGatewayTwo: tunnelGatewayTwoPort, tunnelTarget: tunnelTargetPort,
-      gatewayThree: gatewayThreePort, tunnelGatewayThree: tunnelGatewayThreePort });
-    expect(profileIds).toHaveLength(9);
+      gatewayThree: gatewayThreePort, tunnelGatewayThree: tunnelGatewayThreePort, gatewayFour: gatewayFourPort,
+      gatewayFive: gatewayFivePort, gatewaySix: gatewaySixPort, gatewaySeven: gatewaySevenPort, gatewayEight: gatewayEightPort });
+    expect(profileIds).toHaveLength(14);
+    const routeGatewayProfileIds = [profileIds[0]!, profileIds[1]!, profileIds[7]!, profileIds[9]!, profileIds[10]!,
+      profileIds[11]!, profileIds[12]!, profileIds[13]!];
     await page.reload();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
 
-    const openRoute = async (gatewayCount: 1 | 2 | 3, expectedTrustPorts: readonly number[] = [],
+    const openRoute = async (gatewayCount: 1 | 2 | 3 | 4 | 8, expectedTrustPorts: readonly number[] = [],
       authenticationMethod: 'password' | 'agent' = 'password'): Promise<void> => {
       await page.getByRole('button', { name: 'Actions for saved session Target profile' }).click();
       await page.getByRole('button', { name: 'Connect Target profile through gateways' }).click();
@@ -3378,10 +4012,14 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       await expect(dialog).toBeVisible();
       await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
       await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
+      if (gatewayCount === 8) {
+        await expect(dialog.getByLabel('SSH gateway 8 (optional)')).toBeVisible();
+        await expect(dialog.getByLabel('SSH gateway 9 (optional)')).toHaveCount(0);
+      }
       await dialog.getByLabel('Authentication method').selectOption(authenticationMethod);
-      await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
-      if (gatewayCount >= 2) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
-      if (gatewayCount >= 3) await dialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[7]!);
+      for (let hop = 0; hop < gatewayCount; hop += 1) {
+        await dialog.getByLabel(`SSH gateway ${hop + 1}${hop === 0 ? '' : ' (optional)'}`).selectOption(routeGatewayProfileIds[hop]!);
+      }
       await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
       for (const expectedTrustPort of expectedTrustPorts) {
         const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
@@ -3394,10 +4032,10 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       const panelId = await tab.getAttribute('aria-controls');
       if (!panelId) throw new Error('Missing routed SSH terminal panel');
       await expect(page.locator(`#${panelId} .xterm-rows`)).toContainText('MRT-JUMP-TARGET-READY', { timeout: 15_000 });
-      const routeNames = ['Gateway one', ...(gatewayCount >= 2 ? ['Gateway two'] : []), ...(gatewayCount >= 3 ? ['Gateway three'] : []), 'Target profile'];
+      const routeNames = [...routeGatewayNames.slice(0, gatewayCount), 'Target profile'];
       await confirmCloseActiveTerminal(page, routeNames.join(' → '));
     };
-    const openSftpRoute = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = [],
+    const openSftpRoute = async (gatewayCount: 2 | 3 | 8, expectedTrustPorts: readonly number[] = [],
       authenticationMethod: 'password' | 'agent' = 'password'): Promise<void> => {
       await page.getByRole('button', { name: 'Actions for saved session SFTP target profile' }).click();
       await page.getByRole('button', { name: 'Connect SFTP target profile through gateways' }).click();
@@ -3405,10 +4043,14 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       await expect(dialog).toBeVisible();
       await expect(dialog.getByLabel('SSH gateway 1')).toBeFocused();
       await expect(dialog.getByLabel('Host name or IP address')).toBeDisabled();
+      if (gatewayCount === 8) {
+        await expect(dialog.getByLabel('SSH gateway 8 (optional)')).toBeVisible();
+        await expect(dialog.getByLabel('SSH gateway 9 (optional)')).toHaveCount(0);
+      }
       await dialog.getByLabel('Authentication method').selectOption(authenticationMethod);
-      await dialog.getByLabel('SSH gateway 1').selectOption(profileIds[0]!);
-      if (gatewayCount >= 2) await dialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[1]!);
-      if (gatewayCount >= 3) await dialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[7]!);
+      for (let hop = 0; hop < gatewayCount; hop += 1) {
+        await dialog.getByLabel(`SSH gateway ${hop + 1}${hop === 0 ? '' : ' (optional)'}`).selectOption(routeGatewayProfileIds[hop]!);
+      }
       await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
       for (const port of expectedTrustPorts) {
         const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
@@ -3426,8 +4068,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       expect(fixtureEvents.filter(event => event === 'sftp-target:shell')).toHaveLength(0);
       await page.getByRole('button', { name: 'Close active file session' }).click();
       const confirmation = page.getByRole('alertdialog');
-      const routeNames = ['Gateway one', ...(gatewayCount >= 2 ? ['Gateway two'] : []),
-        ...(gatewayCount >= 3 ? ['Gateway three'] : []), 'SFTP target profile'];
+      const routeNames = [...routeGatewayNames.slice(0, gatewayCount), 'SFTP target profile'];
       for (const routeName of routeNames) {
         await expect(confirmation).toContainText(routeName);
       }
@@ -3553,6 +4194,31 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
 
+    await openRoute(4, [gatewayFourPort]);
+    await expect.poll(() => fixtureEvents.filter(event => event.endsWith(':shell')).length).toBe(4);
+    expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
+    expect(fixtureEvents).toContain('gateway-two:relay:' + gatewayThreePort);
+    expect(fixtureEvents).toContain('gateway-three:relay:' + gatewayFourPort);
+    expect(fixtureEvents).toContain('gateway-four:relay:' + targetPort);
+    expect(fixtureEvents.filter(event => event === 'gateway-four:authenticated')).toHaveLength(1);
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+
+    const eightHopEventStart = fixtureEvents.length;
+    await openRoute(8, [gatewayFivePort, gatewaySixPort, gatewaySevenPort, gatewayEightPort]);
+    await expect.poll(() => fixtureEvents.slice(eightHopEventStart).filter(event => event.endsWith(':shell'))).toEqual(['target:shell']);
+    const eightHopEvents = fixtureEvents.slice(eightHopEventStart);
+    for (let hop = 0; hop < routeGatewayPorts.length; hop += 1) {
+      const fixtureName = `gateway-${['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'][hop]}`;
+      const nextPort = routeGatewayPorts[hop + 1] ?? targetPort;
+      expect(eightHopEvents).toContain(`${fixtureName}:relay:${nextPort}`);
+      expect(eightHopEvents).toContain(`${fixtureName}:authenticated`);
+    }
+    expect(eightHopEvents).toContain('target:authenticated');
+    expect(eightHopEvents).toContain('target:shell');
+    await expect.poll(() => clients.size).toBe(0);
+    await waitForRelayCleanup();
+
     await openSftpRoute(2, [sftpTargetPort]);
     await expect.poll(() => sftpRequests).toBe(1);
     expect(fixtureEvents).toContain('gateway-one:relay:' + gatewayTwoPort);
@@ -3573,7 +4239,7 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     const identityRequestsBeforeRoutedTerminal = agentIdentityRequests;
     const signatureRequestsBeforeRoutedTerminal = agentSignatureRequests;
     await openRoute(3, [], 'agent');
-    await expect.poll(() => fixtureEvents.filter(event => event === 'target:authenticated').length).toBe(4);
+    await expect.poll(() => fixtureEvents.filter(event => event === 'target:authenticated').length).toBe(6);
     expect(fixtureEvents).toContain('target:auth-method:publickey');
     expect(agentIdentityRequests).toBeGreaterThan(identityRequestsBeforeRoutedTerminal);
     expect(agentSignatureRequests).toBeGreaterThan(signatureRequestsBeforeRoutedTerminal);
@@ -3598,6 +4264,20 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     expect(fixtureEvents).toContain('gateway-three:relay:' + sftpTargetPort);
     await expect.poll(() => clients.size).toBe(0);
     await expect.poll(() => agentSockets.size).toBe(0);
+    await waitForRelayCleanup();
+
+    const eightHopSftpEventStart = fixtureEvents.length;
+    await openSftpRoute(8);
+    await expect.poll(() => sftpRequests).toBe(4);
+    const eightHopSftpEvents = fixtureEvents.slice(eightHopSftpEventStart);
+    for (let hop = 0; hop < routeGatewayPorts.length; hop += 1) {
+      const nextPort = routeGatewayPorts[hop + 1] ?? sftpTargetPort;
+      expect(eightHopSftpEvents).toContain(`gateway-${routeGatewayFixtureNames[hop]}:relay:${nextPort}`);
+      expect(eightHopSftpEvents).toContain(`gateway-${routeGatewayFixtureNames[hop]}:authenticated`);
+    }
+    expect(eightHopSftpEvents).toContain('sftp-target:authenticated');
+    expect(eightHopSftpEvents).toContain('sftp-target:sftp');
+    await expect.poll(() => clients.size).toBe(0);
     await waitForRelayCleanup();
     const visibleAgentRouteText = await page.locator('body').innerText();
     expect(visibleAgentRouteText).not.toContain(agentPipePath);
@@ -3679,12 +4359,22 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     expectExactTunnelRequestBytes(requestBytesBeforeLocal, payload);
     expect(await localPortRefusesConnections(tunnelPort)).toBe(true);
 
-    const startSelectedTunnelThroughGateways = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
+    const startSelectedTunnelThroughGateways = async (gatewayCount: 2 | 3 | 8, expectedTrustPorts: readonly number[] = [],
+      remoteForward = false): Promise<void> => {
       await tunnelDialog.getByRole('button', { name: 'Start through gateways' }).click();
-      await tunnelDialog.getByLabel('SSH gateway 1').selectOption(profileIds[4]!);
-      if (gatewayCount >= 2) await tunnelDialog.getByLabel('SSH gateway 2 (optional)').selectOption(profileIds[5]!);
-      if (gatewayCount >= 3) await tunnelDialog.getByLabel('SSH gateway 3 (optional)').selectOption(profileIds[8]!);
-      await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
+      const gatewayIds = gatewayCount === 8 ? routeGatewayProfileIds : [profileIds[4]!, profileIds[5]!, profileIds[8]!];
+      if (gatewayCount === 8) {
+        await expect(tunnelDialog.getByLabel('SSH gateway 8 (optional)')).toBeVisible();
+        await expect(tunnelDialog.getByLabel('SSH gateway 9 (optional)')).toHaveCount(0);
+      }
+      for (let hop = 0; hop < gatewayCount; hop += 1) {
+        await tunnelDialog.getByLabel(`SSH gateway ${hop + 1}${hop === 0 ? '' : ' (optional)'}`).selectOption(gatewayIds[hop]!);
+      }
+      if (remoteForward) {
+        const confirmation = runNativeRemoteForwardConfirmation('accept-remote-forward', app!.process().pid!);
+        await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
+        await confirmation;
+      } else await tunnelDialog.getByRole('button', { name: 'Start tunnel via gateways' }).click();
       for (const expectedTrustPort of expectedTrustPorts) {
         const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
         await expect(trust).toBeVisible({ timeout: 15_000 });
@@ -3693,19 +4383,19 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
       }
       await expect(tunnelDialog.locator('.tunnel-status-card')).toContainText('Active', { timeout: 25_000 });
     };
-    const startSelectedTunnelAndVerifyGatewayRelays = async (gatewayCount: 2 | 3, expectedTrustPorts: readonly number[] = []): Promise<void> => {
-      const firstGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length;
-      const secondGatewayTargetPort = gatewayCount === 3 ? tunnelGatewayThreePort : tunnelTargetPort;
-      const secondGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${secondGatewayTargetPort}`).length;
-      const thirdGatewayRelays = fixtureEvents.filter(event => event === `tunnel-gateway-three:relay:${tunnelTargetPort}`).length;
-      await startSelectedTunnelThroughGateways(gatewayCount, expectedTrustPorts);
-      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-one:relay:${tunnelGatewayTwoPort}`).length)
-        .toBe(firstGatewayRelays + 1);
-      await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-two:relay:${secondGatewayTargetPort}`).length)
-        .toBe(secondGatewayRelays + 1);
-      if (gatewayCount === 3) {
-        await expect.poll(() => fixtureEvents.filter(event => event === `tunnel-gateway-three:relay:${tunnelTargetPort}`).length)
-          .toBe(thirdGatewayRelays + 1);
+    const startSelectedTunnelAndVerifyGatewayRelays = async (gatewayCount: 2 | 3 | 8, expectedTrustPorts: readonly number[] = [],
+      remoteForward = false): Promise<void> => {
+      const relayChecks: Array<{ readonly fixtureName: string; readonly port: number }> = gatewayCount === 8
+        ? routeGatewayFixtureNames.map((name, hop) => ({ fixtureName: `gateway-${name}`, port: routeGatewayPorts[hop + 1] ?? tunnelTargetPort }))
+        : [{ fixtureName: 'tunnel-gateway-one', port: tunnelGatewayTwoPort },
+          { fixtureName: 'tunnel-gateway-two', port: gatewayCount === 3 ? tunnelGatewayThreePort : tunnelTargetPort },
+          ...(gatewayCount === 3 ? [{ fixtureName: 'tunnel-gateway-three', port: tunnelTargetPort }] : [])];
+      const previousRelayCounts = relayChecks.map(({ fixtureName, port }) =>
+        fixtureEvents.filter(event => event === `${fixtureName}:relay:${port}`).length);
+      await startSelectedTunnelThroughGateways(gatewayCount, expectedTrustPorts, remoteForward);
+      for (const [index, { fixtureName, port }] of relayChecks.entries()) {
+        await expect.poll(() => fixtureEvents.filter(event => event === `${fixtureName}:relay:${port}`).length)
+          .toBe(previousRelayCounts[index]! + 1);
       }
     };
     const selectedStatusPort = async (pattern: RegExp): Promise<number> => {
@@ -3731,8 +4421,8 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     const remoteTunnelItem = tunnelDialog.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
     await expect(remoteTunnelItem).toBeVisible();
     await remoteTunnelItem.click();
-    await startSelectedTunnelAndVerifyGatewayRelays(3);
-    const remotePort = await selectedStatusPort(/SSH server 127\.0\.0\.1:(\d+)/u);
+    await startSelectedTunnelAndVerifyGatewayRelays(3, [], true);
+    const remotePort = await selectedStatusPort(/Requested SSH server 127\.0\.0\.1:(\d+)/u);
     expect(remoteBindRequests.at(-1)).toBe('127.0.0.1:0');
     expect(fixtureEvents).toContain(`tunnel-target:remote-bound:${remotePort}`);
     const remotePayload = Buffer.from('three-hop-remote-forward-bytes');
@@ -3766,6 +4456,58 @@ test('SSH saved-profile jump routes verify every hop and clean up one-, two-, an
     await stopSelectedTunnelAndVerifySharedCleanup();
     expectExactTunnelRequestBytes(requestBytesBeforeSocks, socksPayload);
     expect(await localPortRefusesConnections(socksPort)).toBe(true);
+
+    await localTunnelItem.click();
+    await startSelectedTunnelAndVerifyGatewayRelays(8);
+    const eightHopLocalPort = await selectedStatusPort(/Local 127\.0\.0\.1:(\d+)/u);
+    const eightHopLocalPayload = Buffer.from('eight-hop-local-forward-bytes');
+    const eightHopLocalBytesBefore = tunneledRequestBytes;
+    expect(await roundTripTunnelTraffic(eightHopLocalPort, eightHopLocalPayload))
+      .toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), eightHopLocalPayload]));
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expectExactTunnelRequestBytes(eightHopLocalBytesBefore, eightHopLocalPayload);
+    expect(await localPortRefusesConnections(eightHopLocalPort)).toBe(true);
+
+    await remoteTunnelItem.click();
+    await startSelectedTunnelAndVerifyGatewayRelays(8, [], true);
+    const eightHopRemotePort = await selectedStatusPort(/Requested SSH server 127\.0\.0\.1:(\d+)/u);
+    expect(remoteBindRequests.at(-1)).toBe('127.0.0.1:0');
+    expect(fixtureEvents).toContain(`tunnel-target:remote-bound:${eightHopRemotePort}`);
+    const eightHopRemotePayload = Buffer.from('eight-hop-remote-forward-bytes');
+    const eightHopRemoteBytesBefore = tunneledRequestBytes;
+    expect(await roundTripTunnelTraffic(eightHopRemotePort, eightHopRemotePayload))
+      .toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), eightHopRemotePayload]));
+    await expect.poll(() => remoteSockets.size).toBe(0);
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expectExactTunnelRequestBytes(eightHopRemoteBytesBefore, eightHopRemotePayload);
+    expect([...remoteBindings.values()].some(bindings => bindings.has(eightHopRemotePort))).toBe(false);
+    expect(fixtureEvents).toContain(`tunnel-target:remote-unbound:${eightHopRemotePort}`);
+    expect(await localPortRefusesConnections(eightHopRemotePort)).toBe(true);
+
+    await dynamicTunnelItem.click();
+    await startSelectedTunnelAndVerifyGatewayRelays(8);
+    const eightHopSocksPort = await selectedStatusPort(/SOCKS5 proxy 127\.0\.0\.1:(\d+)/u);
+    const eightHopSocksPayload = Buffer.from('eight-hop-dynamic-socks-bytes');
+    const eightHopSocksBytesBefore = tunneledRequestBytes;
+    expect(await roundTripDynamicSocks(eightHopSocksPort, targetEchoPort, eightHopSocksPayload))
+      .toEqual(Buffer.concat([Buffer.from('MRT-GATEWAY-TUNNEL:'), eightHopSocksPayload]));
+    expectTunnelStartDidNotRequestInteractiveChannels(shellCountBeforeTunnel, sftpRequestsBeforeTunnel);
+    expectExactTunnelRequestBytes(eightHopSocksBytesBefore, eightHopSocksPayload);
+    const curlBody = await new Promise<string>((resolveCurl, rejectCurl) => {
+      execFile(systemExecutable('curl.exe'), [
+        '--fail', '--silent', '--show-error', '--max-time', '15', '--connect-timeout', '5', '--noproxy', '',
+        '--socks5-hostname', `127.0.0.1:${eightHopSocksPort}`, `http://localhost:${targetEchoPort}/interop`,
+      ], { encoding: 'utf8', maxBuffer: 4096, timeout: 20_000, windowsHide: true }, (error, stdout) => {
+        if (error) rejectCurl(error);
+        else resolveCurl(stdout);
+      });
+    });
+    expect(curlBody).toBe('MRT-CURL-SOCKS5-OK');
+    await expect.poll(() => tunneledSockets.size).toBe(0);
+    await stopSelectedTunnelAndVerifySharedCleanup();
+    expect(await localPortRefusesConnections(eightHopSocksPort)).toBe(true);
   } finally {
     await app?.close();
     for (const client of clients) client.end();
@@ -3805,8 +4547,8 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
       socket.write(Buffer.concat([Buffer.from('MRT-FORWARDED:'), data]));
     });
   });
-  const forwardRemoteTraffic = (boundPort: number, payload: string): Promise<string> => new Promise((resolvePayload, rejectPayload) => {
-    const socket = connectTcp(boundPort, '127.0.0.1');
+  const forwardRemoteTraffic = (boundPort: number, payload: string, host = '127.0.0.1'): Promise<string> => new Promise((resolvePayload, rejectPayload) => {
+    const socket = connectTcp(boundPort, host);
     let received = '';
     const timer = setTimeout(() => {
       socket.destroy();
@@ -3819,6 +4561,18 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
     socket.once('connect', () => socket.write(Buffer.from(payload)));
   });
+  const assertLocalPortReleased = async (port: number): Promise<void> => {
+    const code = await new Promise<string | undefined>(resolveCode => {
+      const socket = connectTcp(port, '127.0.0.1');
+      const timer = setTimeout(() => { socket.destroy(); resolveCode('TIMEOUT'); }, 5_000);
+      socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolveCode(undefined); });
+      socket.once('error', error => {
+        clearTimeout(timer);
+        resolveCode('code' in error ? String(error.code) : 'ERROR');
+      });
+    });
+    expect(code).toBe('ECONNREFUSED');
+  };
   const forwardSocksTraffic = (proxyPort: number, targetHost: string, targetPort: number, payload: string): Promise<string> =>
     new Promise((resolvePayload, rejectPayload) => {
       const socket = connectTcp(proxyPort, '127.0.0.1');
@@ -3878,12 +4632,12 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
         const reject = typeof rawReject === 'function' ? rawReject as () => void : undefined;
         const info = rawInfo as { readonly bindAddr: string; readonly bindPort: number };
         if (name === 'tcpip-forward') {
-          if (info.bindAddr !== '127.0.0.1') { reject?.(); return; }
+          if (isIP(info.bindAddr) !== 4) { reject?.(); return; }
           let assignedPort = info.bindPort;
           const server = createServer(remoteSocket => {
             const sourceAddress = remoteSocket.remoteAddress ?? '127.0.0.1';
             const sourcePort = remoteSocket.remotePort ?? 0;
-            client.forwardOut('127.0.0.1', assignedPort, sourceAddress, sourcePort, (error, channel) => {
+            client.forwardOut(info.bindAddr, assignedPort, sourceAddress, sourcePort, (error, channel) => {
               if (error || !channel) { fixtureEvents.push(`remote-forwardOut-error:${error?.message ?? 'no channel'}`); remoteSocket.destroy(); return; }
               fixtureEvents.push(`remote-forwardOut-open:${assignedPort}`);
               remoteSocket.once('error', () => channel.destroy());
@@ -3892,7 +4646,7 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
             });
           });
           server.once('error', error => { fixtureEvents.push(`remote-listener-error:${error.message}`); reject?.(); });
-          server.listen(info.bindPort, '127.0.0.1', () => {
+          server.listen(info.bindPort, info.bindAddr, () => {
             const address = server.address();
             if (!address || typeof address === 'string') { server.close(); reject?.(); return; }
             const port = address.port;
@@ -3908,9 +4662,18 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
         }
         if (name === 'cancel-tcpip-forward') {
           const ports = remoteBindings.get(client);
-          ports?.get(info.bindPort)?.close();
+          const server = ports?.get(info.bindPort);
           ports?.delete(info.bindPort);
-          accept?.();
+          if (server?.listening) {
+            server.close(error => {
+              if (error) { fixtureEvents.push(`remote-unbind-error:${info.bindPort}`); reject?.(); return; }
+              fixtureEvents.push(`remote-unbound:${info.bindPort}`);
+              accept?.();
+            });
+          } else {
+            fixtureEvents.push(`remote-unbound:${info.bindPort}`);
+            accept?.();
+          }
           return;
         }
         reject?.();
@@ -4071,6 +4834,54 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     expect(fixtureEvents.filter(event => event === 'direct-tcpip')).toHaveLength(6);
     expect(fixtureEvents.filter(event => event === 'shell')).toHaveLength(shellCountBeforeForward);
 
+    const publicTunnelName = 'Shared local database forward';
+    await manager.getByRole('button', { name: '+ New tunnel' }).click();
+    await manager.getByLabel('Tunnel name').fill(publicTunnelName);
+    await manager.getByLabel('Local address').selectOption('0.0.0.0');
+    await expect(manager.getByRole('note', { name: 'Public local forwarding exposure warning' })).toContainText('Windows firewall');
+    await manager.getByLabel('SSH profile').selectOption({ index: 1 });
+    await manager.getByLabel('Local port').fill('0');
+    await manager.getByLabel('Remote destination host').fill('127.0.0.1');
+    await manager.getByLabel('Remote destination port').fill(String(targetAddress.port));
+    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+    const publicItem = manager.getByRole('button', { name: new RegExp(publicTunnelName, 'u') });
+    await expect(publicItem).toContainText('Local 0.0.0.0:Auto');
+    await publicItem.click();
+    const publicEditor = manager.getByRole('region', { name: 'Tunnel settings' });
+    const publicStatus = publicEditor.getByRole('status');
+    const connectionsBeforeDenial = clients.size;
+    const deniedPublicStart = runNativePublicTunnelConfirmation('cancel-public-tunnel', app!.process().pid!);
+    await publicEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await deniedPublicStart;
+    expect(clients.size).toBe(connectionsBeforeDenial);
+    await expect(publicStatus).toContainText('Stopped');
+    const acceptedPublicStart = runNativePublicTunnelConfirmation('accept-public-tunnel', app!.process().pid!);
+    await publicEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await acceptedPublicStart;
+    await expect(publicStatus).toContainText('Active', { timeout: 20_000 });
+    const publicEndpoint = await publicStatus.locator('code').innerText();
+    const publicPortMatch = /^Local 0\.0\.0\.0:(\d+)/u.exec(publicEndpoint);
+    expect(publicPortMatch).not.toBeNull();
+    const publicPort = Number(publicPortMatch?.[1]);
+    expect(publicPort).toBeGreaterThan(0);
+    const actualListenerAddress = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `(Get-NetTCPConnection -State Listen -LocalPort ${publicPort} | Select-Object -First 1 -ExpandProperty LocalAddress)`], { encoding: 'utf8' }).trim();
+    expect(actualListenerAddress).toBe('0.0.0.0');
+    const publicPayload = 'public-local-forward-roundtrip';
+    const forwardedPublicPayload = await new Promise<string>((resolvePayload, rejectPayload) => {
+      const socket = connectTcp(publicPort, '127.0.0.1');
+      let received = Buffer.alloc(0);
+      const timer = setTimeout(() => socket.destroy(new Error('Timed out waiting for public local-forward data')), 10_000);
+      socket.once('connect', () => socket.end(Buffer.from(publicPayload)));
+      socket.on('data', chunk => { received = Buffer.concat([received, chunk]); });
+      socket.once('end', () => { clearTimeout(timer); resolvePayload(received.toString('utf8')); });
+      socket.once('error', error => { clearTimeout(timer); rejectPayload(error); });
+    });
+    expect(forwardedPublicPayload).toBe(`MRT-FORWARDED:${publicPayload}`);
+    await publicEditor.getByRole('button', { name: 'Stop tunnel', exact: true }).click();
+    await expect(publicStatus).toContainText('Stopped', { timeout: 15_000 });
+    await assertLocalPortReleased(publicPort);
+
     const remoteTunnelName = 'Reverse API forward';
     await manager.getByRole('button', { name: '+ New tunnel' }).click();
     await manager.getByLabel('Tunnel name').fill(remoteTunnelName);
@@ -4085,19 +4896,27 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     const remoteEditor = manager.getByRole('region', { name: 'Tunnel settings' });
     const remoteListItem = manager.getByRole('button', { name: new RegExp(remoteTunnelName, 'u') });
     await expect(remoteListItem).toContainText('Remote forward');
-    await expect(remoteListItem).toContainText('SSH server 127.0.0.1:Auto → Local 127.0.0.1:');
+    await expect(remoteListItem).toContainText('Requested SSH server 127.0.0.1:Auto → Local 127.0.0.1:');
     await page.screenshot({ path: 'test-results/ssh-remote-forward-manager.png', fullPage: true });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(700, 720));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(720);
     await page.screenshot({ path: 'test-results/ssh-remote-forward-manager-narrow.png', fullPage: true });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.setSize(1200, 800));
     await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(720);
-    await remoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
     const remoteStatus = remoteEditor.getByRole('status');
+    const bindRequestsBeforeConsent = remoteBindRequests.length;
+    const deniedConsent = runNativeRemoteForwardConfirmation('cancel-remote-forward', app!.process().pid!);
+    await remoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await deniedConsent;
+    expect(remoteBindRequests).toHaveLength(bindRequestsBeforeConsent);
+    await expect(remoteStatus).toContainText('Stopped');
+    const acceptedConsent = runNativeRemoteForwardConfirmation('accept-remote-forward', app!.process().pid!);
+    await remoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await acceptedConsent;
     await expect(remoteStatus).toContainText('Active', { timeout: 20_000 });
     const remoteEndpoint = await remoteStatus.locator('code').innerText();
     expect(remoteEndpoint).toContain(`Local 127.0.0.1:${targetAddress.port}`);
-    const remotePortMatch = /SSH server 127\.0\.0\.1:(\d+)/u.exec(remoteEndpoint);
+    const remotePortMatch = /Requested SSH server 127\.0\.0\.1:(\d+)/u.exec(remoteEndpoint);
     expect(remotePortMatch).not.toBeNull();
     const remotePort = Number(remotePortMatch?.[1]);
     expect(remotePort).toBeGreaterThan(0);
@@ -4109,12 +4928,103 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     await remoteEditor.getByRole('button', { name: 'Stop tunnel', exact: true }).click();
     await expect(remoteStatus).toContainText('Stopped', { timeout: 15_000 });
     expect([...remoteBindings.values()].some(ports => ports.has(remotePort))).toBe(false);
+    const restartConsent = runNativeRemoteForwardConfirmation('accept-remote-forward', app!.process().pid!);
     await remoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await restartConsent;
     await expect(remoteStatus).toContainText('Active', { timeout: 20_000 });
     const restartedEndpoint = await remoteStatus.locator('code').innerText();
-    const restartedPortMatch = /SSH server 127\.0\.0\.1:(\d+)/u.exec(restartedEndpoint);
+    const restartedPortMatch = /Requested SSH server 127\.0\.0\.1:(\d+)/u.exec(restartedEndpoint);
     expect(restartedPortMatch).not.toBeNull();
     const restartedRemotePort = Number(restartedPortMatch?.[1]);
+
+    const specificRemoteName = 'Specific reverse API forward';
+    await manager.getByRole('button', { name: '+ New tunnel' }).click();
+    await manager.getByLabel('Tunnel name').fill(specificRemoteName);
+    await manager.getByLabel('Forward direction').selectOption('remote');
+    await manager.getByLabel('SSH server address').fill('127.0.0.2');
+    await manager.getByLabel('SSH profile').selectOption({ index: 1 });
+    await manager.getByLabel('Remote port').fill('0');
+    await manager.getByLabel('Local destination host').fill('127.0.0.1');
+    await manager.getByLabel('Local destination port').fill(String(targetAddress.port));
+    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+    await manager.getByRole('button', { name: new RegExp(specificRemoteName, 'u') }).click();
+    const specificRemoteEditor = manager.getByRole('region', { name: 'Tunnel settings' });
+    const specificRemoteStatus = specificRemoteEditor.getByRole('status');
+    const acceptedSpecificRemote = runNativeRemoteForwardConfirmation('accept-remote-forward', app!.process().pid!);
+    await specificRemoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await acceptedSpecificRemote;
+    await expect(specificRemoteStatus).toContainText('Active', { timeout: 20_000 });
+    const specificRemoteEndpoint = await specificRemoteStatus.locator('code').innerText();
+    const specificRemotePortMatch = /Requested SSH server 127\.0\.0\.2:(\d+)/u.exec(specificRemoteEndpoint);
+    expect(specificRemotePortMatch).not.toBeNull();
+    const specificRemotePort = Number(specificRemotePortMatch?.[1]);
+    expect(remoteBindRequests.at(-1)).toBe('127.0.0.2:0');
+    const specificRemoteServer = [...remoteBindings.values()].map(ports => ports.get(specificRemotePort)).find(Boolean);
+    const specificRemoteAddress = specificRemoteServer?.address();
+    expect(specificRemoteAddress && typeof specificRemoteAddress !== 'string' ? specificRemoteAddress.address : undefined).toBe('127.0.0.2');
+    expect(await forwardRemoteTraffic(specificRemotePort, 'specific-reverse-forward-roundtrip', '127.0.0.2'))
+      .toContain('MRT-FORWARDED:specific-reverse-forward-roundtrip');
+    await specificRemoteEditor.getByRole('button', { name: 'Stop tunnel', exact: true }).click();
+    await expect(specificRemoteStatus).toContainText('Stopped', { timeout: 15_000 });
+    expect([...remoteBindings.values()].some(ports => ports.has(specificRemotePort))).toBe(false);
+
+    const publicRemoteName = 'Public reverse API forward';
+    await manager.getByRole('button', { name: '+ New tunnel' }).click();
+    await manager.getByLabel('Tunnel name').fill(publicRemoteName);
+    await manager.getByLabel('Forward direction').selectOption('remote');
+    await manager.getByLabel('SSH server address').fill('0.0.0.0');
+    await expect(manager.getByRole('note', { name: 'Public remote forwarding exposure warning' })).toContainText('all server IPv4 interface');
+    await manager.getByLabel('SSH profile').selectOption({ index: 1 });
+    await manager.getByLabel('Remote port').fill('0');
+    await manager.getByLabel('Local destination host').fill('127.0.0.1');
+    await manager.getByLabel('Local destination port').fill(String(targetAddress.port));
+    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+    await manager.getByRole('button', { name: new RegExp(publicRemoteName, 'u') }).click();
+    const publicRemoteEditor = manager.getByRole('region', { name: 'Tunnel settings' });
+    const publicRemoteStatus = publicRemoteEditor.getByRole('status');
+    const remoteRequestsBeforeDenial = remoteBindRequests.length;
+    const deniedPublicRemote = runNativeRemoteForwardConfirmation('cancel-remote-forward', app!.process().pid!);
+    await publicRemoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await deniedPublicRemote;
+    expect(remoteBindRequests).toHaveLength(remoteRequestsBeforeDenial);
+    await expect(publicRemoteStatus).toContainText('Stopped');
+    const acceptedPublicRemote = runNativeRemoteForwardConfirmation('accept-remote-forward', app!.process().pid!);
+    await publicRemoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await acceptedPublicRemote;
+    await expect(publicRemoteStatus).toContainText('Active', { timeout: 20_000 });
+    const publicRemoteEndpoint = await publicRemoteStatus.locator('code').innerText();
+    const publicRemotePortMatch = /Requested SSH server 0\.0\.0\.0:(\d+)/u.exec(publicRemoteEndpoint);
+    expect(publicRemotePortMatch).not.toBeNull();
+    const publicRemotePort = Number(publicRemotePortMatch?.[1]);
+    expect(publicRemotePort).toBeGreaterThan(0);
+    expect(remoteBindRequests.at(-1)).toBe('0.0.0.0:0');
+    const publicRemoteServer = [...remoteBindings.values()].map(ports => ports.get(publicRemotePort)).find(Boolean);
+    const publicRemoteAddress = publicRemoteServer?.address();
+    expect(publicRemoteAddress && typeof publicRemoteAddress !== 'string' ? publicRemoteAddress.address : undefined).toBe('0.0.0.0');
+    expect(await forwardRemoteTraffic(publicRemotePort, 'public-reverse-forward-roundtrip')).toContain('MRT-FORWARDED:public-reverse-forward-roundtrip');
+    const publicRemoteStopUnbindCount = fixtureEvents.filter(event => event === `remote-unbound:${publicRemotePort}`).length;
+    await publicRemoteEditor.getByRole('button', { name: 'Stop tunnel', exact: true }).click();
+    await expect(publicRemoteStatus).toContainText('Stopped', { timeout: 15_000 });
+    await expect.poll(() => fixtureEvents.filter(event => event === `remote-unbound:${publicRemotePort}`).length)
+      .toBeGreaterThan(publicRemoteStopUnbindCount);
+    expect([...remoteBindings.values()].some(ports => ports.has(publicRemotePort))).toBe(false);
+
+    const publicRemoteShutdownStart = runNativeRemoteForwardConfirmation('accept-remote-forward', app!.process().pid!);
+    await publicRemoteEditor.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await publicRemoteShutdownStart;
+    await expect(publicRemoteStatus).toContainText('Active', { timeout: 20_000 });
+    const publicRemoteShutdownEndpoint = await publicRemoteStatus.locator('code').innerText();
+    const publicRemoteShutdownPortMatch = /Requested SSH server 0\.0\.0\.0:(\d+)/u.exec(publicRemoteShutdownEndpoint);
+    expect(publicRemoteShutdownPortMatch).not.toBeNull();
+    const publicRemoteShutdownPort = Number(publicRemoteShutdownPortMatch?.[1]);
+    expect(publicRemoteShutdownPort).toBeGreaterThan(0);
+    expect(remoteBindRequests.at(-1)).toBe('0.0.0.0:0');
+    const shutdownBoundServer = [...remoteBindings.values()].map(ports => ports.get(publicRemoteShutdownPort)).find(Boolean);
+    const shutdownBoundAddress = shutdownBoundServer?.address();
+    expect(shutdownBoundAddress && typeof shutdownBoundAddress !== 'string' ? shutdownBoundAddress.address : undefined)
+      .toBe('0.0.0.0');
+    const publicRemoteShutdownUnbindCount = fixtureEvents
+      .filter(event => event === `remote-unbound:${publicRemoteShutdownPort}`).length;
 
     const dynamicTunnelName = 'SOCKS browser proxy';
     await manager.getByRole('button', { name: '+ New tunnel' }).click();
@@ -4151,14 +5061,10 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     await app.close();
     app = undefined;
     expect([...remoteBindings.values()].some(ports => ports.has(restartedRemotePort))).toBe(false);
-    for (const localPort of localPorts) {
-      const releasedPortError = await new Promise<Error | undefined>(resolveConnection => {
-        const socket = connectTcp(localPort, '127.0.0.1');
-        socket.once('connect', () => { socket.destroy(); resolveConnection(undefined); });
-        socket.once('error', error => resolveConnection(error));
-      });
-      expect(releasedPortError && 'code' in releasedPortError ? releasedPortError.code : undefined).toBe('ECONNREFUSED');
-    }
+    await expect.poll(() => fixtureEvents.filter(event => event === `remote-unbound:${publicRemoteShutdownPort}`).length)
+      .toBeGreaterThan(publicRemoteShutdownUnbindCount);
+    expect([...remoteBindings.values()].some(ports => ports.has(publicRemoteShutdownPort))).toBe(false);
+    for (const localPort of localPorts) await assertLocalPortReleased(localPort);
 
     app = await launch();
     page = await app.firstWindow();
@@ -4478,6 +5384,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
   const ftpDeleteArguments: string[] = [];
   const ftpDropUploadEvents: string[] = [];
   let ftpLargeUploadDigest: string | undefined;
+  let firstStouPayloadHadDurableName: boolean | undefined;
+  let recoveryReadDatabase: DatabaseSync | undefined;
   let stouCount = 0;
   let uploadTransferStartedCount = 0;
   let firstDropReplyPending = false;
@@ -4577,6 +5485,15 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
         ? createHash('sha256') : undefined;
       dataSocket.on('data', chunk => {
         const data = Buffer.from(chunk);
+        if (name === 'mrt-server-generated.txt' && firstStouPayloadHadDurableName === undefined) {
+          try {
+            recoveryReadDatabase ??= new DatabaseSync(join(appProfilePath!, 'multiremote-terminal.sqlite'), { readOnly: true });
+            const row = recoveryReadDatabase?.prepare(`SELECT remote_artifact_names_json FROM file_transfer_recovery_jobs
+              WHERE direction = 'upload' AND file_name = 'e2e-upload.txt' AND state = 'running' ORDER BY created_at DESC LIMIT 1`).get() as
+              { readonly remote_artifact_names_json: string } | undefined;
+            firstStouPayloadHadDurableName = JSON.parse(row?.remote_artifact_names_json ?? '[]').includes(name);
+          } catch { firstStouPayloadHadDurableName = false; }
+        }
         chunks.push(data);
         uploadHash?.update(data);
         if (isInterruptedUpload) {
@@ -4757,6 +5674,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     if (!uploadedLargeFile) throw new Error('The FTP fixture did not retain the uploaded large file.');
     expect({ size: uploadedLargeFile.byteLength, sha256: ftpLargeUploadDigest })
       .toEqual(expectedLargeFileDigest);
+    expect(firstStouPayloadHadDurableName, 'SQLite contains the server-selected STOU name before the first payload bytes arrive').toBe(true);
     await expect(browser.getByText(/^Uploaded mrt-server-generated\.txt \(/u)).toBeVisible({ timeout: 10_000 });
 
     await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
@@ -4826,6 +5744,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     const remoteFileList = browser.locator('.remote-file-list');
     await remoteFileList.evaluate(element => { element.scrollTop = element.scrollHeight; });
     await expect(browser.getByText('zz-interrupted-download.bin', { exact: true })).toBeVisible({ timeout: 10_000 });
+    await remoteFileList.evaluate(element => { element.scrollTop = element.scrollHeight; });
     interruptNextDownload = true;
     await browser.getByRole('button', { name: 'Download zz-interrupted-download.bin', exact: true }).click();
     const stagedInterruptedDownloadFiles = async () => {
@@ -4861,6 +5780,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await browser.locator('.remote-file-list').evaluate(element => { element.scrollTop = element.scrollHeight; });
     const retryInterruptedDownload = browser.getByRole('button', { name: 'Download zz-interrupted-download.bin', exact: true });
     await expect(retryInterruptedDownload).toBeVisible({ timeout: 10_000 });
+    await browser.locator('.remote-file-list').evaluate(element => { element.scrollTop = element.scrollHeight; });
     await retryInterruptedDownload.click();
     await expect(browser.getByText('Downloaded zz-interrupted-download.bin (4 MB).', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
@@ -4881,6 +5801,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     failedUploadControlSocket.resetAndDestroy();
     await expect(browser.getByText('FTP upload failed. Reconnect and inspect the remote folder for upload or backup files before removing anything.', { exact: true }))
       .toBeVisible({ timeout: 15_000 });
+    const interruptedTransferRecovery = page.getByRole('region', { name: 'Interrupted file transfers' });
+    await expect(interruptedTransferRecovery).toContainText(interruptedUploadName);
+    await expect(interruptedTransferRecovery).toContainText('FTP/FTPS artifacts remain for manual review.');
 
     await browser.getByRole('button', { name: 'Refresh remote folder' }).click();
     await expect(reconnectButton).toBeVisible({ timeout: 15_000 });
@@ -4911,8 +5834,13 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await app.close();
     app = undefined;
 
-    const database = new DatabaseSync(join(profile, 'multiremote-terminal.sqlite'), { readOnly: true });
+    const database = new DatabaseSync(join(appProfilePath!, 'multiremote-terminal.sqlite'), { readOnly: true });
     try {
+      const interruptedFtpUpload = database.prepare(`SELECT state, remote_artifact_names_json FROM file_transfer_recovery_jobs
+        WHERE direction = 'upload' AND file_name = 'e2e-upload.txt' AND state = 'interrupted' ORDER BY updated_at DESC LIMIT 1`).get() as
+        { readonly state: string; readonly remote_artifact_names_json: string } | undefined;
+      expect(interruptedFtpUpload?.state).toBe('interrupted');
+      expect(JSON.parse(interruptedFtpUpload?.remote_artifact_names_json ?? '[]')).toContain(interruptedUploadName);
       const saved = database.prepare('SELECT kind, host, port, username, credential_ref, options_json FROM session_definitions WHERE name = ?').get('FTP loopback') as {
         readonly kind: string; readonly host: string; readonly port: number; readonly username: string | null;
         readonly credential_ref: string | null; readonly options_json: string;
@@ -4924,6 +5852,9 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     page = await app.firstWindow();
     page.on('console', message => rendererConsoleMessages.push(message.text()));
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const restartedTransferRecovery = page.getByRole('region', { name: 'Interrupted file transfers' });
+    await expect(restartedTransferRecovery).toContainText(interruptedUploadName);
+    await expect(restartedTransferRecovery).toContainText(cancelledUploadName);
     const savedProfile = page.getByRole('button', { name: 'Open FTP loopback', exact: true });
     await expect(savedProfile).toBeVisible({ timeout: 15_000 });
     await savedProfile.click();
@@ -4934,6 +5865,8 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => connectionCount).toBe(4);
+    await page.locator('.remote-file-list').evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect(page.getByTestId('remote-file-browser').getByText('Possible interrupted upload', { exact: true })).toBeVisible();
     expect(await page.locator('body').innerText()).not.toContain('ftp-e2e-secret');
     expect(rendererConsoleMessages.join('\n')).not.toContain('ftp-e2e-secret');
     await app.close();
@@ -4967,6 +5900,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     }
   } finally {
     await app?.close();
+    recoveryReadDatabase?.close();
     for (const socket of controlSockets) socket.destroy();
     for (const socket of dataSockets) socket.destroy();
     if (control.listening) await new Promise<void>(resolveClose => control.close(() => resolveClose()));
@@ -5168,6 +6102,86 @@ test('1,000 saved sessions remain searchable, reopenable and deletable in the Wi
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('1,000 saved definitions export, import across profiles and survive restart', async () => {
+  test.setTimeout(240_000);
+  const workspace = await createWorkspaceTempDirectory('mrt-session-bundle-scale-');
+  const sourceProfile = join(workspace, 'source-profile');
+  const targetProfile = join(workspace, 'target-profile');
+  const importPath = join(workspace, 'source-bundle.json');
+  const exportPath = join(workspace, 'exported-bundle.json');
+  const folderId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const bundle = createSessionFolderBundle({
+    rootFolderId: folderId,
+    exportedAt: timestamp,
+    folders: [{ id: folderId, parentId: null, name: 'P38 Bundle' }],
+    sessions: Array.from({ length: 1_000 }, (_, index) => ({
+      id: randomUUID(), folderId, kind: 'local' as const,
+      name: `P38 Bundle ${String(index + 1).padStart(4, '0')}`, shell: 'powershell' as const,
+      favorite: false, createdAt: timestamp, updatedAt: timestamp
+    }))
+  });
+  if (!bundle) throw new Error('Could not create the 1,000-session bundle fixture.');
+  await writeFile(importPath, JSON.stringify(bundle), 'utf8');
+  const launchProfile = (profile: string) => electron.launch({
+    args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment()
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await launchProfile(sourceProfile);
+    let page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, importPath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1000 saved sessions', { timeout: 45_000 });
+    await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
+
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showSaveDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePath }) });
+    }, exportPath);
+    await page.getByRole('button', { name: 'Actions for folder P38 Bundle', exact: true }).click();
+    await page.getByRole('button', { name: 'Export folder P38 Bundle', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Exported 1 folder and 1000 saved sessions.', { timeout: 45_000 });
+    const exportedText = await readFile(exportPath, 'utf8');
+    const exportedBundle = JSON.parse(exportedText) as {
+      readonly version?: unknown;
+      readonly sessions?: readonly unknown[];
+    };
+    expect(exportedBundle.version).toBe(SESSION_FOLDER_BUNDLE_VERSION);
+    expect(exportedBundle.sessions).toHaveLength(1_000);
+    expect(exportedText).not.toMatch(/password|credential|privateKey/i);
+
+    await app.close();
+    app = undefined;
+    app = await launchProfile(targetProfile);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ dialog: nativeDialog }, filePath) => {
+      Object.defineProperty(nativeDialog, 'showOpenDialog', { configurable: true,
+        value: async () => ({ canceled: false, filePaths: [filePath] }) });
+    }, exportPath);
+    await page.getByRole('button', { name: 'Import a saved session folder', exact: true }).click();
+    await expect(page.locator('.alert-strip > span')).toContainText('Imported 1 folder and 1000 saved sessions', { timeout: 45_000 });
+    await expect(page.getByLabel('1000 saved sessions')).toBeVisible();
+
+    await app.close();
+    app = undefined;
+    app = await launchProfile(targetProfile);
+    page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByLabel('1000 saved sessions')).toBeVisible({ timeout: 30_000 });
+    await page.locator('#saved-session-search').fill('P38 Bundle 1000');
+    await expect(page.getByRole('button', { name: 'Open P38 Bundle 1000', exact: true })).toBeVisible();
+  } finally {
+    if (app) await app.close();
+    await rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
   }
 });
 
@@ -6026,8 +7040,11 @@ test('macro recorder captures completed terminal lines and suppresses a recogniz
     const secret = 'never-store-this-secret';
     const promptCommand = "$mrtSecret = Read-Host -Prompt 'Password' -AsSecureString; Write-Output 'MRT-RECORDER-READY'";
     const pastedCommand = "Write-Output 'MRT-RECORDER-PASTE-OMITTED'";
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pastedCommand);
+    await writeClipboardAndVerify(app, pastedCommand);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.press('Control+V');
+    await expect(panel.locator('.xterm-rows')).toContainText(pastedCommand, { timeout: 15_000 });
     await page.keyboard.press('Enter');
     await expect(panel.locator('.xterm-rows')).toContainText('MRT-RECORDER-PASTE-OMITTED', { timeout: 15_000 });
     await expect(banner).toContainText('0 complete lines');
@@ -6140,7 +7157,7 @@ test('macro recorder protects a recognized password prompt already open when rec
   }
 });
 
-test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only actions', async () => {
+test('terminal tab context menu copies selection and clears output', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-tab-actions-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
   try {
@@ -6148,6 +7165,9 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     const title = 'PowerShell session 1';
     const marker = 'MRT-TAB-CONTEXT-CLEARED';
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible();
+    await expect(page.locator('.terminal-workspace .terminal-panel:not([hidden]) .xterm-rows'))
+      .toContainText(/PS [^\r\n]*?>/u, { timeout: 15_000 });
     const { rows } = await sendLine(page, title, `Write-Output '${marker}'`, marker);
     const tab = page.getByRole('tab', { name: new RegExp(title) });
 
@@ -6172,6 +7192,11 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await expect(menu).toHaveCount(0);
     await expect(tab).toBeFocused();
 
+    const panelId = await tab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The active terminal tab has no panel for text selection.');
+    const panel = page.locator(`#${panelId}`);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
     const outputMarker = rows.getByText(marker, { exact: true });
     const markerBoundsRef: { current: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null } = { current: null };
     await expect.poll(async () => {
@@ -6193,20 +7218,38 @@ test('terminal tabs close by Ctrl+W or middle-click and expose terminal-only act
     await menu.getByRole('menuitem', { name: 'Clear terminal' }).click();
     await expect(rows).not.toContainText(marker);
 
-    await page.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('terminal tabs close by Ctrl+W or middle-click', async () => {
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-terminal-tab-close-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    const title = 'PowerShell session 1';
+    const tab = page.getByRole('tab', { name: new RegExp(title) });
+    await expect(tab).toBeVisible();
+    const panelId = await tab.getAttribute('aria-controls');
+    if (!panelId) throw new Error('The active terminal tab has no panel for keyboard focus.');
+    const panel = page.locator(`#${panelId}`);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.press('Control+W');
     let confirmation = page.getByRole('alertdialog');
     await expect(confirmation).toContainText(title);
     await confirmation.getByRole('button', { name: 'Keep terminal' }).click();
     await expect(tab).toBeVisible();
-
     await tab.click({ button: 'middle' });
     confirmation = page.getByRole('alertdialog');
     await expect(confirmation).toContainText(title);
     await confirmation.getByRole('button', { name: 'Keep terminal' }).click();
     await expect(tab).toBeVisible();
-
     await tab.click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: `Terminal actions for ${title}` });
     await expect(menu).toBeVisible();
     await menu.getByRole('menuitem', { name: 'Close terminal' }).click();
     confirmation = page.getByRole('alertdialog');
@@ -6421,6 +7464,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
   const profile = await mkdtemp(join(tmpdir(), 'mrt-storage-worker-e2e-'));
   const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
   const databasePath = join(profile, 'storage-smoke.sqlite');
+  const appRunId = randomUUID();
   const algorithm = 'ssh-ed25519';
   const algorithmBytes = Buffer.from(algorithm, 'ascii');
   const publicKey = Buffer.concat([Buffer.from([0, 0, 0, algorithmBytes.length]), algorithmBytes, Buffer.alloc(32, 41)]);
@@ -6432,10 +7476,10 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    const reply = await app.evaluate(async ({ utilityProcess }, { workerPath, appRoot, databasePath, identity }) => new Promise<unknown>((resolveReply, rejectReply) => {
+    const reply = await app.evaluate(async ({ utilityProcess }, { workerPath, appRoot, databasePath, appRunId, identity }) => new Promise<unknown>((resolveReply, rejectReply) => {
       const requestIds = Array.from({ length: 8 }, (_unused, index) => `00000000-0000-4000-8000-${String(index + 2).padStart(12, '0')}`);
       const replies: { imported?: unknown; found?: unknown; created?: unknown; searched?: unknown; favorited?: unknown; favoriteChecked?: unknown; removed?: unknown; shutdown?: unknown } = {};
-      const child = utilityProcess.fork(workerPath, [], { cwd: appRoot, env: { MRT_STORAGE_DB_PATH: databasePath }, stdio: 'ignore' });
+      const child = utilityProcess.fork(workerPath, [], { cwd: appRoot, env: { MRT_STORAGE_DB_PATH: databasePath, MRT_APP_RUN_ID: appRunId }, stdio: 'ignore' });
       const send = (index: number, command: string, payload: Record<string, unknown> = {}) => child.postMessage({
         version: 1, type: 'request', requestId: requestIds[index], command, ...payload
       });
@@ -6493,7 +7537,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
           child.kill();
         }
       });
-    }), { workerPath: resolve('apps/desktop/dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, identity });
+    }), { workerPath: resolve('apps/desktop/dist/host/apps/desktop/src/workers/storage-worker.js'), appRoot: resolve('apps/desktop'), databasePath, appRunId, identity });
     expect(reply).toEqual({
       imported: { sourceCount: 1, verifiedCount: 1 },
       found: { endpoint: identity.endpoint, algorithm, fingerprint, publicKeyBase64: publicKey.toString('base64'),
@@ -6505,7 +7549,7 @@ test('SQLite storage worker migrates host trust and shuts down inside Electron',
     });
     const database = new DatabaseSync(databasePath, { readOnly: true });
     try {
-      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(3);
+      expect((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(CURRENT_SCHEMA_VERSION);
       expect((database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ssh_host_keys'").get())).toBeTruthy();
       expect(database.prepare('SELECT count(*) AS count FROM ssh_host_keys').get()).toEqual({ count: 1 });
       expect(database.prepare('SELECT count(*) AS count FROM session_definitions').get()).toEqual({ count: 0 });
@@ -6535,7 +7579,7 @@ test('Windows multi-tab terminal dimensions track a resized Electron window', as
       const tab = page.getByRole('tab').filter({ hasText: new RegExp(`PowerShell session ${index}\\b`) });
       await expect(tab.locator('.state-dot')).toHaveClass(/running/);
     }
-    await expect(page.locator('.terminal-workspace')).toHaveAttribute('data-opening', 'false');
+    await expect(page.getByRole('group', { name: 'Opening terminals' })).toHaveCount(0);
     const originalViewport = await page.evaluate(() => ({ innerWidth, innerHeight }));
     const originalWidth = originalViewport.innerWidth;
     const otherShellSize = await readPowerShellSize(page, 'PowerShell session 8');
@@ -6553,6 +7597,106 @@ test('Windows multi-tab terminal dimensions track a resized Electron window', as
     }, { timeout: 10_000, intervals: [250] }).toEqual({ columns: true, rows: true });
   } finally {
     await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Windows terminal input stays under the 75 ms p95 target with ten idle tabs', async () => {
+  test.skip(process.platform !== 'win32', 'N-008 typing latency acceptance is measured on Windows');
+  test.setTimeout(180_000);
+  const profile = await createWorkspaceTempDirectory('mrt-terminal-latency-e2e-');
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    for (let index = 2; index <= 11; index++) {
+      await runPaletteCommand(page, 'New PowerShell terminal');
+      const tab = page.getByRole('tab', { name: new RegExp(`PowerShell session ${index}\\b`) });
+      await expect(tab).toBeVisible({ timeout: 15_000 });
+      await expect(tab.locator('.state-dot')).toHaveClass(/running/, { timeout: 15_000 });
+    }
+    await expect(page.getByRole('tab')).toHaveCount(11);
+    await expect(page.getByRole('tab', { name: /PowerShell session 1\b/ }).locator('.state-dot')).toHaveClass(/running/);
+
+    const panel = await selectTerminal(page, 'PowerShell session 11');
+    const terminalHost = panel.locator('.terminal-host');
+    const sessionId = await terminalHost.getAttribute('data-mrt-terminal-session-id');
+    if (!sessionId) throw new Error('The measured terminal has no session id.');
+    const sample = randomUUID().replaceAll('-', '').toLowerCase();
+    await expect(panel.locator('.xterm-rows')).toContainText(/PS .+>/, { timeout: 15_000 });
+    const initialRows = await panel.locator('.xterm-rows').textContent();
+    expect(initialRows).not.toContain(sample.slice(0, 8));
+    await terminalHost.click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.evaluate(({ expected, targetSessionId }) => {
+      const host = Array.from(document.querySelectorAll<HTMLElement>('.terminal-host'))
+        .find(element => element.dataset.mrtTerminalSessionId === targetSessionId);
+      const rows = host?.querySelector('.xterm-rows');
+      const textarea = host?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+      if (!host || !rows || !textarea) throw new Error('Could not attach the N-008 terminal latency probe.');
+      const keydownTimes: number[] = [];
+      const latencyMs: number[] = [];
+      let completed = 0;
+      let renderedCharacters = 0;
+      const onKeydown = (event: KeyboardEvent) => {
+        if (event.ctrlKey || event.altKey || event.metaKey || event.key !== expected[keydownTimes.length]) return;
+        keydownTimes.push(performance.now());
+      };
+      textarea.addEventListener('keydown', onKeydown, true);
+      const observer = new MutationObserver(() => {
+        const visibleText = rows.textContent ?? '';
+        while (renderedCharacters < keydownTimes.length && visibleText.includes(expected.slice(0, renderedCharacters + 1))) {
+          const keydownTime = keydownTimes[renderedCharacters]!;
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            latencyMs.push(performance.now() - keydownTime);
+            completed += 1;
+          }));
+          renderedCharacters += 1;
+        }
+      });
+      observer.observe(rows, { subtree: true, childList: true, characterData: true });
+      (host as HTMLElement & { __mrtN008Probe?: { readonly latencyMs: number[]; readonly completed: number; dispose(): void } }).__mrtN008Probe = {
+        latencyMs,
+        get completed() { return completed; },
+        dispose() {
+          observer.disconnect();
+          textarea.removeEventListener('keydown', onKeydown, true);
+        }
+      };
+    }, { expected: sample, targetSessionId: sessionId });
+    for (let index = 0; index < sample.length; index++) {
+      await page.keyboard.press(sample[index]!);
+      await expect.poll(() => page.evaluate(({ targetSessionId }) => {
+        const host = Array.from(document.querySelectorAll<HTMLElement>('.terminal-host'))
+          .find(element => element.dataset.mrtTerminalSessionId === targetSessionId);
+        return (host as (HTMLElement & { __mrtN008Probe?: { readonly completed: number } }) | undefined)
+          ?.__mrtN008Probe?.completed ?? 0;
+      }, { targetSessionId: sessionId }), { intervals: [5, 10, 20], timeout: 5_000 }).toBe(index + 1);
+    }
+    const result = await page.evaluate(({ targetSessionId }) => {
+      const host = Array.from(document.querySelectorAll<HTMLElement>('.terminal-host'))
+        .find(element => element.dataset.mrtTerminalSessionId === targetSessionId) as
+          (HTMLElement & { __mrtN008Probe?: { readonly latencyMs: number[]; dispose(): void } }) | undefined;
+      if (!host) throw new Error('The N-008 terminal host was lost.');
+      const probe = host.__mrtN008Probe;
+      if (!probe) throw new Error('The N-008 terminal latency probe was lost.');
+      probe.dispose();
+      delete host.__mrtN008Probe;
+      return [...probe.latencyMs];
+    }, { targetSessionId: sessionId });
+    expect(result).toHaveLength(sample.length);
+    const sorted = [...result].sort((left, right) => left - right);
+    const p95Ms = sorted[Math.ceil(sorted.length * 0.95) - 1];
+    const maxMs = sorted.at(-1);
+    const runtime = await app.evaluate(({ app: electronApp }) => ({ electron: process.versions.electron, app: electronApp.getVersion() }));
+    console.info(`N-008 ${JSON.stringify({ idleTabs: 10, sampleCount: result.length, p95Ms: Number(p95Ms!.toFixed(2)),
+      maxMs: Number(maxMs!.toFixed(2)), windowsBuild: osVersion(), cpuModel: cpus()[0]?.model ?? 'unknown',
+      cpuCount: cpus().length, memoryBytes: totalmem(), ...runtime })}`);
+    expect(p95Ms).toBeLessThan(75);
+    await page.keyboard.press('Control+C');
+  } finally {
+    await app?.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
@@ -6594,7 +7738,7 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     expect(isolation.process).toBe('undefined');
     expect(isolation.Buffer).toBe('undefined');
     expect(isolation.bridge).toEqual(['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal',
-      'previewPowerShellProfileScript', 'applyPowerShellProfileScript',
+      'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'managePowerShellTool',
       'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
       'openSshTerminal', 'authorizeSshX11Forwarding', 'launchXdmcp', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
       'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
@@ -6602,7 +7746,8 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory',
       'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile', 'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer',
       'openLocalTextFile', 'reloadLocalTextFile', 'saveLocalTextFile', 'closeLocalTextFile',
-      'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles',
+      'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer',
+      'listInterruptedFileTransfers', 'dismissInterruptedFileTransfer', 'revealInterruptedDownloadPartial', 'closeFtpFiles',
       'chooseTftpRoot', 'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
       'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
       'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'exportWorkbenchSettingsTemplate', 'importWorkbenchSettingsTemplate',
@@ -6612,7 +7757,8 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
       'hasSavedSshCredential', 'saveSshCredential', 'forgetSshCredential', 'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault',
       'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault', 'exportSshCredentialBundle', 'importSshCredentialBundle',
       'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-      'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+      'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress',
+      'onTransferRecoveryChanged', 'onRemoteFilesDropped']);
     expect(isolation.snapshot.ok).toBe(true);
     const rendererProcesses = await app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.type === 'Tab'));
     expect(rendererProcesses.length).toBeGreaterThan(0);
@@ -6621,21 +7767,6 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     const invalidShell = await page.evaluate(() => window.multiRemoteTerminal.openTerminal(crypto.randomUUID(), { shell: 'sh' } as never, 80, 24));
     expect(invalidShell.ok).toBe(false);
     if (!invalidShell.ok) expect(invalidShell.error.code).toBe('INVALID_REQUEST');
-
-    const unicodeCommand = `$u='${unicodeSample}'; Write-Output ('MRT-UNICODE:' + $u.Length + ':' + $u)`;
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), unicodeCommand);
-    const firstPanel = await selectTerminal(page, 'PowerShell session 1');
-    await firstPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
-    await page.keyboard.press('Control+V');
-    await expect(firstPanel.locator('.xterm-rows')).toContainText('MRT-UNICODE:');
-    await page.keyboard.press('Enter');
-    await expect(firstPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:4:${unicodeSample}`, { timeout: 15_000 });
-
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), "Write-Output ('MRT-' + 'PASTE:clipboard-ok')");
-    await firstPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
-    await page.keyboard.press('Control+V');
-    await page.keyboard.press('Enter');
-    await expect(firstPanel.locator('.xterm-rows')).toContainText('MRT-PASTE:clipboard-ok', { timeout: 15_000 });
 
     await page.keyboard.press('Control+Shift+P');
     const shellPalette = page.getByRole('dialog', { name: 'Command palette' });
@@ -6739,6 +7870,34 @@ test('Windows local terminal workbench operates real shells, handles 10 tabs and
     await runPaletteCommand(page, 'New PowerShell terminal');
     await expect(page.getByRole('tab', { name: /PowerShell session 14/ })).toBeVisible();
     await sendLine(page, 'PowerShell session 14', "Write-Output ('MRT-WORKER:' + 'restarted')", 'MRT-WORKER:restarted');
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Windows PowerShell terminal preserves Unicode and multiline clipboard paste', async () => {
+  test.skip(process.platform !== 'win32', 'PowerShell paste acceptance is Windows-only');
+  test.setTimeout(45_000);
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-powershell-clipboard-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New PowerShell terminal');
+    const panel = await selectTerminal(page, 'PowerShell session 1');
+    const unicodeCommand = `$u='${unicodeSample}'; Write-Output ('MRT-UNICODE:' + $u.Length + ':' + $u)`;
+    await writeClipboardAndVerify(app, unicodeCommand);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await page.keyboard.press('Control+V');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-UNICODE:');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:4:${unicodeSample}`, { timeout: 15_000 });
+    await writeClipboardAndVerify(app, "Write-Output ('MRT-' + 'PASTE:clipboard-ok')");
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await page.keyboard.press('Control+V');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-PASTE:clipboard-ok', { timeout: 15_000 });
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -6891,18 +8050,9 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
       'echo', 'rgb(132, 242, 167)'), { timeout: 10_000 }).toBe(true);
     await page.keyboard.press('Control+C');
     await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
+    await expect(syntaxRows).toContainText('MRT-PRIMARY>');
 
     const bashPanel = await selectTerminal(page, 'Bash session 1');
-    const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);
-    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(pasteCommand);
-    await bashPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
-    await expect(bashPanel.locator('.xterm-helper-textarea')).toBeFocused();
-    await page.keyboard.press('Control+V');
-    await expect(bashPanel.locator('.xterm-rows')).toContainText('MRT-UNICODE:');
-    await page.keyboard.press('Enter');
-    await expect(bashPanel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:${bashUnicodeSample}`, { timeout: 15_000 });
-
     const initialWidth = await page.evaluate(() => innerWidth);
     const initialSizeCommand = "printf 'MRT-BASH-SIZE-INITIAL:%s\\n' \"$(stty size)\"";
     const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE-INITIAL:\d+ \d+/);
@@ -6931,6 +8081,30 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect(closeConfirmation).toContainText('Bash session');
     await closeConfirmation.getByRole('button', { name: 'Close terminal' }).click();
     await expect(bashTabs).toHaveCount(1);
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('Git Bash preserves Unicode clipboard paste', async () => {
+  test.skip(process.platform !== 'win32', 'Git Bash clipboard acceptance is Windows-only');
+  test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash acceptance test');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-bash-clipboard-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await runPaletteCommand(page, 'New Bash terminal');
+    const panel = await selectTerminal(page, 'Bash session 1');
+    const pasteCommand = `printf 'MRT-UNICODE:%s\\n' '${bashUnicodeSample}'`;
+    await writeClipboardAndVerify(app, pasteCommand);
+    await panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(panel.locator('.xterm-helper-textarea')).toBeFocused();
+    await page.keyboard.press('Control+V');
+    await expect(panel.locator('.xterm-rows')).toContainText('MRT-UNICODE:');
+    await page.keyboard.press('Enter');
+    await expect(panel.locator('.xterm-rows')).toContainText(`MRT-UNICODE:${bashUnicodeSample}`, { timeout: 15_000 });
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
@@ -7159,10 +8333,11 @@ test('Git Bash supplementary Unicode paste survives a full command round trip', 
     await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
 
     const supplementarySample = String.fromCodePoint(0x1f642);
-    const { rows } = await sendLine(page, 'Bash session 1', "printf 'MRT-READY\\n'", 'MRT-READY');
+    const { panel: bashPanel, rows } = await sendLine(page, 'Bash session 1', "printf 'MRT-READY\\n'", 'MRT-READY');
     const pasteCommand = `printf 'MRT-OUTPUT:%s\\n' '${supplementarySample}'`;
-    await app.evaluate(({ clipboard }, value) => clipboard.writeText(value), pasteCommand);
-    expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(pasteCommand);
+    await writeClipboardAndVerify(app, pasteCommand);
+    await bashPanel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await expect(bashPanel.locator('.xterm-helper-textarea')).toBeFocused();
     await page.keyboard.press('Control+V');
     await expect(rows).toContainText(pasteCommand);
     await page.keyboard.press('Enter');
@@ -7539,6 +8714,36 @@ test('PowerShell profile text persists, stays idle on startup, and runs only aft
   }
 });
 
+test('PowerShell tool management opens a dedicated terminal before exposing package actions', async () => {
+  test.skip(process.platform !== 'win32', 'PowerShell tool terminal acceptance requires Windows');
+  const profile = await mkdtemp(join(tmpdir(), 'mrt-powershell-tool-terminal-e2e-'));
+  const app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`], env: electronEnvironment() });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: 'PowerShell session 1', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    await settings.getByRole('button', { name: 'Open dedicated PowerShell terminal', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'PowerShell tool management', exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(settings.getByRole('button', { name: 'Install PowerShell 7', exact: true })).toBeEnabled();
+    await expect(settings).toContainText("bundle's Windows signature and package identity are checked before Add-AppxPackage deploys it for this user");
+    await expect(settings).toContainText('does not pin a certificate thumbprint');
+    await expect(settings).toContainText('minimum accepted release is 7.6.9.0');
+    await expect(settings).toContainText("query GitHub's public latest-stable PowerShell release endpoint");
+    await expect(settings).toContainText("stream no more than the release's declared size (capped at 1 GiB) while calculating SHA-256");
+    await expect(settings.getByRole('link', { name: 'PowerShell license', exact: true })).toHaveAttribute('href', 'https://github.com/PowerShell/PowerShell#legal-and-licensing');
+    await expect(settings.getByRole('button', { name: 'Update PowerShell 7', exact: true })).toBeEnabled();
+    await expect(settings.getByRole('button', { name: 'Remove PowerShell 7…', exact: true })).toBeEnabled();
+    await settings.getByRole('button', { name: 'Close', exact: true }).click();
+    const panel = await selectTerminal(page, 'PowerShell tool management');
+    await expect(panel.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 });
+  } finally {
+    await app.close();
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
 test('local shell tool visibility persists and controls command palette entries after restart', async () => {
   test.skip(process.platform !== 'win32', 'Local shell tool preference acceptance requires Windows');
   const profile = await mkdtemp(join(tmpdir(), 'mrt-local-shell-tools-e2e-'));
@@ -7737,11 +8942,11 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
     const exportCredentials = settings.getByRole('button', { name: /Export encrypted SSH passwords/ });
     await exportCredentials.click();
-    await runNativeSshCredentialBundleDialog('cancel-credential-export');
+    await runNativeSshCredentialBundleDialog('cancel-credential-export', undefined, nativeDialogProcessId(app!));
     await expect(exportCredentials).toBeEnabled({ timeout: 30_000 });
     expect(await readFile(credentialBundlePath).catch(() => undefined)).toBeUndefined();
     await exportCredentials.click();
-    await runNativeSshCredentialBundleDialog('export-credential', credentialBundlePath);
+    await runNativeSshCredentialBundleDialog('export-credential', credentialBundlePath, nativeDialogProcessId(app!));
     await expect(settings.getByText('Encrypted bundle exported with 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
     const encryptedBundle = await readFile(credentialBundlePath, 'utf8');
     expect(encryptedBundle).not.toContain('sftp-e2e-secret');
@@ -7772,7 +8977,7 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
     const importCredentials = settings.getByRole('button', { name: /Import encrypted SSH passwords/ });
     await importCredentials.click();
-    await runNativeSshCredentialBundleDialog('cancel-credential-import');
+    await runNativeSshCredentialBundleDialog('cancel-credential-import', undefined, nativeDialogProcessId(app!));
     await expect(importCredentials).toBeEnabled({ timeout: 30_000 });
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
     expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'))).toBe(0);
@@ -7799,7 +9004,7 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
     await importCredentials.click();
-    await runNativeSshCredentialBundleDialog('import-credential', credentialBundlePath);
+    await runNativeSshCredentialBundleDialog('import-credential', credentialBundlePath, nativeDialogProcessId(app!));
     await expect(settings.getByText('Imported 1 saved SSH password.', { exact: true })).toBeVisible({ timeout: 30_000 });
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
     expect(await page.locator('body').innerText()).not.toContain('sftp-e2e-secret');
@@ -7836,6 +9041,9 @@ test('settings profile templates round-trip between Windows app profiles and req
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
+    const settingsTemplate = settings.locator('section[aria-labelledby="settings-template-heading"]');
+    await expect(settingsTemplate).toContainText('Templates are plain JSON');
+    await expect(settingsTemplate).toContainText('Remove secrets before sharing');
     await settings.getByLabel('Startup greeting').fill('MRT template greeting — ready');
     await settings.getByLabel('Saved PowerShell script').fill("Write-Output 'MRT-TEMPLATE-SCRIPT-MUST-NOT-RUN'");
     await app.evaluate(({ dialog: nativeDialog }, filePath) => {
@@ -7844,6 +9052,7 @@ test('settings profile templates round-trip between Windows app profiles and req
     }, templatePath);
     await settings.getByRole('button', { name: 'Export settings template…', exact: true }).click();
     await expect(settings.locator('.settings-save-status')).toContainText('Settings template exported.');
+    await expect(settings.locator('.settings-save-status')).toContainText('remove secrets before sharing');
     const templateText = await readFile(templatePath, 'utf8');
     const template = JSON.parse(templateText) as { format?: unknown; version?: unknown; preferences?: Record<string, unknown> };
     expect(template).toMatchObject({ format: 'multiremote-terminal/workbench-settings', version: 1 });
@@ -8114,11 +9323,11 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
     const chooseLogo = settings.getByRole('button', { name: 'Choose PNG logo', exact: true });
     await chooseLogo.click();
-    await runNativeCustomLogoDialog('cancel-logo');
+    await runNativeCustomLogoDialog('cancel-logo', undefined, nativeDialogProcessId(app!));
     await expect(chooseLogo).toBeEnabled();
     await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toHaveCount(0);
     await chooseLogo.click();
-    await runNativeCustomLogoDialog('select-logo', logoPath);
+    await runNativeCustomLogoDialog('select-logo', logoPath, nativeDialogProcessId(app!));
     const preview = settings.getByRole('img', { name: 'Selected workbench logo' });
     await expect(preview).toBeVisible();
     await expect(preview).toHaveJSProperty('naturalWidth', 1);
@@ -8139,7 +9348,7 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
 
     await writeFile(logoPath, Buffer.from('not a PNG image'));
     await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
-    await runNativeCustomLogoDialog('select-logo', logoPath);
+    await runNativeCustomLogoDialog('select-logo', logoPath, nativeDialogProcessId(app!));
     await expect(settings.getByRole('alert')).toContainText('Choose a valid PNG image');
     await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
     await settings.getByRole('button', { name: 'Use built-in wordmark', exact: true }).click();
@@ -8173,10 +9382,10 @@ test('security settings explain SSH host verification and tunnel bind scope', as
     await expect(policy.getByText(/New SSH hosts require explicit fingerprint approval/u)).toBeVisible();
     await expect(policy.getByText(/A changed key blocks the connection/u)).toBeVisible();
     await expect(policy.getByText(/Verify the new fingerprint independently before resetting saved host trust and reconnecting/u)).toBeVisible();
-    await expect(policy.getByText(/Local and SOCKS tunnels bind to 127\.0\.0\.1/u)).toBeVisible();
-    await expect(policy.getByText(/Remote forwarding requests 127\.0\.0\.1/u)).toBeVisible();
-    await expect(policy.getByText(/GatewayPorts policy may expose the listener more widely/u)).toBeVisible();
-    await expect(policy.getByText(/Review the server's forwarding policy before starting/u)).toBeVisible();
+    await expect(policy.getByText(/Local forwards default to 127\.0\.0\.1; choose all IPv4 interfaces.*confirm each start\. SOCKS stays on this computer/u)).toBeVisible();
+    await expect(policy.getByText(/Remote forwards default to 127\.0\.0\.1; choosing all server IPv4 interfaces exposes the forwarded service/u)).toBeVisible();
+    await expect(policy.getByText(/Server forwarding policy may restrict or widen either bind/u)).toBeVisible();
+    await expect(policy.getByText(/Review its policy and firewall; each start requires main-process confirmation/u)).toBeVisible();
     const vault = settings.locator('.settings-highlights').filter({ hasText: 'Credential vault' });
     await expect(vault.getByText('Protection: Windows account', { exact: true })).toBeVisible();
     await expect(vault.getByRole('status')).toContainText('Unlocked');

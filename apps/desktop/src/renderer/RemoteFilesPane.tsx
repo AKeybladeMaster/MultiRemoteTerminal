@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry } from '../../../../packages/domain/src/remote-files.ts';
 import type { FileTransferProgress } from '../../../../packages/domain/src/file-transfer.ts';
+import { interruptedUploadArtifactNames } from '../../../../packages/domain/src/file-transfer-recovery.ts';
+import type { FileTransferRecoveryRecord } from '../../../../packages/domain/src/file-transfer-recovery.ts';
 import type { RemoteFileDropContext, RemoteFileDropEvent, RemoteFileDropHandle } from '../../../../packages/contracts/src/commands.ts';
 import { RemoteTextEditorDialog } from './RemoteTextEditorDialog.tsx';
 import { transferFailureMessage } from './remote-files-errors.ts';
@@ -11,6 +13,7 @@ interface RemoteFilesPaneProps {
   readonly sessionId: string;
   readonly active: boolean;
   readonly transport: 'sftp' | 'ftp';
+  readonly interruptedTransfers: readonly FileTransferRecoveryRecord[];
   readonly hidden?: boolean;
   readonly onReconnect?: () => void;
 }
@@ -56,7 +59,7 @@ function kindLabel(entry: RemoteFileEntry): string {
   return 'Other item';
 }
 
-export function RemoteFilesPane({ sessionId, active, transport, hidden = false, onReconnect }: RemoteFilesPaneProps) {
+export function RemoteFilesPane({ sessionId, active, transport, interruptedTransfers, hidden = false, onReconnect }: RemoteFilesPaneProps) {
   const [listing, setListing] = useState<RemoteDirectoryListing>();
   const [error, setError] = useState<string>();
   const [errorCode, setErrorCode] = useState<string>();
@@ -170,6 +173,10 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
         void load(remotePath);
       } else {
         setTransferNotice(transferFailureMessage(reply.error.code, transport, direction, droppedFile !== undefined));
+        if (reply.error.code === 'UNAVAILABLE') {
+          setError(describeError(reply.error.code, transport));
+          setErrorCode(reply.error.code);
+        }
       }
       return false;
     }
@@ -240,7 +247,11 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
 
   const parentPath = listing ? remoteParentPath(listing.path) : undefined;
   const displayedPath = requestedPath ?? listing?.path ?? 'Remote directory';
-  const renderRemoteFileEntry = (entry: RemoteFileEntry) => <li key={entry.path}>
+  const renderRemoteFileEntry = (entry: RemoteFileEntry) => {
+    const interruptedArtifact = entry.kind === 'file' && interruptedTransfers.some(record =>
+      (transport === 'sftp' ? record.transport === 'sftp' : record.transport === 'ftp' || record.transport === 'ftps') &&
+      interruptedUploadArtifactNames(record).includes(entry.name));
+    return <li key={entry.path}>
     {entry.kind === 'directory'
       ? <button className="remote-file-row remote-file-folder" type="button" disabled={loading} aria-label={`Open folder ${entry.name}`}
         onClick={() => void load(entry.path, true)}>
@@ -250,7 +261,10 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
       </button>
       : <div className={`remote-file-row remote-file-static ${entry.kind === 'symlink' ? 'is-link' : ''}`}>
         <span className="remote-file-name"><span className={`remote-file-icon ${entry.kind}`} aria-hidden="true">{entry.kind === 'symlink' ? '↗' : '·'}</span>
-          <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span></span>
+          <span className="remote-file-label" translate="no" title={entry.name}>{entry.name}</span>
+          {interruptedArtifact &&
+            <span className="remote-file-meta" role="note" title="Possible interrupted upload. Nothing resumes automatically. A later same-run trusted SFTP reconnect may remove a worker-owned .partial stage; FTP/FTPS artifacts and overwrite backups remain for manual review.">Possible interrupted upload</span>}
+        </span>
         <span className="remote-file-file-actions"><span className="remote-file-meta">{entry.kind === 'file' ? formatFileSize(entry.size) : kindLabel(entry)}</span>
           {entry.kind === 'file' && <>
             {transport === 'sftp' && <button type="button" className="remote-file-download"
@@ -263,7 +277,8 @@ export function RemoteFilesPane({ sessionId, active, transport, hidden = false, 
               disabled={loading || Boolean(transfer) || editorBusy} onClick={() => void transferFile('download', entry.path)}>Download</button>
           </>}</span>
       </div>}
-  </li>;
+    </li>;
+  };
   const dropEnabled = active && Boolean(listing && !loading && !error && !transfer && !editorBusy);
   return <aside className={`remote-file-panel${dropActive ? ' is-file-drop-active' : ''}`} hidden={hidden}
     aria-label="Remote file browser" aria-busy={loading} data-testid="remote-file-browser"

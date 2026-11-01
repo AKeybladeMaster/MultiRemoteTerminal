@@ -60,6 +60,19 @@ test('suppresses input after ANSI styled password prompts and pauses until expli
   });
 });
 
+test('suppresses input for common PIN, passcode, one-time-code and authenticator prompts', () => {
+  for (const prompt of ['PIN: ', 'PIN code: ', 'Passcode: ', 'One-time password: ', 'Authenticator code: ', '2FA code: ',
+    'Two-factor authentication code: ', 'OTP: ', 'TOTP: ', 'Security token: ']) {
+    const recorder = createMacroRecorder();
+    recorder.start('terminal-a');
+    recorder.observeOutput('terminal-a', prompt);
+    assert.equal(recorder.snapshot().warning, 'secret-prompt', prompt);
+    recorder.recordInput('terminal-a', 'unlogged-secret\r');
+    assert.equal(recorder.snapshot().status, 'paused', prompt);
+    assert.deepEqual(recorder.stop('terminal-a')?.steps, [], prompt);
+  }
+});
+
 test('does not mistake echoed commands containing password text for an authentication prompt', () => {
   const recorder = createMacroRecorder();
   recorder.start('terminal-a');

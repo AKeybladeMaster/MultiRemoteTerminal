@@ -14,4 +14,6 @@ test('remote transfer failures preserve actionable local-file and FTP artifact g
     'The dropped local file is no longer available. Drop it again.');
   assert.equal(transferFailureMessage('UNAVAILABLE', 'ftp', 'upload'),
     'FTP upload failed. Reconnect and inspect the remote folder for upload or backup files before removing anything.');
+  assert.equal(transferFailureMessage('BUSY', 'sftp', 'download'),
+    'The transfer could not start because a resource is busy or the interrupted-transfer list is full. Try again shortly; if interrupted transfers are listed, dismiss one before retrying.');
 });

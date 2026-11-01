@@ -3,22 +3,22 @@ import type { ErrorCode, Outcome } from './errors.ts';
 import { canonicalizeRemoteEndpoint } from './remote-endpoint.ts';
 import { isSessionDefinitionId } from './session-definition.ts';
 
-interface SshTunnelDefinitionBase {
+interface SshTunnelDefinitionBase<BindHost extends string = SshRemoteTunnelBindHost> {
   readonly id: string;
   readonly sessionId: string;
   readonly name: string;
-  readonly bindHost: '127.0.0.1';
+  readonly bindHost: BindHost;
   readonly bindPort: number;
   readonly createdAt: string;
 }
 
-export interface SshLocalTunnelDefinition extends SshTunnelDefinitionBase {
+export interface SshLocalTunnelDefinition extends SshTunnelDefinitionBase<SshTunnelBindHost> {
   readonly mode: 'local';
   readonly targetHost: string;
   readonly targetPort: number;
 }
 
-export interface SshRemoteTunnelDefinition extends SshTunnelDefinitionBase {
+export interface SshRemoteTunnelDefinition extends SshTunnelDefinitionBase<SshRemoteTunnelBindHost> {
   readonly mode: 'remote';
   readonly targetHost: string;
   readonly targetPort: number;
@@ -26,26 +26,29 @@ export interface SshRemoteTunnelDefinition extends SshTunnelDefinitionBase {
 
 export interface SshDynamicTunnelDefinition extends SshTunnelDefinitionBase {
   readonly mode: 'dynamic';
+  readonly bindHost: '127.0.0.1';
 }
 
 export type SshEndpointTunnelDefinition = SshLocalTunnelDefinition | SshRemoteTunnelDefinition;
 export type SshTunnelDefinition = SshEndpointTunnelDefinition | SshDynamicTunnelDefinition;
+export type SshTunnelBindHost = '127.0.0.1' | '0.0.0.0';
+export type SshRemoteTunnelBindHost = SshTunnelBindHost | `${number}.${number}.${number}.${number}`;
 
-interface SshTunnelDraftBase {
+interface SshTunnelDraftBase<BindHost extends string = SshRemoteTunnelBindHost> {
   readonly id?: string;
   readonly sessionId: string;
   readonly name: string;
-  readonly bindHost: '127.0.0.1';
+  readonly bindHost: BindHost;
   readonly bindPort: number;
 }
 
-export interface SshLocalTunnelDraft extends SshTunnelDraftBase {
+export interface SshLocalTunnelDraft extends SshTunnelDraftBase<SshTunnelBindHost> {
   readonly mode: 'local';
   readonly targetHost: string;
   readonly targetPort: number;
 }
 
-export interface SshRemoteTunnelDraft extends SshTunnelDraftBase {
+export interface SshRemoteTunnelDraft extends SshTunnelDraftBase<SshRemoteTunnelBindHost> {
   readonly mode: 'remote';
   readonly targetHost: string;
   readonly targetPort: number;
@@ -53,6 +56,7 @@ export interface SshRemoteTunnelDraft extends SshTunnelDraftBase {
 
 export interface SshDynamicTunnelDraft extends SshTunnelDraftBase {
   readonly mode: 'dynamic';
+  readonly bindHost: '127.0.0.1';
 }
 
 export type SshEndpointTunnelDraft = SshLocalTunnelDraft | SshRemoteTunnelDraft;
@@ -61,7 +65,7 @@ export type SshTunnelMode = SshTunnelDraft['mode'];
 
 export type TunnelRunStatus =
   | { readonly tunnelId: string; readonly state: 'stopped' | 'starting' | 'stopping' }
-  | { readonly tunnelId: string; readonly state: 'active'; readonly bindHost: '127.0.0.1'; readonly bindPort: number }
+  | { readonly tunnelId: string; readonly state: 'active'; readonly bindHost: SshRemoteTunnelBindHost; readonly bindPort: number }
   | { readonly tunnelId: string; readonly state: 'failed'; readonly errorCode: ErrorCode };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -71,11 +75,13 @@ export function normalizeSshTunnelDraft(value: unknown): SshTunnelDraft | undefi
   const id = value.id;
   const sessionId = value.sessionId;
   const name = normalizeName(value.name);
+  const bindHost = value.bindHost;
   const bindPort = value.bindPort;
   if (id !== undefined && !isTunnelId(id)) return undefined;
-  if (!isSessionDefinitionId(sessionId) || !name || value.bindHost !== '127.0.0.1' ||
+  if (!isSessionDefinitionId(sessionId) || !name ||
       !Number.isSafeInteger(bindPort) || (bindPort as number) < 0 || (bindPort as number) > 65_535) return undefined;
   if (value.mode === 'dynamic') {
+    if (bindHost !== '127.0.0.1') return undefined;
     if (!exactKeys(value, ['sessionId', 'name', 'mode', 'bindHost', 'bindPort'], ['id'])) return undefined;
     return { ...(id === undefined ? {} : { id }), sessionId, name, mode: 'dynamic', bindHost: '127.0.0.1', bindPort: bindPort as number };
   }
@@ -83,10 +89,14 @@ export function normalizeSshTunnelDraft(value: unknown): SshTunnelDraft | undefi
       !exactKeys(value, ['sessionId', 'name', 'mode', 'bindHost', 'bindPort', 'targetHost', 'targetPort'], ['id'])) return undefined;
   const endpoint = canonicalizeRemoteEndpoint({ host: value.targetHost, port: value.targetPort });
   if (!endpoint) return undefined;
-  return {
-    ...(id === undefined ? {} : { id }), sessionId, name, mode: value.mode, bindHost: '127.0.0.1',
-    bindPort: bindPort as number, targetHost: endpoint.host, targetPort: endpoint.port
-  };
+  if (value.mode === 'local') {
+    if (bindHost !== '127.0.0.1' && bindHost !== '0.0.0.0') return undefined;
+    return { ...(id === undefined ? {} : { id }), sessionId, name, mode: 'local', bindHost,
+      bindPort: bindPort as number, targetHost: endpoint.host, targetPort: endpoint.port };
+  }
+  if (!isSshRemoteTunnelBindHost(bindHost)) return undefined;
+  return { ...(id === undefined ? {} : { id }), sessionId, name, mode: 'remote', bindHost,
+    bindPort: bindPort as number, targetHost: endpoint.host, targetPort: endpoint.port };
 }
 
 export function isSshTunnelDefinition(value: unknown): value is SshTunnelDefinition {
@@ -104,10 +114,19 @@ export function isTunnelId(value: unknown): value is string {
   return typeof value === 'string' && UUID.test(value);
 }
 
+export function isSshRemoteTunnelBindHost(value: unknown): value is SshRemoteTunnelBindHost {
+  return value === '127.0.0.1' || value === '0.0.0.0' || isCanonicalIpv4BindAddress(value);
+}
+
+export function isLoopbackSshTunnelBindHost(value: string): boolean {
+  return isCanonicalIpv4BindAddress(value) && value.split('.')[0] === '127';
+}
+
 export function isTunnelRunStatus(value: unknown): value is TunnelRunStatus {
   if (!isPlainRecord(value) || !isTunnelId(value.tunnelId) || typeof value.state !== 'string') return false;
   if (value.state === 'stopped' || value.state === 'starting' || value.state === 'stopping') return exactKeys(value, ['tunnelId', 'state']);
-  if (value.state === 'active') return exactKeys(value, ['tunnelId', 'state', 'bindHost', 'bindPort']) && value.bindHost === '127.0.0.1' &&
+  if (value.state === 'active') return exactKeys(value, ['tunnelId', 'state', 'bindHost', 'bindPort']) &&
+    isSshRemoteTunnelBindHost(value.bindHost) &&
     Number.isSafeInteger(value.bindPort) && (value.bindPort as number) >= 1 && (value.bindPort as number) <= 65_535;
   if (value.state === 'failed') return exactKeys(value, ['tunnelId', 'state', 'errorCode']) && isErrorCode(value.errorCode);
   return false;
@@ -127,6 +146,12 @@ function isTimestamp(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const epoch = Date.parse(value);
   return Number.isSafeInteger(epoch) && new Date(epoch).toISOString() === value;
+}
+
+function isCanonicalIpv4BindAddress(value: unknown): value is `${number}.${number}.${number}.${number}` {
+  if (typeof value !== 'string') return false;
+  const octets = value.split('.');
+  return octets.length === 4 && octets.every(octet => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
 }
 
 function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean {

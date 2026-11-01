@@ -27,9 +27,15 @@ interface VirtualizedListProps<T> {
   readonly renderNonVirtualizedRows: () => ReactNode;
 }
 
-function visibleFocusableControls(container: ParentNode): HTMLElement[] {
+function visibleFocusableControls(container: HTMLElement): HTMLElement[] {
+  const viewport = container.getBoundingClientRect();
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_ROW_CONTROL))
-    .filter(control => control.getClientRects().length > 0);
+    .filter(control => {
+      if (control.getClientRects().length === 0) return false;
+      const bounds = control.getBoundingClientRect();
+      return bounds.top < viewport.bottom && bounds.bottom > viewport.top &&
+        bounds.left < viewport.right && bounds.right > viewport.left;
+    });
 }
 
 function findFocusableItemIndex<T>(items: readonly T[], isItemFocusable: (item: T) => boolean,

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { APP_URL, isCommandReply, isDescribeReply, isSshTransferEvent, isSshTrustEvent, isTunnelStatusEvent, parseCatalogCancellationRequest,
-  parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
+  isTransferRecoveryChangedEvent, parseRdpLaunchGestureRequest, parseRequest, parseTftpServerActionGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { parseSshSessionLogConsentGestureRequest, parseSshX11ConsentGestureRequest, parseXdmcpLaunchGestureRequest } from '../../packages/contracts/src/commands.ts';
 import { describeWorkbench } from '../../packages/application/src/workbench.ts';
 import { DEFAULT_WORKBENCH_PREFERENCES, MAX_STARTUP_GREETING_CODE_POINTS, toWorkbenchStartupPreferences } from '../../packages/domain/src/workbench-preferences.ts';
@@ -35,6 +35,20 @@ test('PowerShell profile preview and apply IPC carry only a bounded preview resu
   if (parsedApply.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {} }, parsedApply.result), true);
 });
 
+test('PowerShell tool management IPC accepts only a fixed action and a session ID', () => {
+  const base = { requestId: '5726a2ee-03cd-4f5a-a28c-bd72784f80a6', contractVersion: 1 };
+  for (const action of ['install', 'update', 'remove']) {
+    assert.equal(parseRequest({ ...base, command: 'powershell.tool.manage', payload: { sessionId: base.requestId, action } }).ok, true);
+  }
+  for (const payload of [
+    { sessionId: base.requestId, action: 'install arbitrary.package' },
+    { sessionId: base.requestId, action: 'install', packageId: 'arbitrary.package' },
+    { sessionId: 'not-a-session', action: 'remove' }
+  ]) {
+    assert.equal(parseRequest({ ...base, command: 'powershell.tool.manage', payload }).ok, false);
+  }
+});
+
 test('rejects malformed, extra, oversized, and incompatible request fields', () => {
   for (const input of [null, [], 'app.describe', {}, { ...request, contractVersion: 2 },
     { ...request, requestId: '../secret' }, { ...request, requestId: 'a'.repeat(100000) },
@@ -47,6 +61,9 @@ test('rejects malformed, extra, oversized, and incompatible request fields', () 
   const open = { command: 'terminal.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId: request.requestId, launch: { shell: 'powershell' }, columns: 80, rows: 24 } };
   assert.equal(parseRequest(open).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, purpose: 'powershell-tool-management' } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, purpose: 'arbitrary' } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'cmd' }, purpose: 'powershell-tool-management' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'bash' } } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'wsl' } } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, launch: { shell: 'wsl', distribution: 'Ubuntu' } } }).ok, true);
@@ -61,6 +78,38 @@ test('unknown commands never become privileged capabilities', () => {
   for (const command of ['runtime.open', 'fs.readFile', '__proto__', 'constructor', 'mrt:admin']) {
     assert.deepEqual(parseRequest({ ...request, command }), { ok: false, error: { code: 'UNKNOWN_COMMAND', target: 'application', retryable: false } });
   }
+});
+
+test('interrupted transfer IPC exposes only validated status metadata and explicit dismissal', () => {
+  const list = { command: 'transfer.recovery.list', requestId: request.requestId, contractVersion: 1, payload: { cursor: null } };
+  const parsedList = parseRequest(list);
+  assert.equal(parsedList.ok, true);
+  if (!parsedList.ok) return;
+  const record = { operationId: '018f7b8a-6d19-4e0c-8c6a-682f1316f004', transport: 'sftp', direction: 'download', fileName: 'archive.tar',
+    state: 'interrupted', bytesTransferred: 128, totalBytes: 256, errorCode: 'UNAVAILABLE',
+    createdAt: '2026-10-31T10:00:00.000Z', updatedAt: '2026-10-31T10:00:01.000Z', remoteArtifactNames: [] };
+  const page = { records: [record], nextCursor: null };
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: page }, parsedList.result), true);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { records: [{ ...record, state: 'running' }], nextCursor: null } }, parsedList.result), false);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { records: [{ ...record, localPath: 'C:\\private\\file' }], nextCursor: null } }, parsedList.result), false);
+  assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: { records: [{ ...record, remoteArtifactNames: ['/private/file'] }], nextCursor: null } }, parsedList.result), false);
+  assert.equal(parseRequest({ ...list, payload: {} }).ok, false);
+  assert.equal(parseRequest({ ...list, payload: { cursor: { updatedAt: 'bad', operationId: record.operationId } } }).ok, false);
+
+  const dismiss = { command: 'transfer.recovery.dismiss', requestId: request.requestId, contractVersion: 1,
+    payload: { operationId: record.operationId } };
+  assert.equal(parseRequest(dismiss).ok, true);
+  assert.equal(parseRequest({ ...dismiss, payload: { operationId: '../secret' } }).ok, false);
+  const parsedDismiss = parseRequest(dismiss);
+  if (parsedDismiss.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {} }, parsedDismiss.result), true);
+  const reveal = { command: 'transfer.recovery.reveal-local-partial', requestId: request.requestId, contractVersion: 1,
+    payload: { operationId: record.operationId } };
+  const parsedReveal = parseRequest(reveal);
+  assert.equal(parsedReveal.ok, true);
+  assert.equal(parseRequest({ ...reveal, payload: { operationId: '../outside' } }).ok, false);
+  if (parsedReveal.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true, result: {} }, parsedReveal.result), true);
+  assert.equal(isTransferRecoveryChangedEvent('changed'), true);
+  assert.equal(isTransferRecoveryChangedEvent({ kind: 'changed', path: 'C:\\private' }), false);
 });
 
 test('catalog cancellation accepts an exact request only from the owning app main frame', () => {
@@ -102,20 +151,23 @@ test('validates SSH connection requests and keeps host approval as a typed event
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, privateKey: 'must-not-cross-renderer-ipc' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: '11111111-1111-4111-8111-111111111111' } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, profileId: 'not-a-profile' } }).ok, false);
-  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
-    '33333333-3333-4333-8333-333333333333'];
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, true);
+  const gatewayProfileIds = Array.from({ length: 9 }, (_, index) =>
+    `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: gatewayProfileIds.slice(0, 8) } }).ok, true);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload,
-    gatewayProfileIds: ['11111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111'] } }).ok, false);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
+    gatewayProfileIds: [gatewayProfileIds[0], gatewayProfileIds[0]] } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
 
-  assert.deepEqual(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, gatewayProfileIds }),
-    { sessionId, host: 'server.example.com', port: 22, gatewayProfileIds });
+  assert.deepEqual(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22,
+    gatewayProfileIds: gatewayProfileIds.slice(0, 8) }),
+  { sessionId, host: 'server.example.com', port: 22, gatewayProfileIds: gatewayProfileIds.slice(0, 8) });
+  assert.equal(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, gatewayProfileIds }), undefined);
   assert.equal(parseSshSessionLogConsentGestureRequest({ sessionId, host: 'server.example.com', port: 22, secret: true }), undefined);
-  assert.deepEqual(parseSshX11ConsentGestureRequest({ host: 'server.example.com', port: 22, gatewayProfileIds }),
-    { host: 'server.example.com', port: 22, gatewayProfileIds });
+  assert.deepEqual(parseSshX11ConsentGestureRequest({ host: 'server.example.com', port: 22, gatewayProfileIds: gatewayProfileIds.slice(0, 8) }),
+    { host: 'server.example.com', port: 22, gatewayProfileIds: gatewayProfileIds.slice(0, 8) });
+  assert.equal(parseSshX11ConsentGestureRequest({ host: 'server.example.com', port: 22, gatewayProfileIds }), undefined);
   assert.equal(parseSshX11ConsentGestureRequest({ host: 'server.example.com', port: 22, secret: true }), undefined);
 
   const challenge = { kind: 'challenge', sessionId, challenge: { token: 'A'.repeat(32), host: 'server.example.com', port: 22,
@@ -171,15 +223,15 @@ test('credential and vault commands accept only profile identifiers and safe sta
 
 test('SFTP open and close commands share SSH endpoint validation without terminal dimensions', () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
-  const gatewayProfileIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
-    '33333333-3333-4333-8333-333333333333'];
+  const gatewayProfileIds = Array.from({ length: 9 }, (_, index) =>
+    `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`);
   const open = { command: 'sftp.open', requestId: request.requestId, contractVersion: 1,
     payload: { sessionId, host: 'Server.Example.com.', port: 22 } };
   const parsed = parseRequest(open);
   assert.equal(parsed.ok, true);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, true);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
-  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [...gatewayProfileIds, gatewayProfileIds[0]] } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: gatewayProfileIds.slice(0, 8) } }).ok, true);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds } }).ok, false);
+  assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: [gatewayProfileIds[0], gatewayProfileIds[1], gatewayProfileIds[0]] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, gatewayProfileIds: ['not-a-profile-id'] } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, password: 'secret' } }).ok, false);
   assert.equal(parseRequest({ ...open, payload: { ...open.payload, port: 65_536 } }).ok, false);
@@ -509,7 +561,7 @@ test('RDP launch gesture channel accepts only canonicalizable endpoint fields', 
   assert.equal(parseRdpLaunchGestureRequest({ host: 'desktop.example.com', port: 3389, password: 'secret' }), undefined);
 });
 
-test('tunnel IPC accepts named loopback forwards and matches replies to the requested definition', () => {
+test('tunnel IPC accepts only policy-approved binds and matches replies to the requested definition', () => {
   const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId: '44444444-4444-4444-8444-444444444444',
     name: 'Database', mode: 'local', bindHost: '127.0.0.1', bindPort: 0, targetHost: 'db.internal', targetPort: 5432 };
   const save = { command: 'tunnel.save', requestId: request.requestId, contractVersion: 1, payload: definition };
@@ -518,7 +570,13 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
   assert.equal(parseRequest({ ...save, payload: { ...definition, mode: 'remote', targetHost: '127.0.0.1', targetPort: 3000 } }).ok, true);
   assert.equal(parseRequest({ ...save, payload: { id: definition.id, sessionId: definition.sessionId, name: 'Proxy', mode: 'dynamic',
     bindHost: '127.0.0.1', bindPort: 1080 } }).ok, true);
-  assert.equal(parseRequest({ ...save, payload: { ...definition, bindHost: '0.0.0.0' } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, bindHost: '0.0.0.0' } }).ok, true);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, mode: 'remote', bindHost: '0.0.0.0' } }).ok, true);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, mode: 'remote', bindHost: '192.0.2.1' } }).ok, true);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, bindHost: '192.0.2.1' } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { ...definition, mode: 'remote', bindHost: '192.000.2.1' } }).ok, false);
+  assert.equal(parseRequest({ ...save, payload: { id: definition.id, sessionId: definition.sessionId, name: 'Proxy', mode: 'dynamic',
+    bindHost: '0.0.0.0', bindPort: 1080 } }).ok, false);
   assert.equal(parseRequest({ ...save, payload: { ...definition, password: 'hidden' } }).ok, false);
   if (parsedSave.ok) assert.equal(isCommandReply({ requestId: request.requestId, ok: true,
     result: { ...definition, createdAt: '2026-10-24T00:00:00.000Z' } }, parsedSave.result), true);
@@ -533,11 +591,11 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
   const start = { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1, payload: { id: definition.id } };
   const parsedStart = parseRequest(start);
   assert.equal(parsedStart.ok, true);
-  const gatewayIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
-    '33333333-3333-4333-8333-333333333333'];
-  const routedStart = { ...start, payload: { id: definition.id, gatewayProfileIds: gatewayIds } };
+  const gatewayIds = Array.from({ length: 9 }, (_, index) =>
+    `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`);
+  const routedStart = { ...start, payload: { id: definition.id, gatewayProfileIds: gatewayIds.slice(0, 8) } };
   assert.equal(parseRequest(routedStart).ok, true);
-  assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [...gatewayIds, '44444444-4444-4444-8444-444444444444'] } }).ok, false);
+  assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: gatewayIds } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [gatewayIds[0], gatewayIds[0]] } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...start.payload, route: [] } }).ok, false);
   if (parsedStart.ok) {
@@ -547,7 +605,7 @@ test('tunnel IPC accepts named loopback forwards and matches replies to the requ
       result: { tunnelId: request.requestId, state: 'stopped' } }, parsedStart.result), false);
   }
   assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 }), true);
-  assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 }), false);
+  assert.equal(isTunnelStatusEvent({ tunnelId: definition.id, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 }), true);
 });
 
 test('macro IPC accepts only typed steps and credential-free replies', () => {

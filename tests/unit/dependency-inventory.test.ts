@@ -2,14 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureWorkspaceTemporaryDirectory } from '../../scripts/third-party-notices.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 test('dependency inventory includes production packages from workspace projects', async () => {
-  const outputDir = await mkdtemp(join(tmpdir(), 'mrt-dependency-inventory-'));
+  const temporaryDirectory = await ensureWorkspaceTemporaryDirectory(projectRoot);
+  const outputDir = await mkdtemp(join(temporaryDirectory, 'mrt-dependency-inventory-'));
   const outputFile = join(outputDir, 'bom.json');
   try {
     const result = spawnSync(process.execPath, [join(projectRoot, 'scripts/dependency-inventory.mjs')], {

@@ -35,6 +35,7 @@ export interface SshTunnelSnapshot {
 
 export interface SshTunnelController {
   list(): Promise<Outcome<readonly SshTunnelSnapshot[]>>;
+  get(id: unknown): Promise<Outcome<SshTunnelDefinition>>;
   save(draft: unknown): Promise<Outcome<SshTunnelDefinition>>;
   remove(id: unknown): Promise<Outcome<Record<string, never>>>;
   start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<TunnelRunStatus>>;
@@ -45,6 +46,8 @@ export interface SshTunnelController {
   subscribe(listener: (status: TunnelRunStatus) => void): () => void;
   dispose(): Promise<void>;
 }
+
+export type SshTunnelExposureConsent = (definition: SshTunnelDefinition, profile: SshHostEndpoint) => Promise<boolean>;
 
 interface RuntimeTunnel {
   readonly definition: SshTunnelDefinition;
@@ -95,6 +98,7 @@ export function createSshTunnelController(
   ssh: Pick<SshTerminalController, 'openFiles' | 'close' | 'subscribe'>,
   forwarding: SshTunnelForwardProvider,
   newId: () => string,
+  confirmTunnelExposure: SshTunnelExposureConsent,
 ): SshTunnelController {
   const runtimes = new Map<string, RuntimeTunnel>();
   const startingRequests = new Map<string, StartAttempt>();
@@ -146,6 +150,15 @@ export function createSshTunnelController(
       const definitions = await catalog.listSshTunnels();
       return { ok: true, result: definitions.map(definition => ({ definition,
         status: statuses.get(definition.id) ?? { tunnelId: definition.id, state: 'stopped' as const } })) };
+    } catch (error) { return failure(storageErrorCode(error)); }
+  }
+
+  async function get(id: unknown): Promise<Outcome<SshTunnelDefinition>> {
+    if (disposed) return failure('CANCELLED');
+    if (!isTunnelId(id)) return failure('INVALID_REQUEST');
+    try {
+      const definition = await catalog.getSshTunnel(id);
+      return definition ? { ok: true, result: definition } : failure('NOT_FOUND');
     } catch (error) { return failure(storageErrorCode(error)); }
   }
 
@@ -213,11 +226,6 @@ export function createSshTunnelController(
     if (attempt.cancelled) return;
     attempt.cancelled = true;
     if (attempt.runtime) void requestStop(attempt.runtime);
-    else {
-      for (const [id, candidate] of startingRequests) {
-        if (candidate === attempt) startingRequests.delete(id);
-      }
-    }
   }
 
   async function performStartRequest(id: string, attempt: StartAttempt): Promise<Outcome<TunnelRunStatus>> {
@@ -241,6 +249,13 @@ export function createSshTunnelController(
 
     const route = normalizeSshGatewayRoute(attempt.gatewayEndpoints ?? [], { host: profile.host, port: profile.port });
     if (!route) return failure('INVALID_REQUEST');
+
+    if (definition.mode === 'remote' || (definition.mode === 'local' && definition.bindHost === '0.0.0.0')) {
+      try {
+        if (!await confirmTunnelExposure(definition, { host: profile.host, port: profile.port })) return failure('CANCELLED', 'terminal');
+      } catch { return failure('UNAVAILABLE'); }
+      if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
+    }
 
     const runtime: RuntimeTunnel = { definition, sshSessionId: newId(), routeKey: attempt.routeKey,
       ...(route.length === 0 ? {} : { gatewayEndpoints: route }), status: { tunnelId: id, state: 'starting' }, stopRequested: false, bound: false };
@@ -287,7 +302,7 @@ export function createSshTunnelController(
         if (runtimes.get(runtime.definition.id) === runtime) runtimes.delete(runtime.definition.id);
         return runtime.stopRequested ? failure('CANCELLED', 'terminal') : failure(code, 'terminal');
       }
-      const status: TunnelRunStatus = { tunnelId: runtime.definition.id, state: 'active', bindHost: '127.0.0.1', bindPort: portAssigned };
+      const status: TunnelRunStatus = { tunnelId: runtime.definition.id, state: 'active', bindHost: runtime.definition.bindHost, bindPort: portAssigned };
       setStatus(runtime, status);
       return { ok: true, result: status };
     } catch (error) {
@@ -358,6 +373,7 @@ export function createSshTunnelController(
 
   return {
     list,
+    get,
     save,
     remove,
     start,

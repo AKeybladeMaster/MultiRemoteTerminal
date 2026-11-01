@@ -11,6 +11,7 @@ export interface FileTransferProgress {
   readonly fileName: string;
   readonly bytesTransferred: number;
   readonly totalBytes: number | null;
+  readonly remoteArtifactNames?: readonly string[];
 }
 
 export interface FileTransferResult {
@@ -29,13 +30,16 @@ export function isFileTransferConflictPolicy(value: unknown): value is FileTrans
 export function isFileTransferProgress(value: unknown, validFileName: (value: unknown) => value is string = isRemoteFileName): value is FileTransferProgress {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>;
-  return Object.keys(input).length === 7 && Object.hasOwn(input, 'sessionId') && Object.hasOwn(input, 'operationId') &&
+  const hasRemoteArtifactNames = Object.hasOwn(input, 'remoteArtifactNames');
+  return Object.keys(input).length === (hasRemoteArtifactNames ? 8 : 7) && Object.hasOwn(input, 'sessionId') && Object.hasOwn(input, 'operationId') &&
     Object.hasOwn(input, 'direction') && Object.hasOwn(input, 'phase') && Object.hasOwn(input, 'fileName') &&
     Object.hasOwn(input, 'bytesTransferred') && Object.hasOwn(input, 'totalBytes') &&
     typeof input.sessionId === 'string' && UUID.test(input.sessionId) && typeof input.operationId === 'string' && UUID.test(input.operationId) &&
     (input.direction === 'upload' || input.direction === 'download') && (input.phase === 'transferring' || input.phase === 'committing') &&
     validFileName(input.fileName) && Number.isSafeInteger(input.bytesTransferred) && (input.bytesTransferred as number) >= 0 &&
-    (input.totalBytes === null || (Number.isSafeInteger(input.totalBytes) && (input.totalBytes as number) >= 0));
+    (input.totalBytes === null || (Number.isSafeInteger(input.totalBytes) && (input.totalBytes as number) >= 0)) &&
+    (!hasRemoteArtifactNames || input.direction === 'upload' && Array.isArray(input.remoteArtifactNames) && input.remoteArtifactNames.length > 0 &&
+      input.remoteArtifactNames.length <= 2 && input.remoteArtifactNames.every(validFileName) && new Set(input.remoteArtifactNames).size === input.remoteArtifactNames.length);
 }
 
 export function isFileTransferResult(value: unknown, validFileName: (value: unknown) => value is string = isRemoteFileName): value is FileTransferResult {

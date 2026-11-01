@@ -43,6 +43,17 @@ P-02 and F-002 remain PARTIAL. Bridge tests verify write/resize/paste ordering, 
 
 The diagnosis is limited to Windows 11 x64, the installed Git Bash build and the current Electron/node-pty stack. Windows 10, other shell builds and real WSL distributions remain unverified.
 
+## Additional resize-boundary inspection (2026-10-31)
+
+- The pinned `node-pty@1.1.0` `IPty.resize()` contract returns `void`. Its Windows ConPTY adapter calls `ResizePseudoConsole` and returns from the native binding without waiting for a child-process redraw acknowledgement; the native call's `HRESULT` is also not surfaced by this adapter.
+- Microsoft's API reference describes resizing the pseudoconsole's internal buffers and returning an `HRESULT`. The Windows Terminal ConPTY design note separately states that host and ConPTY resizing are asynchronous and may overlap output. These sources support the synchronization hypothesis, but do not establish that this mechanism caused the lost `p` in this application's run. See [ResizePseudoConsole](https://learn.microsoft.com/en-us/windows/console/resizepseudoconsole), the [ConPTY design note](https://github.com/microsoft/terminal/blob/main/doc/specs/%2313000%20-%20In-process%20ConPTY.md), and the pinned [`node-pty@1.1.0` resize implementation](https://github.com/microsoft/node-pty/blob/v1.1.0/src/win/conpty.cc).
+- The application-level resize reply therefore cannot be treated as proof that interactive Bash has processed its resize notification. No generally reliable child-ready acknowledgement has been identified for an arbitrary running shell or full-screen program. No delay, shell-option change, or retry was added because prior probes either failed or would alter normal interaction semantics.
+- This is a narrowed boundary finding, not a root-cause confirmation or fix. P-02/F-002 remain open pending an upstream/platform synchronization boundary and repeated Windows acceptance.
+
 ## Next acceptance
 
 Find a reliable resize-completion boundary or an upstream/platform fix, then remove the E2E skip and pass repeated immediate typing and clipboard-paste acceptance after resize, the full Windows E2E suite and packaged Windows smoke. Keep P-02/F-002 partial until those results pass.
+
+## Upstream API audit (2026-11-01)
+
+The official stable `node-pty@1.1.0` API still exposes no resize-completion event. The npm-published `1.2.0-beta.18` tarball (without a matching GitHub tag) retains the same `void` resize behavior and does not surface `ResizePseudoConsole` completion. This narrows the upstream option but does not prove the application root cause or remove the need for repeated Windows acceptance. See [upstream ConPTY resize research](WP-01E-node-pty-resize-upstream-research-2026-11-01.md). No automated checks or package operations were run.

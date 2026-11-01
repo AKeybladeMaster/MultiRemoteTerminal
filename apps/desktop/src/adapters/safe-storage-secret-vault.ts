@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { SecretVaultError } from '../../../../packages/application/src/secret-vault.ts';
 import type { SecretVault, SecretVaultMode, SecretVaultState } from '../../../../packages/application/src/secret-vault.ts';
@@ -611,17 +611,18 @@ export class SafeStorageSecretVault implements SecretVault {
 
   private async readDocumentAt(path: string): Promise<DecodedDocument> {
     let fileStat;
-    try { fileStat = await stat(path); }
+    try { fileStat = await lstat(path); }
     catch (error) {
       if (hasNodeCode(error, 'ENOENT') && path === this.filePath) return emptyDocument();
       throw error;
     }
-    if (!fileStat.isFile() || fileStat.size > MAX_FILE_BYTES) throw new SecretVaultError('corrupt');
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > MAX_FILE_BYTES) throw new SecretVaultError('corrupt');
     const handle = await open(path, 'r');
     let bytes: Buffer;
     try {
       const openedStat = await handle.stat();
-      if (!openedStat.isFile() || openedStat.size > MAX_FILE_BYTES) throw new SecretVaultError('corrupt');
+      if (!openedStat.isFile() || openedStat.size > MAX_FILE_BYTES ||
+          openedStat.dev !== fileStat.dev || openedStat.ino !== fileStat.ino) throw new SecretVaultError('corrupt');
       const bounded = Buffer.alloc(MAX_FILE_BYTES + 1);
       let offset = 0;
       while (offset < bounded.length) {

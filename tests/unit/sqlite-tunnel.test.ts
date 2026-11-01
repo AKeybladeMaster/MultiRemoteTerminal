@@ -27,11 +27,26 @@ test('SQLite persists local, remote and dynamic forwards against saved SSH and S
     assert.deepEqual(await tunnels.getSshTunnel(saved.id), saved);
     assert.equal((await sessions.getSessionDefinition(ssh.id))?.id, ssh.id);
 
+    const publicTunnel = await tunnels.saveSshTunnel({ ...draft, name: 'Shared database', bindHost: '0.0.0.0' });
+    assert.equal(publicTunnel.bindHost, '0.0.0.0');
+    assert.deepEqual(await tunnels.getSshTunnel(publicTunnel.id), publicTunnel);
     const metrics = await tunnels.saveSshTunnel({ ...draft, name: 'Metrics', bindPort: 15_433 });
     const queue = await tunnels.saveSshTunnel({ ...draft, name: 'Queue', bindPort: 15_434 });
     const remote = await tunnels.saveSshTunnel({ ...draft, name: 'Reverse API', mode: 'remote', targetHost: '127.0.0.1', targetPort: 3000 });
     assert.equal(remote.mode, 'remote');
     assert.equal((await tunnels.getSshTunnel(remote.id))?.mode, 'remote');
+    const publicRemote = await tunnels.saveSshTunnel({ ...draft, name: 'Public reverse API', mode: 'remote', bindHost: '0.0.0.0',
+      targetHost: '127.0.0.1', targetPort: 3000 });
+    assert.equal(publicRemote.bindHost, '0.0.0.0');
+    assert.deepEqual(await tunnels.getSshTunnel(publicRemote.id), publicRemote);
+    const updatedPublicRemote = await tunnels.saveSshTunnel({ ...draft, id: publicRemote.id, name: 'Updated public reverse API',
+      mode: 'remote', bindHost: '0.0.0.0', targetHost: '127.0.0.1', targetPort: 3001 });
+    assert.equal(updatedPublicRemote.bindHost, '0.0.0.0');
+    assert.equal(updatedPublicRemote.targetPort, 3001);
+    const specificRemote = await tunnels.saveSshTunnel({ ...draft, name: 'Specific reverse API', mode: 'remote', bindHost: '192.0.2.1',
+      targetHost: '127.0.0.1', targetPort: 3002 });
+    assert.equal(specificRemote.bindHost, '192.0.2.1');
+    assert.deepEqual(await tunnels.getSshTunnel(specificRemote.id), specificRemote);
     const dynamic = await tunnels.saveSshTunnel({ sessionId: ssh.id, name: 'Browser proxy', mode: 'dynamic', bindHost: '127.0.0.1', bindPort: 0 });
     assert.equal(dynamic.mode, 'dynamic');
     assert.deepEqual(await tunnels.getSshTunnel(dynamic.id), dynamic);
@@ -39,7 +54,7 @@ test('SQLite persists local, remote and dynamic forwards against saved SSH and S
       { readonly target_host: unknown; readonly target_port: unknown } | undefined;
     assert.equal(dynamicRow?.target_host, null, 'dynamic definitions persist without a fixed destination');
     assert.equal(dynamicRow?.target_port, null, 'dynamic definitions persist without a fixed destination');
-    assert.equal((await tunnels.listSshTunnels()).length, 5, 'the catalog stores local, remote and dynamic definitions');
+    assert.equal((await tunnels.listSshTunnels()).length, 8, 'the catalog stores loopback/public/specific local and remote, plus dynamic definitions');
 
     const updated = await tunnels.saveSshTunnel({ ...draft, id: saved.id, sessionId: sftp.id, name: 'SFTP database', bindPort: 15432 });
     assert.equal(updated.id, saved.id);
@@ -47,11 +62,9 @@ test('SQLite persists local, remote and dynamic forwards against saved SSH and S
     assert.equal(updated.bindPort, 15_432);
     await assert.rejects(() => tunnels.saveSshTunnel({ ...draft, sessionId: ftp.id }),
       error => error instanceof StorageOperationError && error.kind === 'invalid');
-    await assert.rejects(() => tunnels.saveSshTunnel({ ...draft, bindHost: '0.0.0.0' as '127.0.0.1' }),
-      error => error instanceof StorageOperationError && error.kind === 'invalid');
-
     assert.equal(await sessions.removeSession(sftp.id), true);
     assert.equal(await tunnels.getSshTunnel(saved.id), undefined, 'deleting its saved SSH profile cascades the dependent tunnel');
-    assert.deepEqual((await tunnels.listSshTunnels()).map(tunnel => tunnel.name).sort(), [dynamic.name, metrics.name, queue.name, remote.name]);
+    assert.deepEqual((await tunnels.listSshTunnels()).map(tunnel => tunnel.name).sort(),
+      [dynamic.name, metrics.name, specificRemote.name, updatedPublicRemote.name, publicTunnel.name, queue.name, remote.name].sort());
   } finally { database.close(); }
 });

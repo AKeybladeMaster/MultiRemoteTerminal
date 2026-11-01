@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { SshTunnelDefinition } from '../../packages/domain/src/ssh-tunnel.ts';
-import type { SshTunnelCatalog, SshTunnelForwardProvider, SavedSessionReader } from '../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelExposureConsent, SshTunnelCatalog, SshTunnelForwardProvider, SavedSessionReader } from '../../packages/application/src/ssh-tunnels.ts';
 import { createSshTunnelController } from '../../packages/application/src/ssh-tunnels.ts';
 import type { SshTerminalController } from '../../packages/application/src/ssh-terminals.ts';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
@@ -21,6 +21,7 @@ function harness(overrides: {
   readonly newId?: () => string;
   readonly getTunnel?: (id: string) => Promise<SshTunnelDefinition | undefined>;
   readonly getProfile?: (id: string) => Promise<SavedSessionDefinition | undefined>;
+  readonly confirmTunnelExposure?: SshTunnelExposureConsent;
 } = {}) {
   const saved = new Map<string, SshTunnelDefinition>();
   saved.set(tunnelId, definition);
@@ -55,12 +56,20 @@ function harness(overrides: {
     async startForward(sessionId, id, tunnel) { calls.forwarded.push(`${sessionId}:${id}`); calls.forwardModes.push(tunnel.mode); return overrides.startForward ? overrides.startForward() : 51_234; },
     async stopForward(sessionId, id) { calls.stopped.push(`${sessionId}:${id}`); }
   };
-  const controller = createSshTunnelController(catalog, profiles, ssh, forwarding, overrides.newId ?? (() => runtimeId));
+  const controller = createSshTunnelController(catalog, profiles, ssh, forwarding, overrides.newId ?? (() => runtimeId),
+    overrides.confirmTunnelExposure ?? (async () => true));
   controller.subscribe(status => events.push(status));
   return { controller, calls, events, sshEvents, saved };
 }
 
 type TunnelStatusEvent = { readonly tunnelId: string; readonly state: string };
+
+test('tunnel controller reads one saved definition without listing the catalog', async () => {
+  const { controller } = harness();
+  assert.deepEqual(await controller.get(tunnelId), { ok: true, result: definition });
+  assert.deepEqual(await controller.get('not-a-tunnel-id'), { ok: false, error: { code: 'INVALID_REQUEST', target: 'application', retryable: false } });
+  await controller.dispose();
+});
 
 test('local tunnel starts through a files-only SSH runtime and closes both listener and connection on stop', async () => {
   const { controller, calls, events } = harness();
@@ -79,9 +88,115 @@ test('local tunnel starts through a files-only SSH runtime and closes both liste
   await controller.dispose();
 });
 
-test('saved tunnel three-gateway routes reach the files-only SSH open in route order', async () => {
+test('remote tunnel start reserves its definition while main-process exposure consent is pending', async () => {
+  const remote: SshTunnelDefinition = { ...definition, name: 'Reverse API', mode: 'remote', bindPort: 8080,
+    targetHost: '127.0.0.1', targetPort: 3000 };
+  let approve!: (value: boolean) => void;
+  let requested!: () => void;
+  const confirmationRequested = new Promise<void>(resolve => { requested = resolve; });
+  const confirmation = new Promise<boolean>(resolve => { approve = resolve; });
+  const { controller, calls } = harness({ getTunnel: async () => remote,
+    confirmTunnelExposure: async (definition, server) => {
+      assert.deepEqual(definition, remote);
+      assert.deepEqual(server, { host: profile.host, port: profile.port });
+      requested();
+      return confirmation;
+    }
+  });
+
+  const starting = controller.start(tunnelId);
+  await confirmationRequested;
+  assert.deepEqual(calls.opened, []);
+  const edited = await controller.save({ id: remote.id, sessionId: remote.sessionId, name: 'Changed while confirming', mode: remote.mode,
+    bindHost: remote.bindHost, bindPort: remote.bindPort, targetHost: remote.targetHost, targetPort: remote.targetPort });
+  assert.equal(edited.ok, false);
+  if (!edited.ok) assert.equal(edited.error.code, 'BUSY');
+  const removed = await controller.remove(tunnelId);
+  assert.equal(removed.ok, false);
+  if (!removed.ok) assert.equal(removed.error.code, 'BUSY');
+
+  approve(false);
+  const denied = await starting;
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'CANCELLED');
+  assert.deepEqual(calls.opened, []);
+  await controller.dispose();
+});
+
+test('canceling a pending exposure prompt keeps the definition reserved until consent settles', async () => {
+  const remote: SshTunnelDefinition = { ...definition, name: 'Reverse API', mode: 'remote', bindPort: 8080,
+    targetHost: '127.0.0.1', targetPort: 3000 };
+  let approve!: (value: boolean) => void;
+  let requested!: () => void;
+  const confirmationRequested = new Promise<void>(resolve => { requested = resolve; });
+  const confirmation = new Promise<boolean>(resolve => { approve = resolve; });
+  const { controller, calls } = harness({ getTunnel: async () => remote,
+    confirmTunnelExposure: async () => { requested(); return confirmation; }
+  });
+  const cancellation = new AbortController();
+  const starting = controller.start(tunnelId, cancellation.signal);
+  await confirmationRequested;
+
+  cancellation.abort();
+  const edited = await controller.save({ id: remote.id, sessionId: remote.sessionId, name: 'Changed during canceled prompt', mode: remote.mode,
+    bindHost: remote.bindHost, bindPort: remote.bindPort, targetHost: remote.targetHost, targetPort: remote.targetPort });
+  assert.equal(edited.ok, false);
+  if (!edited.ok) assert.equal(edited.error.code, 'BUSY');
+  const removed = await controller.remove(tunnelId);
+  assert.equal(removed.ok, false);
+  if (!removed.ok) assert.equal(removed.error.code, 'BUSY');
+
+  approve(true);
+  const cancelled = await starting;
+  assert.equal(cancelled.ok, false);
+  if (!cancelled.ok) assert.equal(cancelled.error.code, 'CANCELLED');
+  assert.deepEqual(calls.opened, []);
+  await controller.dispose();
+});
+
+test('remote tunnel requires fresh exposure consent for each accepted start', async () => {
+  const remote: SshTunnelDefinition = { ...definition, name: 'Reverse API', mode: 'remote', bindPort: 8080,
+    targetHost: '127.0.0.1', targetPort: 3000 };
+  let confirmations = 0;
+  const { controller } = harness({ getTunnel: async () => remote,
+    confirmTunnelExposure: async () => { confirmations++; return true; }
+  });
+
+  assert.equal((await controller.start(tunnelId)).ok, true);
+  assert.equal((await controller.stop(tunnelId)).ok, true);
+  assert.equal((await controller.start(tunnelId)).ok, true);
+  assert.equal(confirmations, 2);
+  await controller.dispose();
+});
+
+test('public local tunnel binds all IPv4 interfaces only after exposure consent', async () => {
+  const publicLocal: SshTunnelDefinition = { ...definition, bindHost: '0.0.0.0' };
+  let approved = false;
+  let confirmations = 0;
+  const { controller, calls } = harness({ getTunnel: async () => publicLocal,
+    confirmTunnelExposure: async (candidate, server) => {
+      assert.deepEqual(candidate, publicLocal);
+      assert.deepEqual(server, { host: profile.host, port: profile.port });
+      confirmations++;
+      return approved;
+    }
+  });
+
+  const denied = await controller.start(tunnelId);
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.equal(denied.error.code, 'CANCELLED');
+  assert.deepEqual(calls.opened, []);
+
+  approved = true;
+  const started = await controller.start(tunnelId);
+  assert.deepEqual(started, { ok: true, result: { tunnelId, state: 'active', bindHost: '0.0.0.0', bindPort: 51_234 } });
+  assert.equal(confirmations, 2);
+  await controller.dispose();
+});
+
+test('saved tunnel eight-gateway routes reach the files-only SSH open in route order', async () => {
   const target = { ...profile, host: 'target.test', port: 2222 };
-  const gateways = [{ host: 'jump-one.test', port: 2201 }, { host: 'jump-two.test', port: 2202 }, { host: 'jump-three.test', port: 2203 }];
+  const gateways = Array.from({ length: 8 }, (_, index) => ({ host: `jump-${index + 1}.test`, port: 2201 + index }));
   const { controller, calls } = harness({ getProfile: async () => target });
 
   const result = await controller.start(tunnelId, undefined, gateways);
@@ -93,13 +208,11 @@ test('saved tunnel three-gateway routes reach the files-only SSH open in route o
   await controller.dispose();
 });
 
-test('saved tunnel gateway routes reject a fourth hop before opening SSH', async () => {
+test('saved tunnel gateway routes reject a ninth hop before opening SSH', async () => {
   const target = { ...profile, host: 'target.test', port: 2222 };
   const { controller, calls } = harness({ getProfile: async () => target });
-  const result = await controller.start(tunnelId, undefined, [
-    { host: 'jump-one.test', port: 2201 }, { host: 'jump-two.test', port: 2202 },
-    { host: 'jump-three.test', port: 2203 }, { host: 'jump-four.test', port: 2204 }
-  ]);
+  const result = await controller.start(tunnelId, undefined,
+    Array.from({ length: 9 }, (_, index) => ({ host: `jump-${index + 1}.test`, port: 2201 + index })));
 
   assert.equal(result.ok, false);
   assert.deepEqual(calls.opened, []);

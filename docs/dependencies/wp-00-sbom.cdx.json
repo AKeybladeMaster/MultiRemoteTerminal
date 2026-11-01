@@ -5368,8 +5368,8 @@
     {
       "type": "library",
       "name": "re2js",
-      "version": "2.8.6",
-      "purl": "pkg:npm/re2js@2.8.6",
+      "version": "2.8.7",
+      "purl": "pkg:npm/re2js@2.8.7",
       "licenses": [
         {
           "expression": "MIT"

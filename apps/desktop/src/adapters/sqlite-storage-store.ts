@@ -11,6 +11,7 @@ import { StorageOperationError } from '../../../../packages/application/src/stor
 import type { SshTunnelCatalog, SavedSessionReader } from '../../../../packages/application/src/ssh-tunnels.ts';
 import type { SshCredentialBundleStore, SshCredentialBundleProfile, ImportedSshCredentialReference } from '../../../../packages/application/src/ssh-credential-bundle.ts';
 import { MAX_SSH_CREDENTIAL_BUNDLE_BYTES } from '../../../../packages/application/src/ssh-credential-bundle.ts';
+import type { FileTransferRecoveryStore } from '../../../../packages/application/src/file-transfer-recovery.ts';
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { CredentialPromptCancellation } from '../../../../packages/application/src/credential-prompt.ts';
 import type { SshHostEndpoint, TrustedHostKey } from '../../../../packages/domain/src/host-trust.ts';
@@ -21,6 +22,9 @@ import type { MacroShortcutBinding, MacroShortcutCode } from '../../../../packag
 import { isCurrentWorkbenchPreferences, isWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { CredentialReference } from '../../../../packages/domain/src/credentials.ts';
+import type { ErrorCode } from '../../../../packages/domain/src/errors.ts';
+import { isFileTransferRecoveryPage, isFileTransferRecoveryRecord } from '../../../../packages/domain/src/file-transfer-recovery.ts';
+import type { FileTransferRecoveryCursor, FileTransferRecoveryPage, FileTransferRecoveryRecord, FileTransferRecoveryTransport } from '../../../../packages/domain/src/file-transfer-recovery.ts';
 import { isSessionDefinitionId, isSessionFolderId, normalizeSavedSessionDraft, normalizeSessionSearch } from '../../../../packages/domain/src/session-definition.ts';
 import type { SavedSessionDefinition, SavedSessionDraft } from '../../../../packages/domain/src/session-definition.ts';
 import { normalizeSessionFolderDraft, normalizeSessionFolderName } from '../../../../packages/domain/src/session-folder.ts';
@@ -54,7 +58,7 @@ function publishStorageDiagnostic(event: StorageDiagnosticEvent['event'], code: 
 
 export type StorageWorkerLaunchOptions = {
   readonly cwd: string;
-  readonly env: { readonly MRT_STORAGE_DB_PATH: string };
+  readonly env: { readonly MRT_STORAGE_DB_PATH: string; readonly MRT_APP_RUN_ID: string };
   readonly serviceName: string;
   readonly stdio: 'ignore';
 };
@@ -88,7 +92,7 @@ type StorageWorkerCommand = StorageWorkerRequest extends infer Request
   : never;
 
 export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, MacroCatalogStore, WorkbenchPreferencesStore,
-  WorkbenchSettingsTemplateStore, SshTunnelCatalog, SavedSessionReader, SshCredentialBundleStore {
+  WorkbenchSettingsTemplateStore, SshTunnelCatalog, SavedSessionReader, SshCredentialBundleStore, FileTransferRecoveryStore {
   private readonly legacyStore: HostTrustJsonStore;
   private readonly worker: StorageWorkerClient;
   private migration: SharedMigration | undefined;
@@ -396,6 +400,47 @@ export class SqliteStorageStore implements HostTrustStore, SessionCatalogStore, 
     return result.value;
   }
 
+  async begin(input: { readonly operationId: string; readonly transport: FileTransferRecoveryTransport; readonly direction: 'upload' | 'download';
+    readonly fileName: string }): Promise<void> {
+    const result = await this.worker.request({ command: 'transferRecovery.begin', ...input });
+    if (result.kind !== 'changed' || !result.value) throw new StorageOperationError('corrupt');
+  }
+
+  async updateProgress(operationId: string, bytesTransferred: number, totalBytes: number | null): Promise<void> {
+    const result = await this.worker.request({ command: 'transferRecovery.progress', operationId, bytesTransferred, totalBytes });
+    if (result.kind !== 'changed' || !result.value) throw new StorageOperationError('corrupt');
+  }
+
+  async updateRemoteArtifactNames(operationId: string, remoteArtifactNames: readonly string[]): Promise<void> {
+    const result = await this.worker.request({ command: 'transferRecovery.artifacts', operationId, remoteArtifactNames });
+    if (result.kind !== 'changed' || !result.value) throw new StorageOperationError('corrupt');
+  }
+
+  async finish(input: { readonly operationId: string; readonly state: 'completed' | 'failed' | 'cancelled' | 'skipped' | 'interrupted';
+    readonly bytesTransferred: number; readonly totalBytes: number | null; readonly errorCode: ErrorCode | null }): Promise<void> {
+    const result = await this.worker.request({ command: 'transferRecovery.finish', ...input });
+    if (result.kind !== 'changed' || !result.value) throw new StorageOperationError('corrupt');
+  }
+
+  async listInterrupted(cursor: FileTransferRecoveryCursor | null): Promise<FileTransferRecoveryPage> {
+    const result = await this.worker.request({ command: 'transferRecovery.list', cursor });
+    if (result.kind !== 'fileTransferRecoveryPage' || !isFileTransferRecoveryPage(result.value)) throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
+  async findInterrupted(operationId: string): Promise<FileTransferRecoveryRecord | undefined> {
+    const result = await this.worker.request({ command: 'transferRecovery.find', operationId });
+    if (result.kind !== 'fileTransferRecoveryLookup' || result.value !== null &&
+        (!isFileTransferRecoveryRecord(result.value) || result.value.state !== 'interrupted')) throw new StorageOperationError('corrupt');
+    return result.value ?? undefined;
+  }
+
+  async dismiss(operationId: string): Promise<boolean> {
+    const result = await this.worker.request({ command: 'transferRecovery.dismiss', operationId });
+    if (result.kind !== 'changed') throw new StorageOperationError('corrupt');
+    return result.value;
+  }
+
   async exportFolderToFile(folderId: string, path: string, cancellation?: CancellationSignal): Promise<SessionFolderExportResult> {
     if (!isSessionFolderId(folderId) || !isFilePath(path)) throw new HostTrustStoreError('invalid');
     await this.ensureMigrated(cancellation);
@@ -470,6 +515,7 @@ class StorageWorkerClient {
   private readonly appRoot: string;
   private readonly launchWorker: StorageWorkerLauncher;
   private readonly removeTemporaryFile: (path: string) => Promise<void>;
+  private readonly appRunId = randomUUID();
   private worker: UtilityProcess | undefined;
   private shuttingDown = false;
   private requesters = 0;
@@ -580,7 +626,7 @@ class StorageWorkerClient {
     this.readyReject = rejectReady;
     const worker = this.launchWorker(this.workerPath, [], {
       cwd: process.resourcesPath ?? this.appRoot,
-      env: { MRT_STORAGE_DB_PATH: this.databasePath },
+      env: { MRT_STORAGE_DB_PATH: this.databasePath, MRT_APP_RUN_ID: this.appRunId },
       serviceName: 'MultiRemoteTerminal SQLite storage provider',
       stdio: 'ignore'
     });

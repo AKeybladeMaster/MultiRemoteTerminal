@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SecretVaultError } from '../../packages/application/src/secret-vault.ts';
@@ -33,6 +33,27 @@ test('stores only ciphertext, resolves per operation, locks and deletes credenti
     assert.equal(await vault.delete(FIRST_REFERENCE), true);
     assert.equal(await vault.delete(FIRST_REFERENCE), false);
     await assert.rejects(vault.resolveForOperation(FIRST_REFERENCE), error => isVaultError(error, 'not-found'));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('vault restart keeps the committed credentials document when a staged replacement was abandoned', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-vault-recovery-'));
+  const path = join(directory, 'credentials.json');
+  const safeStorage = new FakeSafeStorage();
+  try {
+    const original = new SafeStorageSecretVault(path, safeStorage, new TestKeyDeriver());
+    await original.initialize();
+    await original.store(FIRST_REFERENCE, 'recovered-private-password');
+    const committed = await readFile(path, 'utf8');
+    await writeFile(join(directory, '.11111111-1111-4111-8111-111111111111.credential-vault.tmp'), '{"partial":', 'utf8');
+
+    const reopened = new SafeStorageSecretVault(path, safeStorage, new TestKeyDeriver());
+    await reopened.initialize();
+    assert.equal(await reopened.resolveForOperation(FIRST_REFERENCE), 'recovered-private-password');
+    assert.equal(await readFile(path, 'utf8'), committed);
+    assert.equal(committed.includes('recovered-private-password'), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -333,6 +354,32 @@ test('unknown master-password profile fails closed before the KDF worker is call
     await assert.rejects(corrupt.initialize(), error => isVaultError(error, 'corrupt'));
     assert.equal(deriver.calls, callsBeforeRead);
     assert.equal(corrupt.state, 'unavailable');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('vault initialization rejects a symbolic-link document path', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-vault-link-'));
+  const targetPath = join(directory, 'real-credentials.json');
+  const vaultPath = join(directory, 'credentials.json');
+  try {
+    const original = new SafeStorageSecretVault(targetPath, new FakeSafeStorage(), new TestKeyDeriver());
+    await original.initialize();
+    await original.store(FIRST_REFERENCE, 'vault-link-fixture');
+    try { await symlink(targetPath, vaultPath); }
+    catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+      if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') {
+        t.skip('The current account cannot create a symbolic-link fixture.');
+        return;
+      }
+      throw error;
+    }
+
+    const linkedVault = new SafeStorageSecretVault(vaultPath, new FakeSafeStorage(), new TestKeyDeriver());
+    await assert.rejects(linkedVault.initialize(), error => isVaultError(error, 'corrupt'));
+    assert.equal(linkedVault.state, 'unavailable');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

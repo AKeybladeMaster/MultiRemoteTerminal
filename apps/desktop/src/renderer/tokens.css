@@ -164,10 +164,7 @@ button { color: inherit; touch-action: manipulation; -webkit-tap-highlight-color
 .palette-hint { display: flex; align-items: center; gap: 4px; width: 100%; margin-top: auto; padding: 5px 8px; color: var(--muted); text-align: left; }
 .palette-hint > span { flex: 1; }
 kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font: 11px "Segoe UI Variable", "Segoe UI", sans-serif; text-align: center; }
-.terminal-workspace { display: grid; grid-template-rows: 48px minmax(0, 1fr); min-width: 0; min-height: 0; outline: none; }
-.terminal-workspace[data-opening="true"] { grid-template-rows: 48px auto minmax(0, 1fr); }
-.terminal-workspace[data-recording="true"] { grid-template-rows: 48px auto minmax(0, 1fr); }
-.terminal-workspace[data-opening="true"][data-recording="true"] { grid-template-rows: 48px auto auto minmax(0, 1fr); }
+.terminal-workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; outline: none; }
 .opening-notices { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 5px 14px; border-bottom: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 12px; }
 .opening-notice { display: inline-flex; align-items: center; gap: 8px; }
 .opening-notice .quiet-button { min-height: 26px; }
@@ -187,6 +184,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .add-tab { flex: 0 0 40px; align-self: center; min-width: 34px; min-height: 34px; margin: 0 8px; color: var(--accent); font-size: 19px; }
 .add-tab:hover, .font-controls button:hover { background: var(--surface-raised); }
 .terminal-stack, .terminal-panel { position: relative; min-width: 0; min-height: 0; height: 100%; }
+.terminal-stack { flex: 1 1 0; height: auto; overflow: hidden; }
 .terminal-panel[hidden] { display: none; }
 .terminal-panel > .remote-file-panel { width: 100%; height: 100%; }
 .terminal-panel-layout { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; }
@@ -340,6 +338,13 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .startup-greeting-banner > div { min-width: 0; overflow: auto; }
 .startup-greeting-banner h2 { margin: 0 0 3px; color: var(--accent); font-size: 13px; font-weight: 650; }
 .startup-greeting-banner p { max-height: 108px; overflow: auto; margin: 0; color: var(--text); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.interrupted-transfer-banner { align-items: flex-start; max-height: 260px; background: color-mix(in srgb, var(--focus) 7%, var(--surface)); }
+.interrupted-transfer-banner > div { flex: 1 1 auto; }
+.interrupted-transfer-list { display: grid; gap: 5px; max-height: 148px; overflow: auto; margin: 7px 0 0; padding: 0; list-style: none; }
+.interrupted-transfer-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 5px 0; border-top: 1px solid var(--line); }
+.interrupted-transfer-list li > span { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
+.interrupted-transfer-list li strong { color: var(--text); }
+.interrupted-transfer-list button { flex: 0 0 auto; }
 .settings-backdrop { position: fixed; z-index: 13; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: #07111db8; }
 .settings-dialog { width: min(560px, 100%); max-height: min(90vh, 760px); overflow: auto; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); box-shadow: 0 12px 40px #0008; overscroll-behavior: contain; }
 .settings-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px 15px; border-bottom: 1px solid var(--line); }

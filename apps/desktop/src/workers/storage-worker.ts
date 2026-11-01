@@ -7,6 +7,9 @@ import { SqliteSessionCatalogRepository } from '../adapters/sqlite-session-catal
 import { SqliteTunnelRepository } from '../adapters/sqlite-tunnel-repository.ts';
 import { SqliteMacroCatalogRepository } from '../adapters/sqlite-macro-catalog-repository.ts';
 import { SqliteMacroShortcutRepository } from '../adapters/sqlite-macro-shortcut-repository.ts';
+import { SqliteTransferRecoveryRepository } from '../adapters/sqlite-transfer-recovery-repository.ts';
+import { backupBeforeSqliteMigration } from '../adapters/sqlite-migration-backup.ts';
+import { CURRENT_SCHEMA_VERSION } from '../adapters/sqlite-host-trust-repository.ts';
 import { SqliteWorkbenchPreferencesRepository } from '../adapters/sqlite-workbench-preferences-repository.ts';
 import { readWorkbenchSettingsTemplate, writeWorkbenchSettingsTemplate } from '../adapters/workbench-settings-template-files.ts';
 import { readEncryptedSshCredentialBundle, writeEncryptedSshCredentialBundle } from '../adapters/ssh-credential-bundle-files.ts';
@@ -16,7 +19,6 @@ const parent = process.parentPort;
 if (!parent) throw new Error('Storage worker requires an Electron utility process');
 
 const databasePath = process.env.MRT_STORAGE_DB_PATH;
-if (!databasePath || !isAbsolute(databasePath)) throw new Error('Storage worker requires an absolute database path');
 
 let repository: SqliteHostTrustRepository;
 let sessionCatalogRepository: SqliteSessionCatalogRepository;
@@ -24,15 +26,25 @@ let tunnelRepository: SqliteTunnelRepository;
 let macroCatalogRepository: SqliteMacroCatalogRepository;
 let macroShortcutRepository: SqliteMacroShortcutRepository;
 let workbenchPreferencesRepository: SqliteWorkbenchPreferencesRepository;
+let transferRecoveryRepository: SqliteTransferRecoveryRepository;
+let appRunId = '';
+let database: DatabaseSync | undefined;
 try {
+  if (!databasePath || !isAbsolute(databasePath)) throw new Error('Storage worker requires an absolute database path');
+  const configuredAppRunId = process.env.MRT_APP_RUN_ID;
+  if (!configuredAppRunId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(configuredAppRunId)) {
+    throw new Error('Storage worker requires an app run id');
+  }
+  appRunId = configuredAppRunId;
   await mkdir(dirname(databasePath), { recursive: true });
-  const database = new DatabaseSync(databasePath, {
+  database = new DatabaseSync(databasePath, {
     timeout: 5_000,
     enableForeignKeyConstraints: true,
     allowExtension: false,
     defensive: true
   });
   database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+  await backupBeforeSqliteMigration(database, databasePath, CURRENT_SCHEMA_VERSION);
   repository = new SqliteHostTrustRepository(database);
   repository.migrate();
   sessionCatalogRepository = new SqliteSessionCatalogRepository(database);
@@ -40,10 +52,13 @@ try {
   macroCatalogRepository = new SqliteMacroCatalogRepository(database);
   macroShortcutRepository = new SqliteMacroShortcutRepository(database);
   workbenchPreferencesRepository = new SqliteWorkbenchPreferencesRepository(database);
+  transferRecoveryRepository = new SqliteTransferRecoveryRepository(database);
+  transferRecoveryRepository.markPreviousRunsInterrupted(appRunId);
 } catch (error) {
   const normalizedError = toHostTrustStoreError(error);
   const errorCode = storageWorkerErrorCode(normalizedError);
   try { parent.postMessage({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'startup-error', errorCode }); } catch { /* Main observes worker exit. */ }
+  try { database?.close(); } catch { /* Startup failure must not leave SQLite open while the worker exits. */ }
   process.exit(1);
 }
 
@@ -182,6 +197,29 @@ parent.on('message', async event => {
     } else if (request.command === 'tunnel.remove') {
       send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
         result: { kind: 'removed', value: await tunnelRepository.removeSshTunnel(request.id) } });
+    } else if (request.command === 'transferRecovery.begin') {
+      transferRecoveryRepository.begin({ operationId: request.operationId, runId: appRunId, transport: request.transport,
+        direction: request.direction, fileName: request.fileName });
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true, result: { kind: 'changed', value: true } });
+    } else if (request.command === 'transferRecovery.progress') {
+      transferRecoveryRepository.updateProgress(request.operationId, request.bytesTransferred, request.totalBytes);
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true, result: { kind: 'changed', value: true } });
+    } else if (request.command === 'transferRecovery.artifacts') {
+      transferRecoveryRepository.updateRemoteArtifactNames(request.operationId, request.remoteArtifactNames);
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true, result: { kind: 'changed', value: true } });
+    } else if (request.command === 'transferRecovery.finish') {
+      transferRecoveryRepository.finish({ operationId: request.operationId, state: request.state,
+        bytesTransferred: request.bytesTransferred, totalBytes: request.totalBytes, errorCode: request.errorCode });
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true, result: { kind: 'changed', value: true } });
+    } else if (request.command === 'transferRecovery.list') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'fileTransferRecoveryPage', value: transferRecoveryRepository.listInterrupted(request.cursor) } });
+    } else if (request.command === 'transferRecovery.find') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'fileTransferRecoveryLookup', value: transferRecoveryRepository.findInterrupted(request.operationId) ?? null } });
+    } else if (request.command === 'transferRecovery.dismiss') {
+      send({ version: STORAGE_WORKER_PROTOCOL_VERSION, type: 'reply', requestId, ok: true,
+        result: { kind: 'changed', value: transferRecoveryRepository.dismiss(request.operationId) } });
     } else {
       closed = true;
       repository.close();

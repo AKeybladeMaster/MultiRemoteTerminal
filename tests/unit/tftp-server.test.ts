@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { createSocket } from 'node:dgram';
 import type { RemoteInfo, Socket } from 'node:dgram';
@@ -129,6 +129,40 @@ test('read-only TFTP serves a UTF-8 top-level filename longer than the former AS
     const response = await responsePromise;
     assert.deepEqual([...response.packet.subarray(0, 4)], [0, 3, 0, 1]);
     assert.deepEqual(response.packet.subarray(4), contents);
+  } finally {
+    try {
+      await server.stop();
+    } finally {
+      try { if (client) await closeUdpSocket(client); }
+      finally { await rm(rootDirectory, { recursive: true, force: true }); }
+    }
+  }
+});
+
+test('read-only TFTP rejects a symlinked file', async context => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), 'mrt-tftp-symlink-'));
+  const targetPath = join(rootDirectory, 'target.bin');
+  const linkPath = join(rootDirectory, 'linked.bin');
+  const server = new ReadOnlyTftpServer();
+  let client: Socket | undefined;
+  try {
+    await writeFile(targetPath, Buffer.from('must not be served through a link'));
+    try { await symlink(targetPath, linkPath, 'file'); }
+    catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') {
+        context.skip('The current Windows account cannot create a file symlink.');
+        return;
+      }
+      throw error;
+    }
+
+    const port = await server.start(rootDirectory, 0);
+    client = createSocket('udp4');
+    const responsePromise = receivePacket(client, 2_000);
+    await sendPacket(client, readRequest('linked.bin'), port);
+    const response = await responsePromise;
+    assert.deepEqual([...response.packet.subarray(0, 4)], [0, 5, 0, 2]);
   } finally {
     try {
       await server.stop();

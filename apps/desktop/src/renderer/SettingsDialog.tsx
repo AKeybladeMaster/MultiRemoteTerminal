@@ -7,6 +7,7 @@ import type { OptionalConnectionId } from '../../../../packages/domain/src/optio
 import { MAX_STARTUP_GREETING_CODE_POINTS, normalizeWorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import type { WorkbenchPreferences } from '../../../../packages/domain/src/workbench-preferences.ts';
 import { MAX_POWERSHELL_PROFILE_SCRIPT_CODE_UNITS, normalizePowerShellProfileScript } from '../../../../packages/domain/src/powershell-profile.ts';
+import type { PowerShellToolAction } from '../../../../packages/domain/src/powershell-tools.ts';
 import { MAX_CUSTOM_LOGO_DIMENSION, MAX_CUSTOM_LOGO_SOURCE_BYTES } from '../../../../packages/domain/src/custom-logo.ts';
 import { MAX_TERMINAL_HIGHLIGHT_PATTERN_CODE_POINTS, MAX_TERMINAL_HIGHLIGHT_RULES,
   normalizeTerminalHighlightRules, TERMINAL_HIGHLIGHT_COLORS } from '../../../../packages/domain/src/terminal-highlights.ts';
@@ -23,9 +24,10 @@ function sshCredentialBundleError(code: string): string {
   return `The encrypted SSH credential bundle operation failed (${code}).`;
 }
 
-export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSessionId }: {
+export function SettingsDialog({ onClose, onPreferencesSaved, onOpenPowerShellToolTerminal, activePowerShellSessionId }: {
   readonly onClose: () => void;
   readonly onPreferencesSaved: (preferences: WorkbenchPreferences) => void;
+  readonly onOpenPowerShellToolTerminal: () => Promise<string | undefined>;
   readonly activePowerShellSessionId?: string | undefined;
 }) {
   const [greeting, setGreeting] = useState('');
@@ -35,6 +37,10 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
   const [profilePreviewBusy, setProfilePreviewBusy] = useState(false);
   const [profileApplyBusy, setProfileApplyBusy] = useState(false);
   const [profileStatus, setProfileStatus] = useState('');
+  const [powerShellToolActionBusy, setPowerShellToolActionBusy] = useState(false);
+  const [powerShellToolStatus, setPowerShellToolStatus] = useState('');
+  const [powerShellToolSessionId, setPowerShellToolSessionId] = useState<string>();
+  const [confirmingPowerShellToolRemoval, setConfirmingPowerShellToolRemoval] = useState(false);
   const [terminalHighlightEnabled, setTerminalHighlightEnabled] = useState(false);
   const [terminalHighlightRules, setTerminalHighlightRules] = useState<readonly TerminalHighlightRule[]>([]);
   const [terminalShellSyntaxEnabled, setTerminalShellSyntaxEnabled] = useState(false);
@@ -135,6 +141,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
   useEffect(() => {
     setProfilePreview(undefined);
     setProfileStatus('');
+    setConfirmingPowerShellToolRemoval(false);
   }, [activePowerShellSessionId]);
 
   useEffect(() => {
@@ -215,7 +222,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
     setStatus('');
     try {
       const reply = await window.multiRemoteTerminal.exportWorkbenchSettingsTemplate(validatedPreferences);
-      if (reply.ok) setStatus('Settings template exported. Review the included PowerShell script before sharing the file.');
+      if (reply.ok) setStatus('Settings template exported. Review the included PowerShell script and remove secrets before sharing the file.');
       else if (reply.error.code !== 'CANCELLED') setError(`Settings template could not be exported (${reply.error.code}).`);
     } catch { setError('Settings template could not be exported. Try again.'); }
     finally { setSettingsTemplateBusy(false); }
@@ -281,6 +288,37 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
       setProfilePreview(undefined);
       setProfileStatus('The script could not be sent to this PowerShell session. Try again.');
     } finally { setProfileApplyBusy(false); }
+  }
+
+  async function managePowerShellTool(action: PowerShellToolAction): Promise<void> {
+    const sessionId = powerShellToolSessionId;
+    if (!sessionId || loading || loadFailed || powerShellToolActionBusy) return;
+    setPowerShellToolActionBusy(true);
+    setPowerShellToolStatus('Sending the fixed PowerShell 7 action to the dedicated terminal…');
+    setError(undefined);
+    try {
+      const reply = await window.multiRemoteTerminal.managePowerShellTool(sessionId, action);
+      setPowerShellToolStatus(reply.ok
+        ? 'Command sent to the dedicated PowerShell tab.'
+        : reply.error.code === 'FORBIDDEN' ? 'This terminal can no longer be authorized. Close and reopen Settings to start a fresh dedicated PowerShell terminal.'
+          : `The PowerShell 7 action could not be sent (${reply.error.code}).`);
+      if (reply.ok) onClose();
+    } catch { setPowerShellToolStatus('The PowerShell 7 action could not be sent. Try again.'); }
+    finally { setPowerShellToolActionBusy(false); }
+  }
+
+  async function openPowerShellToolTerminal(): Promise<void> {
+    if (loading || loadFailed || powerShellToolActionBusy || powerShellToolSessionId) return;
+    setPowerShellToolActionBusy(true);
+    setPowerShellToolStatus('Opening a dedicated PowerShell tab…');
+    try {
+      const sessionId = await onOpenPowerShellToolTerminal();
+      if (sessionId) {
+        setPowerShellToolSessionId(sessionId);
+        setPowerShellToolStatus('Dedicated tab ready. Choose an action; Settings will close when its command is sent so you can see download status and confirmation prompts.');
+      } else setPowerShellToolStatus('A dedicated PowerShell tab could not be opened. Check shell availability and try again.');
+    } catch { setPowerShellToolStatus('A dedicated PowerShell tab could not be opened. Try again.'); }
+    finally { setPowerShellToolActionBusy(false); }
   }
 
   async function updateVaultFromReply(reply: Awaited<ReturnType<typeof window.multiRemoteTerminal.unlockCredentialVault>>, action: string) {
@@ -434,8 +472,8 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
         <section className="settings-highlights" aria-labelledby="security-policy-heading">
           <h3 id="security-policy-heading">Security policy</h3>
           <p className="settings-highlight-help"><strong>SSH host keys.</strong> New SSH hosts require explicit fingerprint approval. A changed key blocks the connection. Verify the new fingerprint independently before resetting saved host trust and reconnecting.</p>
-          <p className="settings-highlight-help"><strong>Local and SOCKS tunnels.</strong> Local and SOCKS tunnels bind to 127.0.0.1, so other devices cannot connect to them directly.</p>
-          <p className="settings-highlight-help"><strong>Remote forwarding.</strong> Remote forwarding requests 127.0.0.1, but the server's GatewayPorts policy may expose the listener more widely. Review the server's forwarding policy before starting.</p>
+          <p className="settings-highlight-help"><strong>Local and SOCKS tunnels.</strong> Local forwards default to 127.0.0.1; choose all IPv4 interfaces only when other devices need access and confirm each start. SOCKS stays on this computer.</p>
+          <p className="settings-highlight-help"><strong>Remote forwarding.</strong> Remote forwards default to 127.0.0.1; choosing all server IPv4 interfaces exposes the forwarded service to devices that can reach that server. Server forwarding policy may restrict or widen either bind. Review its policy and firewall; each start requires main-process confirmation.</p>
         </section>
         <div className="settings-highlights">
           <h3>Credential vault</h3>
@@ -560,6 +598,40 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
             ? <span className="dialog-error" role="alert">Use no more than {MAX_STARTUP_GREETING_CODE_POINTS} Unicode characters.</span>
             : !greetingIsValid && <span className="dialog-error" role="alert">Omit control characters other than new lines and tabs.</span>}
         </div>
+        <section className="settings-highlights" aria-labelledby="powershell-tool-management-heading"
+          aria-describedby="powershell-tool-management-description powershell-tool-management-warning">
+          <h3 id="powershell-tool-management-heading">PowerShell 7 tool management</h3>
+          <p id="powershell-tool-management-description" className="settings-highlight-help">
+            Install or update the fixed Microsoft PowerShell MSIX bundle from its official GitHub release, or remove only its recognized Microsoft x64 MSIX package for this user. PowerShell is MIT licensed; review the <a href="https://github.com/PowerShell/PowerShell#legal-and-licensing" target="_blank" rel="noreferrer">PowerShell license</a>. Open a dedicated PowerShell tab for each action; Settings closes after the command is sent so package output and confirmation prompts are visible.
+          </p>
+          <p id="powershell-tool-management-warning" className="settings-profile-warning">
+            Install and update query GitHub's public latest-stable PowerShell release endpoint, require the exact official asset URL, then stream no more than the release's declared size (capped at 1 GiB) while calculating SHA-256; redirects are limited to HTTPS GitHub hosts. The bundle's Windows signature and package identity are checked before Add-AppxPackage deploys it for this user, and Windows verifies it again during deployment. The signer subject must match the Microsoft publisher and the minimum accepted release is 7.6.9.0, but the app does not pin a certificate thumbprint. PowerShell deployment confirmation remains visible. Removal checks the registered package family and publisher, and asks for PowerShell confirmation. Removal may remove a matching MSIX installed outside this app; MSI and other PowerShell formats are not removed here.
+          </p>
+          <div className="ssh-connect-actions settings-profile-actions">
+            {!powerShellToolSessionId
+              ? <button type="button" disabled={loading || loadFailed || saving || powerShellToolActionBusy}
+                onClick={() => void openPowerShellToolTerminal()}>Open dedicated PowerShell terminal</button>
+              : <>
+                <button type="button" data-mrt-powershell-tool-trigger={powerShellToolSessionId} data-mrt-powershell-tool-action="install"
+                  disabled={loading || loadFailed || saving || powerShellToolActionBusy}
+                  onClick={() => void managePowerShellTool('install')}>Install PowerShell 7</button>
+                <button type="button" data-mrt-powershell-tool-trigger={powerShellToolSessionId} data-mrt-powershell-tool-action="update"
+                  disabled={loading || loadFailed || saving || powerShellToolActionBusy}
+                  onClick={() => void managePowerShellTool('update')}>Update PowerShell 7</button>
+                {!confirmingPowerShellToolRemoval
+                  ? <button type="button" disabled={loading || loadFailed || saving || powerShellToolActionBusy}
+                    onClick={() => setConfirmingPowerShellToolRemoval(true)}>Remove PowerShell 7…</button>
+                  : <>
+                    <button type="button" disabled={powerShellToolActionBusy} onClick={() => setConfirmingPowerShellToolRemoval(false)}>Cancel removal</button>
+                    <button type="button" className="ssh-primary" data-mrt-powershell-tool-trigger={powerShellToolSessionId} data-mrt-powershell-tool-action="remove"
+                      disabled={loading || loadFailed || saving || powerShellToolActionBusy}
+                      onClick={() => { setConfirmingPowerShellToolRemoval(false); void managePowerShellTool('remove'); }}>Confirm removal</button>
+                  </>}
+              </>}
+          </div>
+          {powerShellToolSessionId && <p className="settings-highlight-help">Actions target the fresh tab opened by this dialog, never the previously selected terminal.</p>}
+          {powerShellToolStatus && <p className="settings-save-status" role="status" aria-live="polite">{powerShellToolStatus}</p>}
+        </section>
         <section className="settings-highlights" aria-labelledby="powershell-profile-heading"
           aria-describedby="powershell-profile-description powershell-profile-warning">
           <h3 id="powershell-profile-heading">PowerShell profile script</h3>
@@ -667,7 +739,7 @@ export function SettingsDialog({ onClose, onPreferencesSaved, activePowerShellSe
         <section className="settings-highlights" aria-labelledby="settings-template-heading">
           <h3 id="settings-template-heading">Settings profile</h3>
           <p className="settings-highlight-help">
-            Export the current draft or load a versioned JSON template. Templates contain workbench settings and saved PowerShell script text, but no saved connection credentials. Review script text before sharing; importing it never runs it. Loading replaces unsaved changes and only changes this draft until you save.
+            Export the current draft or load a versioned JSON template. Templates are plain JSON and include saved PowerShell script text, which can contain secrets. Remove secrets before sharing; importing the script never runs it. Templates do not include saved connection credentials. Loading replaces unsaved changes and only changes this draft until you save.
           </p>
           <div className="ssh-connect-actions">
             <button type="button" disabled={loading || loadFailed || saving || settingsTemplateBusy || !validatedPreferences}

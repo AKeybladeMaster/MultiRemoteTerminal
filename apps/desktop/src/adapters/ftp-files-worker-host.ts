@@ -5,7 +5,7 @@ import type { FtpFilesProvider, FtpCredentials } from '../../../../packages/appl
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import { isFtpDirectoryListing, isFtpTransferResult } from '../../../../packages/domain/src/ftp.ts';
 import type { FtpEndpoint } from '../../../../packages/domain/src/ftp.ts';
-import type { FtpTransferConflictPolicy, FtpTransferProgress, FtpTransferResult } from '../../../../packages/domain/src/ftp.ts';
+import type { FtpTransferConflictPolicy, FtpTransferProgress, FtpTransferProgressHandler, FtpTransferResult } from '../../../../packages/domain/src/ftp.ts';
 import type { RemoteDirectoryListing } from '../../../../packages/domain/src/remote-files.ts';
 import { parseFtpWorkerMessage, FTP_WORKER_PROTOCOL_VERSION } from '../workers/ftp-worker-protocol.ts';
 import type { FtpWorkerErrorCode, FtpWorkerRequest } from '../workers/ftp-worker-protocol.ts';
@@ -15,7 +15,7 @@ interface PendingRequest {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
   cleanup: () => void;
-  readonly onProgress?: (progress: FtpTransferProgress) => void;
+  readonly onProgress?: FtpTransferProgressHandler;
   cleanupTimer?: ReturnType<typeof setTimeout>;
   timedOut: boolean;
   progressPhase?: FtpTransferProgress['phase'];
@@ -82,7 +82,7 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
 
   async uploadFile(sessionId: string, operationId: string, localPath: string, remoteDirectory: string, fileName: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<FtpTransferResult> {
+    onProgress?: FtpTransferProgressHandler): Promise<FtpTransferResult> {
     if (!this.sessions.has(sessionId)) throw new FtpFilesProviderError('UNAVAILABLE');
     const request = { version: FTP_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.upload', sessionId,
       operationId, localPath, remoteDirectory, fileName, conflictPolicy } as const satisfies FtpWorkerRequest;
@@ -93,7 +93,7 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
 
   async downloadFile(sessionId: string, operationId: string, remotePath: string, localPath: string,
     conflictPolicy: FtpTransferConflictPolicy, cancellation?: CancellationSignal,
-    onProgress?: (progress: FtpTransferProgress) => void): Promise<FtpTransferResult> {
+    onProgress?: FtpTransferProgressHandler): Promise<FtpTransferResult> {
     if (!this.sessions.has(sessionId)) throw new FtpFilesProviderError('UNAVAILABLE');
     const request = { version: FTP_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'files.download', sessionId,
       operationId, remotePath, localPath, conflictPolicy } as const satisfies FtpWorkerRequest;
@@ -116,7 +116,7 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
   }
 
   private async request(request: Extract<FtpWorkerRequest, { readonly type: 'request' }>, timeoutMs: number,
-    cancellation?: CancellationSignal, onProgress?: (progress: FtpTransferProgress) => void): Promise<unknown> {
+    cancellation?: CancellationSignal, onProgress?: FtpTransferProgressHandler): Promise<unknown> {
     if (this.shuttingDown && request.command !== 'shutdown') throw new FtpFilesProviderError('CANCELLED');
     if (this.pending.size >= MAX_PENDING_REQUESTS) throw new FtpFilesProviderError('BUSY');
     const worker = this.ensureWorker();
@@ -214,7 +214,21 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
       if (pending.timedOut && message.progress.phase === 'committing' && !previouslyCommitting) {
         this.scheduleWorkerTermination(worker, message.requestId, pending, COMMIT_SETTLEMENT_GRACE_MS);
       }
-      try { pending.onProgress?.(message.progress); } catch { /* The UI listener cannot interrupt worker ownership. */ }
+      let handled: void | Promise<void>;
+      try { handled = pending.onProgress?.(message.progress); }
+      catch (error) { handled = Promise.reject(error); }
+      if (message.progressId) {
+        if (!pending.onProgress) {
+          this.acknowledgeProgress(worker, message.requestId, message.progressId, false);
+          return;
+        }
+        void Promise.resolve(handled).then(
+          () => this.acknowledgeProgress(worker, message.requestId, message.progressId!, true),
+          () => this.acknowledgeProgress(worker, message.requestId, message.progressId!, false)
+        );
+      } else if (handled && typeof handled.then === 'function') {
+        void handled.catch(() => undefined);
+      }
       return;
     }
     clearTimeout(pending.timer);
@@ -224,6 +238,12 @@ export class FtpFilesWorkerHost implements FtpFilesProvider {
     if (message.ok) pending.resolve(message.result);
     else pending.reject(new FtpFilesProviderError(pending.timedOut && message.errorCode === 'CANCELLED' ? 'TIMEOUT' : providerErrorCode(message.errorCode),
       message.sessionUsable));
+  }
+
+  private acknowledgeProgress(worker: UtilityProcess, requestId: string, progressId: string, persisted: boolean): void {
+    if (this.worker !== worker) return;
+    try { worker.postMessage({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'progress-ack', requestId, progressId, persisted }); }
+    catch { void this.killWorker(worker); }
   }
 
   private scheduleWorkerTermination(worker: UtilityProcess, requestId: string, pending: PendingRequest, delayMs: number): void {

@@ -1,13 +1,14 @@
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import type * as BasicFtp from 'basic-ftp';
 import { FtpFilesProviderError } from '../../../../packages/application/src/ftp-files.ts';
 import { createFtpTransportProvider } from './ftp-transport-provider.ts';
-import { parseFtpWorkerInput, FTP_WORKER_PROTOCOL_VERSION } from './ftp-worker-protocol.ts';
-import type { FtpWorkerRequest, FtpWorkerErrorCode } from './ftp-worker-protocol.ts';
-import type { FtpTransferProgress } from '../../../../packages/domain/src/ftp.ts';
+import { parseFtpWorkerInput, parseFtpWorkerProgressAck, FTP_WORKER_PROTOCOL_VERSION } from './ftp-worker-protocol.ts';
+import type { FtpWorkerRequest, FtpWorkerErrorCode, FtpWorkerProgressAck } from './ftp-worker-protocol.ts';
+import type { FtpTransferProgress, FtpTransferProgressHandler } from '../../../../packages/domain/src/ftp.ts';
 import { isFtpFileName } from '../../../../packages/domain/src/ftp.ts';
 import { remoteChildPath, remoteParentPath } from '../../../../packages/domain/src/remote-files.ts';
 
@@ -39,7 +40,7 @@ class MrtFtpClient extends basicFtp.Client {
     return super.access({ ...options, secureOptions: { ...options.secureOptions, ca } });
   }
 
-  async uploadUniqueFrom(source: Readable, remotePath: string): Promise<string> {
+  async uploadUniqueFrom(source: Readable, remotePath: string, onUniqueName?: (name: string) => void | Promise<void>): Promise<string> {
     let generatedPath: string | undefined;
     const requestedDirectory = remoteParentPath(remotePath);
     const originalDirectory = await this.pwd();
@@ -52,6 +53,18 @@ class MrtFtpClient extends basicFtp.Client {
         return originalHandle('STOU', (response, task) => {
           if (!(response instanceof Error) && (response.code === 125 || response.code === 150)) {
             generatedPath = uniqueStorePath(response.message, currentDirectory, requestedDirectory);
+            if (!generatedPath || !onUniqueName) {
+              responseHandler(new FtpFilesProviderError('NOT_SUPPORTED', true), task);
+              return;
+            }
+            let persist: void | Promise<void>;
+            try { persist = onUniqueName(posix.basename(generatedPath)); }
+            catch (error) { responseHandler(error instanceof Error ? error : new Error('FTP recovery metadata could not be persisted.'), task); return; }
+            if (persist && typeof persist.then === 'function') {
+              void persist.then(() => responseHandler(response, task), error =>
+                responseHandler(error instanceof Error ? error : new Error('FTP recovery metadata could not be persisted.'), task));
+              return;
+            }
           }
           responseHandler(response, task);
         });
@@ -95,10 +108,46 @@ interface PendingFtpOperation {
 }
 
 const pendingOperations = new Map<string, PendingFtpOperation>();
+const pendingProgressAcks = new Map<string, (persisted: boolean) => void>();
+const MAX_PENDING_PROGRESS_ACKS = 128;
+const PROGRESS_ACK_TIMEOUT_MS = 15_000;
 let shuttingDown = false;
 
-function send(value: unknown): void {
-  try { parent.postMessage(value); } catch { /* The main process owns worker teardown. */ }
+function send(value: unknown): boolean {
+  try { parent.postMessage(value); return true; } catch { return false; }
+}
+
+function waitForArtifactPersistence(requestId: string, progress: FtpTransferProgress, cancellation: AbortSignal): Promise<void> {
+  if (cancellation.aborted) return Promise.reject(new FtpFilesProviderError('CANCELLED'));
+  if (pendingProgressAcks.size >= MAX_PENDING_PROGRESS_ACKS) return Promise.reject(new FtpFilesProviderError('BUSY'));
+  const progressId = randomUUID();
+  const key = `${requestId}/${progressId}`;
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      cancellation.removeEventListener('abort', onAbort);
+      pendingProgressAcks.delete(key);
+    };
+    const settle = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = () => settle(new FtpFilesProviderError('CANCELLED'));
+    const timer = setTimeout(() => settle(new FtpFilesProviderError('TIMEOUT')), PROGRESS_ACK_TIMEOUT_MS);
+    pendingProgressAcks.set(key, persisted => settle(persisted ? undefined : new FtpFilesProviderError('UNAVAILABLE')));
+    cancellation.addEventListener('abort', onAbort, { once: true });
+    if (!send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'progress', requestId, progress, progressId })) {
+      settle(new FtpFilesProviderError('UNAVAILABLE'));
+    }
+  });
+}
+
+function receiveProgressAck(ack: FtpWorkerProgressAck): void {
+  pendingProgressAcks.get(`${ack.requestId}/${ack.progressId}`)?.(ack.persisted);
 }
 
 function errorCode(error: unknown): FtpWorkerErrorCode {
@@ -136,8 +185,9 @@ async function handle(request: Extract<FtpWorkerRequest, { readonly type: 'reque
   if (request.command === 'files.upload' || request.command === 'files.download') {
     const cancellation = new AbortController();
     pendingOperations.set(request.operationId, { sessionId: request.sessionId, cancellation });
-    const onProgress = (progress: FtpTransferProgress) => {
+    const onProgress: FtpTransferProgressHandler = progress => {
       if (cancellation.signal.aborted) return;
+      if (progress.remoteArtifactNames !== undefined) return waitForArtifactPersistence(request.requestId, progress, cancellation.signal);
       send({ version: FTP_WORKER_PROTOCOL_VERSION, type: 'progress', requestId: request.requestId, progress });
     };
     try {
@@ -171,6 +221,8 @@ async function handle(request: Extract<FtpWorkerRequest, { readonly type: 'reque
 }
 
 parent.on('message', event => {
+  const ack = parseFtpWorkerProgressAck(event.data);
+  if (ack) { receiveProgressAck(ack); return; }
   const request = parseFtpWorkerInput(event.data);
   if (request) void handle(request);
 });

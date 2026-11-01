@@ -43,6 +43,31 @@ test('SSH session log writes ordered JSONL with escaped terminal data and no fil
   }
 });
 
+test('SSH session log preserves all eight gateway endpoints and rejects a ninth gateway', async () => {
+  const directory = await createWorkspaceTempDirectory();
+  const writer = createSshSessionLogWriter();
+  const gateways = Array.from({ length: 8 }, (_, index) => ({ host: `gateway-${index + 1}.internal`, port: 2201 + index }));
+  const target = { host: 'target.internal', port: 22 };
+  try {
+    const started = await writer.start(sessionId, join(directory, 'routed.log'), [...gateways, target]);
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    await writer.finish(sessionId, 'connection-failed');
+    const records = (await readFile(join(directory, 'routed.log'), 'utf8')).trimEnd().split('\n')
+      .map(line => JSON.parse(line) as { readonly target?: { readonly host: string }; readonly gateways?: readonly { readonly host: string }[] });
+    assert.equal(records[0]?.target?.host, target.host);
+    assert.deepEqual(records[0]?.gateways?.map(endpoint => endpoint.host), gateways.map(endpoint => endpoint.host));
+
+    const rejected = await writer.start('22222222-2222-4222-8222-222222222222', join(directory, 'too-deep.log'),
+      [...gateways, { host: 'gateway-9.internal', port: 2209 }, target]);
+    assert.equal(rejected.ok, false);
+    if (!rejected.ok) assert.equal(rejected.error.code, 'INVALID_REQUEST');
+  } finally {
+    await writer.closeAll();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('SSH session log rejects duplicate live session IDs and finalizes an attempt failure', async () => {
   const directory = await createWorkspaceTempDirectory();
   let status: unknown;

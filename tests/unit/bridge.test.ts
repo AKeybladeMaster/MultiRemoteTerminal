@@ -13,13 +13,14 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     assert.deepEqual(request, { command: 'app.describe', requestId: id(), contractVersion: 1, payload: {} });
     return valid;
   }, id);
-  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
+  assert.deepEqual(Object.keys(bridge), ['describe', 'openTerminal', 'listWslDistributions', 'cancelWslDistributionDiscovery', 'writeTerminal', 'previewPowerShellProfileScript', 'applyPowerShellProfileScript', 'managePowerShellTool', 'pasteTerminal', 'resizeTerminal', 'acknowledgeTerminalOutput', 'closeTerminal',
     'openSshTerminal', 'authorizeSshX11Forwarding', 'launchXdmcp', 'startSshSessionLog', 'openSftpFiles', 'writeSshTerminal', 'pasteSshTerminal', 'resizeSshTerminal', 'acknowledgeSshTerminalOutput', 'closeSshTerminal', 'closeSftpFiles',
     'openTelnetTerminal', 'writeTelnetTerminal', 'pasteTelnetTerminal', 'resizeTelnetTerminal', 'acknowledgeTelnetTerminalOutput', 'closeTelnetTerminal',
     'listSerialPorts', 'openSerialTerminal', 'writeSerialTerminal', 'pasteSerialTerminal', 'resizeSerialTerminal', 'acknowledgeSerialTerminalOutput', 'closeSerialTerminal',
     'approveSshHost', 'rejectSshHost', 'revokeSshHost', 'listSshDirectory', 'uploadSshFile', 'uploadDroppedSshFile', 'discardRemoteFileDropHandles', 'downloadSshFile',
     'readSshTextFile', 'saveSshTextFile', 'cancelSshTransfer', 'openLocalTextFile', 'reloadLocalTextFile', 'saveLocalTextFile', 'closeLocalTextFile',
-    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'closeFtpFiles', 'chooseTftpRoot',
+    'openFtpFiles', 'listFtpDirectory', 'uploadFtpFile', 'uploadDroppedFtpFile', 'downloadFtpFile', 'cancelFtpTransfer', 'listInterruptedFileTransfers',
+    'dismissInterruptedFileTransfer', 'revealInterruptedDownloadPartial', 'closeFtpFiles', 'chooseTftpRoot',
     'startTftpServer', 'getTftpServerStatus', 'stopTftpServer', 'launchRdpViewer', 'launchVncViewer',
     'listSavedSessions', 'countSavedSessions', 'listMacros', 'createMacro', 'updateMacro', 'deleteMacro', 'listMacroShortcuts', 'setMacroShortcut', 'deleteMacroShortcut',
     'selectCustomLogo', 'getWorkbenchPreferences', 'getWorkbenchSettingsPreferences', 'saveWorkbenchPreferences', 'exportWorkbenchSettingsTemplate', 'importWorkbenchSettingsTemplate',
@@ -29,8 +30,18 @@ test('preload sends a fixed command and returns a validated reply', async () => 
     'getCredentialVaultState', 'lockCredentialVault', 'unlockCredentialVault', 'enableMasterPasswordVault', 'disableMasterPasswordVault', 'resetCredentialVault',
     'exportSshCredentialBundle', 'importSshCredentialBundle',
     'listSshTunnels', 'saveSshTunnel', 'deleteTunnel', 'startTunnel', 'stopTunnel',
-    'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress', 'onRemoteFilesDropped']);
+    'onTerminalEvent', 'onSshTrustEvent', 'onSshSessionLogStatus', 'onTunnelStatus', 'onTftpServerStatus', 'onFtpTransferProgress', 'onSshTransferProgress',
+    'onTransferRecoveryChanged', 'onRemoteFilesDropped']);
   assert.deepEqual(await bridge.describe(), valid);
+});
+
+test('PowerShell tool commands fail closed when no trusted action gesture is available', async () => {
+  let invoked = false;
+  const bridge = createBridge(async () => { invoked = true; return { requestId: id(), ok: true, result: {} }; }, id);
+  const reply = await bridge.managePowerShellTool(id(), 'install');
+  assert.equal(reply.ok, false);
+  if (!reply.ok) assert.equal(reply.error.code, 'FORBIDDEN');
+  assert.equal(invoked, false);
 });
 
 test('preload starts an SSH session log without accepting a renderer filesystem path', async () => {
@@ -109,10 +120,32 @@ test('preload routes tunnel manager requests and validates runtime status events
   const unsubscribe = bridge.onTunnelStatus(() => { statuses++; });
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '127.0.0.1', bindPort: 53_210 });
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '0.0.0.0', bindPort: 53_210 });
+  deliverStatus?.({ tunnelId, state: 'active', bindHost: '0.0.0.1', bindPort: 53_210 });
+  deliverStatus?.({ tunnelId, state: 'active', bindHost: '127.00.0.1', bindPort: 53_210 });
   unsubscribe();
   assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
   assert.deepEqual(tunnelStartPayloads, [{ id: tunnelId }, { id: tunnelId, gatewayProfileIds: gatewayIds }]);
-  assert.equal(statuses, 1);
+  assert.equal(statuses, 3);
+});
+
+test('preload routes interrupted-transfer recovery through fixed path-free commands', async () => {
+  const operationId = '018f7b8a-6d19-4e0c-8c6a-682f1316f004';
+  const record = { operationId, transport: 'sftp', direction: 'download', fileName: 'archive.tar', state: 'interrupted', bytesTransferred: 128,
+    totalBytes: 256, errorCode: 'UNAVAILABLE', createdAt: '2026-10-31T10:00:00.000Z', updatedAt: '2026-10-31T10:00:01.000Z', remoteArtifactNames: [] } as const;
+  const page = { records: [record], nextCursor: null } as const;
+  const seen: unknown[] = [];
+  const bridge = createBridge(async request => {
+    seen.push(request);
+    return { requestId: request.requestId, ok: true, result: request.command === 'transfer.recovery.list' ? page : {} };
+  }, id);
+  assert.deepEqual(await bridge.listInterruptedFileTransfers(null), { requestId: id(), ok: true, result: page });
+  assert.deepEqual(await bridge.dismissInterruptedFileTransfer(operationId), { requestId: id(), ok: true, result: {} });
+  assert.deepEqual(await bridge.revealInterruptedDownloadPartial(operationId), { requestId: id(), ok: true, result: {} });
+  assert.deepEqual(seen, [
+    { command: 'transfer.recovery.list', requestId: id(), contractVersion: 1, payload: { cursor: null } },
+    { command: 'transfer.recovery.dismiss', requestId: id(), contractVersion: 1, payload: { operationId } },
+    { command: 'transfer.recovery.reveal-local-partial', requestId: id(), contractVersion: 1, payload: { operationId } }
+  ]);
 });
 
 test('preload routes TFTP operations and validates loopback status events', async () => {
@@ -738,6 +771,34 @@ test('a two-gateway SSH open stays pending through all sequential credential pro
   assert.equal((await pending).ok, true);
 });
 
+test('an eight-gateway SSH open stays pending through its full cumulative timeout budget', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
+  const gatewayProfileIds = [
+    '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444',
+    '55555555-5555-4555-8555-555555555555', '66666666-6666-4666-8666-666666666666',
+    '77777777-7777-4777-8777-777777777777', '88888888-8888-4888-8888-888888888888'
+  ];
+  let finish!: (reply: unknown) => void;
+  let pendingRequestId = '';
+  let settled = false;
+  const bridge = createBridge(request => {
+    pendingRequestId = request.requestId;
+    return new Promise(resolve => { finish = resolve; });
+  }, id);
+  const pending = bridge.openSshTerminal(sessionId, 'target.example.net', 22, 80, 24, gatewayProfileIds)
+    .then(reply => { settled = true; return reply; });
+  await Promise.resolve();
+
+  context.mock.timers.tick(2_439_000);
+  assert.equal(settled, false, 'the renderer must wait for all nine credential prompts and the eight-hop worker route bound');
+
+  finish({ requestId: pendingRequestId, ok: true,
+    result: { sessionId, endpoint: { host: 'target.example.net', port: 22 }, state: 'running' } });
+  assert.equal((await pending).ok, true);
+});
+
 test('preload carries a caller-known session id so an opening terminal can be cancelled', async () => {
   const sessionId = 'c8f87744-bd2c-4c0d-9a18-a4a324dd71fd';
   const bridge = createBridge(async request => {
@@ -748,6 +809,13 @@ test('preload carries a caller-known session id so an opening terminal can be ca
     return { requestId: id(), ok: true, result: { sessionId, shell: 'cmd', state: 'running' } };
   }, id);
   assert.equal((await bridge.openTerminal(sessionId, { shell: 'cmd' }, 80, 24)).ok, true);
+
+  const managementBridge = createBridge(async request => {
+    assert.deepEqual(request, { command: 'terminal.open', requestId: id(), contractVersion: 1,
+      payload: { sessionId, launch: { shell: 'powershell' }, columns: 80, rows: 24, purpose: 'powershell-tool-management' } });
+    return { requestId: id(), ok: true, result: { sessionId, shell: 'powershell', state: 'running' } };
+  }, id);
+  assert.equal((await managementBridge.openTerminal(sessionId, { shell: 'powershell' }, 80, 24, 'powershell-tool-management')).ok, true);
 });
 
 test('preload redacts rejected and malformed transport responses', async () => {

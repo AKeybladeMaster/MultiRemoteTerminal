@@ -33,8 +33,8 @@ export class SqliteTunnelRepository implements SshTunnelCatalog {
     this.findSshSession = database.prepare(`SELECT kind, options_json FROM session_definitions WHERE id = ?`);
     this.insertStatement = database.prepare(`INSERT INTO tunnel_definitions
       (id, session_id, name, mode, bind_host, bind_port, target_host, target_port, enabled, created_at)
-      VALUES (?, ?, ?, ?, '127.0.0.1', ?, ?, ?, 0, ?)`);
-    this.updateStatement = database.prepare(`UPDATE tunnel_definitions SET session_id = ?, name = ?, mode = ?, bind_host = '127.0.0.1',
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`);
+    this.updateStatement = database.prepare(`UPDATE tunnel_definitions SET session_id = ?, name = ?, mode = ?, bind_host = ?,
       bind_port = ?, target_host = ?, target_port = ?, enabled = 0 WHERE id = ? AND mode IN ('local', 'remote', 'dynamic')`);
     this.deleteStatement = database.prepare(`DELETE FROM tunnel_definitions WHERE id = ? AND mode IN ('local', 'remote', 'dynamic')`);
   }
@@ -68,9 +68,9 @@ export class SqliteTunnelRepository implements SshTunnelCatalog {
       const targetHost = draft.mode === 'dynamic' ? null : draft.targetHost;
       const targetPort = draft.mode === 'dynamic' ? null : draft.targetPort;
       if (current) {
-        this.updateStatement.run(draft.sessionId, draft.name, draft.mode, draft.bindPort, targetHost, targetPort, id);
+        this.updateStatement.run(draft.sessionId, draft.name, draft.mode, draft.bindHost, draft.bindPort, targetHost, targetPort, id);
       } else {
-        this.insertStatement.run(id, draft.sessionId, draft.name, draft.mode, draft.bindPort, targetHost, targetPort, createdAt);
+        this.insertStatement.run(id, draft.sessionId, draft.name, draft.mode, draft.bindHost, draft.bindPort, targetHost, targetPort, createdAt);
       }
       const saved = this.findStatement.get(id) as unknown as TunnelRow | undefined;
       if (!saved) throw new StorageOperationError('corrupt');

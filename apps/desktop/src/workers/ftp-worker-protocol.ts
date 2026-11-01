@@ -25,10 +25,18 @@ export type FtpWorkerRequest =
 export type FtpWorkerErrorCode = FtpFilesProviderErrorCode | 'INVALID_REQUEST';
 
 export type FtpWorkerMessage =
-  | { readonly version: 1; readonly type: 'progress'; readonly requestId: string; readonly progress: FtpTransferProgress }
+  | { readonly version: 1; readonly type: 'progress'; readonly requestId: string; readonly progress: FtpTransferProgress; readonly progressId?: string }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: true; readonly result: Record<string, never> | RemoteDirectoryListing | FtpTransferResult }
   | { readonly version: 1; readonly type: 'reply'; readonly requestId: string; readonly ok: false; readonly errorCode: FtpWorkerErrorCode;
       readonly sessionUsable?: boolean };
+
+export interface FtpWorkerProgressAck {
+  readonly version: 1;
+  readonly type: 'progress-ack';
+  readonly requestId: string;
+  readonly progressId: string;
+  readonly persisted: boolean;
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ERROR_CODES: readonly FtpWorkerErrorCode[] = ['INVALID_REQUEST', 'UNAVAILABLE', 'CANCELLED', 'TIMEOUT', 'BUSY', 'OUTPUT_LIMIT',
@@ -81,8 +89,12 @@ export function parseFtpWorkerInput(value: unknown): FtpWorkerRequest | undefine
 export function parseFtpWorkerMessage(value: unknown): FtpWorkerMessage | undefined {
   if (!record(value) || value.version !== FTP_WORKER_PROTOCOL_VERSION || (value.type !== 'reply' && value.type !== 'progress') || typeof value.requestId !== 'string' ||
       !UUID.test(value.requestId)) return undefined;
-  if (value.type === 'progress' && exactKeys(value, ['version', 'type', 'requestId', 'progress']) && isFtpTransferProgress(value.progress)) {
-    return value as unknown as FtpWorkerMessage;
+  if (value.type === 'progress' && isFtpTransferProgress(value.progress)) {
+    const requiresAck = value.progress.remoteArtifactNames !== undefined;
+    const validKeys = requiresAck
+      ? exactKeys(value, ['version', 'type', 'requestId', 'progress', 'progressId']) && typeof value.progressId === 'string' && UUID.test(value.progressId)
+      : exactKeys(value, ['version', 'type', 'requestId', 'progress']);
+    if (validKeys) return value as unknown as FtpWorkerMessage;
   }
   if (value.type !== 'reply' || typeof value.ok !== 'boolean') return undefined;
   if (value.ok && exactKeys(value, ['version', 'type', 'requestId', 'ok', 'result']) && record(value.result) &&
@@ -95,6 +107,15 @@ export function parseFtpWorkerMessage(value: unknown): FtpWorkerMessage | undefi
     return value as unknown as FtpWorkerMessage;
   }
   return undefined;
+}
+
+export function parseFtpWorkerProgressAck(value: unknown): FtpWorkerProgressAck | undefined {
+  if (!record(value) || !exactKeys(value, ['version', 'type', 'requestId', 'progressId', 'persisted']) ||
+      value.version !== FTP_WORKER_PROTOCOL_VERSION || value.type !== 'progress-ack' || typeof value.requestId !== 'string' ||
+      !UUID.test(value.requestId) || typeof value.progressId !== 'string' || !UUID.test(value.progressId) || typeof value.persisted !== 'boolean') {
+    return undefined;
+  }
+  return value as unknown as FtpWorkerProgressAck;
 }
 
 export function isFtpEndpoint(value: unknown): value is FtpEndpoint {

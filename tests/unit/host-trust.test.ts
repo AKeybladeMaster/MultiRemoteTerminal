@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Outcome } from '../../packages/domain/src/errors.ts';
@@ -155,6 +155,28 @@ test('corrupt, unsupported, and oversized store files fail closed without replac
     await writeFile(path, oversized);
     await assert.rejects(store.find({ host: 'example.com', port: 22 }), (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'corrupt');
     assert.equal((await readFile(path)).byteLength, oversized.byteLength);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy host-trust store rejects a symbolic link instead of trusting its target', async context => {
+  const directory = await mkdtemp(join(tmpdir(), 'mrt-host-trust-symlink-'));
+  const path = join(directory, 'host-trust.json');
+  const targetPath = join(directory, 'target.json');
+  const target = '{"version":1,"entries":[]}\n';
+  const store = new HostTrustJsonStore(path);
+  try {
+    await writeFile(targetPath, target, 'utf8');
+    try { await symlink(targetPath, path, 'file'); }
+    catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+      if (code === 'EPERM' || code === 'EACCES') { context.skip('The current Windows account cannot create a file symlink.'); return; }
+      throw error;
+    }
+    await assert.rejects(store.find({ host: 'example.com', port: 22 }),
+      (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'corrupt');
+    assert.equal(await readFile(targetPath, 'utf8'), target);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
