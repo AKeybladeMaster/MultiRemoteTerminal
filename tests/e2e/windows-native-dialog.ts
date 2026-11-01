@@ -9,6 +9,14 @@ export type NativeLocalTextDialogAction = 'cancel-local-text' | 'select-local-te
 export type NativeTransferRecoveryFolderAction = 'cancel-transfer-folder' | 'select-transfer-folder';
 export type NativeRemoteForwardConfirmationAction = 'cancel-remote-forward' | 'accept-remote-forward';
 export type NativePublicTunnelConfirmationAction = 'cancel-public-tunnel' | 'accept-public-tunnel';
+export type NativeClipboardFixtureAction = 'write-clipboard';
+
+export async function writeWindowsClipboardFixture(value: string): Promise<void> {
+  if (process.platform !== 'win32' || value.length === 0 || value.length > 16_384 || value.includes('\0')) {
+    throw new Error('The Windows clipboard fixture requires bounded, non-empty text on Windows.');
+  }
+  await runNativeDialog('write-clipboard', undefined, undefined, 'Windows clipboard fixture', value);
+}
 
 export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, filePath: string | undefined, targetProcessId: number): Promise<void> {
   if (action === 'save' && (!filePath || !filePath.toLowerCase().endsWith('.log'))) {
@@ -69,17 +77,18 @@ export async function runNativePublicTunnelConfirmation(action: NativePublicTunn
 
 async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialPromptAction | NativeSshCredentialBundleDialogAction |
   NativeCustomLogoDialogAction | NativeLocalTextDialogAction | NativeTransferRecoveryFolderAction |
-  NativeRemoteForwardConfirmationAction | NativePublicTunnelConfirmationAction,
-  filePath: string | undefined, targetProcessId: number, description: string, stdinInput?: string): Promise<void> {
+  NativeRemoteForwardConfirmationAction | NativePublicTunnelConfirmationAction | NativeClipboardFixtureAction,
+  filePath: string | undefined, targetProcessId: number | undefined, description: string, stdinInput?: string): Promise<void> {
   if (process.platform !== 'win32') throw new Error(`Native ${description} dialog automation is Windows-only.`);
-  if (!Number.isSafeInteger(targetProcessId) || targetProcessId < 1) {
+  if (action !== 'write-clipboard' &&
+      (targetProcessId === undefined || !Number.isSafeInteger(targetProcessId) || targetProcessId < 1)) {
     throw new Error(`Native ${description} dialog automation requires a valid app process ID.`);
   }
   const executable = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+  const args = ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File',
     resolve('tests/e2e/windows-native-dialog.ps1'), '-Action', action];
   if (filePath) args.push('-FilePath', filePath);
-  args.push('-TargetProcessId', String(targetProcessId));
+  if (targetProcessId !== undefined) args.push('-TargetProcessId', String(targetProcessId));
   const child = spawn(executable, args, { cwd: resolve('.'), windowsHide: true, stdio: [stdinInput === undefined ? 'ignore' : 'pipe', 'ignore', 'pipe'] });
   let errorText = '';
   child.stderr?.setEncoding('utf8');
@@ -102,10 +111,10 @@ async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCrede
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
-    }, 35_000);
+    }, 50_000);
     child.once('error', error => finish(error));
     child.once('exit', (code, signal) => {
-      if (timedOut) finish(new Error(`Timed out automating the native ${description} dialog.`));
+      if (timedOut) finish(new Error(`Timed out automating native dialog action '${action}' for ${description}.`));
       else if (code !== 0) finish(new Error(action === 'submit-ssh-credential'
         ? 'Native Windows SSH credential prompt automation failed.'
         : `Native ${description} dialog action '${action}' failed (${signal ?? code}): ${errorText.trim()}`));

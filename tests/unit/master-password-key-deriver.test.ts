@@ -6,7 +6,7 @@ import type { KdfUtilityProcess } from '../../apps/desktop/src/adapters/master-p
 
 test('one-shot KDF process receives only password and salt and returns a bounded derived key', async () => {
   const worker = new FakeKdfProcess(true);
-  const deriver = new MasterPasswordKeyDeriverAdapter('worker.js', 'app-root', () => worker, 100);
+  const deriver = new MasterPasswordKeyDeriverAdapter('worker.js', 'app-root', () => worker, 2_000);
   const password = Buffer.from('one-shot-password');
   const salt = Buffer.alloc(16, 4);
   const key = await deriver.derive(password, salt, new AbortController().signal);

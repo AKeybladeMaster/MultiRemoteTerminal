@@ -17,10 +17,11 @@ import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle, SESSION_FOLDER_BUNDLE_VERSION } from '../../packages/domain/src/session-folder-bundle.ts';
 import { CURRENT_SCHEMA_VERSION } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
-import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativePublicTunnelConfirmation, runNativeRemoteForwardConfirmation, runNativeSshCredentialBundleDialog, runNativeSshLogDialog, runNativeTransferRecoveryFolderDialog } from './windows-native-dialog.ts';
+import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativePublicTunnelConfirmation, runNativeRemoteForwardConfirmation, runNativeSshCredentialBundleDialog, runNativeSshLogDialog, runNativeTransferRecoveryFolderDialog, writeWindowsClipboardFixture } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
+type NativeDialogMethod = 'showOpenDialog' | 'showSaveDialog';
 
 function nativeDialogProcessId(app: ElectronApplication): number {
   const processId = app.process().pid;
@@ -28,6 +29,26 @@ function nativeDialogProcessId(app: ElectronApplication): number {
     throw new Error('Native dialog automation requires a live Electron process.');
   }
   return processId;
+}
+
+async function setNativeDialogDefaultPath(app: ElectronApplication, method: NativeDialogMethod, defaultPath: string): Promise<void> {
+  await app.evaluate(({ dialog: nativeDialog }, options) => {
+    const original = Reflect.get(nativeDialog, options.method);
+    if (typeof original !== 'function') throw new Error(`The native ${options.method} API is unavailable.`);
+    Object.defineProperty(nativeDialog, options.method, {
+      configurable: true,
+      value: async (...args: unknown[]) => {
+        const optionsIndex = args.length - 1;
+        const dialogOptions = args[optionsIndex];
+        if (dialogOptions === null || typeof dialogOptions !== 'object') {
+          throw new Error(`The native ${options.method} call did not supply its options.`);
+        }
+        const configuredArgs = [...args];
+        configuredArgs[optionsIndex] = { ...dialogOptions, defaultPath: options.defaultPath };
+        return Reflect.apply(original, nativeDialog, configuredArgs);
+      }
+    });
+  }, { method, defaultPath });
 }
 
 interface Ssh2FixtureClient extends EventEmitter {
@@ -430,7 +451,7 @@ async function sendLine(page: Page, title: string, line: string, marker: string 
 }
 
 async function writeClipboardAndVerify(app: Awaited<ReturnType<typeof electron.launch>>, value: string): Promise<void> {
-  await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), value);
+  await writeWindowsClipboardFixture(value);
   await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText()), { timeout: 5_000, intervals: [50, 100, 250] }).toBe(value);
 }
 
@@ -642,21 +663,9 @@ test('Windows local text editor preserves drafts on conflict and saves the selec
     await expect(page.locator('body')).not.toContainText(path);
     expect(await readFile(path, 'utf8')).toBe('name=old\r\nlegacy=1\n');
 
-    await app.evaluate(({ dialog: nativeDialog }) => {
-      const original = Reflect.get(nativeDialog, 'showOpenDialog');
-      if (typeof original !== 'function') throw new Error('The native open-dialog API is unavailable.');
-      Object.defineProperty(nativeDialog, 'showOpenDialog', {
-        configurable: true,
-        value: async (...args: unknown[]) => {
-          const selection = await Reflect.apply(original, nativeDialog, args) as { readonly canceled: boolean; readonly filePaths: string[] };
-          Reflect.set(globalThis, '__mrtE2ESelectedOpenDialogPaths', selection.filePaths);
-          return selection;
-        }
-      });
-    });
+    await setNativeDialogDefaultPath(app, 'showOpenDialog', path);
     await openLocalFile.click();
     await runNativeLocalTextDialog('select-local-text', path, nativeDialogProcessId(app!));
-    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESelectedOpenDialogPaths'))).toEqual([path]);
     const contents = editor.getByRole('textbox', { name: 'File contents' });
     const autoSave = editor.getByRole('checkbox', { name: 'Save automatically after 1 second of inactivity', exact: true });
     await expect(editor.getByRole('heading', { name: 'settings.txt', exact: true })).toBeVisible();
@@ -1531,6 +1540,7 @@ test('SSH session log native consent and Save dialogs support cancellation and l
     const sshTabs = () => page.getByRole('tab').filter({ hasText: /SSH/ });
     const logNames = async () => (await readDirectory(profile)).filter(name => name.toLowerCase().endsWith('.log'));
     const credentialPromptCount = () => app!.evaluate(() => Reflect.get(globalThis, '__mrtE2ESshCredentialPromptCount'));
+    await setNativeDialogDefaultPath(app, 'showSaveDialog', selectedLogPath);
     const requestLoggedConnection = async () => {
       await page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
       const dialog = page.getByRole('dialog', { name: 'Connect to an SSH server' });
@@ -3417,22 +3427,10 @@ test('Windows restart surfaces a durable interrupted transfer record and lets th
     await expect(recovery).toContainText('do not resume automatically');
     await expect(recovery).toContainText('A same-run reconnect may remove a worker-owned SFTP .partial stage');
     await app.evaluate(({ app: electronApp }, downloadsPath) => electronApp.setPath('downloads', downloadsPath), partialDirectory);
-    await app.evaluate(({ dialog: nativeDialog }) => {
-      const original = Reflect.get(nativeDialog, 'showOpenDialog');
-      if (typeof original !== 'function') throw new Error('The native open-dialog API is unavailable.');
-      Object.defineProperty(nativeDialog, 'showOpenDialog', {
-        configurable: true,
-        value: async (...args: unknown[]) => {
-          const selection = await Reflect.apply(original, nativeDialog, args) as { readonly canceled: boolean; readonly filePaths: string[] };
-          Reflect.set(globalThis, '__mrtE2ESelectedOpenDialogPaths', selection.filePaths);
-          return selection;
-        }
-      });
-    });
+    await setNativeDialogDefaultPath(app, 'showOpenDialog', partialDirectory);
     const currentDownload = recovery.locator('li').filter({ hasText: 'Download archive.tar' });
     await currentDownload.getByRole('button', { name: 'Locate local partial', exact: true }).click();
     await runNativeTransferRecoveryFolderDialog('select-transfer-folder', partialDirectory, nativeDialogProcessId(app!));
-    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESelectedOpenDialogPaths'))).toEqual([partialDirectory]);
     await expect(recovery.getByRole('alert'), 'The current recovery record should match its own operation-ID stage.')
       .toHaveCount(0);
     await recovery.getByRole('button', { name: 'Show older interrupted transfers', exact: true }).click();
@@ -3449,7 +3447,6 @@ test('Windows restart surfaces a durable interrupted transfer record and lets th
     expect(pagedOlderOperationId).toBe(olderOperationIds[0]);
     await olderDownload.getByRole('button', { name: 'Locate local partial', exact: true }).click();
     await runNativeTransferRecoveryFolderDialog('select-transfer-folder', partialDirectory, nativeDialogProcessId(app!));
-    expect(await app.evaluate(() => Reflect.get(globalThis, '__mrtE2ESelectedOpenDialogPaths'))).toEqual([partialDirectory]);
     expect(await readDirectory(partialDirectory)).toContain(`.mrt-${olderOperationIds[0]}.partial`);
     const recoveryLookupAlert = recovery.getByRole('alert');
     await expect(recoveryLookupAlert).toHaveCount(0);
@@ -5863,6 +5860,7 @@ test('FTP shows plaintext risk, browses through the utility worker, and persists
     await expect(dialog.getByLabel('Port')).toHaveValue(String(address.port));
     await expect(dialog.getByLabel('Connection security')).toHaveValue('ftp');
     await dialog.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByRole('tab').filter({ hasText: 'FTP loopback' }).last()).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('remote-file-browser').getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => connectionCount).toBe(4);
     await page.locator('.remote-file-list').evaluate(element => { element.scrollTop = element.scrollHeight; });
@@ -6666,7 +6664,7 @@ test('macro playback sends reviewed steps through a trusted SSH terminal', async
   test.setTimeout(90_000);
   const profile = await mkdtemp(join(tmpdir(), 'mrt-macro-ssh-playback-e2e-'));
   const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
-  const keyPair = ssh2.utils.generateKeyPairSync('ed25519');
+  const keyPair = ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256 });
   const command = 'echo MRT-SSH-MACRO-PLAYBACK-OK';
   const receivedLines: string[] = [];
   const fixtureErrors: string[] = [];
@@ -7211,6 +7209,7 @@ test('terminal tab context menu copies selection and clears output', async () =>
     await page.mouse.up();
     await tab.click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Copy selection' }).click();
+    expect(await page.getByRole('alert').allTextContents()).toEqual([]);
     await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(marker);
 
     await tab.click({ button: 'right' });
@@ -7618,6 +7617,10 @@ test('Windows terminal input stays under the 75 ms p95 target with ten idle tabs
     }
     await expect(page.getByRole('tab')).toHaveCount(11);
     await expect(page.getByRole('tab', { name: /PowerShell session 1\b/ }).locator('.state-dot')).toHaveClass(/running/);
+    for (let index = 1; index <= 11; index++) {
+      const readyPanel = await selectTerminal(page, `PowerShell session ${index}`);
+      await expect(readyPanel.locator('.xterm-rows')).toContainText(/PS .+>/, { timeout: 15_000 });
+    }
 
     const panel = await selectTerminal(page, 'PowerShell session 11');
     const terminalHost = panel.locator('.terminal-host');
@@ -8052,7 +8055,7 @@ test('Git Bash runs in a local terminal and saved Bash sessions reopen', async (
     await expect.poll(() => syntaxRows.locator('span.xterm-decoration-top').count(), { timeout: 10_000 }).toBe(0);
     await expect(syntaxRows).toContainText('MRT-PRIMARY>');
 
-    const bashPanel = await selectTerminal(page, 'Bash session 1');
+    await selectTerminal(page, 'Bash session 1');
     const initialWidth = await page.evaluate(() => innerWidth);
     const initialSizeCommand = "printf 'MRT-BASH-SIZE-INITIAL:%s\\n' \"$(stty size)\"";
     const initialSize = await sendLine(page, 'Bash session 1', initialSizeCommand, /MRT-BASH-SIZE-INITIAL:\d+ \d+/);
@@ -8112,7 +8115,7 @@ test('Git Bash preserves Unicode clipboard paste', async () => {
 });
 
 test('Git Bash accepts the first input immediately after a window resize', async () => {
-  test.skip(true, 'P-02 remains open: ConPTY resize can drop the first input character; see WP-01E resize evidence');
+  test.setTimeout(60_000);
   test.skip(process.platform !== 'win32', 'ConPTY resize acceptance evidence is required on Windows');
   test.skip(!installedGitBashExecutable(), 'Install Git for Windows to run the Bash acceptance test');
   const profile = await createWorkspaceTempDirectory('mrt-bash-resize-e2e-');
@@ -8120,6 +8123,7 @@ test('Git Bash accepts the first input immediately after a window resize', async
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await expect(page.getByRole('tab', { name: /PowerShell session 1/ })).toBeVisible({ timeout: 15_000 });
     await runPaletteCommand(page, 'New Bash terminal');
     await expect(page.getByRole('tab', { name: /Bash session 1/ })).toBeVisible({ timeout: 15_000 });
 
@@ -8138,6 +8142,29 @@ test('Git Bash accepts the first input immediately after a window resize', async
     await expect(prompt.rows).toContainText(/MRT-RESIZE-AFTER:\d+ \d+/, { timeout: 15_000 });
     const resizedColumns = Number((await prompt.rows.innerText()).match(/MRT-RESIZE-AFTER:\d+ (\d+)/)?.[1]);
     expect(resizedColumns).toBeLessThan(initialColumns);
+
+    await page.keyboard.type("printf 'MRT-EDIT-%s-END\\n' OKX");
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 800));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(900);
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Enter');
+    await expect(prompt.rows).toContainText('MRT-EDIT-OK-END', { timeout: 15_000 });
+
+    await writeClipboardAndVerify(app, "printf 'MRT-RESIZE-PASTE:%s\\n' \"$(stty size)\"");
+    await prompt.panel.locator('.terminal-host').click({ position: { x: 80, y: 60 } });
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(900);
+    await page.keyboard.press('Control+V');
+    await page.keyboard.press('Enter');
+    await expect(prompt.rows).toContainText(/MRT-RESIZE-PASTE:\d+ \d+/, { timeout: 15_000 });
+
+    await sendLine(page, 'Bash session 1', 'MSYS_NO_PATHCONV=1 cmd.exe /D /Q', 'Microsoft Windows');
+    await sendLine(page, 'Bash session 1', 'prompt MRT-CMD$G', 'MRT-CMD>');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 800));
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThan(900);
+    await page.keyboard.type('echo MRT-NATIVE-%RANDOM%');
+    await page.keyboard.press('Enter');
+    await expect(prompt.rows).toContainText(/MRT-NATIVE-\d+/, { timeout: 15_000 });
   } finally {
     await app.close();
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -8940,6 +8967,7 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await setNativeDialogDefaultPath(app, 'showSaveDialog', credentialBundlePath);
     const exportCredentials = settings.getByRole('button', { name: /Export encrypted SSH passwords/ });
     await exportCredentials.click();
     await runNativeSshCredentialBundleDialog('cancel-credential-export', undefined, nativeDialogProcessId(app!));
@@ -8975,6 +9003,7 @@ test('encrypted SSH credential bundles restore saved passwords across Windows ap
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings.getByText('Status: Unlocked')).toBeVisible();
+    await setNativeDialogDefaultPath(app, 'showOpenDialog', credentialBundlePath);
     const importCredentials = settings.getByRole('button', { name: /Import encrypted SSH passwords/ });
     await importCredentials.click();
     await runNativeSshCredentialBundleDialog('cancel-credential-import', undefined, nativeDialogProcessId(app!));
@@ -9307,7 +9336,8 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
   test.skip(process.platform !== 'win32', 'Native custom-logo picker acceptance runs on Windows');
   test.setTimeout(90_000);
   const profile = await createWorkspaceTempDirectory('mrt-custom-logo-e2e-');
-  const logoPath = join(profile, 'selected-logo.png');
+  const logoDirectory = join(profile, 'logo-fixture');
+  const logoPath = join(logoDirectory, 'selected-logo.png');
   const validPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGOQm/D/PwAFKgKti6zvbAAAAABJRU5ErkJggg==', 'base64');
   const launch = () => electron.launch({
     args: [resolve('apps/desktop'), `--user-data-dir=${profile}`, '--mrt-e2e-custom-logo'],
@@ -9315,13 +9345,16 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
   });
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
+    await mkdir(logoDirectory);
+    await writeFile(logoPath, validPng);
     app = await launch();
     let page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
-    await writeFile(logoPath, validPng);
+    await app.evaluate(({ app: electronApp }, downloadsPath) => electronApp.setPath('downloads', downloadsPath), logoDirectory);
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     let settings = page.getByRole('dialog', { name: 'Workbench settings' });
     const chooseLogo = settings.getByRole('button', { name: 'Choose PNG logo', exact: true });
+    await setNativeDialogDefaultPath(app, 'showOpenDialog', logoPath);
     await chooseLogo.click();
     await runNativeCustomLogoDialog('cancel-logo', undefined, nativeDialogProcessId(app!));
     await expect(chooseLogo).toBeEnabled();
@@ -9338,15 +9371,17 @@ test('custom workbench logo is bounded, persists across restart, and resets to t
     await settings.getByRole('button', { name: 'Close', exact: true }).click();
 
     await app.close();
+    await writeFile(logoPath, Buffer.from('not a PNG image'));
     app = await launch();
     page = await app.firstWindow();
     await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await app.evaluate(({ app: electronApp }, downloadsPath) => electronApp.setPath('downloads', downloadsPath), logoDirectory);
     await expect(page.getByTestId('custom-workbench-logo')).toBeVisible();
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     settings = page.getByRole('dialog', { name: 'Workbench settings' });
     await expect(settings.getByRole('img', { name: 'Selected workbench logo' })).toBeVisible();
 
-    await writeFile(logoPath, Buffer.from('not a PNG image'));
+    await setNativeDialogDefaultPath(app, 'showOpenDialog', logoPath);
     await settings.getByRole('button', { name: 'Choose PNG logo', exact: true }).click();
     await runNativeCustomLogoDialog('select-logo', logoPath, nativeDialogProcessId(app!));
     await expect(settings.getByRole('alert')).toContainText('Choose a valid PNG image');

@@ -294,3 +294,26 @@ An earlier Windows E2E verified native custom-logo picker selection and cancella
 ## 2026-11-01 generated release-metadata write safety (unverified)
 
 The shared workspace output writer now stages bounded notices, dependency inventory, SBOM, and checksum content in a unique exclusive sibling, syncs it, checks the destination identity before atomic replacement, and removes only its own temporary file on failure. This preserves the prior generated file if the staged write/replacement fails. A package-release assertion covers replacement with no leftover sibling. No automated check or package generation ran; Phase 08/N-012 remain PARTIAL.
+
+## 2026-11-01 current-candidate notice-generation blocker
+
+The Windows package workflow passed both dependency-signature audits and the Windows build but failed in `notices:win` before package creation. Reproduction showed the installed `@serialport/bindings-interface@1.2.2/package.json` is hard-linked by pnpm (`nlink=2`), while the notice reader requires `nlink === 1`; current default installs therefore fail the release inventory step. This candidate has not passed notice generation, licensing review, packaging or phase acceptance; no feature status is upgraded.
+The package workflow was rerun after the Phase 05 shutdown source correction: signature audits and build passed, and the same hard-linked `@serialport/bindings-interface@1.2.2` manifest was rejected by the single-link reader before package creation. This confirms the notice-generation blocker remains on the final source candidate.
+## 2026-11-01 final-source release verification
+
+After the final main-process shutdown guards, `corepack pnpm package:win:smoke` again passed production and development signature audits and built the Windows x64 app, then failed in `notices:win` because the bounded reader rejects the normal pnpm hard-linked `@serialport/bindings-interface@1.2.2/package.json` (`nlink=2`). Electron-builder and packaged smoke never ran. This is an unresolved release workflow defect; Phase 08 remains PARTIAL.
+## 2026-11-01 final Windows package smoke after metadata fixes
+
+Using pinned Node v24.14.1/pnpm 12.15.0, `corepack pnpm package:win:smoke` passed production/dev dependency-signature audits (45/340 packages), Windows x64 build, third-party notices (30 production package versions), and per-artifact CycloneDX SBOM generation (31 runtime components). Four of six packaged E2Es passed: ASAR/package policy, SBOM and SHA-256 manifest validation, offline NSIS installation/settings/uninstall, and portable terminal/profile-data smoke. Two native Windows workflows failed automation: synthetic SSH credential submission in the portable app, and native Save selection for the portable SSH session log. Both artifacts were built with `NotSigned` status because no code-signing certificate was configured. Packaging metadata now builds, but Phase 08 remains PARTIAL; native-dialog acceptance and release signing remain open.
+
+## 2026-11-01 current-candidate final package verification
+
+Pinned Node v24.14.1/pnpm 12.15.0: the final Windows package workflow passed production/development signature audits, Windows x64 build, production notice generation (30 package versions), CycloneDX 1.6 SBOM generation (31 runtime components per artifact), SHA-256 manifests, and produced NSIS plus portable artifacts. Direct packaged-app smoke passed 6/6, covering package policy, SBOM/hashes, offline NSIS install/settings/uninstall, portable profile/runtime behavior, packaged native SSH prompt, and portable SSH-log shutdown finalization. The artifacts are NotSigned; no release signing identity was configured. The full pnpm check passed at command level (684 unit passes/6 skipped; 82 E2Es passed/7 skipped), but P-02's immediate post-resize input regression remains reproducible (2/10 focused runs failed); P-32/F-001 and Phase 08 are not release-qualified. Windows 10, broader native-picker and interoperability acceptance, legal review, and signing remain open.
+
+## 2026-11-01 code-signing identity preflight
+
+Read-only Windows check found zero valid code-signing certificates with private keys in the CurrentUser and LocalMachine Personal stores, no CSC/WIN_CSC/MRT signing environment variables configured, and no signtool.exe on PATH. No signing command was attempted. Current NSIS/portable outputs remain NotSigned; a trusted publisher identity and toolchain are external prerequisites.
+
+## 2026-11-01 rebuilt runnable binaries after resize repair
+
+Final pinned package:win:smoke exited 0 after the corrected resize acceptance passed10/10. Registry signature audits passed45runtime/340development, production notices covered30package versions, and each artifact's CycloneDX SBOM covered31runtime components. Packaged smoke passed6/6 with no skips; SHA256SUMS entries reverified independently and packaged PTY worker matched the current build. NSIS/portable binaries and a refreshed win-packed.zip are under artifacts/windows; a local runnable copy is under .tmp/run-resize-fix to keep profile/log files within .tmp. Signatures remain NotSigned because no publisher identity is configured. The full repository suite was not rerun, and broader phase/release acceptance remains partial. See [binary paths, hashes and limits](WINDOWS-BINARIES-2026-11-01.md).

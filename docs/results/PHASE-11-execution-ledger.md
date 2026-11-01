@@ -137,3 +137,32 @@ Static review found that byte-count checks could not detect a same-size rewrite 
 ## 2026-11-01 atomic generated-output staging (unverified)
 
 The shared writer for production notices, dependency inventory, distribution SBOMs, and SHA-256 manifests now stages each bounded output in a unique exclusive workspace-local sibling, syncs it, rechecks the existing destination identity, and atomically replaces the destination. Failure cleanup is limited to the sibling created by that operation, preserving an existing output if writing or replacement fails. Added package-release assertion source checks successful replacement leaves no temp file. No automated check, SBOM generation, or package build ran; N-012/Phase 11 remain PARTIAL.
+
+## 2026-11-01 current-candidate package smoke attempt
+
+`corepack pnpm package:win:smoke` passed production and development signature audits and the Windows x64 build, then stopped during `notices:win` before electron-builder and packaged-app smoke. The notice generator reports `@serialport/bindings-interface@1.2.2` metadata as missing/invalid. The installed package manifest is a normal pnpm content-store hard link (`nlink=2`), which the bounded reader rejects. Thus packaging is currently incompatible with the default pnpm installation layout. No new installer or portable executable was produced; the prior `artifacts/windows` tree is preserved in ignored workspace-local `.tmp/phase-gate-original-artifacts-windows`. Phase 11 remains PARTIAL.
+The final-source rerun repeated the same result: signature audits and Windows build passed; `notices:win` rejected the normal pnpm hard-linked `@serialport/bindings-interface@1.2.2` manifest before electron-builder. No final-candidate installer or portable smoke test was produced.
+## 2026-11-01 final-source package gate
+
+The final-source package-and-smoke command passed both dependency signature audits and the Windows x64 build, then failed during third-party notice generation on the pnpm hard-linked package manifest documented in Phase 08. Package creation, installer/portable inspection and packaged-app smoke were not reached. Prior artifacts remain preserved under ignored `.tmp/phase-gate-original-artifacts-windows`; they are not evidence for this candidate. Phase 11 remains PARTIAL.
+## 2026-11-01 N-012 pnpm hard-link packaging remediation (unverified)
+
+Kept the release metadata reader's symlink/hard-link rejection and selected pnpm packageImportMethod: clone-or-copy, which tries copy-on-write cloning and falls back to copying instead of hard-linking. Added a unit assertion for the workspace policy. The installed dependency tree has not yet been reimported with the setting, and no tests, notices, SBOMs, or packages have been generated after this change; N-012 and Phase 11 remain PARTIAL pending the complete gate.
+
+The pinned Node 24.14.1/pnpm 12.15.0 workspace was force-reimported offline with clone-or-copy; all 395 packages came from the local store and the representative @serialport/bindings-interface@1.2.2 manifest now has nlink=1. No package gate has run after reimport; the notice, SBOM, installer/portable and packaged-app checks remain pending.
+
+## 2026-11-01 current artifact-generation and package-smoke result
+
+The final pinned Windows package run generated NSIS and portable x64 artifacts plus per-artifact CycloneDX 1.6 SBOMs for 31 runtime components and verified SHA-256 manifests. Dependency signature audits and notice generation passed after the workspace switched to clone-or-copy and the integrity parser selected the application package section of the pnpm 12 lockfile. Four of six package-smoke tests passed; the two failures were native SSH credential prompt automation and native SSH-log Save selection. Authenticode is `NotSigned`; no release signing identity was configured. The artifacts are generated but not release-qualified, and Phase 11 remains PARTIAL.
+
+## 2026-11-01 current-candidate package and release verification
+
+The pinned final Windows packaging run generated NSIS and portable x64 artifacts, per-artifact CycloneDX 1.6 SBOMs (31 runtime components), third-party notices (30 production package versions), and verified SHA-256 manifests. Signature audits and build passed; direct package E2E smoke passed 6/6. Authenticode remains NotSigned because no signing identity is configured. Full corepack pnpm check passed with 684 unit tests passed/6 skipped and 82 E2Es passed/7 skipped, but the known P-02 resize-first-input regression failed 2/10 focused repetitions. The SSH fixture integration remained unavailable (0 passed/1 skipped; no disposable fixture settings). N-012 stays partial for provenance/archive identity and legal compatibility; Phase 11 is not complete or release-qualified.
+
+## 2026-11-01 signing identity availability check
+
+Windows signing preflight found no valid code-signing certificate with private key in either Personal certificate store, no signing environment variables, and no signtool.exe on PATH. No signature was fabricated or applied; the generated artifacts remain NotSigned pending a trusted release identity/toolchain.
+
+## 2026-11-01 rebuilt runnable binaries after resize repair
+
+Final pinned package:win:smoke exited 0 after the corrected resize acceptance passed10/10. Registry signature audits passed45runtime/340development, production notices covered30package versions, and each artifact's CycloneDX SBOM covered31runtime components. Packaged smoke passed6/6 with no skips; SHA256SUMS entries reverified independently and packaged PTY worker matched the current build. NSIS/portable binaries and a refreshed win-packed.zip are under artifacts/windows; a local runnable copy is under .tmp/run-resize-fix to keep profile/log files within .tmp. Signatures remain NotSigned because no publisher identity is configured. The full repository suite was not rerun, and broader phase/release acceptance remains partial. See [binary paths, hashes and limits](WINDOWS-BINARIES-2026-11-01.md).

@@ -583,6 +583,7 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
     if (!shutdownPromise) {
       shutdownPromise = Promise.all([tunnels.closeAll(), tftpServer.closeAll()])
         .then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll(), localTextEditor.closeAll()]))
+        .then(() => sshX11Provider.closeAll())
         .then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
     }
@@ -660,6 +661,7 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
     const mainFrame = owned && event.senderFrame === event.sender.mainFrame;
     const frameUrl = event.senderFrame?.url ?? '';
     const parsed = parseRequest(input);
+    if (quitRequested && parsed.ok) return { requestId: parsed.result.requestId, ...failure('CANCELLED') };
     const catalogRequest = parsed.ok && (parsed.result.command.startsWith('session.') || parsed.result.command.startsWith('macro.') ||
       parsed.result.command.startsWith('preferences.') || parsed.result.command.startsWith('tunnel.') || parsed.result.command === 'ssh.files.list' ||
       parsed.result.command === 'ftp.open' || parsed.result.command === 'ftp.files.list' || parsed.result.command === 'rdp.launch' || parsed.result.command === 'vnc.launch' ||
@@ -719,7 +721,7 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
         authorizeFtpConsent: sessionId => rendererGestures.consume(event.sender.id, sessionId, 'ftp-plaintext-consent'),
         authorizeRdpLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'rdp', host, port),
         authorizeVncLaunch: (host, port) => rendererGestures.consumeExternalViewerLaunch(event.sender.id, 'vnc', host, port),
-        authorizeXdmcpLaunch: host => rendererGestures.consumeXdmcpLaunch(event.sender.id, host),
+        authorizeXdmcpLaunch: host => !quitRequested && rendererGestures.consumeXdmcpLaunch(event.sender.id, host),
         authorizeTftpServerAction: (action: TftpServerAction, selectionId?: string, port?: number) =>
           rendererGestures.consumeTftpServerAction(event.sender.id, action, selectionId, port),
         selectCustomLogo: () => customLogoPreferences.select(),
@@ -889,8 +891,10 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
               detail: 'It may contain secrets typed into the remote shell or printed by it. SSH credential prompts and key material are excluded. Store and delete it according to company policy.',
               buttons: ['Continue to file selection', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true });
           if (consent.response !== 0) return failure('CANCELLED');
+          const packageSmokeLogPath = packageSmokeSshLogPath();
           const options: Electron.SaveDialogOptions = {
-            title: 'Save sensitive SSH session log', buttonLabel: 'Save log', defaultPath: `ssh-session-${new Date().toISOString().replace(/[:.]/gu, '-')}.log`,
+            title: 'Save sensitive SSH session log', buttonLabel: 'Save log',
+            defaultPath: packageSmokeLogPath ?? `ssh-session-${new Date().toISOString().replace(/[:.]/gu, '-')}.log`,
             filters: [{ name: 'Log files', extensions: ['log'] }], properties: ['showOverwriteConfirmation']
           };
           const selected = currentWindow && !currentWindow.isDestroyed()
@@ -1126,6 +1130,7 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
     pendingSshSessionLogs.clear();
     void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => sshSessionLogWriter.closeAll())
       .then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
+      .then(() => sshX11Provider.closeAll())
       .then(() => storageStore.shutdown())
       .catch(() => undefined).finally(() => app.quit());
   });
@@ -1181,6 +1186,13 @@ function e2eCustomLogoPath(): string | undefined {
   if (!isE2ETestHookEnabled('--mrt-e2e-custom-logo', app.isPackaged, process.env, process.argv)) return undefined;
   const value = process.argv.find(argument => argument.startsWith('--mrt-e2e-custom-logo-file='))?.slice('--mrt-e2e-custom-logo-file='.length);
   return value && resolve(value) === value ? value : undefined;
+}
+
+function packageSmokeSshLogPath(): string | undefined {
+  if (!app.isPackaged || process.env.MRT_PACKAGE_E2E !== '1') return undefined;
+  const value = process.argv.find(argument => argument.startsWith('--mrt-package-smoke-ssh-log='))
+    ?.slice('--mrt-package-smoke-ssh-log='.length);
+  return value && resolve(value) === value && value.toLowerCase().endsWith('.log') ? value : undefined;
 }
 
 // Do not await readiness at ESM top level: Electron 45 delays ready until module evaluation completes.

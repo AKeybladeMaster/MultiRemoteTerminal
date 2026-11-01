@@ -150,3 +150,21 @@ The Windows packaging helper now runs pinned `pnpm --filter @mrt/desktop audit s
 ## Local transfer stage identity (2026-11-01; unverified)
 
 FTP and SFTP local downloads create an operation-scoped stage exclusively and capture its file identity from the opened handle. Before commit or cleanup, the path must still resolve to that same regular non-symlink file; a mismatch returns `UNAVAILABLE` and leaves the replacement object untouched. Node's path-based rename/unlink operations do not make the identity check atomic, so a concurrent same-account path swap between check and operation remains a race limitation. The focused regressions are authored but unrun.
+
+### N-012 pnpm package import layout - 2026-11-01 (unverified)
+
+The workspace selects pnpm clone-or-copy imports so package manifests and notice files can retain the release reader's strict no-hard-link policy on filesystems where pnpm's default Windows auto mode would create hard links. The release reader still rejects symbolic and hard links and checks file identity and metadata while reading. A fresh dependency reimport and the full Windows package gate must verify this configuration before it is accepted. See the [pnpm packageImportMethod setting](https://pnpm.io/settings/node-modules#packageimportmethod).
+
+The pinned Node 24.14.1/pnpm 12.15.0 workspace was force-reimported offline with clone-or-copy; all 395 packages came from the local store, and the representative package manifest now has link count one. This confirms the configured layout for that package only. Full notice/SBOM generation and packaged-output checks remain pending.
+
+### Current-candidate verification status - 2026-11-01
+
+The final pinned Windows package workflow passed signature audits, build, bounded notice generation, per-artifact CycloneDX SBOM and SHA-256 generation; direct NSIS/portable packaged smoke passed 6/6. Artifacts are unsigned (NotSigned). The pinned full check completed with 684 unit tests passed, 6 skipped, and 82 E2Es passed, 7 skipped, 0 failed. A separate focused run of the normally skipped P-02 resize-first-input E2E failed 2/10 repetitions, including the exact first-character loss; therefore this is not a passing release or phase gate. P-02, P-25, N-010, Windows 10, broad interoperability, signing, and parts of release provenance/legal review remain open. The focused final standards review found no Critical or Important issue in the package smoke hook/native-dialog helper delta; this is not a complete line-by-line security certification.
+
+### Code-signing preflight - 2026-11-01
+
+Read-only Windows preflight found no currently valid code-signing certificate with a private key in either the CurrentUser or LocalMachine Personal store, no signing environment variables configured, and no signtool.exe on PATH. No signing operation was attempted; existing artifacts remain NotSigned. A trusted publisher identity and signing toolchain must be provisioned before signing or release qualification. A self-signed development certificate would not satisfy the publisher-signing requirement.
+
+### Scoped Git Bash resize acceptance - 2026-11-01
+
+The formerly failing P-02 resize regression now passes the re-enabled ten-repeat Windows E2E with a Git Bash/mode-9001-gated empty key-up record after resize. Immediate typing, immediate clipboard paste, existing input-line preservation/Backspace and interactive native cmd-child input pass. There is no text, physical key, delay, user-input retry or additional renderer capability. Raw console readers can observe the synthetic release; broader platform/application acceptance remains open. This supersedes the active P-02 failure status in earlier checkpoints, while P-25, N-010, Windows 10, signing and wider release gates remain partial. Three independent final reviews found no outstanding Critical or Important issue in the reviewed delta; the Spec review's weak editing assertion was tightened and rerun. See [acceptance and review evidence](results/WP-01E-resize-input-wake-2026-11-01.md).

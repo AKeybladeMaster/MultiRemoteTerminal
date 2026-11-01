@@ -40,3 +40,10 @@
 2. The production type/build/unit/lint gates passed; full E2E and package smoke are blocked by missing interactive foreground/clipboard capabilities. See [Phase 05 gate results](PHASE-05-graphical-sessions-gate-2026-10-30.md).
 3. Separate reviews and promotion are deferred until the mandatory Windows gate can run in an interactive desktop and external protocol acceptance is available.
 4. Continue with independent Phase 06 work while keeping Phase 05 PARTIAL; do not promote this candidate to `main`.
+
+## 2026-11-01 review-driven XDMCP process shutdown wiring
+
+The main composition root now calls the existing `WindowsCygwinX11Provider.closeAll()` after session teardown both when stopping terminals after window/renderer teardown and before app quit. This covers leftover app-owned SSH X11/XDMCP display processes after per-session cleanup. The provider unit fixture verifies that `closeAll()` kills managed XWin children. The full current-candidate check passes typecheck, lint, build and unit tests, but the E2E gate is red (73 passed, 9 failed, 7 skipped); no installed Cygwin/X app-shutdown interoperability run was available. Phase 05 remains PARTIAL for live X11/XDMCP, clipboard/access-control, and platform acceptance.
+## 2026-11-01 XDMCP shutdown race review closure
+
+The follow-up review found that `before-quit` keeps command IPC alive while asynchronous cleanup runs. A request already waiting on optional-connection preferences could resume after provider cleanup. The main command handler now rejects valid commands after `quitRequested`; the XDMCP authorization callback also checks shutdown after the preference await and before launch. Independent standards and security follow-ups confirmed that a request authorized before quit registers the provider opening synchronously, which the awaited `closeAll()` drains. The XDMCP ACCEPT packet carries authorization data; no static `-auth` command-line flag was proven necessary. Actual manager authentication, display access control, firewall scope, clipboard behavior and installed Cygwin/X shutdown remain live acceptance gaps. The final full suite remains red as documented in Phase 07.

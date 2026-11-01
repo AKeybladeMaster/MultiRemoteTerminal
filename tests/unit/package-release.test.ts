@@ -13,6 +13,11 @@ import {
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+test('release workspace avoids dependency hard links so bounded package readers can inspect pnpm installs', async () => {
+  const workspaceConfig = await readFile(join(workspaceRoot, 'pnpm-workspace.yaml'), 'utf8');
+  assert.match(workspaceConfig, /^packageImportMethod:\s*clone-or-copy\s*$/mu);
+});
+
 test('release signature policy pins every artifact to the expected certificate', () => {
   assert.equal(signedReleaseRequested(undefined), false);
   assert.equal(signedReleaseRequested('0'), false);
@@ -266,11 +271,13 @@ test('production notice aggregation rejects symbolic links named as license file
 
 test('production package integrity index binds scoped and unscoped lock entries to SHA-512 hashes', () => {
   const digest = Buffer.alloc(64, 0x5a).toString('base64');
-  const lockfile = `lockfileVersion: '9.0'\n\npackages:\n  '@scope/sample@1.2.3':\n    resolution: {integrity: sha512-${digest}}\n  plain-package@2.0.0:\n    resolution: {integrity: sha512-${digest}}\n\nsnapshots:\n  '@scope/sample@1.2.3': {}\n`;
+  const toolDigest = Buffer.alloc(64, 0x33).toString('base64');
+  const lockfile = `lockfileVersion: '9.0'\n\npackages:\n  'pnpm@12.15.0':\n    resolution: {integrity: sha512-${toolDigest}}\n\nsnapshots:\n  'pnpm@12.15.0': {}\n\nimporters:\n  .: {}\n\npackages:\n  '@scope/sample@1.2.3':\n    resolution: {integrity: sha512-${digest}}\n  plain-package@2.0.0:\n    resolution: {integrity: sha512-${digest}}\n\nsnapshots:\n  '@scope/sample@1.2.3': {}\n`;
   const index = productionPackageIntegrityIndex(lockfile);
   const expected = { alg: 'SHA-512', content: Buffer.alloc(64, 0x5a).toString('hex') };
   assert.deepEqual(index.get('@scope/sample@1.2.3'), expected);
   assert.deepEqual(index.get('plain-package@2.0.0'), expected);
+  assert.equal(index.has('pnpm@12.15.0'), false);
   assert.throws(() => productionPackageIntegrityIndex(lockfile.replace('9.0', '8.0')), /unsupported/u);
   assert.throws(() => productionPackageIntegrityIndex(lockfile.replace(`sha512-${digest}`, 'sha512-invalid')), /invalid SHA-512/u);
   assert.throws(() => productionPackageIntegrityIndex(lockfile.replace(`sha512-${digest}`, `sha512-${'A'.repeat(89)}`)), /invalid SHA-512/u);

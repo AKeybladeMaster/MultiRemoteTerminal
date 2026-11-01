@@ -322,3 +322,7 @@ https://github.com/WiseLibs/better-sqlite3
 ## 2026-11-01 WP-04L focused acceptance correction
 
 The focused eight-gateway Windows Electron E2E passed (1/1, 32.0s) on pinned Node v24.14.1/pnpm 12.15.0, covering terminal, SFTP-only and local/remote/dynamic tunnel routes over controlled loopback SSH gateways; the SOCKS5 route also completed an HTTP request through the Windows inbox `curl.exe`. The complete Phase 07 gate, public SSH-server interoperability, and requirements beyond eight hops remain open. See the [Phase 07 ledger](results/PHASE-07-execution-ledger.md).
+
+## Git Bash resize input wake (ADR-0066)
+
+The local PTY utility-worker adapter records the launch shell and observes ConPTY's output-negotiated Win32 Input Mode. After a Git Bash resize in that mode it sends one empty native key-up record (zero virtual key, scan code, character and modifiers). This wakes MSYS input-side resize processing without replaying or delaying user data. Other shells and sessions without the mode request receive no record. It is a bounded adapter workaround, not a generic child-ready acknowledgement; raw console readers may observe the empty release. See [ADR-0066](adr/ADR-0066-git-bash-resize-input-wake.md) and [focused Windows acceptance](results/WP-01E-resize-input-wake-2026-11-01.md).

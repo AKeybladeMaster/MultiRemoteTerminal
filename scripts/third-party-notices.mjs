@@ -285,7 +285,7 @@ export function productionPackageIntegrityIndex(lockfileText) {
     throw new Error('The production package lockfile is missing, oversized, or unsupported.');
   }
   const lines = lockfileText.split(/\r?\n/u);
-  const packagesStart = lines.indexOf('packages:');
+  const packagesStart = lines.lastIndexOf('packages:');
   const snapshotsStart = lines.indexOf('snapshots:', packagesStart + 1);
   if (packagesStart < 0 || snapshotsStart <= packagesStart) throw new Error('The pnpm package lockfile sections are invalid.');
 

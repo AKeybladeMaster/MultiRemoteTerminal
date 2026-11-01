@@ -233,7 +233,11 @@ test('FTPS validates the server certificate and encrypts the FTP data channel', 
     }
     await expect(browser.getByText('ftps-visible.txt', { exact: true })).toBeVisible({ timeout: 15_000 });
     await browser.getByRole('button', { name: 'Upload file', exact: true }).click();
-    await expect.poll(() => uploadedFiles.length, { timeout: 15_000 }).toBe(1);
+    try { await expect.poll(() => uploadedFiles.length, { timeout: 15_000 }).toBe(1); }
+    catch (error) {
+      throw new Error(`FTPS upload did not reach the server. commands=${JSON.stringify(commands)}, fixture=${JSON.stringify(fixtureEvents)}, ` +
+        `TLS errors=${JSON.stringify(tlsErrors)}, data TLS=${protectedDataChannelCount}, browser=${JSON.stringify(await browser.innerText())}; ${String(error)}`);
+    }
 
     expect(commands.filter(command => command.verb === 'AUTH')).toHaveLength(1);
     expect(commands.some(command => command.verb === 'USER' && command.encrypted)).toBe(true);

@@ -37,3 +37,7 @@ The renderer receives image bytes only, never the selected path. PNG signature, 
 ## Native picker follow-up (2026-10-28)
 
 The E2E now drives the actual Windows `Choose a PNG logo` picker for both cancellation and valid/malformed PNG selection, with its user profile under workspace `.tmp`. Spec review confirmed P-35 VERIFIED and F-009 still incomplete for shell/tool lifecycle. Standards findings about non-Windows execution and cleanup on Electron launch failure were fixed; Standards confirmed closure and found no remaining issue. Reviewers inspected but did not rerun tests. Final checks passed: typecheck, lint/import boundaries, PowerShell syntax, `git diff --check`, and the native-picker E2E 1/1.
+
+## Current-candidate rerun (2026-11-01)
+
+The focused Windows custom-logo E2E passed 1/1 on the current candidate after the native-dialog helper updates. It exercised actual PNG picker selection and cancellation, persistence, malformed-image rejection, and reset. The full pinned corepack pnpm check also completed with 82 E2Es passed, 7 skipped, and 0 failed; this feature's focused scenario was not skipped. P-35 is VERIFIED for this bounded workflow. This does not close the broader F-009 shell/tool lifecycle requirement.

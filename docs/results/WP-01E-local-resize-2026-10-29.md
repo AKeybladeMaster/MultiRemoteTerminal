@@ -1,8 +1,8 @@
 # WP-01E local ConPTY resize/input follow-up
 
 **Requirement:** P-02 local terminal sizing and input; F-002 ConPTY input/resize.
-**Status:** Open. The ordering barriers do not reliably preserve the first key after resize.
-**Last updated:** 2026-10-30.
+**Status:** Historical failure analysis. The subsequent bounded wake workaround passes the current focused acceptance; see [November 1 results](WP-01E-resize-input-wake-2026-11-01.md).
+**Last updated:** 2026-11-01. Earlier failed probes below remain historical evidence.
 
 ## Change under evaluation
 
@@ -57,3 +57,7 @@ Find a reliable resize-completion boundary or an upstream/platform fix, then rem
 ## Upstream API audit (2026-11-01)
 
 The official stable `node-pty@1.1.0` API still exposes no resize-completion event. The npm-published `1.2.0-beta.18` tarball (without a matching GitHub tag) retains the same `void` resize behavior and does not surface `ResizePseudoConsole` completion. This narrows the upstream option but does not prove the application root cause or remove the need for repeated Windows acceptance. See [upstream ConPTY resize research](WP-01E-node-pty-resize-upstream-research-2026-11-01.md). No automated checks or package operations were run.
+
+## Current candidate repeat probe (2026-11-01)
+
+The skipped acceptance test was temporarily enabled without changing application code and run with pinned Node v24.14.1/pnpm 12.15.0: the Playwright test for Git Bash's first input immediately after resize was repeated ten times serially. Result: 8 passed, 2 failed, exit 1. One failure captured the exact symptom: Bash received rintf instead of printf and reported rintf: command not found; the other exceeded the 30-second test timeout. The original unconditional skip was restored after the diagnostic. This confirms the intermittent P-02/F-002 defect remains on the current candidate; no application change was made because prior probes found no reliable resize-completion boundary and timing/transport workarounds failed or altered shell behavior. Acceptance remains open.

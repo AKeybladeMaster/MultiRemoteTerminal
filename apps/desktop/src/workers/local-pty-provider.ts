@@ -59,6 +59,7 @@ interface OutputChunk {
 
 interface PtySession {
   readonly pty: NodePty.IPty;
+  readonly shell: LocalShell;
   readonly win32InputMode: Win32InputModeTracker;
   readonly chunks: OutputChunk[];
   disposeData: NodePty.IDisposable;
@@ -131,7 +132,7 @@ export class LocalPtyProvider implements LocalTerminalProvider {
     let resolveExit = () => {};
     const exited = new Promise<void>(resolve => { resolveExit = resolve; });
     const state: PtySession = {
-      pty: terminal, win32InputMode: new Win32InputModeTracker(), chunks: [], disposeData: { dispose() {} }, disposeExit: { dispose() {} }, exited, resolveExit,
+      pty: terminal, shell: launch.shell, win32InputMode: new Win32InputModeTracker(), chunks: [], disposeData: { dispose() {} }, disposeExit: { dispose() {} }, exited, resolveExit,
       queuedBytes: 0, sequence: 0, inFlight: undefined, exitCode: undefined, closing: false
     };
     state.disposeData = terminal.onData(data => this.queueOutput(sessionId, state, data));
@@ -168,6 +169,8 @@ export class LocalPtyProvider implements LocalTerminalProvider {
     const state = this.requireSession(sessionId);
     if (state.closing) throw new Error('Terminal is closing');
     state.pty.resize(size.columns, size.rows);
+    // shortcut: wake MSYS with a zero-key release; remove when upstream resize/input handling is reliable.
+    if (state.shell === 'bash' && state.win32InputMode.enabled) state.pty.write('\x1b[;;;0_');
   }
 
   async acknowledgeOutput(sessionId: string, sequence: number): Promise<void> {

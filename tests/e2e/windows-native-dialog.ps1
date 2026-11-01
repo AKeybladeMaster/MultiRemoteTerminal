@@ -1,14 +1,36 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'submit-ssh-credential', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo', 'cancel-local-text', 'select-local-text', 'cancel-transfer-folder', 'select-transfer-folder', 'cancel-remote-forward', 'accept-remote-forward', 'cancel-public-tunnel', 'accept-public-tunnel')]
+    [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'submit-ssh-credential', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo', 'cancel-local-text', 'select-local-text', 'cancel-transfer-folder', 'select-transfer-folder', 'cancel-remote-forward', 'accept-remote-forward', 'cancel-public-tunnel', 'accept-public-tunnel', 'write-clipboard')]
     [string] $Action,
     [string] $FilePath = '',
     [int] $TargetProcessId = 0
 )
 
 $ErrorActionPreference = 'Stop'
-if ($TargetProcessId -lt 1) { throw 'Native dialog automation requires the target app process ID.' }
 Add-Type -AssemblyName System.Windows.Forms
+if ($Action -eq 'write-clipboard') {
+    $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+    $clipboardText = $reader.ReadToEnd()
+    if ($clipboardText.Length -lt 1 -or $clipboardText.Length -gt 16384 -or $clipboardText.Contains([char]0)) {
+        $clipboardText = $null
+        throw 'The Windows clipboard fixture is empty, oversized, or invalid.'
+    }
+    $clipboardFailure = $null
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            [System.Windows.Forms.Clipboard]::SetText($clipboardText, [System.Windows.Forms.TextDataFormat]::UnicodeText)
+            $clipboardFailure = $null
+            break
+        } catch [System.Runtime.InteropServices.ExternalException] {
+            $clipboardFailure = $_
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    $clipboardText = $null
+    if ($clipboardFailure) { throw $clipboardFailure }
+    exit 0
+}
+if ($TargetProcessId -lt 1) { throw 'Native dialog automation requires the target app process ID.' }
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -TypeDefinition @"
@@ -17,8 +39,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 public static class MrtNativeDialog {
-    private const int FileNameEditControlId = 0x0480;
-    private const int SaveDialogFileNameEditControlId = 1001;
     public delegate bool WindowCallback(IntPtr window, IntPtr parameter);
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(WindowCallback callback, IntPtr parameter);
@@ -40,10 +60,7 @@ public static class MrtNativeDialog {
     private static extern IntPtr GetDlgItem(IntPtr window, int controlId);
     [DllImport("user32.dll")]
     private static extern IntPtr GetParent(IntPtr window);
-    [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool SetWindowText(IntPtr window, string text);
+    private const int BM_CLICK = 0x00F5;
     public static IntPtr GetDialogControl(IntPtr dialog, int controlId) {
         return GetDlgItem(dialog, controlId);
     }
@@ -54,51 +71,6 @@ public static class MrtNativeDialog {
         GetClassName(button, className, className.Capacity);
         return String.Equals(className.ToString(), "Button", StringComparison.Ordinal);
     }
-    public static IntPtr GetDialogEditControl(IntPtr dialog, int controlId) {
-        IntPtr result = IntPtr.Zero;
-        bool ambiguous = false;
-        WindowCallback callback = (child, parameter) => {
-            if (!IsWindowVisible(child) || !IsWindowEnabled(child)) return true;
-            var className = new StringBuilder(128);
-            GetClassName(child, className, className.Capacity);
-            if (!String.Equals(className.ToString(), "Edit", StringComparison.Ordinal)) return true;
-            int editId = GetDlgCtrlID(child);
-            IntPtr parent = GetParent(child);
-            bool directFileNameEdit = parent == dialog && (editId == FileNameEditControlId || editId == controlId);
-            IntPtr comboEx = parent == IntPtr.Zero || parent == dialog ? IntPtr.Zero : GetParent(parent);
-            bool belongsToFileNameCombo = GetDlgCtrlID(parent) == controlId ||
-                comboEx != IntPtr.Zero && comboEx != dialog && GetDlgCtrlID(comboEx) == controlId;
-            if (!directFileNameEdit && !belongsToFileNameCombo && !IsSaveDialogFileNameEdit(dialog, child)) return true;
-            if (result != IntPtr.Zero) { ambiguous = true; return false; }
-            result = child;
-            return false;
-        };
-        EnumChildWindows(dialog, callback, IntPtr.Zero);
-        return ambiguous ? IntPtr.Zero : result;
-    }
-    private static bool IsSaveDialogFileNameEdit(IntPtr dialog, IntPtr edit) {
-        IntPtr combo = GetParent(edit);
-        IntPtr notificationParent = GetParent(combo);
-        var comboClass = new StringBuilder(128);
-        var parentClass = new StringBuilder(128);
-        if (combo != IntPtr.Zero) GetClassName(combo, comboClass, comboClass.Capacity);
-        if (notificationParent != IntPtr.Zero) GetClassName(notificationParent, parentClass, parentClass.Capacity);
-        return GetDlgCtrlID(edit) == SaveDialogFileNameEditControlId && IsChild(dialog, edit) &&
-            String.Equals(comboClass.ToString(), "ComboBox", StringComparison.Ordinal) &&
-            String.Equals(parentClass.ToString(), "FloatNotifySink", StringComparison.Ordinal);
-    }
-    public static string GetDialogEditText(IntPtr edit) {
-        var value = new StringBuilder(32768);
-        GetWindowText(edit, value, value.Capacity);
-        return value.ToString();
-    }
-    public static bool SetDialogPath(IntPtr dialog, string path, int controlId) {
-        IntPtr edit = GetDialogEditControl(dialog, controlId);
-        if (edit == IntPtr.Zero) return false;
-        int editId = GetDlgCtrlID(edit);
-        if (editId != FileNameEditControlId && editId != controlId && !IsSaveDialogFileNameEdit(dialog, edit)) return false;
-        return SetWindowText(edit, path) && String.Equals(GetDialogEditText(edit), path, StringComparison.OrdinalIgnoreCase);
-    }
     public static string DescribeChildControls(IntPtr dialog) {
         var summary = new StringBuilder();
         WindowCallback callback = (child, parameter) => {
@@ -107,7 +79,8 @@ public static class MrtNativeDialog {
             var text = new StringBuilder(256);
             string classValue = className.ToString();
             if (String.Equals(classValue, "Button", StringComparison.Ordinal) ||
-                String.Equals(classValue, "Static", StringComparison.Ordinal)) {
+                String.Equals(classValue, "Static", StringComparison.Ordinal) ||
+                String.Equals(classValue, "Edit", StringComparison.Ordinal)) {
                 GetWindowText(child, text, text.Capacity);
             }
             IntPtr parent = GetParent(child);
@@ -160,12 +133,10 @@ public static class MrtNativeDialog {
             if (attached) AttachThreadInput(currentThread, targetThread, false);
         }
     }
-    public static bool ClickEnabledDialogButton(IntPtr dialog, int controlId) {
+    public static bool PostEnabledDialogButtonClick(IntPtr dialog, int controlId) {
         if (!IsEnabledDialogButton(dialog, controlId)) return false;
         IntPtr button = GetDlgItem(dialog, controlId);
-        if (!FocusDialogControl(dialog, button)) return false;
-        SendMessage(button, 0x00F5, IntPtr.Zero, IntPtr.Zero);
-        return true;
+        return PostMessage(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
     }
     public static bool ClickEnabledDialogButtonByName(IntPtr dialog, string[] expectedNames) {
         IntPtr button = IntPtr.Zero;
@@ -183,9 +154,8 @@ public static class MrtNativeDialog {
             return true;
         };
         EnumChildWindows(dialog, callback, IntPtr.Zero);
-        if (ambiguous || button == IntPtr.Zero || !FocusDialogControl(dialog, button)) return false;
-        SendMessage(button, 0x00F5, IntPtr.Zero, IntPtr.Zero);
-        return true;
+        if (ambiguous || button == IntPtr.Zero) return false;
+        return PostMessage(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
     }
     public static bool ActivateWindow(IntPtr window) {
         if (GetForegroundWindow() == window) return true;
@@ -293,6 +263,17 @@ function Focus-Dialog([IntPtr] $dialog) {
     throw 'Could not activate the native dialog.'
 }
 
+function Focus-DialogElement([IntPtr] $dialog, [System.Windows.Automation.AutomationElement] $element) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(2)
+    do {
+        $element.SetFocus()
+        if ($element.Current.HasKeyboardFocus) { return }
+        Focus-Dialog $dialog
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Could not focus the requested native dialog field.'
+}
+
 function Get-DialogAutomationSummary([IntPtr] $dialog) {
     try {
         $window = [System.Windows.Automation.AutomationElement]::FromHandle($dialog)
@@ -316,58 +297,15 @@ function Get-DialogAutomationSummary([IntPtr] $dialog) {
     }
 }
 
-function Set-DialogPath([IntPtr] $dialog, [string] $path) {
-    if (-not [MrtNativeDialog]::SetDialogPath($dialog, $path, 1148)) {
-        throw "The native filename control did not retain the fixture path. Controls: $(Get-DialogAutomationSummary $dialog)"
-    }
-}
-
-function Set-DialogFilename([IntPtr] $dialog, [string] $filePath) {
-    Set-DialogPath $dialog $filePath
-}
-
 function Invoke-DialogButton([IntPtr] $dialog, [string[]] $acceptedNames, [int] $controlId = 0) {
-    $window = [System.Windows.Automation.AutomationElement]::FromHandle($dialog)
-    $buttonCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
-    $buttons = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
-    $matches = @($buttons | Where-Object {
-        try { $_.Current.IsEnabled -and $_.Current.Name -in $acceptedNames } catch { $false }
-    })
-    if ($matches.Count -gt 1) { throw 'The native dialog exposed multiple matching action buttons.' }
-    if ($matches.Count -eq 1) {
-        try {
-            $invoke = [System.Windows.Automation.InvokePattern]$matches[0].GetCurrentPattern(
-                [System.Windows.Automation.InvokePattern]::Pattern)
-            $invoke.Invoke()
-            if ([MrtNativeDialog]::GetDialogEditControl($dialog, 1148) -eq [IntPtr]::Zero) { return }
-            $deadline = [DateTime]::UtcNow.AddMilliseconds(750)
-            do {
-                if (-not [MrtNativeDialog]::IsWindowVisible($dialog)) { return }
-                Start-Sleep -Milliseconds 50
-            } while ([DateTime]::UtcNow -lt $deadline)
-        } catch { }
-    }
-    $nativeFailure = "The native dialog control ID $controlId was not found."
     if ($controlId -gt 0) {
         $nativeHandle = [MrtNativeDialog]::GetDialogControl($dialog, $controlId)
         if ($nativeHandle -ne [IntPtr]::Zero) {
-            try {
-                if (-not [MrtNativeDialog]::IsEnabledDialogButton($dialog, $controlId)) {
-                    throw "Control ID $controlId is not a visible enabled button owned by this dialog."
-                }
-                if (-not [MrtNativeDialog]::ClickEnabledDialogButton($dialog, $controlId)) {
-                    throw "Could not focus or activate the enabled action control ID $controlId."
-                }
-                return
-            } catch {
-                $nativeFailure = $_.Exception.Message
-            }
+            if ([MrtNativeDialog]::PostEnabledDialogButtonClick($dialog, $controlId)) { return }
         }
     }
     if ([MrtNativeDialog]::ClickEnabledDialogButtonByName($dialog, $acceptedNames)) { return }
-    $labels = @($buttons | ForEach-Object { try { $_.Current.Name } catch { '<unavailable>' } }) -join ', '
-    throw "The native dialog action was not invoked. $nativeFailure UIA: $labels. Win32: $([MrtNativeDialog]::DescribeChildControls($dialog))"
+    throw "The native dialog action was not invoked. Control ID $controlId and button names '$($acceptedNames -join ', ')' were not available. Win32: $([MrtNativeDialog]::DescribeChildControls($dialog))"
 }
 
 function Get-TargetProcessIds([int] $rootProcessId) {
@@ -460,11 +398,11 @@ if ($Action -eq 'submit-ssh-credential') {
             $usernameValue.SetValue($username)
             if ($usernameValue.Current.Value -cne $username) { throw 'The native SSH credential prompt did not accept the fixture username.' }
         } catch {
-            $usernameField.SetFocus()
+            Focus-DialogElement ([IntPtr]$credentialWindow.Current.NativeWindowHandle) $usernameField
             [System.Windows.Forms.SendKeys]::SendWait('^a')
             [System.Windows.Forms.SendKeys]::SendWait($username)
         }
-        $passwordField.SetFocus()
+        Focus-DialogElement ([IntPtr]$credentialWindow.Current.NativeWindowHandle) $passwordField
         [System.Windows.Forms.SendKeys]::SendWait($password)
         [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
         Wait-SshCredentialWindowClosed $targetProcessIds
@@ -492,7 +430,6 @@ if ($Action -like '*credential-*' -or $Action -eq 'export-credential' -or $Actio
     if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.mrtcred') {
         throw 'A full .mrtcred path is required for native credential bundle selection.'
     }
-    Set-DialogFilename $credentialDialog $FilePath
     Invoke-DialogButton $credentialDialog $(if ($isExport) { @('Save', 'Export') } else { @('Open', 'Import') }) 1
     Wait-DialogClosed $title 10 $TargetProcessId
     if ($isExport) {
@@ -517,7 +454,6 @@ if ($Action -in @('cancel-local-text', 'select-local-text')) {
     if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.txt') {
         throw 'A full .txt path is required for native local text file selection.'
     }
-    Set-DialogFilename $localTextDialog $FilePath
     Invoke-DialogButton $localTextDialog @('Open', 'Edit') 1
     Wait-DialogClosed $title 10 $TargetProcessId
     exit 0
@@ -534,7 +470,6 @@ if ($Action -in @('cancel-transfer-folder', 'select-transfer-folder')) {
     if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath -PathType Container)) {
         throw 'An existing interrupted-download folder is required.'
     }
-    Set-DialogPath $folderDialog $FilePath
     Invoke-DialogButton $folderDialog @('Select Folder', 'Select folder', 'Open') 1
     Wait-DialogClosed $title 10 $TargetProcessId
     exit 0
@@ -551,7 +486,6 @@ if ($Action -in @('cancel-logo', 'select-logo')) {
     if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.png') {
         throw 'A full .png path is required for native logo selection.'
     }
-    Set-DialogFilename $logoDialog $FilePath
     Invoke-DialogButton $logoDialog @('Open') 1
     Wait-DialogClosed $title 10 $TargetProcessId
     exit 0
@@ -606,7 +540,6 @@ if ($Action -eq 'cancel-save') {
 if ([string]::IsNullOrWhiteSpace($FilePath) -or [IO.Path]::GetExtension($FilePath) -ne '.log') {
     throw 'A full .log path is required for native Save dialog selection.'
 }
-Set-DialogFilename $saveDialog $FilePath
 Invoke-DialogButton $saveDialog @('Save', 'Save log') 1
 Wait-DialogClosed 'Save sensitive SSH session log' 10 $TargetProcessId
 

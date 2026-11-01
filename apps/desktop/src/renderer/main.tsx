@@ -435,6 +435,7 @@ function Workbench() {
   const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
   const sessionsRef = useRef<WorkbenchSession[]>(sessions);
   sessionsRef.current = sessions;
+  const startupTerminalSelectionBlocked = useRef(false);
   const handles = useRef(new Map<string, TerminalUiHandle>());
   const pendingEvents = useRef(new Map<string, LocalTerminalEvent[]>());
   const fileOnlySshSessionIds = useRef(new Set<string>());
@@ -1584,7 +1585,7 @@ function Workbench() {
   }), []);
 
   const openTerminal = useCallback(async (launch: LocalTerminalLaunch, savedTitle?: string, rememberWhenOpened = true,
-    dismissPalette = true, purpose?: 'powershell-tool-management'): Promise<string | undefined> => {
+    dismissPalette = true, purpose?: 'powershell-tool-management', selectIfIdle = false): Promise<string | undefined> => {
     if (!workbenchPreferencesLoaded || !enabledLocalShells.includes(launch.shell)) {
       setAlert(workbenchPreferencesLoaded
         ? `${shellName(launch.shell)} terminals are disabled in Workbench settings. Enable this shell to start or reopen a session.`
@@ -1622,8 +1623,9 @@ function Workbench() {
         : { kind: 'local', name: savedTitle ?? title, shell: launch.shell };
       void rememberOpenedSession(draft);
     }
+    if (!selectIfIdle) startupTerminalSelectionBlocked.current = true;
     setSessions(current => [...current, { ...reply.result, transport: 'local', title: savedTitle ?? `${title} session ${ordinal}` }]);
-    setActiveId(reply.result.sessionId);
+    if (!selectIfIdle || (!startupTerminalSelectionBlocked.current && sessionsRef.current.length === 0)) setActiveId(reply.result.sessionId);
     return reply.result.state === 'running' ? reply.result.sessionId : undefined;
   }, [enabledLocalShells, rememberOpenedSession, workbenchPreferencesLoaded]);
 
@@ -1687,6 +1689,7 @@ function Workbench() {
     if (reply.result.state === 'running' && gatewayProfileIds.length === 0) {
       void rememberOpenedSession({ kind: 'ssh', name: savedTitle ?? autoSavedProfileName('SSH', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
     }
+    startupTerminalSelectionBlocked.current = true;
     setSessions(current => [...current, { sessionId: reply.result.sessionId, endpoint, state: reply.result.state,
       transport: 'ssh', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SSH ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
@@ -1746,6 +1749,7 @@ function Workbench() {
       void rememberOpenedSession({ kind: 'sftp', name: savedTitle ?? autoSavedProfileName('SFTP', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
     }
     visibleFileOnlySshSessionIds.current.add(sessionId);
+    startupTerminalSelectionBlocked.current = true;
     setSessions(current => [...current, { ...reply.result, state, transport: 'sftp', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - SFTP ${ordinal}` }]);
     setActiveId(reply.result.sessionId);
   }, [rememberOpenedSession]);
@@ -1784,6 +1788,7 @@ function Workbench() {
     if (reply.result.state === 'running') {
       void rememberOpenedSession({ kind: 'telnet', name: savedTitle ?? autoSavedProfileName('Telnet', endpoint.host, endpoint.port), host: endpoint.host, port: endpoint.port });
     }
+    startupTerminalSelectionBlocked.current = true;
     setSessions(current => [...current, {
       ...reply.result, transport: 'telnet', title: savedTitle ?? `${endpoint.host}:${endpoint.port} - Telnet (plaintext) ${ordinal}`
     }]);
@@ -1819,6 +1824,7 @@ function Workbench() {
     if (reply.result.state === 'running') {
       void rememberOpenedSession({ kind: 'serial', name: savedTitle ?? `${configuration.path} - ${configuration.baudRate} baud`, configuration });
     }
+    startupTerminalSelectionBlocked.current = true;
     setSessions(current => [...current, {
       ...reply.result, transport: 'serial', title: savedTitle ?? `${configuration.path} · ${configuration.baudRate} baud · Serial ${ordinal}`
     }]);
@@ -1851,6 +1857,7 @@ function Workbench() {
         void rememberOpenedSession({ kind: 'ftp', name: savedTitle ?? autoSavedProfileName(endpoint.secure ? 'FTPS' : 'FTP', endpoint.host, endpoint.port),
           host: endpoint.host, port: endpoint.port, secure: endpoint.secure });
       }
+      startupTerminalSelectionBlocked.current = true;
       setSessions(current => [...current, { ...reply.result, transport: 'ftp', title }]);
       setActiveId(reply.result.sessionId);
       setFtpConnectOpen(false);
@@ -1945,6 +1952,9 @@ function Workbench() {
       fileOnlySshSessionIds.current.delete(sessionId);
       visibleFileOnlySshSessionIds.current.delete(sessionId);
     }
+    if (sessionsRef.current.length === 1 && sessionsRef.current[0]?.sessionId === sessionId) {
+      startupTerminalSelectionBlocked.current = false;
+    }
     focusTerminalOnActiveChange.current = true;
     setSessions(current => current.filter(session => session.sessionId !== sessionId));
   }, [macroRunner, stopMacroRecording]);
@@ -2033,7 +2043,7 @@ function Workbench() {
   useEffect(() => {
     if (!workbenchPreferencesLoaded || startupTerminalRequested.current) return;
     startupTerminalRequested.current = true;
-    if (enabledLocalShells.includes('powershell')) void openTerminal({ shell: 'powershell' }, undefined, false, false);
+    if (enabledLocalShells.includes('powershell')) void openTerminal({ shell: 'powershell' }, undefined, false, false, undefined, true);
   }, [enabledLocalShells, openTerminal, workbenchPreferencesLoaded]);
 
   useEffect(() => {

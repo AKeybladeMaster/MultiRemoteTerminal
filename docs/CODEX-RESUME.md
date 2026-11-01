@@ -1,4 +1,14 @@
-# Codex resume snapshot — 2026-10-30
+# Codex resume snapshot - 2026-11-01
+
+## Latest verified repair checkpoint
+
+Work branch is dev-1. Verify live refs before further changes; the exact checkpoint hash is in Git history and the local session-context. The Git Bash resize/input workaround in ADR-0066 passed the corrected focused ten-repeat E2E (10/10), three Bash/Unicode E2Es (3/3), 52 focused input/bridge/mode unit tests, and final Windows package smoke (6/6). Focused release/KDF tests were16passed/3symlink-skipped/0failed. Typecheck, scoped lint/import boundaries and native/renderer build passed on pinned Node24.14.1/pnpm12.15.0.
+
+Runnable NSIS/portable outputs, refreshed ZIP, SBOMs and checksums are under artifacts/windows; a local run copy under .tmp/run-resize-fix keeps its data/logs in .tmp. See [binary evidence](results/WINDOWS-BINARIES-2026-11-01.md) and [resize evidence](results/WP-01E-resize-input-wake-2026-11-01.md). Signatures are NotSigned; product/phase acceptance remains incomplete. The full repository suite was not rerun for this repair.
+
+The user's latest request authorizes committing the current repository work to dev-1, including preserved guidance/build-policy edits. Never stage session-context.md, generated artifacts, logs, .tmp or .cache. No promotion to main is part of this checkpoint. Earlier hashes, skipped-regression status and staging instructions below are historical and superseded where they conflict with this paragraph.
+
+## Historical snapshot - 2026-10-30
 
 Treat `docs/SPEC-001-MultiRemoteTerminal.md`, `docs/FEATURE-MATRIX.md`, `docs/IMPLEMENTATION-PLAN.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, the glossary and relevant ADRs as the requirements source of truth. Refresh Git state before editing.
 

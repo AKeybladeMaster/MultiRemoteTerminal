@@ -481,8 +481,13 @@ test('portable package submits synthetic credentials through the shipped Windows
     client.on('error', (error: Error) => fixtureErrors.push(error.message));
     client.on('authentication', (rawContext: unknown) => {
       const context = rawContext as PackagedSshAuthenticationContext;
-      if (context.method === 'password' && context.username === username && context.password === password) context.accept();
-      else context.reject();
+      if (context.method !== 'password') {
+        fixtureErrors.push(`Unexpected SSH authentication method: ${context.method}`);
+        context.reject();
+      } else if (context.username !== username || context.password !== password) {
+        fixtureErrors.push(`SSH fixture credentials mismatched (usernameMatch=${context.username === username}, passwordMatch=${context.password === password})`);
+        context.reject();
+      } else context.accept();
     });
     client.on('ready', () => client.on('session', (acceptSession: () => PackagedSshSession) => {
       const session = acceptSession();
@@ -553,11 +558,11 @@ test('portable app finalizes an active SSH session log on shutdown', async () =>
   const temporaryRoot = await createWorkspaceTempDirectory('mrt-portable-ssh-log-');
   const portableExecutable = join(temporaryRoot, 'MultiRemoteTerminal.exe');
   await copyFile(portableArtifact, portableExecutable);
+  const sshLogPath = join(temporaryRoot, 'packaged-ssh-session.log');
   let app: PackagedApp | undefined;
   try {
-    app = await launchPackagedApp(portableExecutable);
+    app = await launchPackagedApp(portableExecutable, [`--mrt-package-smoke-ssh-log=${sshLogPath}`]);
     await expect(app.page.getByRole('heading', { name: 'MultiRemoteTerminal terminal workspace' })).toBeVisible({ timeout: 30_000 });
-    const sshLogPath = join(temporaryRoot, 'packaged-ssh-session.log');
     await app.page.getByRole('button', { name: 'Connect to SSH', exact: true }).first().click();
     const sshDialog = app.page.getByRole('dialog', { name: 'Connect to an SSH server' });
     await sshDialog.getByRole('checkbox', { name: 'Record this SSH session to a local .log file' }).check();
