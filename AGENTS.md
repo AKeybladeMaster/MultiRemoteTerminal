@@ -29,6 +29,20 @@ The user reports these skills under `C:\Users\Beasty\.agents\skills\`. At each t
 
 See `docs/SKILLS-PLAYBOOK.md` for exact sequencing and evidence requirements.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and specs for `AKeybladeMaster/MultiRemoteTerminal` live in GitHub Issues and use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context glossary at `docs/GLOSSARY.md` and relevant decisions in `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Non-negotiable clean architecture
 
 - Depend inward: `presentation -> application -> domain` with **no** domain imports from Electron, Node.js, React, SQLite, or protocol libraries.
