@@ -632,7 +632,12 @@ test('authenticated SOCKS accepts fragmented UTF-8 credentials and pipelined CON
     pending.write(Buffer.from([1, 3, 0x61]));
     const closed = sockets.map(socket => socket.destroyed ? Promise.resolve() : new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Stopped SOCKS socket remained open')), 3_000);
-      socket.once('close', () => { clearTimeout(timer); resolve(); });
+      const onError = (error: Error & { code?: string }): void => {
+        // Explicit stop may reset a Windows peer that still has an incomplete authentication request.
+        if (error.code !== 'ECONNRESET') { clearTimeout(timer); reject(error); }
+      };
+      socket.once('error', onError);
+      socket.once('close', () => { clearTimeout(timer); socket.removeListener('error', onError); resolve(); });
       socket.resume();
     }));
     await provider.stopForward(sessionId, definition.id);

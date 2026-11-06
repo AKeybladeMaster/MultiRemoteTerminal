@@ -1,7 +1,7 @@
 # WP-11H feasibility research: TightVNC provider lifecycle
 
-**Reviewed:** 2026-11-01  
-**Scope:** F-017 signed third-party provider discovery, installation, and update; VNC viewer interoperability  
+**Reviewed:** 2026-11-01
+**Scope:** F-017 signed third-party provider discovery, installation, and update; VNC viewer interoperability
 **Status:** Research only; no product implementation, artifact download, installation, execution, or acceptance
 
 ## Finding

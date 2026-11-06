@@ -1,7 +1,7 @@
 # ADR-0065: Bounded PowerShell release download
 
-**Date:** 2026-10-31  
-**Status:** Accepted implementation direction; Windows acceptance pending  
+**Date:** 2026-10-31
+**Status:** Accepted implementation direction; Windows acceptance pending
 **Supersedes:** [ADR-0064](ADR-0064-fixed-powershell-tool-lifecycle.md)
 
 ## Context

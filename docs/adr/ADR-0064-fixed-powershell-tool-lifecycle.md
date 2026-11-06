@@ -1,6 +1,6 @@
 # ADR-0064: Fixed PowerShell 7 tool lifecycle through WinGet
 
-**Date:** 2026-10-31  
+**Date:** 2026-10-31
 **Status:** Superseded by [ADR-0065](ADR-0065-bounded-powershell-release-download.md); historical Windows acceptance remains pending
 
 The WinGet-based implementation direction described here was superseded after review found that `winget download` cannot enforce the candidate's 1 GiB transfer bound while bytes are being written. ADR-0065 records the direct, bounded official-release download direction. This ADR remains as a record of the prior decision.

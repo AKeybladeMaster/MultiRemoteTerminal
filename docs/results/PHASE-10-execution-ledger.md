@@ -87,7 +87,7 @@ FTP and SFTP download providers now preserve an interrupted outcome when cleanup
 Follow-up (2026-11-01): The local staged-download identity guard now prevents ordinary replacement-file cleanup or commit and leaves the mismatched object intact. The FTP/SFTP regressions are authored but unrun. A concurrent replacement between the path identity check and path-based operation remains possible.
 ## 2026-11-01 N-010 explicit-undefined progress metadata guard (unverified)
 
-- unTrackedFileTransfer now preserves previously captured remote artifact names if a later progress snapshot includes emoteArtifactNames: undefined, which object spread previously overwrote. The FTPS tracker regression now covers that runtime shape. No automated checks ran; N-010 and Phases 07/10 remain PARTIAL.
+- `runTrackedFileTransfer` now preserves previously captured remote artifact names if a later progress snapshot includes `remoteArtifactNames: undefined`, which object spread previously overwrote. The FTPS tracker regression now covers that runtime shape. No automated checks ran; N-010 and Phases 07/10 remain PARTIAL.
 ## 2026-11-01 generated release-metadata write safety (unverified)
 
 N-012 output generation now stages bounded notice, dependency-inventory, SBOM, and checksum documents in unique exclusive workspace-local siblings, syncs them, rechecks the observed destination before atomic replacement, and removes only the operation's temporary file on failure. Added a package-release assertion for successful replacement without temporary-file residue. No automated check, SBOM, or package output ran; Phase 10/N-012 remain PARTIAL.

@@ -1,7 +1,7 @@
 # WP-01E upstream ConPTY resize boundary research
 
-**Requirement:** P-02 local terminal sizing and input; F-002 ConPTY input/resize.  
-**Status:** No upstream resize-completion or child-redraw acknowledgement identified.  
+**Requirement:** P-02 local terminal sizing and input; F-002 ConPTY input/resize.
+**Status:** No upstream resize-completion or child-redraw acknowledgement identified.
 **Checked:** 2026-11-01.
 
 ## Findings

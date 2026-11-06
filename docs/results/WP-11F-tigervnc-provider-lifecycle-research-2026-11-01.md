@@ -1,7 +1,7 @@
 # WP-11F feasibility research: TigerVNC provider lifecycle
 
-**Reviewed:** 2026-11-01  
-**Scope:** F-017 signed third-party provider discovery, installation, and update  
+**Reviewed:** 2026-11-01
+**Scope:** F-017 signed third-party provider discovery, installation, and update
 **Status:** Research only; no product implementation or acceptance
 
 ## Finding

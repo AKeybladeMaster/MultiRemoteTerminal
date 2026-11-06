@@ -1,7 +1,7 @@
 # WP-07AB — production license notice and provenance review
 
-**Date:** 2026-10-31  
-**Requirement:** N-012 legal/provenance hygiene; related to P-32/N-007 release inventory.  
+**Date:** 2026-10-31
+**Requirement:** N-012 legal/provenance hygiene; related to P-32/N-007 release inventory.
 **Status:** Research findings only; N-012 remains open.
 
 ## Scope and method

@@ -1,6 +1,6 @@
 # WP-11E: PowerShell MSIX dependency-path research
 
-**Date:** 2026-11-01  
+**Date:** 2026-11-01
 **Status:** Source-based conclusion; no package download, signature verification, or deployment performed
 
 ## Finding

@@ -1,7 +1,7 @@
 # WP-11E - WinGet as an optional tool-provider installer
 
-**Date:** 2026-10-31  
-**Scope:** Assess whether Windows Package Manager can safely support an app-managed, fixed allowlist of optional command-line tools.  
+**Date:** 2026-10-31
+**Scope:** Assess whether Windows Package Manager can safely support an app-managed, fixed allowlist of optional command-line tools.
 **Status:** Research plus an unverified fixed-package implementation candidate; no general provider catalog or lifecycle acceptance is approved by this finding.
 
 ## Findings

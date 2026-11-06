@@ -1,6 +1,6 @@
 # WP-11E: MSIX bundle signature verification research
 
-**Date:** 2026-10-31  
+**Date:** 2026-10-31
 **Status:** Source-based conclusion; no package operation or runtime test performed
 
 ## Finding

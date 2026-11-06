@@ -165,7 +165,8 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
   }
   if (value.command === 'files.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId']) &&
       isUuid(value.sessionId) && isUuid(value.operationId)) return value as unknown as SshWorkerRequest;
-  if (value.command === 'tunnel.forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition'], ['socksCredentials']) &&
+  if (value.command === 'tunnel.forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition',
+      ...(Object.hasOwn(value, 'socksCredentials') ? ['socksCredentials'] : [])]) &&
       isUuid(value.sessionId) && isSshTunnelDefinition(value.definition) &&
       (!Object.hasOwn(value, 'socksCredentials') || value.definition.mode === 'dynamic' && isSocksProxyCredentials(value.socksCredentials))) return value as unknown as SshWorkerRequest;
   if (value.command === 'tunnel.forward.stop' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'tunnelId']) &&

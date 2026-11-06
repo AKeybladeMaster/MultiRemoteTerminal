@@ -1,7 +1,7 @@
 # WP-11G feasibility research: RealVNC Viewer provider lifecycle
 
-**Reviewed:** 2026-11-01  
-**Scope:** F-017 fixed third-party provider discovery, installation, update, and removal  
+**Reviewed:** 2026-11-01
+**Scope:** F-017 fixed third-party provider discovery, installation, update, and removal
 **Status:** Research only; no product implementation, download, installation, or acceptance
 
 ## Decision

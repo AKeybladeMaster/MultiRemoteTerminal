@@ -162,4 +162,3 @@ test('SQLite v4 recovery migration preserves interrupted rows and defaults their
     { operationId, fileName: 'archive.bin', state: 'interrupted', bytesTransferred: 12, totalBytes: 24, remoteArtifactNames: [] });
   } finally { database.close(); }
 });
-

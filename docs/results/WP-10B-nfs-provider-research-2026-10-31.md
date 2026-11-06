@@ -1,6 +1,6 @@
 # WP-10B - NFS provider research
 
-**Date:** 2026-10-31  
+**Date:** 2026-10-31
 **Status:** Research only; no provider selected or accepted. F-022/P-20 remain PARTIAL.
 
 ## Requirement and decision
