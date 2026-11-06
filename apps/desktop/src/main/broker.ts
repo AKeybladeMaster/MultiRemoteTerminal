@@ -624,8 +624,8 @@ export async function dispatchCommand(
       case 'tunnel.save': return { requestId, ...await actions.tunnels.save(parsed.result.payload) };
       case 'tunnel.delete': return { requestId, ...await actions.tunnels.remove(parsed.result.payload.id) };
       case 'tunnel.start': {
-        const { id, gatewayProfileIds = [] } = parsed.result.payload;
-        if (gatewayProfileIds.length === 0) return { requestId, ...await actions.tunnels.start(id, actions.cancellation) };
+        const { id, gatewayProfileIds = [], requireSocksAuthentication } = parsed.result.payload;
+        if (gatewayProfileIds.length === 0) return { requestId, ...await actions.tunnels.start(id, actions.cancellation, undefined, requireSocksAuthentication) };
         const tunnel = await actions.tunnels.get(id);
         if (!tunnel.ok) return { requestId, ...tunnel };
         const target = await actions.sessionCatalog.get(tunnel.result.sessionId, actions.cancellation);
@@ -635,7 +635,7 @@ export async function dispatchCommand(
         }
         const route = await resolveSshGatewayRoute(actions, gatewayProfileIds, { host: target.result.host, port: target.result.port });
         if (!route.ok) return { requestId, ...route };
-        return { requestId, ...await actions.tunnels.start(id, actions.cancellation, route.result) };
+        return { requestId, ...await actions.tunnels.start(id, actions.cancellation, route.result, requireSocksAuthentication) };
       }
       case 'tunnel.stop': return { requestId, ...await actions.tunnels.stop(parsed.result.payload.id) };
     }

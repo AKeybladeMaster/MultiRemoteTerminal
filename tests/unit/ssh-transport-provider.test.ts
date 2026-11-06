@@ -587,6 +587,97 @@ test('dynamic SOCKS rejection keeps its connection counted until close and relea
   }
 });
 
+test('authenticated SOCKS accepts fragmented UTF-8 credentials and pipelined CONNECT data', async () => {
+  const client = new ForwardingTargetCaptureClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const credentials = { username: 'utente-界', password: 'segreto-🙂' };
+  const sockets: Socket[] = [];
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333344', sessionId, name: 'Authenticated proxy', mode: 'dynamic' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition, credentials);
+    const authentication = socksAuthentication(credentials.username, credentials.password);
+    const connect = Buffer.from([5, 1, 0, 1, 127, 0, 0, 1, 1, 187]);
+    const payload = Buffer.from('authenticated payload');
+
+    for (const fragmented of [false, true]) {
+      const socket = connectTcp(bindPort, '127.0.0.1');
+      sockets.push(socket);
+      const methodReply = readSocketBytes(socket, 2);
+      socket.write(Buffer.from([5, 2, 0, 2]));
+      assert.deepEqual(await methodReply, Buffer.from([5, 2]), 'authenticated listeners must select method 2 even when method 0 is offered');
+      const reply = readSocketBytes(socket, 12 + payload.length);
+      let remaining = authentication;
+      if (fragmented) {
+        const split = 2 + Buffer.byteLength('utente-') + 1;
+        socket.write(authentication.subarray(0, split));
+        await new Promise<void>(resolve => setImmediate(resolve));
+        remaining = authentication.subarray(split);
+      }
+      socket.write(Buffer.concat([remaining, connect, payload]));
+      const received = await reply;
+      assert.deepEqual(received.subarray(0, 4), Buffer.from([1, 0, 5, 0]));
+      assert.deepEqual(received.subarray(12), payload, 'pipelined application bytes reach the selected destination unchanged');
+    }
+    assert.deepEqual(client.destinations, [{ host: '127.0.0.1', port: 443 }, { host: '127.0.0.1', port: 443 }]);
+
+    const pending = connectTcp(bindPort, '127.0.0.1');
+    sockets.push(pending);
+    const methodReply = readSocketBytes(pending, 2);
+    pending.write(Buffer.from([5, 1, 2]));
+    assert.deepEqual(await methodReply, Buffer.from([5, 2]));
+    pending.write(Buffer.from([1, 3, 0x61]));
+    const closed = sockets.map(socket => socket.destroyed ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Stopped SOCKS socket remained open')), 3_000);
+      socket.once('close', () => { clearTimeout(timer); resolve(); });
+      socket.resume();
+    }));
+    await provider.stopForward(sessionId, definition.id);
+    await Promise.all(closed);
+    assert.ok(sockets.every(socket => socket.destroyed), 'stop closes both authenticated and incomplete-authentication sockets');
+    assert.equal(await canConnect(bindPort), false);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await provider.close(sessionId);
+  }
+});
+
+test('authenticated SOCKS rejects invalid credentials before opening an SSH channel and never falls back to no-auth', async () => {
+  const client = new ForwardingTargetCaptureClient();
+  const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
+  const credentials = { username: 'proxy-user', password: 'proxy-secret' };
+  try {
+    const opened = provider.openFiles(sessionId, endpoint, { username: 'alice', password: 'secret-value' }, async () => true);
+    client.emit('ready');
+    await opened;
+    const definition = { id: '33333333-3333-4333-8333-333333333345', sessionId, name: 'Protected proxy', mode: 'dynamic' as const,
+      bindHost: '127.0.0.1' as const, bindPort: 0, createdAt: '2026-10-24T00:00:00.000Z' };
+    const bindPort = await provider.startForward(sessionId, definition, credentials);
+    const failures = [
+      socksAuthentication('wrong-user', credentials.password),
+      socksAuthentication(credentials.username, 'wrong-password'),
+      socksAuthentication('', credentials.password),
+      socksAuthentication(credentials.username, ''),
+      socksAuthentication(credentials.username, credentials.password, 2),
+      Buffer.from([1, 1, 0xff, 1, 0xff])
+    ];
+    for (const authentication of failures) {
+      const reply = await collectSocketReplyUntilClosed(bindPort, Buffer.concat([
+        Buffer.from([5, 2, 0, 2]), authentication,
+        Buffer.from([5, 1, 0, 1, 127, 0, 0, 1, 1, 187]), Buffer.from('must not reach SSH')
+      ]));
+      assert.deepEqual(reply, Buffer.from([5, 2, 1, 1]));
+      assert.deepEqual(client.destinations, [], 'authentication rejection must precede forwardOut even with pipelined CONNECT bytes');
+    }
+    const unsupported = await socksRequest(bindPort, 443, 1, [0]);
+    assert.deepEqual(unsupported.methodReply, Buffer.from([5, 0xff]));
+    assert.deepEqual(client.destinations, []);
+  } finally { await provider.close(sessionId); }
+});
+
 test('dynamic SOCKS forwarding passes IPv6 CONNECT destinations through SSH unchanged', async () => {
   const client = new ForwardingTargetCaptureClient();
   const provider = createSshTransportProvider({ create: () => client as unknown as Client, parseHostKey: keyParser() }, () => {});
@@ -879,6 +970,46 @@ async function listen(server: Server): Promise<number> {
       if (!address || typeof address === 'string') { reject(new Error('Expected an IP listener')); return; }
       resolve(address.port);
     });
+  });
+}
+
+function socksAuthentication(username: string, password: string, version = 1): Buffer {
+  const user = Buffer.from(username, 'utf8');
+  const secret = Buffer.from(password, 'utf8');
+  return Buffer.concat([Buffer.from([version, user.length]), user, Buffer.from([secret.length]), secret]);
+}
+
+function readSocketBytes(socket: Socket, length: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.removeListener('readable', onReadable);
+      socket.removeListener('error', onError);
+      socket.removeListener('close', onClose);
+    };
+    const onError = (error: Error): void => { cleanup(); reject(error); };
+    const onClose = (): void => onError(new Error('Socket closed before its expected reply'));
+    const onReadable = (): void => {
+      const bytes = socket.read(length) as Buffer | null;
+      if (bytes) { cleanup(); resolve(bytes); }
+    };
+    const timer = setTimeout(() => { onError(new Error('SOCKS socket reply timed out')); socket.destroy(); }, 3_000);
+    socket.on('readable', onReadable);
+    socket.once('error', onError);
+    socket.once('close', onClose);
+    onReadable();
+  });
+}
+
+function collectSocketReplyUntilClosed(port: number, request: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const socket = connectTcp(port, '127.0.0.1');
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('SOCKS rejection did not close its socket')); }, 3_000);
+    socket.once('connect', () => socket.write(request));
+    socket.on('data', chunk => chunks.push(chunk));
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+    socket.once('close', () => { clearTimeout(timer); resolve(Buffer.concat(chunks)); });
   });
 }
 

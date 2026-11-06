@@ -20,7 +20,7 @@ export interface TunnelManagerDialogProps {
   readonly onClose: () => void;
   readonly onSave: (draft: SshTunnelDraft) => Promise<string | undefined>;
   readonly onDelete: (id: string) => void;
-  readonly onStart: (id: string, gatewayProfileIds?: readonly string[]) => void;
+  readonly onStart: (id: string, gatewayProfileIds?: readonly string[], requireSocksAuthentication?: boolean) => void;
   readonly onStop: (id: string) => void;
 }
 
@@ -69,6 +69,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
   const selected = tunnels.find(item => item.definition.id === selectedId);
   const [gatewayRouteOpen, setGatewayRouteOpen] = useState(false);
   const [gatewayProfileIds, setGatewayProfileIds] = useState<readonly string[]>([]);
+  const [requireSocksAuthentication, setRequireSocksAuthentication] = useState(false);
   const [loadedSelectionId, setLoadedSelectionId] = useState<string>();
   const locked = isRunning(selected?.status);
   const busy = busyId !== undefined;
@@ -106,6 +107,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
     setSelectedId(undefined);
     setGatewayRouteOpen(false);
     setGatewayProfileIds([]);
+    setRequireSocksAuthentication(false);
     setLoadedSelectionId(undefined);
     setSessionId(eligibleProfiles[0]?.id ?? '');
     setName('');
@@ -126,6 +128,12 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
         : { ...common, mode, bindHost: localBindHost, targetHost, targetPort: Number(targetPort) };
     const id = await onSave(draft);
     if (id) { setCreating(false); setSelectedId(id); }
+  }
+
+  function startSelected(gateways?: readonly string[]): void {
+    if (!selected) return;
+    onStart(selected.definition.id, gateways, selected.definition.mode === 'dynamic' && requireSocksAuthentication);
+    setRequireSocksAuthentication(false);
   }
 
   return <div className="ssh-backdrop tunnel-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
@@ -157,6 +165,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               <button type="button" className={`tunnel-list-item ${selectedId === item.definition.id ? 'selected' : ''}`}
                 aria-pressed={selectedId === item.definition.id} onClick={() => {
                   setCreating(false); setSelectedId(item.definition.id); setGatewayRouteOpen(false); setGatewayProfileIds([]);
+                  setRequireSocksAuthentication(false);
                 }}>
                 <span className={`tunnel-state-dot ${item.status.state}`} aria-hidden="true" />
               <span className="tunnel-list-copy"><strong>{item.definition.name}</strong><small>{tunnelModeLabel(item.definition.mode)}</small><small>{tunnelRouteLabel(item.definition)}</small></span>
@@ -176,7 +185,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
 
             <label htmlFor="tunnel-mode">Forward direction</label>
             <select id="tunnel-mode" name="forwardMode" required disabled={locked || busy} value={mode}
-              onChange={event => setMode(event.target.value as SshTunnelMode)}>
+              onChange={event => { setMode(event.target.value as SshTunnelMode); setRequireSocksAuthentication(false); }}>
               <option value="local">Local to remote service</option>
               <option value="remote">SSH server to local service</option>
               <option value="dynamic">Dynamic SOCKS5 proxy</option>
@@ -222,9 +231,21 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               </> : <><span className="tunnel-field-label">Local address</span><code>127.0.0.1</code></>}</div>
             </div>
             <p className="tunnel-hint">{mode === 'remote' ? `Enter a canonical IPv4 address (0.0.0.0 requests all interfaces). Use port 0 to let the SSH server choose an available port. The app requests ${remoteBindHost}.`
-              : mode === 'dynamic' ? 'No authentication is required. This proxy listens on this computer only; use port 0 for an available port.'
+              : mode === 'dynamic' ? 'This proxy listens on this computer only; use port 0 for an available port. By default, any local application can use it without authentication.'
                 : localBindHost === '0.0.0.0' ? 'Use port 0 to let this computer choose an available port. All IPv4 interfaces will listen.'
                   : 'Use port 0 to let this computer choose an available port.'}</p>
+            {mode === 'dynamic' && <>
+              <label htmlFor="tunnel-socks-authentication">
+                <input id="tunnel-socks-authentication" name="requireSocksAuthentication" type="checkbox"
+                  checked={requireSocksAuthentication} disabled={locked || busy}
+                  aria-describedby="tunnel-socks-authentication-description"
+                  onChange={event => setRequireSocksAuthentication(event.target.checked)} />
+                Require SOCKS username/password for this start
+              </label>
+              <p id="tunnel-socks-authentication-description" className="tunnel-hint">
+                Credentials are requested in a native Windows prompt and discarded when the tunnel stops. This choice applies to the next start only and is never saved or exported.
+              </p>
+            </>}
 
             {mode !== 'dynamic' && <>
               <label htmlFor="tunnel-target-host">{mode === 'local' ? 'Remote destination host' : 'Local destination host'}</label>
@@ -254,7 +275,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
               {selected?.status.state === 'active' || selected?.status.state === 'starting'
                 ? <button type="button" className="tunnel-stop" onClick={() => onStop(selected.definition.id)}>Stop tunnel</button>
                 : <button type="button" className="tunnel-stop" disabled={!selected || selected.status.state === 'stopping' || busy}
-                  onClick={() => selected && onStart(selected.definition.id)}>Start tunnel</button>}
+                  onClick={() => startSelected()}>Start tunnel</button>}
               {selected && !locked && <button type="button" className="tunnel-start-routed" disabled={busy || gatewayProfiles.length === 0}
                 aria-expanded={gatewayRouteOpen} aria-controls="tunnel-gateway-route" onClick={() => setGatewayRouteOpen(open => !open)}>
                 {gatewayRouteOpen ? 'Hide gateway route' : 'Start through gateways'}
@@ -270,7 +291,7 @@ export function TunnelManagerDialog({ dialogRef, profiles, tunnels, loading, bus
                 <button type="button" className="ssh-primary" disabled={busy || gatewayProfileIds.length === 0}
                   onClick={() => {
                     if (!selected || gatewayProfileIds.length === 0) return;
-                    onStart(selected.definition.id, gatewayProfileIds);
+                    startSelected(gatewayProfileIds);
                     setGatewayRouteOpen(false); setGatewayProfileIds([]);
                   }}>Start tunnel via gateways</button>
                 <button type="button" disabled={busy} onClick={() => {

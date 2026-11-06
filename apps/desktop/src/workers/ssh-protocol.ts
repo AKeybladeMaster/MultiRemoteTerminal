@@ -20,6 +20,8 @@ import { isFileTransferConflictPolicy, isFileTransferProgress, isFileTransferRes
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isSocksProxyCredentials } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SocksProxyCredentials } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { isAbsoluteNormalizedLocalPath } from './local-transfer-target.ts';
 
 export const SSH_WORKER_PROTOCOL_VERSION = 1;
@@ -45,7 +47,7 @@ export type SshWorkerRequest =
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.write-text'; readonly sessionId: string;
       readonly operationId: string; readonly remotePath: string; readonly content: string; readonly expectedRevision: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'files.cancel'; readonly sessionId: string; readonly operationId: string }
-  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.start'; readonly sessionId: string; readonly definition: SshTunnelDefinition }
+  | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.start'; readonly sessionId: string; readonly definition: SshTunnelDefinition; readonly socksCredentials?: SocksProxyCredentials }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'tunnel.forward.stop'; readonly sessionId: string; readonly tunnelId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'close'; readonly sessionId: string }
   | { readonly version: 1; readonly type: 'request'; readonly requestId: string; readonly command: 'shutdown' }
@@ -163,8 +165,9 @@ export function parseSshWorkerInput(value: unknown): SshWorkerRequest | undefine
   }
   if (value.command === 'files.cancel' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'operationId']) &&
       isUuid(value.sessionId) && isUuid(value.operationId)) return value as unknown as SshWorkerRequest;
-  if (value.command === 'tunnel.forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition']) &&
-      isUuid(value.sessionId) && isSshTunnelDefinition(value.definition)) return value as unknown as SshWorkerRequest;
+  if (value.command === 'tunnel.forward.start' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'definition'], ['socksCredentials']) &&
+      isUuid(value.sessionId) && isSshTunnelDefinition(value.definition) &&
+      (!Object.hasOwn(value, 'socksCredentials') || value.definition.mode === 'dynamic' && isSocksProxyCredentials(value.socksCredentials))) return value as unknown as SshWorkerRequest;
   if (value.command === 'tunnel.forward.stop' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId', 'tunnelId']) &&
       isUuid(value.sessionId) && isTunnelId(value.tunnelId)) return value as unknown as SshWorkerRequest;
   if (value.command === 'close' && exactKeys(value, ['version', 'type', 'requestId', 'command', 'sessionId']) && isUuid(value.sessionId)) return value as unknown as SshWorkerRequest;

@@ -2,6 +2,19 @@
 
 **Architecture baseline:** ADR-0001; independent modular monolith, desktop only. All interfaces below are **design contracts**, not implementation source.
 
+## 2026-11-06 SOCKS account ownership (unverified)
+
+Dynamic tunnel starts may request a separate ephemeral SOCKS account. Renderer
+IPC carries only a boolean policy flag; the main-process native credential
+prompt supplies the account to the application start reservation and then the
+existing SSH utility worker. Only the listener owns credential buffers; it
+validates RFC 1929 before opening an SSH TCP channel and clears buffers on stop.
+No saved tunnel schema, status event, export or renderer receives the account.
+The default remains loopback no-auth; protected starts never downgrade. A pending
+start's cancellation reaches the native prompt, including stop before a runtime
+exists. See [ADR-0067](adr/ADR-0067-per-start-socks-credentials.md). All new checks
+are deferred until all resumed phase implementation is integrated.
+
 ## 1. System context
 
 ```mermaid

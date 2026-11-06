@@ -160,6 +160,7 @@ test('real Windows helper accepts contextual SSH and context-free FTP prompt req
       'function global:Get-Credential {',
       '  param([string]$Message)',
       "  $expectedMessages = @{ 'ssh-password' = 'Enter the SSH account credential.'; 'ssh-key-passphrase' = 'Unlock the selected SSH private key.'; 'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'; 'ftp-account' = 'Enter the FTP account credential.'; 'master-password' = 'Enter the vault master password.'; 'credential-bundle-passphrase' = 'Enter the passphrase for the encrypted SSH credential bundle.' }",
+      "  $expectedMessages['socks-account'] = 'Choose a separate local SOCKS proxy username and password for this tunnel start. Enter these same credentials in your SOCKS client. They are not saved. Do not reuse your SSH password. Each value must contain 1 to 255 UTF-8 bytes.'",
       '  $expectedMessage = $expectedMessages[$env:MRT_TEST_HELPER_PURPOSE]',
       '  if (-not [string]::IsNullOrEmpty($env:MRT_TEST_HELPER_CONTEXT)) { $expectedMessage = "$expectedMessage`r`n`r`n$env:MRT_TEST_HELPER_CONTEXT" }',
       "  if ($Message -ne $expectedMessage) { throw 'Credential prompt message mismatch' }",
@@ -214,6 +215,14 @@ test('real Windows helper accepts contextual SSH and context-free FTP prompt req
 
   helperOutput = '';
   assert.deepEqual(await prompt.prompt('ftp-account'), {
+    kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
+  });
+  assert.deepEqual(JSON.parse(helperOutput), {
+    kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
+  });
+
+  helperOutput = '';
+  assert.deepEqual(await prompt.prompt('socks-account'), {
     kind: 'provided', username: 'mrt-test-user', secret: 'mrt-test-placeholder'
   });
   assert.deepEqual(JSON.parse(helperOutput), {

@@ -5,11 +5,22 @@
 ## Branching and release protocol
 
 - Inspect `git status`, branch graph and `origin` before changes; preserve existing repository contents unless user directs a clean reset.
-- Use the active `dev` branch for feature work; integrate optional `feature/WP-XX` branches into `dev` first. `main` is the default branch.
-- Keep commits scoped per work package, with spec/acceptance test references. Review and validate each completed phase on `dev`.
-- After a phase passes its acceptance checks and independent review, push `dev` and promote it to `main` with a regular merge commit, then return to `dev`. The M4 gate remains required before calling a build an MVP release. Do not force-push.
+- Use `dev-1` for development. `main` is the default production branch; do not use the historical `dev` branch.
+- The 2026-11-06 user direction permits an explicitly unverified commit/push after each essential Phase 07–11 integration. Defer tests, typecheck, lint and builds until all resumed implementation is finished. These checkpoints are not phase acceptance.
+- After final verification and independent reviews accept the complete promoted range, merge `dev-1` into `main` using `--no-ff`, push normally, verify remote ancestry and return to `dev-1`. The M4 gate remains required before calling a build an MVP release. Do not force-push.
 - Verify remote branch history with `git ls-remote` after publishing. Credentials and GitHub privileges are user-controlled.
-- No direct source pushes to `main` and no blanket claim that `dev` or `main` contains a change until remote refs confirm it.
+- No direct source pushes to `main`; verify remote refs before claiming publication.
+
+### 2026-11-06 essential Phase 07 continuation
+
+WP-04M adds optional per-start SOCKS username/password authentication through the
+existing native credential prompt and SSH worker. Only the policy flag crosses
+renderer IPC; credentials stay transient and separate from SSH authentication.
+No database migration or credential export is introduced. Legacy no-auth starts
+remain available; BIND and UDP remain unsupported. ADR-0067 and authored tests
+cover strict credentials, fragmented/pipelined negotiation, no downgrade,
+cancellation and cleanup. Implementation is unverified until the final combined
+gate; P-25/N-010 and broader interoperability remain PARTIAL.
 
 ## Shared definition of done for every work package
 

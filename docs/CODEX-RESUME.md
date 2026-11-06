@@ -1,4 +1,15 @@
-# Codex resume snapshot - 2026-11-01
+# Codex resume snapshot - 2026-11-06
+
+User resumed essential Phases 07–11 implementation, with all automated tests,
+typechecks, lint and builds deferred until every resumed implementation phase is
+integrated. Commit/push explicitly unverified phase checkpoints to dev-1; never
+stage session-context.md or generated artifacts. Main still requires accepted
+verification/review of the complete range. Current source work adds optional
+per-start native SOCKS credentials (ADR-0067), TFTP ACK/read ordering and robust
+shutdown/storage exit handling. Consult the latest phase ledger entries and
+local handoff for exact committed/pushed refs. No new acceptance is claimed.
+
+## Historical verified checkpoint - 2026-11-01
 
 ## Latest verified repair checkpoint
 

@@ -1,5 +1,26 @@
 # Phase 07 execution ledger — sessions, tunnels and productivity
 
+## 2026-11-06 essential implementation checkpoint (unverified)
+
+The user's resumed sequence defers all automated checks until essential Phase
+07–11 implementation is integrated, and permits unverified dev-1 checkpoints.
+WP-04M now authors optional per-start SOCKS username/password CONNECT. The native
+prompt collects a separate proxy account; renderer IPC carries only the policy
+flag. Worker negotiation requires method 2 without downgrade, validates bounded
+RFC 1929 fields and preserves pipelined CONNECT data. Listener cleanup clears its
+credential buffers. No credential is saved/exported or returned in status.
+Start reservations distinguish authentication policy, and caller abort, stop,
+closeAll and dispose cancel a pending native prompt before SSH opens.
+
+Authored regression coverage spans controller, contract/broker/preload, native
+helper purpose, worker schema and real TCP socket negotiation/cleanup. No tests,
+typecheck, lint or build ran. See [ADR-0067](../adr/ADR-0067-per-start-socks-credentials.md).
+BIND still needs an advertised-address/consent design and UDP needs a remote
+datagram-capable transport. Those are open implementation dependencies, not
+passing acceptance. N-010 wider recovery/platform checks, broad SSH-server
+interoperability and the complete phase gate remain open; no promotion or
+VERIFIED status is claimed.
+
 **Status:** Phase 07 implementation remains active after additional N-010 changes; the final gate and affected-scope re-review are pending. Phase 07 acceptance and promotion remain blocked by PARTIAL requirements and unavailable live OpenSSH interoperability configuration.
 
 ## Prior resumed verification freeze - 2026-10-31

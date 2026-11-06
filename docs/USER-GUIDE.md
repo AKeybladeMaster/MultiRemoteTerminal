@@ -246,3 +246,7 @@ apply to cmd, Bash, WSL, SSH, Telnet, or other sessions.
 Help content and searches stay on this device; the application does not send
 them to an online help service. The app has no external analytics. Terminal
 input goes to the local shell or remote endpoint selected for that session.
+
+## Development candidate: SOCKS proxy authentication (2026-11-06; unverified)
+
+In Port forwarding, select a saved dynamic tunnel and enable “Require SOCKS username/password for this start” before Start. A native Windows prompt asks you to choose a separate local proxy account; configure your SOCKS client with those same values. Each field accepts 1–255 UTF-8 bytes. The account and the choice are not saved: select the option and enter credentials again on the next start. Leaving it off permits any local application to use the loopback listener. SOCKS username/password travels in cleartext on the local connection; do not reuse your SSH credential. BIND and UDP ASSOCIATE remain unsupported.

@@ -554,6 +554,7 @@ kbd { min-width: 19px; padding: 2px 4px; border: 1px solid var(--line); border-r
 .tunnel-form { display: grid; gap: 5px; }
 .tunnel-form label, .tunnel-field-label { margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 650; }
 .tunnel-form input, .tunnel-form select { width: 100%; min-width: 0; min-height: 36px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: var(--terminal-background); color: var(--text); }
+.tunnel-form input[type="checkbox"] { width: 16px; min-height: 16px; margin: 0 7px 0 0; padding: 0; vertical-align: middle; accent-color: var(--accent); }
 .tunnel-form input:focus-visible, .tunnel-form select:focus-visible { border-color: var(--focus); outline: 3px solid var(--focus); outline-offset: 1px; }
 .tunnel-form input:disabled, .tunnel-form select:disabled { opacity: .7; }
 .tunnel-endpoint-grid { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(145px, 1.2fr); align-items: end; gap: 12px; margin-top: 2px; }

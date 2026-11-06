@@ -5,7 +5,8 @@ import type { SshAuthenticationCredentials, SshConnectionGatewayCredentials, Ssh
 import type { SshX11Display } from '../../../../packages/application/src/ssh-x11-display.ts';
 import { SshTerminalProviderError } from '../../../../packages/application/src/ssh-terminals.ts';
 import { sshRoutedOpenWorkerTimeoutMs } from '../../../../packages/application/src/ssh-route-timeout-budget.ts';
-import type { SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
+import { isSocksProxyCredentials } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SocksProxyCredentials, SshTunnelForwardProvider } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { isSshTunnelDefinition, isTunnelId } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
 import type { LocalTerminalEvent } from '../../../../packages/application/src/local-terminals.ts';
@@ -225,12 +226,13 @@ export class SshTerminalWorkerHost implements SshTerminalProvider, SshTunnelForw
     return result;
   }
 
-  async startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition): Promise<number> {
-    if (!this.sessions.has(sessionId) || !isTunnelId(tunnelId) || !isSshTunnelDefinition(definition) || definition.id !== tunnelId) {
+  async startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition, socksCredentials?: SocksProxyCredentials): Promise<number> {
+    if (!this.sessions.has(sessionId) || !isTunnelId(tunnelId) || !isSshTunnelDefinition(definition) || definition.id !== tunnelId ||
+        socksCredentials !== undefined && (definition.mode !== 'dynamic' || !isSocksProxyCredentials(socksCredentials))) {
       throw new SshTerminalProviderError('INVALID_REQUEST');
     }
     const request = { version: SSH_WORKER_PROTOCOL_VERSION, type: 'request', requestId: randomUUID(), command: 'tunnel.forward.start',
-      sessionId, definition } as const satisfies SshWorkerRequest;
+      sessionId, definition, ...(socksCredentials === undefined ? {} : { socksCredentials }) } as const satisfies SshWorkerRequest;
     const result = await this.request(request, 20_000);
     if (!isBindPortResult(result)) throw new SshTerminalProviderError('UNAVAILABLE');
     return result.bindPort;

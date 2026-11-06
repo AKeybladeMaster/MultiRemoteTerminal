@@ -114,6 +114,7 @@ test('preload routes tunnel manager requests and validates runtime status events
   assert.equal((await bridge.startTunnel(tunnelId)).ok, true);
   const gatewayIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
   assert.equal((await bridge.startTunnel(tunnelId, gatewayIds)).ok, true);
+  assert.equal((await bridge.startTunnel(tunnelId, gatewayIds, true)).ok, true);
   assert.equal((await bridge.stopTunnel(tunnelId)).ok, true);
   assert.equal((await bridge.deleteTunnel(tunnelId)).ok, true);
   let statuses = 0;
@@ -123,8 +124,9 @@ test('preload routes tunnel manager requests and validates runtime status events
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '0.0.0.1', bindPort: 53_210 });
   deliverStatus?.({ tunnelId, state: 'active', bindHost: '127.00.0.1', bindPort: 53_210 });
   unsubscribe();
-  assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
-  assert.deepEqual(tunnelStartPayloads, [{ id: tunnelId }, { id: tunnelId, gatewayProfileIds: gatewayIds }]);
+  assert.deepEqual(seen, ['tunnel.list', 'tunnel.save', 'tunnel.start', 'tunnel.start', 'tunnel.start', 'tunnel.stop', 'tunnel.delete']);
+  assert.deepEqual(tunnelStartPayloads, [{ id: tunnelId }, { id: tunnelId, gatewayProfileIds: gatewayIds },
+    { id: tunnelId, gatewayProfileIds: gatewayIds, requireSocksAuthentication: true }]);
   assert.equal(statuses, 3);
 });
 

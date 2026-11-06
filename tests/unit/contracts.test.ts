@@ -595,6 +595,12 @@ test('tunnel IPC accepts only policy-approved binds and matches replies to the r
     `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`);
   const routedStart = { ...start, payload: { id: definition.id, gatewayProfileIds: gatewayIds.slice(0, 8) } };
   assert.equal(parseRequest(routedStart).ok, true);
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, requireSocksAuthentication: true } }).ok, true);
+  assert.equal(parseRequest({ ...routedStart, payload: { ...routedStart.payload, requireSocksAuthentication: false } }).ok, true);
+  for (const requireSocksAuthentication of ['true', null, undefined, 1]) {
+    assert.equal(parseRequest({ ...start, payload: { ...start.payload, requireSocksAuthentication } }).ok, false);
+  }
+  assert.equal(parseRequest({ ...start, payload: { ...start.payload, username: 'not-accepted', password: 'not-accepted' } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: gatewayIds } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...routedStart.payload, gatewayProfileIds: [gatewayIds[0], gatewayIds[0]] } }).ok, false);
   assert.equal(parseRequest({ ...start, payload: { ...start.payload, route: [] } }).ok, false);

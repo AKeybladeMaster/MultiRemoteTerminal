@@ -1137,12 +1137,12 @@ function Workbench() {
     }
   }, [loadTunnelManager]);
 
-  const startTunnel = useCallback(async (id: string, gatewayProfileIds?: readonly string[]): Promise<void> => {
+  const startTunnel = useCallback(async (id: string, gatewayProfileIds?: readonly string[], requireSocksAuthentication?: boolean): Promise<void> => {
     const operation = ++tunnelOperationRequest.current;
     setTunnelBusyId(id);
     setTunnelError(undefined);
     try {
-      const reply = await window.multiRemoteTerminal.startTunnel(id, gatewayProfileIds);
+      const reply = await window.multiRemoteTerminal.startTunnel(id, gatewayProfileIds, requireSocksAuthentication);
       if (!reply.ok) setTunnelError(tunnelOpenError(reply.error.code));
       else setTunnels(current => current.map(item => item.definition.id === id ? { ...item, status: reply.result } : item));
       await loadTunnelManager();
@@ -3680,7 +3680,7 @@ function Workbench() {
     </div>}
     {tunnelManagerOpen && <TunnelManagerDialog dialogRef={tunnelManagerDialog} profiles={tunnelProfiles} tunnels={tunnels}
       loading={tunnelsLoading} busyId={tunnelBusyId} error={tunnelError} onClose={closeTunnelManager} onSave={saveSshTunnel}
-      onDelete={id => { void deleteTunnel(id); }} onStart={(id, gatewayProfileIds) => { void startTunnel(id, gatewayProfileIds); }}
+      onDelete={id => { void deleteTunnel(id); }} onStart={(id, gatewayProfileIds, requireSocksAuthentication) => { void startTunnel(id, gatewayProfileIds, requireSocksAuthentication); }}
       onStop={id => { void stopTunnel(id); }} />}
     {macroManagerOpen && <MacroManagerDialog dialogRef={macroManagerDialog} macros={macros} shortcuts={macroShortcuts} loading={macrosLoading} busy={macroBusy} error={macroError}
       activeSessionId={activeId}

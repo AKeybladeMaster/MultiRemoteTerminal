@@ -155,3 +155,29 @@ test('SSH worker accepts policy-approved tunnel binds and bounded assigned-port 
   assert.equal(parseSshWorkerInput(dynamicStart)?.type, 'request');
   assert.equal(parseSshWorkerInput({ ...dynamicStart, definition: { ...dynamicStart.definition, targetHost: 'public.example', targetPort: 443 } }), undefined);
 });
+
+test('SSH worker accepts exact byte-bounded SOCKS credentials only on dynamic forwards', () => {
+  const definition = { id: '33333333-3333-4333-8333-333333333333', sessionId, name: 'Protected proxy', mode: 'dynamic',
+    bindHost: '127.0.0.1', bindPort: 1080, createdAt: '2026-10-24T00:00:00.000Z' };
+  const start = { version: 1, type: 'request', requestId, command: 'tunnel.forward.start', sessionId, definition };
+  const socksCredentials = { username: 'proxy-user', password: 'proxy-secret' };
+  assert.deepEqual(parseSshWorkerInput({ ...start, socksCredentials }), { ...start, socksCredentials });
+  assert.equal(parseSshWorkerInput(start)?.type, 'request', 'existing no-auth dynamic forwards remain valid');
+  assert.equal(parseSshWorkerInput({ ...start, socksCredentials: { username: '界'.repeat(85), password: 'p'.repeat(255) } })?.type, 'request');
+  assert.equal(parseSshWorkerInput({ ...start, socksCredentials: { username: 'u'.repeat(255), password: '界'.repeat(85) } })?.type, 'request');
+  for (const invalid of [
+    undefined, null, [], {}, { username: 'user' }, { password: 'secret' },
+    { ...socksCredentials, username: '' }, { ...socksCredentials, password: '' },
+    { ...socksCredentials, username: 123 }, { ...socksCredentials, password: 123 },
+    { ...socksCredentials, username: 'u'.repeat(256) }, { ...socksCredentials, password: 'p'.repeat(256) },
+    { ...socksCredentials, username: '界'.repeat(86) }, { ...socksCredentials, password: '界'.repeat(86) },
+    { ...socksCredentials, apiKey: 'unexpected' }
+  ]) {
+    assert.equal(parseSshWorkerInput({ ...start, socksCredentials: invalid }), undefined);
+  }
+  for (const mode of ['local', 'remote']) {
+    assert.equal(parseSshWorkerInput({ ...start, definition: { ...definition, mode, targetHost: '127.0.0.1', targetPort: 443 },
+      socksCredentials }), undefined, 'SOCKS credentials cannot be attached to a different forwarding mode');
+  }
+  assert.equal(parseSshWorkerInput({ ...start, socksCredentials, password: 'extra secret' }), undefined);
+});

@@ -2,7 +2,7 @@ import type { Client, ClientChannel, ConnectConfig, VerifyCallback } from 'ssh2'
 import type { FileEntryWithStats, SFTPWrapper } from 'ssh2';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { connect as connectTcp, createServer, isIP } from 'node:net';
 import type { Server, Socket } from 'node:net';
 import { Writable } from 'node:stream';
@@ -20,6 +20,8 @@ import { awaitWithCancellation } from '../../../../packages/application/src/canc
 import type { CancellationSignal } from '../../../../packages/application/src/cancellation.ts';
 import type { FileTransferConflictPolicy, FileTransferProgress, FileTransferResult } from '../../../../packages/domain/src/file-transfer.ts';
 import type { SshTunnelDefinition } from '../../../../packages/domain/src/ssh-tunnel.ts';
+import { isSocksProxyCredentials } from '../../../../packages/application/src/ssh-tunnels.ts';
+import type { SocksProxyCredentials } from '../../../../packages/application/src/ssh-tunnels.ts';
 import { canonicalizeRemoteEndpoint } from '../../../../packages/domain/src/remote-endpoint.ts';
 import { isRemotePath, MAX_REMOTE_DIRECTORY_ENTRIES, MAX_REMOTE_FILE_NAME_CHARS } from '../../../../packages/domain/src/remote-files.ts';
 import type { RemoteDirectoryListing, RemoteFileEntry, RemoteFileKind } from '../../../../packages/domain/src/remote-files.ts';
@@ -83,13 +85,14 @@ interface ForwardedConnection {
 
 interface SocksForwardedConnection extends ForwardedConnection {
   input: Buffer;
-  stage: 'methods' | 'request' | 'connecting' | 'connected' | 'rejecting';
+  stage: 'methods' | 'authentication' | 'request' | 'connecting' | 'connected' | 'rejecting';
 }
 
 interface LocalForwardRuntime {
   readonly definition: Extract<SshTunnelDefinition, { readonly mode: 'local' | 'dynamic' }>;
   readonly server: Server;
   readonly connections: Set<ForwardedConnection>;
+  readonly socksCredentials?: { readonly username: Buffer; readonly password: Buffer };
 }
 
 interface RemoteForwardedConnection {
@@ -141,7 +144,7 @@ export interface SshTransportProvider {
     onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFile>;
   saveRemoteTextFile(sessionId: string, operationId: string, remotePath: string, content: string, expectedRevision: string,
     cancellation?: CancellationSignal, onProgress?: (progress: FileTransferProgress) => void): Promise<RemoteTextFileSaveResult>;
-  startForward(sessionId: string, definition: SshTunnelDefinition): Promise<number>;
+  startForward(sessionId: string, definition: SshTunnelDefinition, socksCredentials?: SocksProxyCredentials): Promise<number>;
   stopForward(sessionId: string, tunnelId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
   shutdown(): Promise<void>;
@@ -216,12 +219,15 @@ export function createSshTransportProvider(
     connection.closed = true;
     clearTimeout(connection.timer);
     forward.connections.delete(connection);
+    if (forward.definition.mode === 'dynamic') (connection as SocksForwardedConnection).input.fill(0);
     try { connection.socket.destroy(); } catch { /* The paired channel still receives cleanup. */ }
     try { connection.channel?.destroy(); } catch { /* The paired socket is already closed. */ }
   }
 
   function closeLocalForward(forward: LocalForwardRuntime): Promise<void> {
     for (const connection of [...forward.connections]) closeForwardConnection(forward, connection);
+    forward.socksCredentials?.username.fill(0);
+    forward.socksCredentials?.password.fill(0);
     if (!forward.server.listening) return Promise.resolve();
     return new Promise(resolve => {
       let settled = false;
@@ -306,7 +312,8 @@ export function createSshTransportProvider(
   }
 
   function acceptForwardConnection(session: RuntimeSession, forward: LocalForwardRuntime, socket: Socket): void {
-    if (session.closing || sessions.get(session.sessionId) !== session || forward.connections.size >= MAX_FORWARD_CONNECTIONS) {
+    if (session.closing || sessions.get(session.sessionId) !== session || session.localForwards.get(forward.definition.id) !== forward ||
+        forward.connections.size >= MAX_FORWARD_CONNECTIONS) {
       socket.destroy();
       return;
     }
@@ -347,7 +354,9 @@ export function createSshTransportProvider(
   function acceptSocksConnection(session: RuntimeSession, forward: LocalForwardRuntime, socks: SocksForwardedConnection): void {
     const onData = (chunk: Buffer): void => {
       if (socks.closed || socks.stage === 'connecting' || socks.stage === 'connected' || socks.stage === 'rejecting') return;
-      socks.input = Buffer.concat([socks.input, chunk]);
+      const previous = socks.input;
+      socks.input = Buffer.concat([previous, chunk]);
+      previous.fill(0);
       if (socks.input.length > MAX_SOCKS_PENDING_BYTES) {
         finishSocksConnection(socks, Buffer.from([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]));
         return;
@@ -362,17 +371,42 @@ export function createSshTransportProvider(
         }
         const messageLength = 2 + methodCount;
         if (socks.input.length < messageLength) return;
-        let supportsNoAuthentication = false;
+        const method = forward.socksCredentials ? 2 : 0;
+        let supportsMethod = false;
         for (let index = 2; index < messageLength; index += 1) {
-          if (socks.input[index] === 0) supportsNoAuthentication = true;
+          if (socks.input[index] === method) supportsMethod = true;
         }
-        if (!supportsNoAuthentication) {
+        if (!supportsMethod) {
           finishSocksConnection(socks, Buffer.from([5, 0xff]));
           return;
         }
         socks.input = socks.input.subarray(messageLength);
+        socks.stage = forward.socksCredentials ? 'authentication' : 'request';
+        writeSocket(socks.socket, Buffer.from([5, method]));
+      }
+
+      if (socks.stage === 'authentication') {
+        if (socks.input.length < 2) return;
+        const usernameLength = socks.input[1]!;
+        if (socks.input[0] !== 1 || usernameLength === 0) {
+          finishSocksConnection(socks, Buffer.from([1, 1])); return;
+        }
+        const passwordOffset = 2 + usernameLength;
+        if (socks.input.length <= passwordOffset) return;
+        const passwordLength = socks.input[passwordOffset]!;
+        if (passwordLength === 0) { finishSocksConnection(socks, Buffer.from([1, 1])); return; }
+        const end = passwordOffset + 1 + passwordLength;
+        if (socks.input.length < end) return;
+        const expected = forward.socksCredentials!;
+        const username = socks.input.subarray(2, passwordOffset);
+        const password = socks.input.subarray(passwordOffset + 1, end);
+        const userMatches = username.length === expected.username.length && timingSafeEqual(username, expected.username);
+        const passwordMatches = password.length === expected.password.length && timingSafeEqual(password, expected.password);
+        socks.input.fill(0, 0, end);
+        if (!userMatches || !passwordMatches) { finishSocksConnection(socks, Buffer.from([1, 1])); return; }
+        socks.input = socks.input.subarray(end);
         socks.stage = 'request';
-        writeSocket(socks.socket, Buffer.from([5, 0]));
+        writeSocket(socks.socket, Buffer.from([1, 0]));
       }
 
       const parsed = parseSocksConnectRequest(socks.input);
@@ -429,6 +463,8 @@ export function createSshTransportProvider(
   function finishSocksConnection(connection: SocksForwardedConnection, response: Buffer): void {
     if (connection.closed || connection.stage === 'rejecting') return;
     connection.stage = 'rejecting';
+    connection.input.fill(0);
+    connection.input = Buffer.alloc(0);
     clearTimeout(connection.timer);
     try { connection.channel?.destroy(); } catch { /* The response is still sent to the local client. */ }
     const socket = connection.socket;
@@ -1034,12 +1070,17 @@ export function createSshTransportProvider(
       } finally { if (!session.sftpOpenAttempt) session.sftpBusy = false; }
     },
 
-    async startForward(sessionId, definition): Promise<number> {
+    async startForward(sessionId, definition, socksCredentials): Promise<number> {
+      if (socksCredentials !== undefined && (definition.mode !== 'dynamic' || !isSocksProxyCredentials(socksCredentials))) {
+        throw new SshTerminalProviderError('INVALID_REQUEST');
+      }
       const session = sessions.get(sessionId);
       if (!session || session.closing || session.opening || session.mode !== 'files') throw new SshTerminalProviderError('UNAVAILABLE');
       if (session.localForwards.has(definition.id) || session.remoteForwards.has(definition.id)) throw new SshTerminalProviderError('BUSY');
       if (definition.mode === 'remote') return startRemoteForward(session, definition);
-      const forward: LocalForwardRuntime = { definition, server: createServer({ allowHalfOpen: true }), connections: new Set() };
+      const forward: LocalForwardRuntime = { definition, server: createServer({ allowHalfOpen: true }), connections: new Set(),
+        ...(socksCredentials === undefined ? {} : { socksCredentials: {
+          username: Buffer.from(socksCredentials.username, 'utf8'), password: Buffer.from(socksCredentials.password, 'utf8') } }) };
       session.localForwards.set(definition.id, forward);
       try {
         const assignedPort = await new Promise<number>((resolve, reject) => {

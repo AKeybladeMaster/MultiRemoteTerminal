@@ -2,6 +2,18 @@
 
 **Threat model:** Desktop application executes local commands and communicates with untrusted network servers. Remote terminal output, file names, user-supplied profile scripts, third-party viewer processes and network peers must be treated as untrusted. User is assumed to control their Windows login; the app must protect against accidental exposure, compromised servers, malformed inputs, malicious downloads and privilege boundary violations. Protection against fully compromised same-user malware is out of scope.
 
+## 2026-11-06 SOCKS account boundary (unverified)
+
+Optional authenticated SOCKS CONNECT uses a separate native-prompt account for
+one start only. The renderer sends no credentials; database, profile exports,
+diagnostics and status events contain none. The worker requires method 2,
+validates 1–255 UTF-8 bytes per field, compares credential bytes and closes failed
+authentication before any SSH forwarding. Listener buffers are cleared on stop;
+JavaScript strings and IPC copies cannot be guaranteed erased. RFC 1929 carries
+the credential in cleartext over loopback, so this is local client authorization,
+not protection from a compromised account. BIND/UDP remain rejected; P-25 stays
+PARTIAL. See [ADR-0067](adr/ADR-0067-per-start-socks-credentials.md).
+
 ## Core threats and mandatory controls
 
 | Threat | Attack path | Mitigation | Acceptance proof |

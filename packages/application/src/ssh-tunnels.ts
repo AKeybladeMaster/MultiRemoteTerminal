@@ -7,7 +7,9 @@ import type { SavedSessionDefinition } from '../../domain/src/session-definition
 import { canonicalizeSshHostEndpoint, hostEndpointKey } from '../../domain/src/host-trust.ts';
 import type { SshHostEndpoint } from '../../domain/src/host-trust.ts';
 import { MAX_SSH_GATEWAY_HOPS, normalizeSshGatewayRoute } from '../../domain/src/ssh-route.ts';
-import type { CancellationSignal } from './cancellation.ts';
+import { remoteTextByteLength } from '../../domain/src/remote-text-file.ts';
+import { createCancellationSource } from './cancellation.ts';
+import type { CancellationSignal, CancellationSource } from './cancellation.ts';
 import type { SshTerminalController } from './ssh-terminals.ts';
 import type { StorageOperationKind } from './storage-errors.ts';
 import { StorageOperationError } from './storage-errors.ts';
@@ -24,8 +26,23 @@ export interface SavedSessionReader {
 }
 
 export interface SshTunnelForwardProvider {
-  startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition): Promise<number>;
+  startForward(sessionId: string, tunnelId: string, definition: SshTunnelDefinition, socksCredentials?: SocksProxyCredentials): Promise<number>;
   stopForward(sessionId: string, tunnelId: string): Promise<void>;
+}
+
+export interface SocksProxyCredentials {
+  readonly username: string;
+  readonly password: string;
+}
+
+export function isSocksProxyCredentials(value: unknown): value is SocksProxyCredentials {
+  if (typeof value !== 'object' || value === null || Reflect.ownKeys(value).length !== 2 ||
+      !Object.hasOwn(value, 'username') || !Object.hasOwn(value, 'password')) return false;
+  return ['username', 'password'].every(key => {
+    const text = (value as Record<string, unknown>)[key];
+    const bytes = typeof text === 'string' && text.length <= 255 ? remoteTextByteLength(text) : undefined;
+    return bytes !== undefined && bytes >= 1 && bytes <= 255;
+  });
 }
 
 export interface SshTunnelSnapshot {
@@ -38,7 +55,7 @@ export interface SshTunnelController {
   get(id: unknown): Promise<Outcome<SshTunnelDefinition>>;
   save(draft: unknown): Promise<Outcome<SshTunnelDefinition>>;
   remove(id: unknown): Promise<Outcome<Record<string, never>>>;
-  start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<TunnelRunStatus>>;
+  start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[], requireSocksAuthentication?: boolean): Promise<Outcome<TunnelRunStatus>>;
   stop(id: unknown): Promise<Outcome<TunnelRunStatus>>;
   beginSessionRemoval(sessionId: string): boolean;
   endSessionRemoval(sessionId: string): void;
@@ -53,6 +70,7 @@ interface RuntimeTunnel {
   readonly definition: SshTunnelDefinition;
   readonly sshSessionId: string;
   readonly routeKey: string;
+  readonly requireSocksAuthentication: boolean;
   readonly gatewayEndpoints?: readonly SshHostEndpoint[];
   status: TunnelRunStatus;
   startPromise?: Promise<Outcome<TunnelRunStatus>>;
@@ -64,6 +82,8 @@ interface RuntimeTunnel {
 
 interface StartAttempt {
   cancelled: boolean;
+  readonly cancellation: CancellationSource;
+  readonly requireSocksAuthentication: boolean;
   readonly routeKey: string;
   readonly gatewayEndpoints?: readonly SshHostEndpoint[];
   sessionId?: string;
@@ -99,6 +119,7 @@ export function createSshTunnelController(
   forwarding: SshTunnelForwardProvider,
   newId: () => string,
   confirmTunnelExposure: SshTunnelExposureConsent,
+  requestSocksCredentials?: (signal: CancellationSignal) => Promise<Outcome<SocksProxyCredentials>>,
 ): SshTunnelController {
   const runtimes = new Map<string, RuntimeTunnel>();
   const startingRequests = new Map<string, StartAttempt>();
@@ -188,23 +209,26 @@ export function createSshTunnelController(
     catch (error) { return failure(storageErrorCode(error)); }
   }
 
-  function start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[]): Promise<Outcome<TunnelRunStatus>> {
+  function start(id: unknown, cancellation?: CancellationSignal, gatewayEndpoints?: readonly SshHostEndpoint[],
+    requireSocksAuthentication = false): Promise<Outcome<TunnelRunStatus>> {
     if (disposed) return Promise.resolve(failure('CANCELLED'));
     if (cancellation?.aborted) return Promise.resolve(failure('CANCELLED', 'terminal'));
-    if (!isTunnelId(id)) return Promise.resolve(failure('INVALID_REQUEST'));
+    if (!isTunnelId(id) || typeof requireSocksAuthentication !== 'boolean') return Promise.resolve(failure('INVALID_REQUEST'));
     const requestedRoute = normalizeRequestedGatewayEndpoints(gatewayEndpoints);
     if (!requestedRoute) return Promise.resolve(failure('INVALID_REQUEST'));
     const pending = startingRequests.get(id);
-    if (pending) return pending.routeKey === requestedRoute.key ? observeStart(pending, cancellation) : Promise.resolve(failure('BUSY', 'terminal'));
+    if (pending) return !pending.cancelled && pending.routeKey === requestedRoute.key && pending.requireSocksAuthentication === requireSocksAuthentication
+      ? observeStart(pending, cancellation) : Promise.resolve(failure('BUSY', 'terminal'));
     const current = runtimes.get(id);
     if (current) {
-      if (current.status.state !== 'starting' || !current.startPromise || current.routeKey !== requestedRoute.key) return Promise.resolve(failure('BUSY', 'terminal'));
-      const attempt = { cancelled: false, routeKey: current.routeKey,
+      if (current.status.state !== 'starting' || !current.startPromise || current.routeKey !== requestedRoute.key ||
+          current.requireSocksAuthentication !== requireSocksAuthentication) return Promise.resolve(failure('BUSY', 'terminal'));
+      const attempt: StartAttempt = { cancelled: false, cancellation: createCancellationSource(), requireSocksAuthentication, routeKey: current.routeKey,
         ...(current.gatewayEndpoints ? { gatewayEndpoints: current.gatewayEndpoints } : {}), runtime: current, promise: current.startPromise };
       return observeStart(attempt, cancellation);
     }
 
-    const attempt: StartAttempt = { cancelled: false, routeKey: requestedRoute.key,
+    const attempt: StartAttempt = { cancelled: false, cancellation: createCancellationSource(), requireSocksAuthentication, routeKey: requestedRoute.key,
       ...(requestedRoute.endpoints ? { gatewayEndpoints: requestedRoute.endpoints } : {}),
       promise: Promise.resolve(failure('UNAVAILABLE')) };
     startingRequests.set(id, attempt);
@@ -225,6 +249,7 @@ export function createSshTunnelController(
   function cancelAttempt(attempt: StartAttempt): void {
     if (attempt.cancelled) return;
     attempt.cancelled = true;
+    attempt.cancellation.abort();
     if (attempt.runtime) void requestStop(attempt.runtime);
   }
 
@@ -236,6 +261,7 @@ export function createSshTunnelController(
       definition = await catalog.getSshTunnel(id);
       if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
       if (!definition) return failure('NOT_FOUND');
+      if (attempt.requireSocksAuthentication && definition.mode !== 'dynamic') return failure('INVALID_REQUEST');
       attempt.sessionId = definition.sessionId;
       if (profilesBeingRemoved.has(definition.sessionId)) return failure('BUSY');
       profile = await profiles.getSessionDefinition(definition.sessionId);
@@ -257,18 +283,32 @@ export function createSshTunnelController(
       if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
     }
 
+    let socksCredentials: SocksProxyCredentials | undefined;
+    if (attempt.requireSocksAuthentication) {
+      if (!requestSocksCredentials) return failure('NOT_SUPPORTED', 'terminal');
+      try {
+        const credentials = await requestSocksCredentials(attempt.cancellation);
+        if (disposed || attempt.cancelled) return failure('CANCELLED', 'terminal');
+        if (!credentials.ok) return credentials;
+        if (!isSocksProxyCredentials(credentials.result)) return failure('INVALID_REQUEST', 'terminal');
+        socksCredentials = credentials.result;
+      } catch { return failure(disposed || attempt.cancelled ? 'CANCELLED' : 'UNAVAILABLE', 'terminal'); }
+    }
+
     const runtime: RuntimeTunnel = { definition, sshSessionId: newId(), routeKey: attempt.routeKey,
+      requireSocksAuthentication: attempt.requireSocksAuthentication,
       ...(route.length === 0 ? {} : { gatewayEndpoints: route }), status: { tunnelId: id, state: 'starting' }, stopRequested: false, bound: false };
     if (!isTunnelId(runtime.sshSessionId)) return failure('UNAVAILABLE');
     attempt.runtime = runtime;
     runtimes.set(id, runtime);
     setStatus(runtime, runtime.status);
-    const operation = performStart(runtime, profile.host, profile.port);
+    const operation = performStart(runtime, profile.host, profile.port, socksCredentials);
+    socksCredentials = undefined;
     runtime.startPromise = operation;
     return operation;
   }
 
-  async function performStart(runtime: RuntimeTunnel, host: string, port: number): Promise<Outcome<TunnelRunStatus>> {
+  async function performStart(runtime: RuntimeTunnel, host: string, port: number, socksCredentials?: SocksProxyCredentials): Promise<Outcome<TunnelRunStatus>> {
     try {
       const opened = runtime.gatewayEndpoints
         ? await ssh.openFiles(runtime.sshSessionId, host, port, undefined, runtime.gatewayEndpoints)
@@ -290,7 +330,9 @@ export function createSshTunnelController(
         if (runtimes.get(runtime.definition.id) === runtime) runtimes.delete(runtime.definition.id);
         return runtime.stopRequested ? failure('CANCELLED', 'terminal') : failure(code, 'terminal');
       }
-      const portAssigned = await forwarding.startForward(runtime.sshSessionId, runtime.definition.id, runtime.definition);
+      const forwardingStart = forwarding.startForward(runtime.sshSessionId, runtime.definition.id, runtime.definition, socksCredentials);
+      socksCredentials = undefined;
+      const portAssigned = await forwardingStart;
       runtime.bound = true;
       if (!Number.isSafeInteger(portAssigned) || portAssigned < 1 || portAssigned > 65_535) throw new Error('Invalid listener result');
       if (runtime.stopRequested || runtime.failureCode) {
@@ -313,12 +355,14 @@ export function createSshTunnelController(
       setStatus(runtime, status);
       if (runtimes.get(runtime.definition.id) === runtime) runtimes.delete(runtime.definition.id);
       return runtime.stopRequested ? failure('CANCELLED', 'terminal') : failure(code, 'terminal');
-    } finally { delete runtime.startPromise; }
+    } finally { socksCredentials = undefined; delete runtime.startPromise; }
   }
 
   function stop(id: unknown): Promise<Outcome<TunnelRunStatus>> {
     if (disposed) return Promise.resolve(failure('CANCELLED'));
     if (!isTunnelId(id)) return Promise.resolve(failure('INVALID_REQUEST'));
+    const attempt = startingRequests.get(id);
+    if (attempt) cancelAttempt(attempt);
     const runtime = runtimes.get(id);
     if (!runtime) return Promise.resolve({ ok: true, result: { tunnelId: id, state: 'stopped' } });
     return requestStop(runtime);

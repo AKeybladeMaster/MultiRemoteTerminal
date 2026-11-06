@@ -496,6 +496,12 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
         ? await dialog.showMessageBox(currentWindow, options)
         : await dialog.showMessageBox(options);
       return result.response === 0;
+    }, async signal => {
+      const result = await credentialPrompt.prompt('socks-account', signal);
+      if (result.kind === 'cancelled') return failure('CANCELLED');
+      if (result.kind === 'timeout') return failure('TIMEOUT');
+      if (result.kind !== 'provided') return failure('UNAVAILABLE');
+      return { ok: true, result: { username: result.username, password: result.secret } };
     });
   const sessionCredentials = createSessionCredentialManager(storageStore, credentialPrompt, credentialVault, randomUUID);
   const credentialBundles = createSshCredentialBundleManager(storageStore, credentialBundleDialog, credentialPrompt, credentialVault,

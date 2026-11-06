@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'master-password', 'credential-bundle-passphrase')]
+    [ValidateSet('ssh-password', 'ssh-key-passphrase', 'ssh-agent-username', 'ftp-account', 'socks-account', 'master-password', 'credential-bundle-passphrase')]
     [string] $Purpose,
     [ValidateLength(0, 256)]
     [string] $Context = ''
@@ -13,6 +13,7 @@ $purposeMessages = @{
     'ssh-key-passphrase' = 'Unlock the selected SSH private key.'
     'ssh-agent-username' = 'Enter the SSH account username. Leave the password blank; your Windows OpenSSH agent will sign authentication requests.'
     'ftp-account' = 'Enter the FTP account credential.'
+    'socks-account' = 'Choose a separate local SOCKS proxy username and password for this tunnel start. Enter these same credentials in your SOCKS client. They are not saved. Do not reuse your SSH password. Each value must contain 1 to 255 UTF-8 bytes.'
     'master-password' = 'Enter the vault master password.'
     'credential-bundle-passphrase' = 'Enter the passphrase for the encrypted SSH credential bundle.'
 }

@@ -78,3 +78,7 @@ This research does not close P-25 or accept the outstanding requirements.
 - Static source inspection of the pinned `ssh2` forwarding calls and the
   current dynamic tunnel implementation.
 - No automated tests were run; Phase 07 implementation is still in progress.
+
+## 2026-11-06 authentication implementation follow-up (unverified)
+
+ADR-0067 supersedes the earlier statement that no proxy credential boundary exists: the current candidate authors an optional per-start native username/password prompt, transient main-to-worker credential handoff, RFC1929 validation, no method downgrade and bounded cleanup. Renderer IPC carries only a policy flag; saved tunnel definitions/exports/status contain no account. Default no-auth CONNECT remains available. Authored regression sources have not run under the user's deferred verification sequence. BIND/UDP transport and advertised-address/consent findings above remain unchanged; P-25 stays PARTIAL.

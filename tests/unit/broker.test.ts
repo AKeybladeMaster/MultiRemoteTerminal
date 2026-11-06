@@ -698,24 +698,29 @@ test('tunnel broker resolves saved SSH gateways against the tunnel profile befor
     } },
     tunnels: { ...base.tunnels,
       async get(id) { return id === tunnelId ? { ok: true, result: definition } : failure('NOT_FOUND'); },
-      async start(id, cancellation, gateways) {
-        starts.push({ id, cancellation, gateways });
+      async start(id, cancellation, gateways, requireSocksAuthentication) {
+        starts.push({ id, cancellation, gateways, requireSocksAuthentication });
         return { ok: true, result: { tunnelId: id as string, state: 'active' as const, bindHost: '127.0.0.1' as const, bindPort: 52000 } };
       }
     }
   };
   const reply = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,
-    payload: { id: tunnelId, gatewayProfileIds: [gatewayOneId, gatewayTwoId, gatewayThreeId] } }, routed, () => {});
+    payload: { id: tunnelId, gatewayProfileIds: [gatewayOneId, gatewayTwoId, gatewayThreeId], requireSocksAuthentication: true } }, routed, () => {});
   assert.equal(reply.ok, true);
   assert.deepEqual(starts, [{ id: tunnelId, cancellation: undefined, gateways: [
     { host: 'first.example.net', port: 2201 }, { host: 'second.example.net', port: 2202 }, { host: 'third.example.net', port: 2203 }
-  ] }]);
+  ], requireSocksAuthentication: true }]);
+
+  const direct = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,
+    payload: { id: tunnelId, requireSocksAuthentication: true } }, routed, () => {});
+  assert.equal(direct.ok, true);
+  assert.deepEqual(starts[1], { id: tunnelId, cancellation: undefined, gateways: undefined, requireSocksAuthentication: true });
 
   const rejected = await dispatchCommand(owner, { command: 'tunnel.start', requestId: request.requestId, contractVersion: 1,
     payload: { id: tunnelId, gatewayProfileIds: [badGatewayId] } }, routed, () => {});
   assert.equal(rejected.ok, false);
   if (!rejected.ok) assert.equal(rejected.error.code, 'INVALID_REQUEST');
-  assert.equal(starts.length, 1, 'a non-SSH saved profile is rejected before the tunnel controller starts');
+  assert.equal(starts.length, 2, 'a non-SSH saved profile is rejected before the tunnel controller starts');
 });
 
 test('macro catalog commands reach only the typed catalog and count as user activity', async () => {

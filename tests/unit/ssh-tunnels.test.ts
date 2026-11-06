@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { SshTunnelDefinition } from '../../packages/domain/src/ssh-tunnel.ts';
-import type { SshTunnelExposureConsent, SshTunnelCatalog, SshTunnelForwardProvider, SavedSessionReader } from '../../packages/application/src/ssh-tunnels.ts';
-import { createSshTunnelController } from '../../packages/application/src/ssh-tunnels.ts';
+import type { SshTunnelExposureConsent, SshTunnelCatalog, SshTunnelForwardProvider, SavedSessionReader, SocksProxyCredentials } from '../../packages/application/src/ssh-tunnels.ts';
+import { createSshTunnelController, isSocksProxyCredentials } from '../../packages/application/src/ssh-tunnels.ts';
 import type { SshTerminalController } from '../../packages/application/src/ssh-terminals.ts';
 import type { LocalTerminalEvent } from '../../packages/application/src/local-terminals.ts';
 import type { SavedSessionDefinition } from '../../packages/domain/src/session-definition.ts';
+import { failure } from '../../packages/domain/src/errors.ts';
+import type { Outcome } from '../../packages/domain/src/errors.ts';
 
 const profileId = '00000000-0000-4000-8000-000000000001';
 const tunnelId = '00000000-0000-4000-8000-000000000002';
@@ -22,13 +24,15 @@ function harness(overrides: {
   readonly getTunnel?: (id: string) => Promise<SshTunnelDefinition | undefined>;
   readonly getProfile?: (id: string) => Promise<SavedSessionDefinition | undefined>;
   readonly confirmTunnelExposure?: SshTunnelExposureConsent;
+  readonly requestSocksCredentials?: Parameters<typeof createSshTunnelController>[6];
 } = {}) {
   const saved = new Map<string, SshTunnelDefinition>();
   saved.set(tunnelId, definition);
   const events: TunnelStatusEvent[] = [];
   const sshEvents = new Set<(event: LocalTerminalEvent) => void>();
   const calls = { opened: [] as string[], gatewayRoutes: [] as (readonly { readonly host: string; readonly port: number }[])[],
-    closed: [] as string[], forwarded: [] as string[], forwardModes: [] as string[], stopped: [] as string[] };
+    closed: [] as string[], forwarded: [] as string[], forwardModes: [] as string[], stopped: [] as string[],
+    socksCredentials: [] as (SocksProxyCredentials | undefined)[] };
   const catalog: SshTunnelCatalog = {
     async listSshTunnels() { return [...saved.values()]; },
     async getSshTunnel(id) { return overrides.getTunnel ? overrides.getTunnel(id) : saved.get(id); },
@@ -53,16 +57,128 @@ function harness(overrides: {
     subscribe(listener) { sshEvents.add(listener); return () => sshEvents.delete(listener); }
   };
   const forwarding: SshTunnelForwardProvider = {
-    async startForward(sessionId, id, tunnel) { calls.forwarded.push(`${sessionId}:${id}`); calls.forwardModes.push(tunnel.mode); return overrides.startForward ? overrides.startForward() : 51_234; },
+    async startForward(sessionId, id, tunnel, socksCredentials) {
+      calls.forwarded.push(`${sessionId}:${id}`); calls.forwardModes.push(tunnel.mode); calls.socksCredentials.push(socksCredentials);
+      return overrides.startForward ? overrides.startForward() : 51_234;
+    },
     async stopForward(sessionId, id) { calls.stopped.push(`${sessionId}:${id}`); }
   };
   const controller = createSshTunnelController(catalog, profiles, ssh, forwarding, overrides.newId ?? (() => runtimeId),
-    overrides.confirmTunnelExposure ?? (async () => true));
+    overrides.confirmTunnelExposure ?? (async () => true), overrides.requestSocksCredentials);
   controller.subscribe(status => events.push(status));
   return { controller, calls, events, sshEvents, saved };
 }
 
 type TunnelStatusEvent = { readonly tunnelId: string; readonly state: string };
+
+const dynamicDefinition: SshTunnelDefinition = { id: tunnelId, sessionId: profileId, name: 'SOCKS proxy', mode: 'dynamic',
+  bindHost: '127.0.0.1', bindPort: 0, createdAt: definition.createdAt };
+
+test('SOCKS credentials require exact fields and one through 255 UTF-8 bytes per value', () => {
+  assert.equal(isSocksProxyCredentials({ username: 'u', password: 'p' }), true);
+  assert.equal(isSocksProxyCredentials({ username: 'é'.repeat(127) + 'a', password: 'p'.repeat(255) }), true);
+  for (const value of [null, [], { username: '', password: 'p' }, { username: 'u', password: '' },
+    { username: 'é'.repeat(128), password: 'p' }, { username: 'u', password: 'p'.repeat(256) },
+    { username: 'u\0', password: 'p' }, { username: 'u', password: '\0p' },
+    { username: '\ud800', password: 'p' }, { username: 'u', password: '\udfff' },
+    { username: 'u', password: null }, { username: 'u', password: 'p', extra: true }]) {
+    assert.equal(isSocksProxyCredentials(value), false);
+  }
+});
+
+test('authenticated SOCKS starts request transient credentials before SSH and never save or publish them', async () => {
+  let prompts = 0;
+  const credentials = { username: 'proxy-user', password: 'proxy-secret' };
+  const { controller, calls, events, saved } = harness({ getTunnel: async () => dynamicDefinition,
+    requestSocksCredentials: async signal => {
+      assert.equal(signal.aborted, false);
+      assert.deepEqual(calls.opened, []);
+      prompts++;
+      return { ok: true, result: credentials };
+    }
+  });
+  assert.equal((await controller.start(tunnelId, undefined, undefined, true)).ok, true);
+  assert.deepEqual(calls.socksCredentials, [credentials]);
+  assert.doesNotMatch(JSON.stringify([await controller.list(), events, [...saved.values()]]), /proxy-user|proxy-secret/u);
+  await controller.stop(tunnelId);
+
+  assert.equal((await controller.start(tunnelId)).ok, true);
+  assert.deepEqual(calls.socksCredentials, [credentials, undefined]);
+  assert.equal(prompts, 1, 'an authenticated start must not change the default for a later start');
+  await controller.dispose();
+});
+
+test('required SOCKS authentication never falls back on unsupported mode, missing prompt, malformed credentials or prompt failure', async () => {
+  const requestCredentials = async () => ({ ok: true as const, result: { username: 'u', password: 'p' } });
+  const scenarios = [
+    { getTunnel: async () => definition, requestSocksCredentials: requestCredentials, code: 'INVALID_REQUEST' },
+    { getTunnel: async () => dynamicDefinition, code: 'NOT_SUPPORTED' },
+    { getTunnel: async () => dynamicDefinition,
+      requestSocksCredentials: async () => ({ ok: true as const, result: { username: 'u', password: '' } }), code: 'INVALID_REQUEST' },
+    { getTunnel: async () => dynamicDefinition, requestSocksCredentials: async () => failure('CANCELLED'), code: 'CANCELLED' },
+    { getTunnel: async () => dynamicDefinition, requestSocksCredentials: async () => { throw new Error('native prompt unavailable'); }, code: 'UNAVAILABLE' }
+  ];
+  for (const scenario of scenarios) {
+    const { controller, calls } = harness(scenario);
+    const result = await controller.start(tunnelId, undefined, undefined, true);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.error.code, scenario.code);
+    assert.deepEqual(calls.opened, []);
+    assert.deepEqual(calls.forwarded, []);
+    await controller.dispose();
+  }
+});
+
+test('cancellation, stop, closeAll and dispose cancel a pending SOCKS credential request before SSH opens', async () => {
+  for (const action of ['cancel', 'stop', 'closeAll', 'dispose'] as const) {
+    let requested!: () => void;
+    const promptRequested = new Promise<void>(resolve => { requested = resolve; });
+    let cancelled = false;
+    const { controller, calls } = harness({ getTunnel: async () => dynamicDefinition,
+      requestSocksCredentials: signal => new Promise<Outcome<SocksProxyCredentials>>(resolve => {
+        signal.addEventListener('abort', () => { cancelled = true; resolve(failure('CANCELLED')); });
+        requested();
+      })
+    });
+    const cancellation = new AbortController();
+    const starting = controller.start(tunnelId, cancellation.signal, undefined, true);
+    await promptRequested;
+    if (action === 'cancel') cancellation.abort();
+    else if (action === 'stop') assert.deepEqual(await controller.stop(tunnelId), { ok: true, result: { tunnelId, state: 'stopped' } });
+    else await controller[action]();
+    assert.equal(cancelled, true, action);
+    const result = await starting;
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.error.code, 'CANCELLED');
+    assert.deepEqual(calls.opened, []);
+    assert.deepEqual(calls.forwarded, []);
+    await controller.dispose();
+  }
+});
+
+test('concurrent authenticated starts share one prompt while a different authentication policy is busy', async () => {
+  let requested!: () => void;
+  const promptRequested = new Promise<void>(resolve => { requested = resolve; });
+  let finishPrompt!: (value: Outcome<SocksProxyCredentials>) => void;
+  const prompt = new Promise<Outcome<SocksProxyCredentials>>(resolve => { finishPrompt = resolve; });
+  let prompts = 0;
+  const { controller, calls } = harness({ getTunnel: async () => dynamicDefinition,
+    requestSocksCredentials: async () => { prompts++; requested(); return prompt; }
+  });
+  const first = controller.start(tunnelId, undefined, undefined, true);
+  await promptRequested;
+  const second = controller.start(tunnelId, undefined, undefined, true);
+  const anonymous = await controller.start(tunnelId);
+  assert.equal(anonymous.ok, false);
+  if (!anonymous.ok) assert.equal(anonymous.error.code, 'BUSY');
+  finishPrompt({ ok: true, result: { username: 'u', password: 'p' } });
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.ok, true);
+  assert.deepEqual(secondResult, firstResult);
+  assert.equal(prompts, 1);
+  assert.equal(calls.forwarded.length, 1);
+  await controller.dispose();
+});
 
 test('tunnel controller reads one saved definition without listing the catalog', async () => {
   const { controller } = harness();

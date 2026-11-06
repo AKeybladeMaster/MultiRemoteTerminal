@@ -13,6 +13,17 @@ The comparison application's publicly advertised features include tabbed local t
 
 **Product boundary:** Build equivalent workflows independently. No reused proprietary binary/code/design assets, bypasses of license controls, copyrighted artwork or branded imitation. Supporting third-party tools are permitted only after license and redistributability review. REA research is observational with an evidence trail, never an instruction to extract reusable proprietary implementation.
 
+## 2026-11-06 essential implementation continuation
+
+WP-04M authors optional per-start SOCKS username/password CONNECT through a
+separate native prompt. The renderer receives no proxy credentials, and profiles
+do not save them. Existing loopback no-auth remains available. Authentication,
+cancellation and protocol regression sources are authored but unrun; P-25/F-006
+remain PARTIAL for final acceptance, BIND, UDP and interoperability. See
+[ADR-0067](adr/ADR-0067-per-start-socks-credentials.md). Under the user's current
+direction, all resumed Phase 07–11 implementation precedes automated verification;
+development checkpoint pushes do not qualify a phase or production release.
+
 ## Requirements
 
 Priority labels: **Must** = MVP release gate; **Should** = next public-quality release; **Could** = parity milestone; **Won't in MVP** = explicitly deferred while staying in full-scope backlog.

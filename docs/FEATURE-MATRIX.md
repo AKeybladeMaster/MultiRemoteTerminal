@@ -1,5 +1,12 @@
 # Full Feature Matrix — MobaXterm Home + Professional Benchmark
 
+2026-11-06 continuation: optional per-start SOCKS username/password CONNECT is
+authored under ADR-0067, including native credential isolation, strict worker
+validation, cancellation and protocol regression sources. No checks have run on
+this candidate. P-25/F-006 remain PARTIAL; BIND/UDP and broad interoperability
+remain open. Development checkpoint commits are explicitly unverified and do not
+upgrade feature acceptance.
+
 **Date:** 2026-10-23. Reference: official [edition comparison](https://mobaxterm.mobatek.net/download.html) and [feature descriptions](https://mobaxterm.mobatek.net/features.html).
 
 This is **requirements coverage**, not an assertion of implemented code. Each feature begins `PLANNED`. Change the status only with a Windows build and linked acceptance evidence.

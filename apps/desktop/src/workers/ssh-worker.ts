@@ -160,7 +160,7 @@ async function handle(request: Extract<SshWorkerRequest, { type: 'request' }>): 
         clearGatewayCredentials(request.gatewayHops);
       }
     } else if (request.command === 'tunnel.forward.start') {
-      const bindPort = await provider.startForward(request.sessionId, request.definition);
+      const bindPort = await provider.startForward(request.sessionId, request.definition, request.socksCredentials);
       send({ version: SSH_WORKER_PROTOCOL_VERSION, type: 'reply', requestId: request.requestId, ok: true, result: { bindPort } });
       return;
     } else if (request.command === 'tunnel.forward.stop') {
