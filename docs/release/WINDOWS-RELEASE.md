@@ -48,3 +48,7 @@ Publish only after the version is set to the intended release value, the signed 
 ## 2026-11-01 notice-generation path boundary
 
 The standalone `notices:win` generator validates the workspace `.tmp` directory before its local pnpm inventory query and writes only to a regular `THIRD-PARTY-NOTICES.txt` in that directory. The Windows package and direct SBOM commands validate/create the workspace `artifacts/windows` directory before package tooling or metadata writes. These paths reject linked directory components; notice, SBOM, and checksum writers reject symbolic-link and hard-link output files, stage writes to unique exclusive siblings, sync the staged file, recheck the existing destination identity, and atomically replace it. On write or replacement failure, cleanup removes only the operation's own temporary file and preserves the prior output. The package inventory includes common `THIRD-PARTY-NOTICES` filename variants. These source and test changes are unverified; the release output has not been regenerated.
+
+## Resumed essential implementation — 2026-11-06
+
+Current source includes new SOCKS authentication and lifecycle/TFTP changes after the Nov1 binary evidence. The earlier binaries are historical candidates, not this source tree. Final checks and packaging run only after all resumed implementation is integrated; retain PARTIAL status for Windows10, real hardware/accessibility/account recovery, provider/legal provenance and trusted signing. No new artifact or signature is claimed at this checkpoint.

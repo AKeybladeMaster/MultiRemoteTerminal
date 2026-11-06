@@ -25,13 +25,14 @@ export async function runNativeSshLogDialog(action: NativeSshLogDialogAction, fi
   await runNativeDialog(action, filePath, targetProcessId, 'SSH session log');
 }
 
-export async function runNativeSshCredentialPrompt(username: string, password: string, targetProcessId: number): Promise<void> {
+export async function runNativeSshCredentialPrompt(username: string, password: string, targetProcessId: number,
+  purpose: 'ssh-password' | 'socks-account' = 'ssh-password'): Promise<void> {
   // SendKeys treats printable punctuation as key syntax; package fixtures use an alphanumeric alphabet.
   if (!/^[A-Za-z0-9]+$/u.test(username) || username.length > 256 || !/^[A-Za-z0-9]+$/u.test(password) || password.length > 256 ||
-      !Number.isSafeInteger(targetProcessId) || targetProcessId < 1) {
+      !Number.isSafeInteger(targetProcessId) || targetProcessId < 1 || (purpose !== 'ssh-password' && purpose !== 'socks-account')) {
     throw new Error('Native SSH credential prompt automation requires alphanumeric fixture values and a valid app process ID.');
   }
-  await runNativeDialog('submit-ssh-credential', undefined, targetProcessId, 'Windows SSH credential prompt', JSON.stringify({ username, password }));
+  await runNativeDialog('submit-ssh-credential', undefined, targetProcessId, 'Windows credential prompt', JSON.stringify({ username, password }), purpose);
 }
 
 export async function runNativeSshCredentialBundleDialog(action: NativeSshCredentialBundleDialogAction, filePath: string | undefined,
@@ -78,7 +79,8 @@ export async function runNativePublicTunnelConfirmation(action: NativePublicTunn
 async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCredentialPromptAction | NativeSshCredentialBundleDialogAction |
   NativeCustomLogoDialogAction | NativeLocalTextDialogAction | NativeTransferRecoveryFolderAction |
   NativeRemoteForwardConfirmationAction | NativePublicTunnelConfirmationAction | NativeClipboardFixtureAction,
-  filePath: string | undefined, targetProcessId: number | undefined, description: string, stdinInput?: string): Promise<void> {
+  filePath: string | undefined, targetProcessId: number | undefined, description: string, stdinInput?: string,
+  credentialPurpose?: 'ssh-password' | 'socks-account'): Promise<void> {
   if (process.platform !== 'win32') throw new Error(`Native ${description} dialog automation is Windows-only.`);
   if (action !== 'write-clipboard' &&
       (targetProcessId === undefined || !Number.isSafeInteger(targetProcessId) || targetProcessId < 1)) {
@@ -89,6 +91,7 @@ async function runNativeDialog(action: NativeSshLogDialogAction | NativeSshCrede
     resolve('tests/e2e/windows-native-dialog.ps1'), '-Action', action];
   if (filePath) args.push('-FilePath', filePath);
   if (targetProcessId !== undefined) args.push('-TargetProcessId', String(targetProcessId));
+  if (credentialPurpose !== undefined) args.push('-CredentialPurpose', credentialPurpose);
   const child = spawn(executable, args, { cwd: resolve('.'), windowsHide: true, stdio: [stdinInput === undefined ? 'ignore' : 'pipe', 'ignore', 'pipe'] });
   let errorText = '';
   child.stderr?.setEncoding('utf8');

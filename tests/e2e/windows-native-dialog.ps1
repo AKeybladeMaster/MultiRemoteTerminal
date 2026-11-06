@@ -3,10 +3,15 @@ param(
     [ValidateSet('cancel-consent', 'cancel-save', 'save', 'close-app', 'submit-ssh-credential', 'cancel-credential-export', 'export-credential', 'cancel-credential-import', 'import-credential', 'cancel-logo', 'select-logo', 'cancel-local-text', 'select-local-text', 'cancel-transfer-folder', 'select-transfer-folder', 'cancel-remote-forward', 'accept-remote-forward', 'cancel-public-tunnel', 'accept-public-tunnel', 'write-clipboard')]
     [string] $Action,
     [string] $FilePath = '',
-    [int] $TargetProcessId = 0
+    [int] $TargetProcessId = 0,
+    [ValidateSet('ssh-password', 'socks-account')]
+    [string] $CredentialPurpose = 'ssh-password'
 )
 
 $ErrorActionPreference = 'Stop'
+$credentialPromptMessage = if ($CredentialPurpose -eq 'socks-account') {
+    'Choose a separate local SOCKS proxy username and password for this tunnel start.'
+} else { 'Enter the SSH account credential.' }
 Add-Type -AssemblyName System.Windows.Forms
 if ($Action -eq 'write-clipboard') {
     $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
@@ -338,7 +343,7 @@ function Find-SshCredentialWindow([int[]] $targetProcessIds) {
         foreach ($element in $elements) {
             try {
                 $name = $element.Current.Name
-                if (-not [string]::IsNullOrEmpty($name) -and $name.Contains('Enter the SSH account credential.')) { return $window }
+                if (-not [string]::IsNullOrEmpty($name) -and $name.Contains($credentialPromptMessage)) { return $window }
             } catch { }
         }
     }

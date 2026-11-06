@@ -17,7 +17,7 @@ import { join, posix, resolve, win32 } from 'node:path';
 import { createSessionFolderBundle, SESSION_FOLDER_BUNDLE_VERSION } from '../../packages/domain/src/session-folder-bundle.ts';
 import { CURRENT_SCHEMA_VERSION } from '../../apps/desktop/src/adapters/sqlite-host-trust-repository.ts';
 import { resolveShellExecutable } from '../../apps/desktop/src/workers/local-pty-provider.ts';
-import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativePublicTunnelConfirmation, runNativeRemoteForwardConfirmation, runNativeSshCredentialBundleDialog, runNativeSshLogDialog, runNativeTransferRecoveryFolderDialog, writeWindowsClipboardFixture } from './windows-native-dialog.ts';
+import { runNativeCustomLogoDialog, runNativeLocalTextDialog, runNativePublicTunnelConfirmation, runNativeRemoteForwardConfirmation, runNativeSshCredentialBundleDialog, runNativeSshCredentialPrompt, runNativeSshLogDialog, runNativeTransferRecoveryFolderDialog, writeWindowsClipboardFixture } from './windows-native-dialog.ts';
 import { createWorkspaceTempDirectory } from './workspace-temp-directory.ts';
 
 type ElectronApplication = Awaited<ReturnType<typeof electron.launch>>;
@@ -5090,6 +5090,175 @@ test('saved SSH profiles start loopback forwards, relay traffic and restore stop
     for (const socket of targetSockets) socket.destroy();
     if (sshListening) await new Promise<void>(resolveClose => sshServer.close(() => resolveClose()));
     if (targetListening) await new Promise<void>(resolveClose => targetServer.close(() => resolveClose()));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  }
+});
+
+test('dynamic SOCKS requires separate native credentials, rejects a wrong password and releases its listener on stop', async () => {
+  test.skip(process.platform !== 'win32', 'Exercise the actual Windows credential prompt and SSH utility worker');
+  test.setTimeout(120_000);
+  const profile = await createWorkspaceTempDirectory('mrt-native-socks-auth-');
+  const proxyUsername = `proxy${randomUUID().replaceAll('-', '')}`;
+  const proxyPassword = randomUUID().replaceAll('-', '');
+  const sshUsername = `ssh${randomUUID().replaceAll('-', '')}`;
+  const sshPassword = randomUUID().replaceAll('-', '');
+  const payload = Buffer.from([0, 255, 128, 13, 10, ...Buffer.from('MRT-AUTHENTICATED-SOCKS')]);
+  const ssh2 = createRequire(resolve('apps/desktop/package.json'))('ssh2') as Ssh2FixturePackage;
+  const clients = new Set<Ssh2FixtureClient>();
+  const requests: { readonly destIP: string; readonly destPort: number }[] = [];
+  const fixtureErrors: string[] = [];
+  const consoleMessages: string[] = [];
+  let forwardedBytes = Buffer.alloc(0);
+  let authenticatedConnections = 0;
+  let shellRequests = 0;
+  const server = new ssh2.Server({ hostKeys: [ssh2.utils.generateKeyPairSync('ed25519').private] }, rawClient => {
+    const client = rawClient as Ssh2FixtureClient;
+    clients.add(client);
+    client.once('close', () => clients.delete(client));
+    client.on('error', (error: Error) => fixtureErrors.push(error.message));
+    client.on('authentication', (context: Ssh2AuthenticationContext) => {
+      if (context.method === 'password' && context.username === sshUsername && context.password === sshPassword) context.accept();
+      else context.reject();
+    });
+    client.on('ready', () => {
+      authenticatedConnections += 1;
+      client.on('session', (_accept: unknown, reject: () => void) => { shellRequests += 1; reject(); });
+      client.on('tcpip', (accept: () => Duplex, reject: () => void, info: { readonly destIP: string; readonly destPort: number }) => {
+        requests.push({ destIP: info.destIP, destPort: info.destPort });
+        if (info.destIP !== 'localhost' || info.destPort !== 32123) { reject(); return; }
+        const channel = accept();
+        channel.on('error', (error: Error) => fixtureErrors.push(error.message));
+        channel.on('data', (chunk: Buffer) => { forwardedBytes = Buffer.concat([forwardedBytes, chunk]); channel.write(chunk); });
+        channel.on('end', () => channel.end());
+      });
+    });
+  });
+  server.on('error', (error: Error) => fixtureErrors.push(error.message));
+  let app: ElectronApplication | undefined;
+  let listening = false;
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', () => { listening = true; resolveListen(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('The native SOCKS SSH fixture did not bind a loopback port.');
+    app = await electron.launch({ args: [resolve('apps/desktop'), `--user-data-dir=${profile}`],
+      env: { ...electronEnvironment(), MRT_E2E: '1' } });
+    app.on('console', message => consoleMessages.push(message.text()));
+    const page = await app.firstWindow();
+    page.on('console', message => consoleMessages.push(message.text()));
+    const pageErrors: string[] = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await expect(page.locator('.visually-hidden[role="status"]')).toContainText('Ready', { timeout: 15_000 });
+    await page.evaluate(async port => {
+      const reply = await window.multiRemoteTerminal.createSavedSession({ kind: 'ssh', name: 'Native SOCKS SSH profile', host: '127.0.0.1', port });
+      if (!reply.ok) throw new Error(`Could not save the native SOCKS SSH profile (${reply.error.code}).`);
+    }, address.port);
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Open Native SOCKS SSH profile', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Port forwarding', exact: true }).click();
+    const manager = page.getByRole('dialog', { name: 'Port forwarding' });
+    await manager.getByRole('button', { name: '+ New tunnel' }).click();
+    await manager.getByLabel('Tunnel name').fill('Native authenticated SOCKS');
+    await manager.getByLabel('Forward direction').selectOption('dynamic');
+    await manager.getByLabel('Local SOCKS5 port').fill('0');
+    await manager.getByRole('button', { name: 'Save tunnel', exact: true }).click();
+    await manager.getByRole('button', { name: /Native authenticated SOCKS/u }).click();
+    const requireAuthentication = manager.getByRole('checkbox', { name: 'Require SOCKS username/password for this start' });
+    await requireAuthentication.check();
+    await manager.getByRole('button', { name: 'Start tunnel', exact: true }).click();
+    await runNativeSshCredentialPrompt(proxyUsername, proxyPassword, nativeDialogProcessId(app), 'socks-account');
+    await runNativeSshCredentialPrompt(sshUsername, sshPassword, nativeDialogProcessId(app));
+    const trust = page.getByRole('dialog', { name: 'Verify this SSH host' });
+    await expect(trust).toBeVisible({ timeout: 20_000 });
+    await trust.getByRole('button', { name: 'Trust key and connect' }).click();
+    const status = manager.getByRole('region', { name: 'Tunnel settings' }).getByRole('status');
+    await expect(status).toContainText('Active', { timeout: 20_000 });
+    const portMatch = /SOCKS5 proxy 127\.0\.0\.1:(\d+)/u.exec(await status.locator('code').innerText());
+    if (!portMatch) throw new Error('The authenticated SOCKS listener did not report its loopback port.');
+    const proxyPort = Number(portMatch[1]);
+    expect(authenticatedConnections).toBe(1);
+    await expect(requireAuthentication).not.toBeChecked();
+
+    const exchange = async (password: string, accepted: boolean): Promise<void> => {
+      const socket = connectTcp(proxyPort, '127.0.0.1');
+      socket.setTimeout(10_000, () => socket.destroy(new Error('Timed out during authenticated SOCKS forwarding.')));
+      const chunks = socket[Symbol.asyncIterator]();
+      let buffered = Buffer.alloc(0);
+      const readExactly = async (length: number): Promise<Buffer> => {
+        while (buffered.length < length) {
+          const next = await chunks.next();
+          if (next.done || !Buffer.isBuffer(next.value)) throw new Error('The authenticated SOCKS response ended early.');
+          buffered = Buffer.concat([buffered, next.value]);
+        }
+        const result = buffered.subarray(0, length);
+        buffered = buffered.subarray(length);
+        return result;
+      };
+      try {
+        socket.write(Buffer.from([5, 2, 0, 2]));
+        expect(await readExactly(2)).toEqual(Buffer.from([5, 2]));
+        const usernameBytes = Buffer.from(proxyUsername);
+        const passwordBytes = Buffer.from(password);
+        const host = Buffer.from('localhost');
+        socket.write(Buffer.concat([Buffer.from([1, usernameBytes.length]), usernameBytes, Buffer.from([passwordBytes.length]), passwordBytes,
+          Buffer.from([5, 1, 0, 3, host.length]), host, Buffer.from([32123 >> 8, 32123 & 255]), payload]));
+        expect(await readExactly(2)).toEqual(Buffer.from([1, accepted ? 0 : 1]));
+        if (!accepted) {
+          expect(buffered).toHaveLength(0);
+          expect((await chunks.next()).done).toBe(true);
+          return;
+        }
+        expect(await readExactly(10)).toEqual(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
+        expect(await readExactly(payload.length)).toEqual(payload);
+        expect(buffered).toHaveLength(0);
+      } finally { socket.destroy(); }
+    };
+    await exchange(`${proxyPassword}wrong`, false);
+    expect(requests).toEqual([]);
+    expect(forwardedBytes).toHaveLength(0);
+    await exchange(proxyPassword, true);
+    expect(requests).toEqual([{ destIP: 'localhost', destPort: 32123 }]);
+    expect(forwardedBytes).toEqual(payload);
+    expect(shellRequests).toBe(0);
+    const rendererSnapshot = await page.evaluate(async () => JSON.stringify({
+      document: document.documentElement.outerHTML,
+      profiles: await window.multiRemoteTerminal.listSavedSessions(''), tunnels: await window.multiRemoteTerminal.listSshTunnels()
+    }));
+    for (const canary of [proxyUsername, proxyPassword]) expect(rendererSnapshot).not.toContain(canary);
+    await manager.getByRole('button', { name: 'Stop tunnel', exact: true }).click();
+    await expect(status).toContainText('Stopped', { timeout: 15_000 });
+    await expect.poll(() => clients.size).toBe(0);
+    const releasedPort = createServer();
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        releasedPort.once('error', rejectListen);
+        releasedPort.listen(proxyPort, '127.0.0.1', resolveListen);
+      });
+    } finally { if (releasedPort.listening) await new Promise<void>(resolveClose => releasedPort.close(() => resolveClose())); }
+    expect(pageErrors).toEqual([]);
+    expect(fixtureErrors).toEqual([]);
+    await app.close();
+    app = undefined;
+    for (const canary of [proxyUsername, proxyPassword]) expect(consoleMessages.join('\n')).not.toContain(canary);
+    const pendingDirectories = [profile];
+    while (pendingDirectories.length > 0) {
+      const directory = pendingDirectories.pop();
+      if (!directory) continue;
+      for (const entry of await readDirectory(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) pendingDirectories.push(path);
+        else if (entry.isFile()) {
+          const contents = await readFile(path);
+          for (const canary of [proxyUsername, proxyPassword]) expect(contents.includes(Buffer.from(canary)), path).toBe(false);
+        }
+      }
+    }
+  } finally {
+    await app?.close();
+    for (const client of clients) client.end();
+    if (listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 });
