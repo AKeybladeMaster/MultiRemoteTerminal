@@ -339,3 +339,7 @@ The focused eight-gateway Windows Electron E2E passed (1/1, 32.0s) on pinned Nod
 ## Git Bash resize input wake (ADR-0066)
 
 The local PTY utility-worker adapter records the launch shell and observes ConPTY's output-negotiated Win32 Input Mode. After a Git Bash resize in that mode it sends one empty native key-up record (zero virtual key, scan code, character and modifiers). This wakes MSYS input-side resize processing without replaying or delaying user data. Other shells and sessions without the mode request receive no record. It is a bounded adapter workaround, not a generic child-ready acknowledgement; raw console readers may observe the empty release. See [ADR-0066](adr/ADR-0066-git-bash-resize-input-wake.md) and [focused Windows acceptance](results/WP-01E-resize-input-wake-2026-11-01.md).
+
+## 2026-11-06 shutdown failure containment (unverified)
+
+The existing composition root retains dependency order but settles each provider group before attempting later cleanup; failed session or log cleanup cannot skip X11 and storage shutdown. The storage adapter bounds shutdown at three seconds and keeps the genuine worker-exit promise as the only authorization for stage cleanup/replacement. A timeout returns typed unavailability without assuming termination. This adds no new layer, renderer capability or secret persistence; injected no-exit/kill-failure coverage is authored for the final gate.

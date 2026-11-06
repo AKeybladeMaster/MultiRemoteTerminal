@@ -602,6 +602,71 @@ test('timed-out folder export waits for partial temp-file cleanup before rejecti
   }
 });
 
+for (const killBehavior of ['no-exit', 'false', 'throw'] as const) {
+  test(`storage shutdown is bounded when worker kill reports ${killBehavior}, retaining cleanup until exit`, { timeout: 5_000 }, async context => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const directory = await mkdtemp(join(tmpdir(), 'mrt-storage-shutdown-'));
+    const destinationPath = join(directory, 'sessions.json');
+    let resolveStalled!: () => void;
+    const stalled = new Promise<void>(resolve => { resolveStalled = resolve; });
+    let worker: FakeStorageWorker | undefined;
+    let killAttempts = 0;
+    let cleanupAttempts = 0;
+    let launches = 0;
+    const store = new SqliteStorageStore(join(directory, 'storage.sqlite'), join(directory, 'ssh-host-keys.json'),
+      'storage-worker.js', directory, () => {
+        launches++;
+        worker = new FakeStorageWorker(':memory:', false, 'session.folder.export', resolveStalled);
+        worker.kill = () => {
+          killAttempts++;
+          if (killBehavior === 'throw') throw new Error('Injected kill failure');
+          return killBehavior !== 'false';
+        };
+        return worker as unknown as UtilityProcess;
+      }, async path => {
+        cleanupAttempts++;
+        await rm(path, { force: true });
+      });
+    const cancellation = cancellationSource();
+    let pending: Promise<unknown> | undefined;
+    try {
+      pending = store.exportFolderToFile('11111111-1111-4111-8111-111111111111', destinationPath, cancellation.token);
+      let settled = false;
+      const observed = pending.then(() => { settled = true; }, () => { settled = true; });
+      await stalled;
+      assert.ok(worker);
+      const temporaryPath = worker.temporaryPath;
+      assert.ok(temporaryPath);
+      cancellation.abort();
+      assert.equal(killAttempts, 1);
+
+      const closing = store.shutdown();
+      const rejected = assert.rejects(closing, (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'unavailable');
+      context.mock.timers.tick(3_000);
+      await rejected;
+      assert.ok(killAttempts >= 2);
+      assert.equal(settled, false, 'the cancelled export retains its real-exit cleanup barrier');
+      assert.equal(cleanupAttempts, 0);
+      assert.equal((await stat(temporaryPath)).isFile(), true, 'a live worker may still write its stage');
+      await assert.rejects(store.find({ host: 'shutdown.example', port: 22 }),
+        (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'unavailable');
+      assert.equal(launches, 1, 'shutdown never replaces the unconfirmed worker');
+
+      FakeStorageWorker.prototype.kill.call(worker);
+      await assert.rejects(pending, (error: unknown) => error instanceof HostTrustStoreError && error.kind === 'cancelled');
+      await observed;
+      assert.equal(cleanupAttempts, 1);
+      await assert.rejects(stat(temporaryPath), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'ENOENT');
+      await store.shutdown();
+    } finally {
+      if (worker) FakeStorageWorker.prototype.kill.call(worker);
+      await pending?.catch(() => undefined);
+      context.mock.timers.reset();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 function hostKey(host: string, port: number, byte: number): TrustedHostKey {
   const algorithm = 'ssh-ed25519';
   const algorithmBytes = Buffer.from(algorithm, 'ascii');

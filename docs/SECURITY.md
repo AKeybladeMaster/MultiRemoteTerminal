@@ -180,3 +180,7 @@ Read-only Windows preflight found no currently valid code-signing certificate wi
 ### Scoped Git Bash resize acceptance - 2026-11-01
 
 The formerly failing P-02 resize regression now passes the re-enabled ten-repeat Windows E2E with a Git Bash/mode-9001-gated empty key-up record after resize. Immediate typing, immediate clipboard paste, existing input-line preservation/Backspace and interactive native cmd-child input pass. There is no text, physical key, delay, user-input retry or additional renderer capability. Raw console readers can observe the synthetic release; broader platform/application acceptance remains open. This supersedes the active P-02 failure status in earlier checkpoints, while P-25, N-010, Windows 10, signing and wider release gates remain partial. Three independent final reviews found no outstanding Critical or Important issue in the reviewed delta; the Spec review's weak editing assertion was tightened and rerun. See [acceptance and review evidence](results/WP-01E-resize-input-wake-2026-11-01.md).
+
+## 2026-11-06 storage shutdown failure boundary (unverified)
+
+Shutdown has a bounded typed failure when the storage worker does not report exit. A deadline does not prove the worker is dead: its staging files remain untouched and a replacement worker stays blocked until genuine exit. Provider cleanup failures no longer prevent subsequent independent cleanup attempts in main. Redacted diagnostics identify only shutdown timeout/failed termination categories. No final verification has run on this candidate.

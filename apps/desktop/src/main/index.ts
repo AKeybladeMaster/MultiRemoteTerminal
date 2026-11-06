@@ -587,8 +587,8 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
   let quitRequested = false;
   const stopTerminals = (): Promise<void> => {
     if (!shutdownPromise) {
-      shutdownPromise = Promise.all([tunnels.closeAll(), tftpServer.closeAll()])
-        .then(() => Promise.all([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll(), localTextEditor.closeAll()]))
+      shutdownPromise = Promise.allSettled([tunnels.closeAll(), tftpServer.closeAll()])
+        .then(() => Promise.allSettled([terminals.closeAll(), sshTerminals.closeAll(), telnetTerminals.closeAll(), serialTerminals.closeAll(), ftpFiles.closeAll(), localTextEditor.closeAll()]))
         .then(() => sshX11Provider.closeAll())
         .then(() => undefined).catch(() => undefined)
         .finally(() => { shutdownPromise = undefined; });
@@ -1134,11 +1134,14 @@ The SSH server is ${server}; forwarded traffic reaches ${destination}. Review lo
     powerShellProfileScripts.clear();
     for (const pending of pendingSshSessionLogs.values()) clearTimeout(pending.timer);
     pendingSshSessionLogs.clear();
-    void Promise.all([tunnels.dispose(), tftpServer.closeAll()]).then(() => sshSessionLogWriter.closeAll())
-      .then(() => Promise.all([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]))
-      .then(() => sshX11Provider.closeAll())
-      .then(() => storageStore.shutdown())
-      .catch(() => undefined).finally(() => app.quit());
+    void (async () => {
+      try {
+        await Promise.allSettled([tunnels.dispose(), tftpServer.closeAll()]);
+        await sshSessionLogWriter.closeAll().catch(() => undefined);
+        await Promise.allSettled([terminals.dispose(), sshTerminals.dispose(), telnetTerminals.dispose(), serialTerminals.dispose(), ftpFiles.dispose(), localTextEditor.closeAll()]);
+        await sshX11Provider.closeAll().catch(() => undefined);
+      } finally { await storageStore.shutdown(); }
+    })().catch(() => undefined).finally(() => app.quit());
   });
   app.on('will-quit', () => {
     powerMonitor.removeListener('lock-screen', lockVaultForSystemEvent);

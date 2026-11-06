@@ -40,13 +40,14 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const START_TIMEOUT_MS = 5_000;
+const SHUTDOWN_TIMEOUT_MS = 3_000;
 const MAX_PENDING_REQUESTS = 128;
 export const STORAGE_DIAGNOSTICS_CHANNEL_NAME = 'multi-remote-terminal.storage';
 const storageDiagnostics = channel(STORAGE_DIAGNOSTICS_CHANNEL_NAME);
 
 type StorageDiagnosticEvent = {
   readonly component: 'storage';
-  readonly event: 'protocol-invalid' | 'request-cancelled' | 'request-timeout' | 'startup-error' | 'startup-timeout' | 'worker-exit';
+  readonly event: 'protocol-invalid' | 'request-cancelled' | 'request-timeout' | 'startup-error' | 'startup-timeout' | 'worker-exit' | 'worker-kill-failed' | 'shutdown-timeout';
   readonly code: 'BUSY' | 'CANCELLED' | 'CONFLICT' | 'CORRUPT' | 'INVALID_BUNDLE' | 'NOT_FOUND' | 'UNAVAILABLE';
 };
 
@@ -601,12 +602,26 @@ class StorageWorkerClient {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     const exit = this.workerExit;
-    if (exit) { await exit; return; }
     const worker = this.worker;
-    if (!worker) return;
-    try { await this.request({ command: 'shutdown' }); }
-    catch { /* A failed shutdown is completed by killing this owned worker. */ }
-    if (this.worker === worker) await this.terminate(worker);
+    if (!worker && !exit) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        (async () => {
+          if (exit) { await exit; return; }
+          try { await this.request({ command: 'shutdown' }); }
+          catch { /* A failed shutdown is completed by killing this owned worker. */ }
+          if (worker && this.worker === worker) await this.terminate(worker);
+        })(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            if (this.worker) void this.terminate(this.worker);
+            publishStorageDiagnostic('shutdown-timeout', 'UNAVAILABLE');
+            reject(new HostTrustStoreError('unavailable'));
+          }, SHUTDOWN_TIMEOUT_MS);
+        })
+      ]);
+    } finally { clearTimeout(timer); }
   }
 
   private ensureWorker(): Promise<UtilityProcess> {
@@ -706,7 +721,8 @@ class StorageWorkerClient {
     this.workerExit = exitPromise;
     // DatabaseSync runs synchronously, so terminating the worker is the interrupt mechanism.
     // Any other in-flight request fails on exit; SQLite transactions retain crash atomicity.
-    try { worker.kill(); } catch { /* The exit event owns final cleanup. */ }
+    try { if (!worker.kill()) publishStorageDiagnostic('worker-kill-failed', 'UNAVAILABLE'); }
+    catch { publishStorageDiagnostic('worker-kill-failed', 'UNAVAILABLE'); }
     return exitPromise;
   }
 }
