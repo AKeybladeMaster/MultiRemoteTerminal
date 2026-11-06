@@ -53,3 +53,7 @@ Audit an exact candidate release and dependency tree, establish a least-privileg
 
 - `openRootFile` now rechecks `lstat` after opening and compares the path entry, opened handle, and canonical target identities before serving. Added a unit case for rejecting a file symlink; it skips only when Windows denies link creation. This closes the identified replacement window for paths that resolve to a different file or outside the selected root, but does not establish the Windows symlink acceptance gate.
 - No tests or other automated checks ran. Phase 09 remains PARTIAL; retain the explicit Windows symlink-capability limitation until the phase gate.
+
+## 2026-11-06 essential TFTP ACK/read ownership (unverified)
+
+Static audit found that a current-block ACK could arrive while the next disk read was pending, reuse the previous DATA packet state, advance offsets and start overlapping reads. The existing transfer owner now clears its current packet before reading, ignores ACKs until DATA exists, and ignores send callbacks for superseded packets. A gated-read UDP regression source sends an early ACK, drains the listener queue, then checks no extra read and exact subsequent DATA/offsets. No new module/dependency or daemon scope was added. No automated checks ran; prior TFTP acceptance does not verify this delta. NFS/Cron/helper breadth stays PARTIAL with the existing transport/toolchain/export-policy/interoperability dependencies; no unsupported provider is emulated.

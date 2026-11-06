@@ -176,6 +176,7 @@ class TftpReadTransfer {
 
   private async sendNextBlock(): Promise<void> {
     if (this.closed) return;
+    this.currentPacket = undefined;
     const remaining = Math.max(0, this.file.size - this.offset);
     const requestedLength = Math.min(BLOCK_BYTES, remaining);
     const data = Buffer.allocUnsafe(requestedLength);
@@ -198,6 +199,7 @@ class TftpReadTransfer {
     const socket = this.socket;
     if (!socket || this.closed) return;
     socket.send(packet, this.remote.port, this.remote.address, error => {
+      if (this.closed || this.currentPacket !== packet) return;
       if (error) { void this.finish(); return; }
       if (armRetry) {
         if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -222,6 +224,7 @@ class TftpReadTransfer {
       this.sendError(4, 'Illegal TFTP operation', remote, true);
       return;
     }
+    if (!this.currentPacket) return;
     if (block !== this.currentBlock) {
       const previous = (this.currentBlock + 65_535) & 65_535;
       if (block === previous) this.resendCurrent();

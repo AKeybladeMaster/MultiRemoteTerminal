@@ -173,6 +173,67 @@ test('read-only TFTP rejects a symlinked file', async context => {
   }
 });
 
+test('TFTP ignores early acknowledgements while the next block is being read', async () => {
+  const rootDirectory = await mkdtemp(join(tmpdir(), 'mrt-tftp-early-ack-'));
+  const contents = Buffer.alloc(1_025, 0x61);
+  const readOffsets: number[] = [];
+  let notifySecondRead!: () => void;
+  const secondReadStarted = new Promise<void>(resolve => { notifySecondRead = resolve; });
+  let releaseSecondRead!: () => void;
+  const secondReadGate = new Promise<void>(resolve => { releaseSecondRead = resolve; });
+  const server = new ReadOnlyTftpServer(undefined, async () => ({
+    size: contents.byteLength,
+    handle: {
+      async read(buffer: Buffer, offset: number, length: number, position: number) {
+        readOffsets.push(position);
+        if (position === 512) { notifySecondRead(); await secondReadGate; }
+        const bytesRead = contents.copy(buffer, offset, position, position + length);
+        return { bytesRead, buffer };
+      },
+      async close() {}
+    } as unknown as FileHandle
+  }));
+  const client = createSocket('udp4');
+  const probe = createSocket('udp4');
+  try {
+    const port = await server.start(rootDirectory, 0);
+    const firstReply = receivePacket(client, 2_000);
+    await sendPacket(client, readRequest('payload.bin'), port);
+    const first = await firstReply;
+    assert.deepEqual([...first.packet.subarray(0, 4)], [0, 3, 0, 1]);
+    assert.deepEqual(first.packet.subarray(4), contents.subarray(0, 512));
+
+    await sendPacket(client, Buffer.from([0, 4, 0, 1]), first.remote.port);
+    await secondReadStarted;
+    await sendPacket(client, Buffer.from([0, 4, 0, 2]), first.remote.port);
+    const probeReply = receivePacket(probe, 2_000);
+    await sendPacket(probe, Buffer.from([0, 4, 0, 2]), first.remote.port);
+    const probeResponse = await probeReply;
+    assert.deepEqual([...probeResponse.packet.subarray(0, 4)], [0, 5, 0, 5]);
+    assert.deepEqual(readOffsets, [0, 512], 'an ACK for unsent DATA must not start another disk read');
+
+    const secondReply = receivePacket(client, 2_000);
+    releaseSecondRead();
+    const second = await secondReply;
+    assert.deepEqual([...second.packet.subarray(0, 4)], [0, 3, 0, 2]);
+    assert.deepEqual(second.packet.subarray(4), contents.subarray(512, 1_024));
+    const finalReply = receivePacket(client, 2_000);
+    await sendPacket(client, Buffer.from([0, 4, 0, 2]), first.remote.port);
+    const final = await finalReply;
+    assert.deepEqual([...final.packet.subarray(0, 4)], [0, 3, 0, 3]);
+    assert.deepEqual(final.packet.subarray(4), contents.subarray(1_024));
+    await sendPacket(client, Buffer.from([0, 4, 0, 3]), first.remote.port);
+    assert.deepEqual(readOffsets, [0, 512, 1_024]);
+  } finally {
+    releaseSecondRead();
+    try { await server.stop(); }
+    finally {
+      try { await Promise.all([closeUdpSocket(client), closeUdpSocket(probe)]); }
+      finally { await rm(rootDirectory, { recursive: true, force: true }); }
+    }
+  }
+});
+
 test('TFTP server bounds pending file opens and rejects the next request as busy', async () => {
   const rootDirectory = await mkdtemp(join(tmpdir(), 'mrt-tftp-pending-'));
   let openCount = 0;
